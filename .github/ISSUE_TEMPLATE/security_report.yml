@@ -1,0 +1,66 @@
+name: Security Concern
+description: Report a security concern that is NOT a critical vulnerability (for critical vulns, email security contact directly)
+labels: ["security", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **For critical vulnerabilities** (credential exposure, auth bypass, policy circumvention): please report privately rather than opening a public issue.
+
+        This template is for security-adjacent concerns: hardening suggestions, defense-in-depth improvements, or low-severity issues that are safe to discuss publicly.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Policy bypass / unexpected authorization
+        - Credential leak in logs or responses
+        - SSRF or URL validation gap
+        - Encryption or key management concern
+        - Authentication weakness
+        - Audit logging gap
+        - MCP tool authorization issue
+        - Hardening suggestion
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the security concern. Include how the current behavior diverges from expected security properties.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction or proof of concept
+      description: |
+        Steps, commands, or a minimal config that demonstrates the concern.
+        Redact any real credentials or sensitive data.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: exploitability
+    attributes:
+      label: Exploitability
+      description: How easily could this be exploited in a real deployment?
+      options:
+        - Requires local/admin access
+        - Requires a specific misconfiguration
+        - Exploitable with default settings
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: AgentCordon version
+      placeholder: "v0.1.2"
+    validations:
+      required: true

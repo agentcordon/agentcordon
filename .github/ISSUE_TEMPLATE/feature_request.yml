@@ -1,0 +1,104 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement", "triage"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which area does this feature relate to?
+      options:
+        - Gateway CLI (agentcordon command)
+        - Credential Proxy
+        - Policy Engine (Cedar)
+        - MCP Integration
+        - Admin API
+        - Admin UI / Dashboard
+        - OIDC / SSO
+        - Encryption / Crypto
+        - Database / Storage
+        - Docker / Deployment
+        - New component
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Request type
+      description: What kind of change is this?
+      options:
+        - New capability
+        - Improve existing feature
+        - New credential type or transform
+        - New MCP server / tool support
+        - New auth provider integration
+        - Developer experience / ergonomics
+        - Performance
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: |
+        What problem does this solve? Describe the use case or workflow that is currently painful or impossible.
+        Link to related issues if applicable.
+      placeholder: |
+        When an agent needs to call AWS services, it must ... but currently AgentCordon doesn't support ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: |
+        How do you think this should work? Include example commands, API shapes, or Cedar policy snippets if relevant.
+      placeholder: |
+        A new transform type that ...
+
+        ```
+        agentcordon proxy my-aws-cred GET https://s3.amazonaws.com/...
+        ```
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds you've tried
+      description: What have you tried so far? Why didn't it work?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: security-impact
+    attributes:
+      label: Security model impact
+      description: Does this change affect the security boundary?
+      options:
+        - "No: works within existing trust model"
+        - "Yes: agents gain access to new secret types"
+        - "Yes: changes policy evaluation or enforcement"
+        - "Yes: modifies credential injection or proxy behavior"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: breaking
+    attributes:
+      label: Would this be a breaking change?
+      options:
+        - "No"
+        - "Yes: CLI interface change"
+        - "Yes: API change"
+        - "Yes: policy schema change"
+        - "Yes: database migration required"
+        - "Not sure"
+    validations:
+      required: true

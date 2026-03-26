@@ -1,0 +1,157 @@
+name: Bug Report
+description: Report a bug in AgentCordon
+labels: ["bug", "triage"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of AgentCordon is affected?
+      options:
+        - Gateway CLI (agentcordon command)
+        - Credential Proxy
+        - Policy Engine (Cedar)
+        - MCP Integration
+        - Admin API
+        - Admin UI / Dashboard
+        - OIDC / SSO
+        - Encryption / Crypto
+        - Database (SQLite)
+        - Database (PostgreSQL)
+        - Docker / Deployment
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How severe is the impact?
+      options:
+        - "Critical: credentials exposed, auth bypass, or data loss"
+        - "High: core functionality broken, no workaround"
+        - "Medium: functionality impaired but workaround exists"
+        - "Low: cosmetic, minor inconvenience"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug. Include the exact error message if there is one.
+      placeholder: |
+        When I run `agentcordon proxy my-cred GET https://api.example.com/...`, I get:
+
+        ```
+        Error: <paste exact error output here>
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What should have happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug. Include commands, config snippets, and Cedar policies if relevant.
+      placeholder: |
+        1. Create a credential with URL pattern `https://api.example.com/*`
+        2. Create a Cedar policy that permits the agent principal
+        3. Run `agentcordon proxy ...`
+        4. Observe error
+    validations:
+      required: true
+
+  - type: textarea
+    id: config-context
+    attributes:
+      label: Configuration context
+      description: |
+        Relevant configuration that a triage agent needs to understand your setup.
+        Include any of: Cedar policy snippet, credential config (redact secrets), environment variables, proxy settings.
+      placeholder: |
+        **Cedar policy:**
+        ```cedar
+        permit(
+          principal == Agent::"...",
+          action == Action::"proxy",
+          resource == Credential::"my-cred"
+        );
+        ```
+
+        **Relevant env vars:**
+        ```
+        AGTCRDN_PORT=3140
+        AGTCRDN_DB_PATH=/data/agentcordon.db
+        ```
+      render: markdown
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: |
+        Paste server logs, CLI output with RUST_LOG=debug, or audit trail entries.
+        Redact any secrets or tokens.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: AgentCordon version
+      description: Output of `agentcordon --version` or the Docker image tag.
+      placeholder: "v0.1.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment method
+      options:
+        - Docker
+        - Built from source (cargo)
+        - Pre-built binary
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database backend
+      options:
+        - SQLite (default)
+        - PostgreSQL
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / Architecture
+      placeholder: "Ubuntu 22.04 x86_64 / macOS 14 arm64"
+    validations:
+      required: false
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround
+      description: If you found a workaround, describe it here. This helps triage prioritize.
+    validations:
+      required: false
