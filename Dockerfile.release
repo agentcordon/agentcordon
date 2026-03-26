@@ -1,0 +1,29 @@
+FROM debian:bookworm-slim
+
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --shell /bin/bash agtcrdn
+
+COPY bin/linux/${TARGETARCH}/agent-cordon-server /usr/local/bin/agent-cordon-server
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN mkdir -p /data && chown agtcrdn:agtcrdn /data
+
+USER agtcrdn
+
+ENV AGTCRDN_LISTEN_ADDR=0.0.0.0:3140
+ENV AGTCRDN_DB_PATH=/data/agent-cordon.db
+
+EXPOSE 3140
+
+VOLUME ["/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:3140/health || exit 1
+
+ENTRYPOINT ["docker-entrypoint.sh"]

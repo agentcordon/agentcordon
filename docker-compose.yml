@@ -1,0 +1,43 @@
+# AgentCordon — Zero-Config Production Compose
+#
+# Quick start (no .env required):
+#   docker compose up -d
+#
+# The server auto-generates cryptographic secrets on first run
+# and persists them to the /data volume. No env vars needed.
+#
+# Services:
+#   agentcordon — Control plane (server) on port 3140
+#
+# Optional: create a .env file to override defaults:
+#   AGTCRDN_PORT           — Server host port (default: 3140)
+#   AGTCRDN_ROOT_USERNAME  — Admin username (default: auto-generated)
+#   AGTCRDN_ROOT_PASSWORD  — Admin password (default: auto-generated, printed in logs)
+#   AGTCRDN_SEED_DEMO      — Seed demo data on first boot (default: true)
+#
+# See .env.example for all available options.
+
+services:
+  agentcordon:
+    image: ghcr.io/agentcordon/agentcordon:latest
+    container_name: agentcordon
+    command: ["agent-cordon-server"]
+    ports:
+      - "${AGTCRDN_PORT:-3140}:3140"
+    volumes:
+      - agentcordon-data:/data
+    environment:
+      AGTCRDN_SEED_DEMO: "${AGTCRDN_SEED_DEMO:-true}"
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3140/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  agentcordon-data:

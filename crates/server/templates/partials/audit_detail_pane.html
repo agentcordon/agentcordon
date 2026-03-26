@@ -1,0 +1,112 @@
+{# Audit event detail pane — loaded via AJAX into the split-view right pane.
+   No base.html wrapper. Contains full detail + inline scripts. #}
+<div x-data="auditDetailPane()" x-init="init()">
+    <div class="content-body">
+        <div x-show="loading" class="page-loader">
+            <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+            <span class="page-loader-label">Loading audit event...</span>
+        </div>
+
+        <div x-show="notFound && !loading" class="empty-state">
+            <h3>Audit event not found</h3>
+        </div>
+
+        <div x-show="event && !loading" class="detail-card detail-card-narrow">
+            <div class="detail-header">
+                <h3>
+                    <span class="pill pill-type" x-text="event && event.event_type"></span>
+                </h3>
+            </div>
+            <div class="detail-body">
+                <div class="detail-row">
+                    <div class="detail-label">Timestamp</div>
+                    <div class="detail-value timestamp" x-text="formatDateTime(event && event.timestamp)"></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Principal</div>
+                    <div class="detail-value" x-text="event && (event.agent_name || event.workspace_name || event.user_name || event.device_name || event.principal || '\u2014')"></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Action</div>
+                    <div class="detail-value" x-text="event && event.action"></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Resource Type</div>
+                    <div class="detail-value" x-text="event && event.resource_type"></div>
+                </div>
+                <div class="detail-row" x-show="event && event.resource_id">
+                    <div class="detail-label">Resource ID</div>
+                    <div class="detail-value mono-sm" x-text="event && event.resource_id"></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Decision</div>
+                    <div class="detail-value">
+                        <span class="pill"
+                              :class="event && event.decision === 'permit' ? 'pill-ok' : (event && event.decision === 'forbid' ? 'pill-bad' : 'pill-warn')"
+                              x-text="event && event.decision"></span>
+                    </div>
+                </div>
+                <div class="detail-row" x-show="event && event.decision_reason">
+                    <div class="detail-label">Reason</div>
+                    <div class="detail-value" x-text="event && event.decision_reason"></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Correlation ID</div>
+                    <div class="detail-value mono-sm" x-text="event && (event.correlation_id || '\u2014')"></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Event ID</div>
+                    <div class="detail-value mono-sm" x-text="event && event.id"></div>
+                </div>
+
+                <!-- Metadata -->
+                <div class="detail-row" x-show="event && hasMetadata()">
+                    <div class="detail-label">Metadata</div>
+                    <div class="detail-value">
+                        <pre class="audit-metadata-pre" style="white-space:pre-wrap; word-break:break-all; font-size:0.85em; margin:0;" x-text="metadataJson()"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function auditDetailPane() {
+    return {
+        event: null,
+        loading: true,
+        notFound: false,
+
+        async init() {
+            var id = '{{ event_id }}';
+            await this.loadEvent(id);
+        },
+
+        async loadEvent(id) {
+            try {
+                var resp = await fetch('/api/v1/audit/' + id);
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.event = data.data || data;
+                } else if (resp.status === 404) {
+                    this.notFound = true;
+                }
+            } catch(e) { showToast('Failed to load audit event', 'error'); }
+            this.loading = false;
+        },
+
+        hasMetadata() {
+            if (!this.event || !this.event.metadata) return false;
+            return Object.keys(this.event.metadata).length > 0;
+        },
+
+        metadataJson() {
+            if (!this.event || !this.event.metadata) return '{}';
+            return JSON.stringify(this.event.metadata, null, 2);
+        },
+
+        formatDateTime: formatDateTime
+    };
+}
+</script>

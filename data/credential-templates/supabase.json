@@ -1,0 +1,13 @@
+{
+  "key": "supabase",
+  "name": "Supabase API Key",
+  "service": "supabase.co",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "apikey",
+  "allowed_url_pattern": "https://*.supabase.co/*",
+  "fields": ["secret_value"],
+  "description": "Supabase project API key (anon or service_role). Injected as apikey header.",
+  "tags": ["database", "supabase"],
+  "sort_order": 200
+}

@@ -1,0 +1,56 @@
+<!-- Affected Principals — included by policies/detail.html -->
+<div x-show="policy && !loading" class="detail-card detail-card-narrow mt-6">
+    <div class="detail-header">
+        <h3>Affected Principals</h3>
+        <div class="detail-header-actions">
+            <button class="btn btn-secondary btn-sm" @click="loadAffectedPrincipals()" :disabled="affectedPrincipals.loading">
+                <span x-text="affectedPrincipals.loading ? 'Loading...' : (affectedPrincipals.loaded ? 'Refresh' : 'Load')"></span>
+            </button>
+        </div>
+    </div>
+    <div class="detail-body">
+        <p class="affected-principals-desc">Principals whose access is affected by this policy.</p>
+        <div x-show="affectedPrincipals.loading" class="page-loader page-loader-sm">
+            <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+        </div>
+        <div x-show="affectedPrincipals.loaded && affectedPrincipals.list.length === 0 && !affectedPrincipals.loading" class="text-sm opacity-muted">
+            No principals affected by this policy.
+        </div>
+        <table x-show="affectedPrincipals.list.length > 0" class="tbl tbl-flush">
+            <thead><tr><th>Principal</th><th>Type</th><th>Actions Affected</th></tr></thead>
+            <tbody>
+                <template x-for="p in affectedPrincipals.list" :key="p.principal_id">
+                    <tr class="affected-principal-row">
+                        <td>
+                            <span class="affected-principal-name" x-text="p.principal_name"></span>
+                        </td>
+                        <td><span class="pill pill-type pill-sm" x-text="p.principal_type"></span></td>
+                        <td class="text-sm">
+                            <div class="affected-principal-actions">
+                                <template x-for="a in p.actions" :key="a">
+                                    <span class="pill pill-scope pill-sm" x-text="a"></span>
+                                </template>
+                            </div>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+</div>
+<style>
+.affected-principals-desc {
+    font-size: 0.8rem;
+    opacity: 0.55;
+    margin: 0 0 16px 0;
+}
+.affected-principal-row:hover {
+    background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+.affected-principal-name { font-weight: 500; }
+.affected-principal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+</style>

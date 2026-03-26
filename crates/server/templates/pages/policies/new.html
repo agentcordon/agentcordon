@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}New Security Policy — Agent Cordon{% endblock %}
+{% block content %}
+<div x-data="policyNewPage()" x-init="init()">
+    <a href="/security" class="back-link">&larr; Security</a>
+    <h2 class="page-title">Create Security Policy</h2>
+
+    <div class="form-two-col">
+        <div class="form-main">
+            <form @submit.prevent="submitPolicy()">
+                <div class="form-group">
+                    <label for="policy-name">Name <span class="required">*</span></label>
+                    <input id="policy-name" x-model="form.name" class="form-input" placeholder="e.g. Allow workspace credential access" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="policy-desc">Description</label>
+                    <input id="policy-desc" x-model="form.description" class="form-input" placeholder="Optional description of what this policy does">
+                </div>
+
+                <div class="form-group">
+                    <label for="policy-cedar">Cedar Policy <span class="required">*</span></label>
+                    <textarea id="policy-cedar" x-model="form.cedar_policy" class="form-input cedar-editor" rows="14" required
+                        placeholder="permit(principal, action, resource) when { ... };"></textarea>
+                    <div class="form-hint">Write a Cedar policy expression. Use the template buttons on the right to get started.</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" x-model="form.enabled" class="checkbox-input">
+                        <span>Enabled</span>
+                    </label>
+                    <div class="form-hint">Disabled policies are stored but not evaluated.</div>
+                </div>
+
+                <div class="form-actions">
+                    <a href="/security" class="btn btn-secondary">Cancel</a>
+                    <button type="submit" class="btn btn-primary" :disabled="form.submitting">
+                        <span x-show="form.submitting" class="spinner"></span>
+                        <span x-text="form.submitting ? 'Creating...' : 'Create Policy'"></span>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <aside class="form-aside">
+            <div class="help-card">
+                <div class="help-card-icon">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    <span>Cedar Templates</span>
+                </div>
+                <p class="new-policy-tpl-desc">Click a template to populate the editor:</p>
+                <div class="new-policy-tpl-list">
+                    <template x-for="tpl in policyTemplates" :key="tpl.key">
+                        <button type="button" class="new-policy-tpl-btn" @click="previewTemplate(tpl)" :class="{ 'new-policy-tpl-btn-active': previewKey === tpl.key }">
+                            <span class="new-policy-tpl-name" x-text="tpl.name"></span>
+                            <span class="new-policy-tpl-hint" x-show="tpl.description" x-text="tpl.description"></span>
+                        </button>
+                    </template>
+                </div>
+
+                <!-- Template preview -->
+                <div x-show="previewKey" class="new-policy-tpl-preview" x-transition>
+                    <div class="new-policy-tpl-preview-header">
+                        <span class="text-sm">Preview</span>
+                        <button type="button" class="btn btn-ghost btn-sm" @click="previewKey = ''">&times;</button>
+                    </div>
+                    <pre class="new-policy-tpl-preview-code" x-text="previewCedar"></pre>
+                    <button type="button" class="btn btn-primary btn-sm new-policy-tpl-use-btn" @click="usePreviewedTemplate()">Use this template</button>
+                </div>
+            </div>
+        </aside>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<style>
+.cedar-editor {
+    font-family: 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    resize: vertical;
+    min-height: 240px;
+    line-height: 1.6;
+    tab-size: 2;
+}
+.new-policy-tpl-desc {
+    font-size: 0.8rem;
+    opacity: 0.6;
+    margin: 0 0 10px 0;
+}
+.new-policy-tpl-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.new-policy-tpl-btn {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    text-align: left;
+    padding: 8px 10px;
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    background: var(--bg-tertiary, rgba(255,255,255,0.03));
+    color: inherit;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+.new-policy-tpl-btn:hover {
+    border-color: var(--color-link, #60a5fa);
+    background: rgba(96, 165, 250, 0.04);
+}
+.new-policy-tpl-btn-active {
+    border-color: var(--color-link, #60a5fa);
+    background: rgba(96, 165, 250, 0.06);
+}
+.new-policy-tpl-name {
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+.new-policy-tpl-hint {
+    font-size: 0.7rem;
+    opacity: 0.5;
+    line-height: 1.3;
+}
+.new-policy-tpl-preview {
+    margin-top: 12px;
+    padding: 10px;
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    background: var(--bg-secondary, #1a1a2e);
+}
+.new-policy-tpl-preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.new-policy-tpl-preview-code {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    margin: 0 0 10px 0;
+    max-height: 200px;
+    overflow-y: auto;
+}
+.new-policy-tpl-use-btn { width: 100%; }
+</style>
+<script>
+function policyNewPage() {
+    return {
+        form: {
+            name: '',
+            description: '',
+            cedar_policy: '',
+            enabled: true,
+            submitting: false
+        },
+        policyTemplates: [],
+        policyTemplateMap: {},
+        previewKey: '',
+        previewCedar: '',
+
+        init() {
+            fetch('/api/v1/policy-templates', { credentials: 'same-origin' })
+                .then(r => r.ok ? r.json() : Promise.reject(r))
+                .then(data => {
+                    this.policyTemplates = data.data || [];
+                    var map = {};
+                    this.policyTemplates.forEach(function(t) { map[t.key] = t.cedar_policy; });
+                    this.policyTemplateMap = map;
+                })
+                .catch(function() {});
+        },
+
+        previewTemplate(tpl) {
+            this.previewKey = tpl.key;
+            this.previewCedar = this.policyTemplateMap[tpl.key] || '';
+        },
+
+        usePreviewedTemplate() {
+            this.form.cedar_policy = this.previewCedar;
+            this.previewKey = '';
+            this.previewCedar = '';
+        },
+
+        useTemplate(type) {
+            this.form.cedar_policy = this.policyTemplateMap[type] || '';
+        },
+
+        async submitPolicy() {
+            this.form.submitting = true;
+            var body = {
+                name: this.form.name,
+                cedar_policy: this.form.cedar_policy,
+                enabled: this.form.enabled
+            };
+            if (this.form.description) {
+                body.description = this.form.description;
+            }
+            try {
+                var resp = await fetch('/api/v1/policies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify(body)
+                });
+                if (resp.ok) {
+                    var data = await resp.json();
+                    var id = (data.data && data.data.id) || data.id;
+                    window.location.href = '/security/' + id;
+                } else {
+                    var err = await resp.json().catch(function() { return {}; });
+                    showToast((err.error && err.error.message) || 'Failed to create policy', 'error');
+                }
+            } catch(e) {
+                showToast('Network error', 'error');
+            }
+            this.form.submitting = false;
+        }
+    };
+}
+</script>
+{% endblock %}

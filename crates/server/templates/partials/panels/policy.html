@@ -1,0 +1,27 @@
+<div class="panel-header">
+    <h2>{{ policy_name }}</h2>
+    {% if enabled %}
+    <span class="pill pill-ok">enabled</span>
+    {% else %}
+    <span class="pill pill-bad">disabled</span>
+    {% endif %}
+    {% if is_system %}
+    <span class="pill pill-type">system</span>
+    {% endif %}
+</div>
+<div class="panel-body">
+    <dl class="detail-list">
+        <dt>ID</dt>
+        <dd><code class="monospace">{{ policy_id }}</code></dd>
+
+        <dt>Description</dt>
+        <dd>{% if description == "" %}<span class="text-faint">&mdash;</span>{% else %}{{ description }}{% endif %}</dd>
+
+        <dt>Updated</dt>
+        <dd>{{ updated_at }}</dd>
+    </dl>
+    <div class="panel-section">
+        <h4>Policy Text</h4>
+        <pre class="code-block">{{ cedar_policy }}</pre>
+    </div>
+</div>

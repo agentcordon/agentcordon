@@ -1,0 +1,634 @@
+{% extends "base.html" %}
+{% block title %}MCP Server Detail — Agent Cordon{% endblock %}
+{% block content %}
+<div x-data="mcpServerDetailPage()" x-init="init()">
+    <a href="/mcp-servers" class="back-link">&larr; MCP Servers</a>
+
+    <!-- Loading -->
+    <div x-show="loading" class="page-loader">
+        <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+        <span class="page-loader-label">Loading server...</span>
+    </div>
+
+    <!-- Server Detail -->
+    <div x-show="!loading && server" x-cloak>
+        <div class="detail-card detail-card-narrow mcp-detail-card">
+            <div class="detail-header">
+                <template x-if="!editing">
+                    <h3 x-text="server && server.name"></h3>
+                </template>
+                <template x-if="editing">
+                    <input x-model="editForm.name" class="form-input inline-edit-title" placeholder="Server name">
+                </template>
+                <div class="detail-header-actions">
+                    <template x-if="!editing">
+                        <div class="inline-actions-group">
+                            <button class="btn btn-secondary btn-sm" @click="startEdit()">Edit</button>
+                            <button class="btn btn-danger btn-sm" @click="deleteModal = true">Delete</button>
+                        </div>
+                    </template>
+                    <template x-if="editing">
+                        <div class="inline-actions-group">
+                            <button class="btn btn-secondary btn-sm" @click="cancelEdit()">Cancel</button>
+                            <button class="btn btn-primary btn-sm" @click="saveServer()" :disabled="saving">
+                                <span x-show="saving" class="spinner" aria-hidden="true"></span>
+                                <span x-text="saving ? 'Saving...' : 'Save'"></span>
+                            </button>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            <div class="detail-body">
+                <div class="detail-row">
+                    <div class="detail-label">URL</div>
+                    <div class="detail-value" x-text="server && server.upstream_url"></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Transport</div>
+                    <div class="detail-value">
+                        <span class="pill pill-type" x-text="server && server.transport"></span>
+                    </div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Enabled</div>
+                    <div class="detail-value" x-show="!editing">
+                        <span class="pill" :class="server && server.enabled ? 'pill-ok' : 'pill-warn'" x-text="server && server.enabled ? 'Active' : 'Disabled'"></span>
+                    </div>
+                    <div class="detail-value" x-show="editing">
+                        <label><input type="checkbox" x-model="editForm.enabled"> Enabled</label>
+                    </div>
+                </div>
+                <div class="detail-row" x-show="server && server.workspace_name">
+                    <div class="detail-label">Registered by</div>
+                    <div class="detail-value">
+                        <span class="pill pill-type">
+                            <svg class="nav-icon mcp-workspace-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+                            <a :href="'/workspaces/' + server.workspace_id" x-text="server && server.workspace_name" class="mcp-workspace-link"></a>
+                        </span>
+                    </div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Created</div>
+                    <div class="detail-value timestamp" x-text="formatDateTime(server && server.created_at)"></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">ID</div>
+                    <div class="detail-value mono-sm" x-text="server && server.id"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="detail-tabs mcp-tabs-container">
+            <div class="tab-bar">
+                <button class="tab-btn" :class="{ 'tab-active': activeTab === 'tools' }" @click="activeTab = 'tools'">Tools</button>
+                <button class="tab-btn" :class="{ 'tab-active': activeTab === 'workspaces' }" @click="activeTab = 'workspaces'">Workspaces</button>
+                <button class="tab-btn" :class="{ 'tab-active': activeTab === 'permissions' }" @click="activeTab = 'permissions'; loadRsop(); loadPermissions()">Permissions</button>
+                <button class="tab-btn" :class="{ 'tab-active': activeTab === 'history' }" @click="activeTab = 'history'; loadHistory()">History</button>
+            </div>
+
+            <!-- Permissions Tab -->
+            <div class="tab-content" x-show="activeTab === 'permissions'">
+                <!-- Section 1: Effective Access -->
+                <div class="mcp-perm-section">
+                    <h3 class="mcp-section-header">Effective Access</h3>
+                    <p class="text-sm opacity-muted mcp-section-desc">Default policies allow all enabled workspaces to access enabled MCP servers. Add forbid rules to restrict access.</p>
+                    <div x-show="rsop.loading" class="page-loader page-loader-sm">
+                        <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+                    </div>
+                    <div x-show="!rsop.loading && rsop.matrix.length === 0" class="empty-state empty-state-compact">
+                        <p>No workspaces found for effective access evaluation.</p>
+                    </div>
+                    <div x-show="!rsop.loading && rsop.matrix.length > 0">
+                        <template x-for="action in rsopActions" :key="action.key">
+                            <div x-show="principalsForAction(action.key).length > 0" class="mcp-rsop-action">
+                                <div class="mcp-rsop-action-label" x-text="action.label"></div>
+                                <div class="mcp-rsop-pills">
+                                    <template x-for="(p, idx) in principalsForAction(action.key).slice(0, 5)" :key="p.principal_id">
+                                        <span class="pill pill-scope" x-text="p.principal_name"></span>
+                                    </template>
+                                    <template x-if="principalsForAction(action.key).length > 5">
+                                        <button class="btn btn-ghost btn-sm" @click="openEaModal(action.key, action.label)"
+                                                x-text="'... and ' + (principalsForAction(action.key).length - 5) + ' others \u2014 View all'"></button>
+                                    </template>
+                                    <template x-if="principalsForAction(action.key).length <= 5 && principalsForAction(action.key).length > 0">
+                                        <button class="btn btn-ghost btn-sm" @click="openEaModal(action.key, action.label)" title="View details">Details</button>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                    <template x-if="!rsop.loading && rsop.conditional_policies && rsop.conditional_policies.length > 0">
+                        <div class="text-sm opacity-muted mt-2">
+                            <template x-for="cp in rsop.conditional_policies" :key="cp.policy_id || cp.policy_name">
+                                <div>&#9889; <span x-text="cp.policy_name"></span>: <span x-text="cp.description"></span></div>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- Section 2: Cedar Actions (collapsible) -->
+                <details class="mcp-perm-section mcp-advanced-section">
+                    <summary class="mcp-section-header mcp-section-toggle">Available Cedar Actions</summary>
+                    <div x-show="cedarActions.length > 0" class="mcp-cedar-actions">
+                        <template x-for="action in cedarActions" :key="action.name">
+                            <div class="mcp-cedar-action-row">
+                                <code class="mono-id mcp-cedar-action-name" x-text="action.name"></code>
+                                <span class="text-sm opacity-muted" x-text="action.description"></span>
+                            </div>
+                        </template>
+                    </div>
+                    <div x-show="cedarActions.length === 0 && !rsop.loading" class="text-sm opacity-muted">No actions found.</div>
+                </details>
+
+                <!-- Section 3: Granted Permissions -->
+                <div class="mcp-perm-section">
+                    <h3 class="mcp-section-header">Granted Permissions</h3>
+                    <div x-show="permissionsLoading" class="page-loader page-loader-sm">
+                        <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+                    </div>
+                    <div x-show="!permissionsLoading && permissions.length === 0" class="empty-state empty-state-compact">
+                        <p>No permissions granted yet.</p>
+                    </div>
+                    <table x-show="!permissionsLoading && permissions.length > 0" class="tbl tbl-flush">
+                        <thead>
+                            <tr>
+                                <th>Workspace</th>
+                                <th>Permission</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="perm in permissions" :key="perm.workspace_id + '-' + perm.permission">
+                                <tr>
+                                    <td :title="perm.workspace_id" x-text="perm.workspace_name || perm.workspace_id"></td>
+                                    <td><span class="pill pill-scope" x-text="permLabel(perm.permission)"></span></td>
+                                    <td>
+                                        <button class="btn btn-ghost btn-sm" @click="revokePermission(perm.workspace_id, perm.permission)" title="Revoke">&#10005;</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Section 4: Grant Access -->
+                <div class="mcp-perm-section">
+                    <h3 class="mcp-section-header">Grant Access</h3>
+                    <div class="perm-form-batch">
+                        <div class="perm-form-row">
+                            <select x-model="grantWorkspace" class="form-input perm-agent-select" aria-label="Select workspace" @focus="loadWorkspaces()">
+                                <option value="" disabled>Select workspace...</option>
+                                <template x-for="a in workspaces" :key="a.id">
+                                    <option :value="a.id" x-text="a.name"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div class="mcp-grant-mode-toggle">
+                            <button type="button" class="btn btn-sm" :class="grantMode === 'grant' ? 'btn-primary' : 'btn-ghost'" @click="grantMode = 'grant'">Grant</button>
+                            <button type="button" class="btn btn-sm" :class="grantMode === 'deny' ? 'btn-danger' : 'btn-ghost'" @click="grantMode = 'deny'">Deny</button>
+                        </div>
+                        <div class="mcp-grant-checkboxes">
+                            <div class="mcp-grant-primary-checks">
+                                <label class="checkbox-label"><input type="checkbox" :checked="grantListTools" @change="grantListTools = $el.checked" class="checkbox-input" data-testid="grant-list-tools"><span>List Tools</span></label>
+                                <label class="checkbox-label"><input type="checkbox" :checked="grantAllTools" @change="grantAllTools = $el.checked" class="checkbox-input" data-testid="grant-all-tools"><span>All Tools</span></label>
+                            </div>
+                            <template x-if="server && server.tools && server.tools.length > 0">
+                                <div>
+                                    <div class="text-sm opacity-muted mcp-individual-tools-label">Individual tools:</div>
+                                    <div class="mcp-tool-checkboxes">
+                                        <template x-for="tool in server.tools" :key="tool.name">
+                                            <label class="checkbox-label" :title="tool.description || ''">
+                                                <input type="checkbox" class="checkbox-input" :checked="grantTools[tool.name]" @change="grantTools[tool.name] = $event.target.checked">
+                                                <span class="mono-sm" x-text="tool.name"></span>
+                                            </label>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                        <button class="btn btn-sm" :class="grantMode === 'deny' ? 'btn-danger' : 'btn-primary'" @click="grantPermissions()" :disabled="grantSubmitting">
+                            <span x-text="grantSubmitting ? (grantMode === 'deny' ? 'Denying...' : 'Granting...') : (grantMode === 'deny' ? 'Deny Permissions' : 'Grant Permissions')"></span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Effective Access Modal -->
+                <div x-show="eaModal.open" x-cloak class="modal-overlay" @click.self="eaModal.open = false" @keydown.escape.window="eaModal.open && (eaModal.open = false)">
+                    <div class="modal mcp-ea-modal">
+                        <div class="mcp-ea-modal-header">
+                            <h3 x-text="eaModal.title"></h3>
+                            <button class="btn btn-ghost btn-sm" @click="eaModal.open = false" aria-label="Close">&times;</button>
+                        </div>
+                        <table class="tbl tbl-flush">
+                            <thead>
+                                <tr><th>Principal</th><th>Decision</th><th>Policy Basis</th></tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="entry in eaModal.entries" :key="entry.principal_id">
+                                    <tr>
+                                        <td x-text="entry.principal_name"></td>
+                                        <td><span class="pill pill-sm" :class="rsopPill(entry.decision)" x-text="rsopIcon(entry.decision)"></span></td>
+                                        <td class="text-sm opacity-muted">
+                                            <template x-for="reason in entry.reasons" :key="reason.reason">
+                                                <template x-if="reason.policy_id">
+                                                    <a :href="'/security/' + reason.policy_id" x-text="reason.policy_name || reason.reason" class="mcp-policy-link"></a>
+                                                </template>
+                                                <template x-if="!reason.policy_id">
+                                                    <span x-text="reason.reason" class="mcp-policy-link"></span>
+                                                </template>
+                                            </template>
+                                            <span x-show="entry.reasons.length === 0">default policy</span>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tools Tab -->
+            <div class="tab-content" x-show="activeTab === 'tools'">
+            <h3>Tools</h3>
+            <div x-show="!server.tools || server.tools.length === 0" class="empty-state empty-state-sm">
+                <p>No tools registered for this server.</p>
+            </div>
+            <table x-show="server.tools && server.tools.length > 0" class="tbl">
+                <thead><tr><th>Name</th><th>Description</th></tr></thead>
+                <tbody>
+                    <template x-for="tool in (server.tools || [])" :key="tool.name">
+                        <tr>
+                            <td class="mono-id" x-text="tool.name"></td>
+                            <td x-text="tool.description || '\u2014'"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+            </div>
+
+            <!-- Workspaces Tab -->
+            <div class="tab-content" x-show="activeTab === 'workspaces'">
+            <h3>Workspaces</h3>
+            <p class="text-sm opacity-muted mcp-workspaces-desc">Workspaces with access to this MCP server.</p>
+            <div x-show="installedWorkspaces.length === 0" class="empty-state empty-state-sm">
+                <p>No active workspace found for this server.</p>
+            </div>
+            <div x-show="installedWorkspaces.length > 0" class="workspace-list">
+                <template x-for="w in installedWorkspaces" :key="w.id">
+                    <a :href="'/workspaces/' + w.id" class="agent-list-item">
+                        <span class="status-dot status-enabled"></span>
+                        <span x-text="w.name"></span>
+                    </a>
+                </template>
+            </div>
+        </div>
+
+            <!-- History Tab -->
+            <div class="tab-content" x-show="activeTab === 'history'">
+                <h3>History</h3>
+                <div x-show="historyLoading" class="page-loader page-loader-sm">
+                    <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+                </div>
+                <div x-show="!historyLoading && history.length === 0" class="empty-state empty-state-sm">
+                    <p>No audit events recorded for this server.</p>
+                </div>
+                <table x-show="!historyLoading && history.length > 0" class="tbl">
+                    <thead><tr><th>Timestamp</th><th>Event</th><th>Decision</th><th>Details</th></tr></thead>
+                    <tbody>
+                        <template x-for="evt in history" :key="evt.id">
+                            <tr>
+                                <td class="timestamp" x-text="formatDateTime(evt.timestamp)"></td>
+                                <td><span class="pill pill-type" x-text="evt.action || evt.event_type"></span></td>
+                                <td>
+                                    <span class="pill pill-sm" :class="evt.decision === 'permit' ? 'pill-ok' : evt.decision === 'forbid' ? 'pill-danger' : 'pill-muted'" x-text="evt.decision || 'n/a'"></span>
+                                </td>
+                                <td class="text-sm mono-sm" x-text="evt.workspace_name || ''"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+    </div>
+
+    <!-- Delete Modal -->
+    {% include "partials/delete_modal.html" %}
+</div>
+{% endblock %}
+{% block scripts %}
+<style>
+/* MCP detail page — extracted from inline styles */
+.mcp-detail-card { margin-bottom: 24px; }
+.mcp-tabs-container { margin-bottom: 24px; }
+
+/* Permissions sections */
+.mcp-perm-section { padding-top: 20px; border-top: 1px solid var(--line); margin-top: 20px; }
+.mcp-perm-section:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+.mcp-section-header { margin-bottom: 8px; }
+.mcp-section-desc { margin-bottom: 8px; }
+
+/* Advanced section (Cedar actions) — collapsible */
+.mcp-advanced-section { cursor: default; }
+.mcp-section-toggle { cursor: pointer; font-weight: 600; font-size: 14px; list-style: none; }
+.mcp-section-toggle::-webkit-details-marker { display: none; }
+.mcp-section-toggle::before { content: '\25B6'; display: inline-block; margin-right: 6px; font-size: 10px; transition: transform 0.15s ease; }
+details[open] .mcp-section-toggle::before { transform: rotate(90deg); }
+
+/* RSOP action rows */
+.mcp-rsop-action { margin-bottom: 12px; }
+.mcp-rsop-action-label { font-weight: 600; margin-bottom: 4px; }
+.mcp-rsop-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* Cedar actions list */
+.mcp-cedar-actions { margin-top: 8px; }
+.mcp-cedar-action-row { display: flex; gap: 8px; padding: 4px 0; }
+.mcp-cedar-action-name { min-width: 140px; }
+
+/* Grant form */
+.mcp-grant-mode-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+.mcp-grant-checkboxes { display: flex; flex-direction: column; gap: 8px; }
+.mcp-grant-primary-checks { display: flex; flex-wrap: wrap; gap: 8px; }
+.mcp-individual-tools-label { margin-bottom: 4px; }
+.mcp-tool-checkboxes { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Workspace link in pill */
+.mcp-workspace-icon { vertical-align: -1px; margin-right: 2px; }
+.mcp-workspace-link { color: inherit; text-decoration: underline; }
+
+/* Workspaces tab */
+.mcp-workspaces-desc { margin-bottom: 12px; }
+
+/* EA Modal */
+.mcp-ea-modal { max-width: 600px; max-height: 80vh; overflow-y: auto; }
+.mcp-ea-modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.mcp-ea-modal-header h3 { margin-bottom: 0; }
+.mcp-policy-link { display: inline-block; margin-right: 4px; }
+</style>
+<script>
+function mcpServerDetailPage() {
+    return {
+        loading: true,
+        server: null,
+        installedWorkspaces: [],
+        saving: false,
+        editing: false,
+        editForm: { name: '', enabled: true },
+        deleteModal: false,
+        deleteTargetName: '',
+        activeTab: 'tools',
+        rsop: { matrix: [], conditional_policies: [], loading: false },
+        rsopActions: [
+            { key: 'mcp_tool_call', label: 'Tool Call' },
+            { key: 'mcp_list_tools', label: 'List Tools' },
+        ],
+        cedarActions: [],
+        eaModal: { open: false, title: '', action: '', entries: [] },
+        permissions: [],
+        permissionsLoading: false,
+        workspaces: [],
+        grantWorkspace: '',
+        grantListTools: false,
+        grantAllTools: false,
+        grantTools: {},
+        grantMode: 'grant',
+        grantSubmitting: false,
+        history: [],
+        historyLoading: false,
+        historyLoaded: false,
+        async init() {
+            try {
+                const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}');
+                if (resp.ok) {
+                    const json = await resp.json();
+                    this.server = json.data;
+                    this.deleteTargetName = this.server.name;
+                    this.installedWorkspaces = this.server.installed_workspaces || [];
+                    if (this.server.tools) {
+                        this.server.tools.forEach(t => { this.grantTools[t.name] = false; });
+                    }
+                }
+            } catch(e) { showToast('Failed to load MCP server', 'error'); }
+            this.loading = false;
+            this.loadWorkspaces();
+            window.addEventListener('ac:mcp_server_changed', () => this.refreshServer());
+            window.addEventListener('ac:policy_changed', () => {
+                this.loadPermissions();
+                this.rsop.matrix = [];
+                this.loadRsop();
+            });
+        },
+        async refreshServer() {
+            try {
+                const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}');
+                if (resp.ok) {
+                    const json = await resp.json();
+                    this.server = json.data;
+                    this.installedWorkspaces = this.server.installed_workspaces || [];
+                    if (this.server.tools) {
+                        this.server.tools.forEach(t => {
+                            if (!(t.name in this.grantTools)) this.grantTools[t.name] = false;
+                        });
+                    }
+                }
+            } catch(e) { showToast('Failed to refresh MCP server', 'error'); }
+        },
+        startEdit() {
+            this.editForm.name = this.server.name;
+            this.editForm.enabled = this.server.enabled;
+            this.editing = true;
+        },
+        cancelEdit() {
+            this.editing = false;
+        },
+        async saveServer() {
+            this.saving = true;
+            try {
+                const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({
+                        name: this.editForm.name,
+                        enabled: this.editForm.enabled,
+                    }),
+                });
+                if (resp.ok) {
+                    showToast('Server saved', 'success');
+                    await this.refreshServer();
+                    this.editing = false;
+                } else {
+                    const err = await resp.json();
+                    showToast(err.error?.message || 'Failed to save', 'error');
+                }
+            } catch(e) {
+                showToast('Network error', 'error');
+            }
+            this.saving = false;
+        },
+        async loadPermissions() {
+            this.permissionsLoading = true;
+            try {
+                var resp = await fetch('/api/v1/mcp-servers/{{ server_id }}/permissions');
+                if (resp.ok) {
+                    var data = await resp.json();
+                    var inner = data.data || data || {};
+                    this.permissions = inner.permissions || (Array.isArray(inner) ? inner : []);
+                }
+            } catch(e) { showToast('Failed to load permissions', 'error'); }
+            this.permissionsLoading = false;
+        },
+
+        async loadHistory() {
+            if (this.historyLoaded) return;
+            this.historyLoading = true;
+            try {
+                var resp = await fetch('/api/v1/audit?resource_id={{ server_id }}&resource_type=mcp_server&limit=50');
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.history = data.data || data || [];
+                }
+            } catch(e) { showToast('Failed to load history', 'error'); }
+            this.historyLoading = false;
+            this.historyLoaded = true;
+        },
+
+        async loadWorkspaces() {
+            if (this.workspaces.length > 0) return;
+            try {
+                var resp = await fetch('/api/v1/workspaces');
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.workspaces = data.data || data || [];
+                }
+            } catch(e) { showToast('Failed to load workspaces', 'error'); }
+        },
+
+        async grantPermissions() {
+            if (!this.grantWorkspace) return;
+            this.grantSubmitting = true;
+            var perms = [];
+            if (this.grantAllTools) perms.push('mcp_tool_call');
+            if (this.grantListTools) perms.push('mcp_list_tools');
+            if (this.server && this.server.tools) {
+                for (var t of this.server.tools) {
+                    if (this.grantTools[t.name]) {
+                        perms.push('mcp_tool_call:' + t.name);
+                    }
+                }
+            }
+            for (var p of perms) {
+                try {
+                    await fetch('/api/v1/mcp-servers/{{ server_id }}/permissions', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                        body: JSON.stringify({ workspace_id: this.grantWorkspace, permission: p, mode: this.grantMode })
+                    });
+                } catch(e) { showToast('Failed to grant permission', 'error'); }
+            }
+            await this.loadPermissions();
+            this.rsop.matrix = [];
+            await this.loadRsop();
+            this.grantWorkspace = '';
+            this.grantAllTools = false;
+            this.grantListTools = false;
+            this.grantMode = 'grant';
+            if (this.server && this.server.tools) {
+                this.server.tools.forEach(t => { this.grantTools[t.name] = false; });
+            }
+            this.grantSubmitting = false;
+        },
+
+        async revokePermission(agentId, permission) {
+            try {
+                await fetch('/api/v1/mcp-servers/{{ server_id }}/permissions/' + agentId + '/' + permission, {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                await this.loadPermissions();
+                this.rsop.matrix = [];
+                await this.loadRsop();
+            } catch(e) { showToast('Failed to revoke permission', 'error'); }
+        },
+
+        permLabel(perm) {
+            if (perm === 'mcp_tool_call') return 'All Tools';
+            if (perm === 'mcp_list_tools') return 'List Tools';
+            if (perm.startsWith('mcp_tool_call:')) return perm.substring('mcp_tool_call:'.length);
+            return perm;
+        },
+
+        async loadRsop() {
+            if (this.rsop.matrix.length > 0) return;
+            this.rsop.loading = true;
+            try {
+                var resp = await fetch('/api/v1/policies/rsop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ resource_type: 'McpServer', resource_id: '{{ server_id }}' })
+                });
+                if (resp.ok) {
+                    var data = await resp.json();
+                    var rsopData = data.data || data;
+                    this.rsop.matrix = rsopData.matrix || [];
+                    this.rsop.conditional_policies = rsopData.conditional_policies || [];
+                }
+            } catch(e) { showToast('Failed to load effective access', 'error'); }
+            this.rsop.loading = false;
+            this.loadCedarActions();
+        },
+        async loadCedarActions() {
+            try {
+                var resp = await fetch('/api/v1/policies/schema/reference');
+                if (resp.ok) {
+                    var data = await resp.json();
+                    var actions = (data.data || data).actions || [];
+                    this.cedarActions = actions.filter(function(a) {
+                        return a.resource_types && a.resource_types.indexOf('McpServer') >= 0;
+                    });
+                }
+            } catch(e) { /* non-critical */ }
+        },
+        principalsForAction(actionKey) {
+            var results = [];
+            for (var i = 0; i < this.rsop.matrix.length; i++) {
+                var row = this.rsop.matrix[i];
+                var result = row.results && row.results[actionKey];
+                var decision = result ? result.decision : 'forbid';
+                if (decision === 'permit') {
+                    results.push({
+                        principal_id: row.principal_id,
+                        principal_name: row.principal_name || row.principal_id,
+                        principal_type: row.principal_type,
+                        decision: decision,
+                        reasons: result ? (result.reasons || []) : []
+                    });
+                }
+            }
+            results.sort(function(a, b) { return a.principal_name.localeCompare(b.principal_name); });
+            return results;
+        },
+        openEaModal(actionKey, label) {
+            this.eaModal.title = label;
+            this.eaModal.action = actionKey;
+            this.eaModal.entries = this.principalsForAction(actionKey);
+            this.eaModal.open = true;
+        },
+        rsopPill: rsopPill,
+        rsopIcon: rsopIcon,
+        rsopLabel: rsopLabel,
+        rsopBasis: rsopBasis,
+        formatDateTime: formatDateTime,
+        async confirmDelete() {
+            try {
+                const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}', {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': getCsrfToken() },
+                });
+                if (resp.ok) {
+                    window.location.href = '/mcp-servers';
+                }
+            } catch(e) { showToast('Failed to delete MCP server', 'error'); }
+        }
+    };
+}
+</script>
+{% endblock %}

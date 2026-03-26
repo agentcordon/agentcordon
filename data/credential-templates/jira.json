@@ -1,0 +1,13 @@
+{
+  "key": "jira",
+  "name": "Jira API Token",
+  "service": "atlassian.net",
+  "credential_type": "generic",
+  "auth_type": "basic_auth",
+  "header": "Authorization: Basic",
+  "allowed_url_pattern": "https://*.atlassian.net/rest/*",
+  "fields": ["secret_value"],
+  "description": "Atlassian/Jira API token. Used with Basic auth (email:token base64-encoded).",
+  "tags": ["project-management", "atlassian", "jira"],
+  "sort_order": 140
+}

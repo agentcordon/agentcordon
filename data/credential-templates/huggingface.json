@@ -1,0 +1,13 @@
+{
+  "key": "huggingface",
+  "name": "HuggingFace Token",
+  "service": "api-inference.huggingface.co",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api-inference.huggingface.co/*",
+  "fields": ["secret_value"],
+  "description": "HuggingFace API token. Injected as Authorization: Bearer header.",
+  "tags": ["ai", "huggingface"],
+  "sort_order": 90
+}

@@ -1,0 +1,26 @@
+<div x-data="toastManager()" class="toast-container" aria-live="polite" role="status"
+     @toast.window="addToast($event.detail)">
+    <template x-for="t in toasts" :key="t.id">
+        <div class="toast" :class="'toast-' + t.type" x-text="t.message"
+             x-transition:enter="toast-enter"
+             x-transition:leave="toast-leave"></div>
+    </template>
+</div>
+<script>
+function toastManager() {
+    return {
+        toasts: [],
+        addToast(detail) {
+            var toast = {
+                id: Date.now() + Math.random(),
+                message: detail.message || 'Something happened',
+                type: detail.type || 'info'
+            };
+            this.toasts.push(toast);
+            setTimeout(() => {
+                this.toasts = this.toasts.filter(t => t.id !== toast.id);
+            }, detail.duration || 4000);
+        }
+    };
+}
+</script>

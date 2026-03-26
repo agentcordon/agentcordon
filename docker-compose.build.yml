@@ -1,0 +1,36 @@
+# AgentCordon — Build from Source
+#
+# Usage:
+#   docker compose -f docker-compose.build.yml up --build -d
+#
+# Same zero-config experience as production, but builds the image
+# locally from the Dockerfile instead of pulling from the registry.
+#
+# No .env required — the server auto-generates secrets on first run.
+# Optionally create a .env to override port, admin credentials, etc.
+
+services:
+  agentcordon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentcordon
+    ports:
+      - "${AGTCRDN_PORT:-3141}:3140"
+    volumes:
+      - agentcordon-data:/data
+    environment:
+      - AGTCRDN_MASTER_SECRET=${AGTCRDN_MASTER_SECRET}
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3140/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  agentcordon-data:

@@ -1,0 +1,390 @@
+{# Workspace detail pane — loaded via AJAX into the split-view right pane.
+   No base.html wrapper. Contains full detail + tabs + inline scripts. #}
+<div x-data="workspaceDetailPane()" x-init="init()">
+    <div class="content-body">
+        <div x-show="loading" class="page-loader">
+            <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+            <span class="page-loader-label">Loading workspace...</span>
+        </div>
+
+        <div x-show="notFound && !loading" class="empty-state">
+            <h3>Workspace not found</h3>
+        </div>
+
+        <template x-if="workspace">
+        <div x-show="!loading" class="detail-card detail-card-narrow">
+            <div class="detail-header">
+                <h3 x-text="workspace.name"></h3>
+                <div class="detail-header-actions">
+                    <div class="inline-actions-group">
+                        <button class="btn btn-sm"
+                                :class="workspace.enabled ? 'btn-secondary' : 'btn-primary'"
+                                @click="toggleEnabled()"
+                                x-text="workspace.enabled ? 'Disable' : 'Enable'"></button>
+                        <button class="btn btn-danger btn-sm" @click="openDelete()">Delete</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab bar -->
+            <div class="detail-tabs">
+                <nav class="tab-bar" role="tablist" aria-label="Workspace detail tabs">
+                    <button class="tab-btn" role="tab"
+                            :class="{ 'tab-active': activeTab === 'details' }"
+                            :aria-selected="activeTab === 'details'"
+                            @click="activeTab = 'details'">Details</button>
+                    <button class="tab-btn" role="tab"
+                            :class="{ 'tab-active': activeTab === 'history' }"
+                            :aria-selected="activeTab === 'history'"
+                            @click="activeTab = 'history'; loadHistory()">History</button>
+                    <button class="tab-btn" role="tab"
+                            :class="{ 'tab-active': activeTab === 'mcp' }"
+                            :aria-selected="activeTab === 'mcp'"
+                            @click="activeTab = 'mcp'; loadMcpServers()">MCP Servers</button>
+                </nav>
+
+                <!-- Details tab -->
+                <div class="tab-content" role="tabpanel" x-show="activeTab === 'details'">
+                    <div class="detail-body">
+                        <div class="detail-row">
+                            <div class="detail-label">Status</div>
+                            <div class="detail-value">
+                                <span class="pill" :class="workspace.enabled ? 'pill-ok' : 'pill-warn'">
+                                    <span class="pill-dot"></span>
+                                    <span x-text="workspace.enabled ? 'Active' : 'Disabled'"></span>
+                                </span>
+                            </div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Owner</div>
+                            <div class="detail-value" x-text="workspace.owner_username || 'Unassigned'"></div>
+                        </div>
+                        <div class="detail-row" x-show="workspace.description">
+                            <div class="detail-label">Description</div>
+                            <div class="detail-value" x-text="workspace.description"></div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Tags</div>
+                            <div class="detail-value">
+                                <template x-if="!editingTags">
+                                    <div>
+                                        <template x-for="t in (workspace.tags || [])" :key="t">
+                                            <span class="tag" x-text="t"></span>
+                                        </template>
+                                        <span x-show="!(workspace.tags || []).length" class="text-faint">None</span>
+                                        <button class="btn btn-ghost btn-sm edit-roles-btn" @click="startEditTags()">Edit</button>
+                                    </div>
+                                </template>
+                                <template x-if="editingTags">
+                                    <div>
+                                        <div class="tag-input-wrapper" @click="$refs.editTagInput && $refs.editTagInput.focus()">
+                                            <template x-for="(tag, idx) in editTags" :key="idx">
+                                                <span class="chip">
+                                                    <span x-text="tag"></span>
+                                                    <span class="chip-remove" @click="editTags.splice(idx, 1)">&times;</span>
+                                                </span>
+                                            </template>
+                                            <input x-ref="editTagInput"
+                                                   x-model="editTagInput"
+                                                   @keydown.enter.prevent="addEditTag()"
+                                                   @keydown.comma.prevent="addEditTag()"
+                                                   @blur="addEditTag()"
+                                                   placeholder="Type a tag and press Enter"
+                                                   class="tag-input-field">
+                                        </div>
+                                        <div class="tag-edit-actions">
+                                            <button class="btn btn-primary btn-sm" @click="saveEditTags()" :disabled="savingTags">Save</button>
+                                            <button class="btn btn-secondary btn-sm" @click="editingTags = false">Cancel</button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Created</div>
+                            <div class="detail-value timestamp" x-text="formatDateTime(workspace.created_at)"></div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Updated</div>
+                            <div class="detail-value timestamp" x-text="formatDateTime(workspace.updated_at)"></div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">ID</div>
+                            <div class="detail-value mono-sm" x-text="workspace.id"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- History tab -->
+                <div class="tab-content" role="tabpanel" x-show="activeTab === 'history'">
+                    <div x-show="historyLoading" class="page-loader page-loader-sm">
+                        <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+                    </div>
+                    <div x-show="!historyLoading && history.length === 0" class="empty-state empty-state-compact">
+                        <p>No events yet</p>
+                    </div>
+                    <table x-show="!historyLoading && history.length > 0" class="tbl tbl-flush">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Event</th>
+                                <th>Decision</th>
+                                <th>Summary</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="ev in history" :key="ev.id">
+                                <tr class="clickable-row" @click="window.location.href = '/audit/' + ev.id"
+                                    role="link" :aria-label="'View audit event ' + ev.event_type">
+                                    <td class="timestamp" :title="formatDateTime(ev.timestamp)"
+                                        x-text="timeAgo(ev.timestamp)"></td>
+                                    <td><span class="pill pill-type" x-text="ev.event_type"></span></td>
+                                    <td>
+                                        <span class="pill"
+                                              :class="ev.decision === 'permit' ? 'pill-ok' : (ev.decision === 'forbid' ? 'pill-bad' : 'pill-warn')"
+                                              x-text="ev.decision"></span>
+                                    </td>
+                                    <td x-text="eventSummary(ev)"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- MCP Servers tab -->
+                <div class="tab-content" role="tabpanel" x-show="activeTab === 'mcp'">
+                    <div x-show="mcpLoading" class="page-loader page-loader-sm">
+                        <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+                    </div>
+                    <div x-show="!mcpLoading && mcpServers.length === 0" class="empty-state empty-state-compact">
+                        <p>No MCP servers registered for this workspace</p>
+                    </div>
+                    <table x-show="!mcpLoading && mcpServers.length > 0" class="tbl tbl-flush">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Transport</th>
+                                <th>Status</th>
+                                <th>Tools</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="server in mcpServers" :key="server.id">
+                                <tr>
+                                    <td><a :href="'/mcp-servers/' + server.id" class="cred-name" x-text="server.name"></a></td>
+                                    <td><span class="pill pill-type" x-text="server.transport"></span></td>
+                                    <td>
+                                        <span class="pill" :class="server.enabled ? 'pill-ok' : 'pill-warn'" x-text="server.enabled ? 'Active' : 'Disabled'"></span>
+                                    </td>
+                                    <td x-text="server.tools_count + ' tools'"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        </template>
+    </div>
+
+    <!-- Delete modal (inline for partial) -->
+    <div x-show="deleteModal" x-cloak x-transition.opacity.duration.150ms class="modal-overlay" @click.self="deleteModal = false" @keydown.escape.window="deleteModal && (deleteModal = false)">
+        <div class="modal">
+            <h3>Delete Workspace</h3>
+            <p>Are you sure you want to delete <strong x-text="deleteTargetName"></strong>? This action cannot be undone.</p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" @click="deleteModal = false">Cancel</button>
+                <button class="btn btn-danger" @click="confirmDelete()">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.clickable-row { cursor: pointer; }
+.clickable-row:hover td { background: var(--wash); }
+.tag-edit-actions { display: flex; gap: 8px; margin-top: 8px; }
+</style>
+
+<script>
+function workspaceDetailPane() {
+    return {
+        workspace: null,
+        loading: true,
+        notFound: false,
+        activeTab: 'details',
+        editingTags: false,
+        editTags: [],
+        editTagInput: '',
+        savingTags: false,
+        history: [],
+        historyLoading: false,
+        historyLoaded: false,
+        mcpServers: [],
+        mcpLoading: false,
+        mcpLoaded: false,
+        deleteModal: false,
+        deleteTargetName: '',
+
+        async init() {
+            var id = '{{ workspace_id }}';
+            await this.loadWorkspace(id);
+            window.addEventListener('ac:workspace_updated', () => this.loadWorkspace(id));
+            window.addEventListener('ac:audit_event', () => this.refreshHistory());
+        },
+
+        async loadWorkspace(id) {
+            try {
+                var resp = await fetch('/api/v1/workspaces/' + id);
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.workspace = data.data || data;
+                } else if (resp.status === 404) {
+                    this.notFound = true;
+                }
+            } catch(e) { showToast('Failed to load workspace', 'error'); }
+            this.loading = false;
+        },
+
+        async loadHistory() {
+            if (this.historyLoaded) return;
+            this.historyLoading = true;
+            try {
+                var id = '{{ workspace_id }}';
+                var resp = await fetch('/api/v1/audit?workspace_id=' + id + '&limit=50');
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.history = data.data || [];
+                }
+            } catch(e) { showToast('Failed to load history', 'error'); }
+            this.historyLoading = false;
+            this.historyLoaded = true;
+        },
+
+        async refreshHistory() {
+            if (this.activeTab !== 'history') {
+                this.historyLoaded = false;
+                return;
+            }
+            this.historyLoaded = false;
+            await this.loadHistory();
+        },
+
+        async loadMcpServers() {
+            if (this.mcpLoaded) return;
+            this.mcpLoading = true;
+            try {
+                var id = '{{ workspace_id }}';
+                var resp = await fetch('/api/v1/mcp-servers?workspace_id=' + id);
+                if (resp.ok) {
+                    var data = await resp.json();
+                    var items = data.data || [];
+                    this.mcpServers = items.map(function(s) {
+                        return {
+                            id: s.id,
+                            name: s.name,
+                            transport: s.transport || '',
+                            enabled: s.enabled,
+                            tools_count: s.allowed_tools ? s.allowed_tools.length : 0
+                        };
+                    });
+                }
+            } catch(e) { showToast('Failed to load MCP servers', 'error'); }
+            this.mcpLoading = false;
+            this.mcpLoaded = true;
+        },
+
+        async toggleEnabled() {
+            try {
+                var id = '{{ workspace_id }}';
+                await fetch('/api/v1/workspaces/' + id, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ enabled: !this.workspace.enabled })
+                });
+                await this.loadWorkspace(id);
+            } catch(e) { showToast('Failed to update workspace', 'error'); }
+        },
+
+        startEditTags() {
+            this.editTags = [...(this.workspace.tags || [])];
+            this.editTagInput = '';
+            this.editingTags = true;
+        },
+
+        addEditTag() {
+            var tag = (this.editTagInput || '').trim();
+            if (tag && !this.editTags.includes(tag)) {
+                this.editTags.push(tag);
+            }
+            this.editTagInput = '';
+        },
+
+        async saveEditTags() {
+            this.savingTags = true;
+            try {
+                var id = '{{ workspace_id }}';
+                await fetch('/api/v1/workspaces/' + id, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ tags: this.editTags })
+                });
+                await this.loadWorkspace(id);
+                this.editingTags = false;
+            } catch(e) { showToast('Failed to save tags', 'error'); }
+            this.savingTags = false;
+        },
+
+        eventSummary(ev) {
+            if (!ev) return '';
+            var md = ev.metadata || {};
+            return md.credential_name || md.tool || md.tool_name
+                || md.name || md.resource_name || ev.resource_id || '';
+        },
+
+        timeAgo(ts) {
+            if (!ts) return '';
+            var now = Date.now();
+            var then = new Date(ts).getTime();
+            var diff = Math.max(0, Math.floor((now - then) / 1000));
+            if (diff < 60) return 'just now';
+            if (diff < 3600) {
+                var m = Math.floor(diff / 60);
+                return m + (m === 1 ? ' minute ago' : ' minutes ago');
+            }
+            if (diff < 86400) {
+                var h = Math.floor(diff / 3600);
+                return h + (h === 1 ? ' hour ago' : ' hours ago');
+            }
+            if (diff < 604800) {
+                var d = Math.floor(diff / 86400);
+                return d + (d === 1 ? ' day ago' : ' days ago');
+            }
+            return formatDateTime(ts);
+        },
+
+        openDelete() {
+            this.deleteTargetName = this.workspace.name;
+            this.deleteModal = true;
+        },
+
+        async confirmDelete() {
+            try {
+                var id = '{{ workspace_id }}';
+                var resp = await fetch('/api/v1/workspaces/' + id, {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                if (resp.ok) {
+                    window.location.href = '/workspaces';
+                }
+            } catch(e) { showToast('Failed to delete workspace', 'error'); }
+            this.deleteModal = false;
+        },
+
+        statusClass: statusClass,
+        statusLabel: statusLabel,
+        formatDateTime: formatDateTime
+    };
+}
+</script>

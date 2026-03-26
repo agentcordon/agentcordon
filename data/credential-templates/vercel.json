@@ -1,0 +1,13 @@
+{
+  "key": "vercel",
+  "name": "Vercel API Token",
+  "service": "api.vercel.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api.vercel.com/*",
+  "fields": ["secret_value"],
+  "description": "Vercel API token. Injected as Authorization: Bearer header.",
+  "tags": ["deployment", "vercel"],
+  "sort_order": 160
+}

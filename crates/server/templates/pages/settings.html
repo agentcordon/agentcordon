@@ -1,0 +1,382 @@
+{% extends "base.html" %}
+{% block title %}Settings — Agent Cordon{% endblock %}
+{% block content %}
+<div x-data="settingsPage()" x-init="init()">
+    <div class="content-header">
+        <h2>Settings</h2>
+    </div>
+
+    <!-- Section: Account Settings -->
+    <h3 class="settings-section-header">Account Settings</h3>
+
+    <!-- Advanced Mode Toggle -->
+    <div class="card mb-6">
+        <div class="d-flex justify-between items-center">
+            <div>
+                <h3>Advanced Mode</h3>
+                <p class="text-sm mt-2 settings-desc">Shows additional technical details like Cedar policy source, raw JSON payloads, and debug information throughout the UI. Off by default to keep the interface focused.</p>
+            </div>
+            <label class="toggle-switch settings-toggle">
+                <input type="checkbox" x-model="advancedMode" @change="toggleAdvancedMode()" aria-label="Toggle Advanced Mode">
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
+    </div>
+
+    <!-- Change Password -->
+    <div class="card mb-6">
+        <h3>Change Password</h3>
+        <p class="text-sm mt-2 mb-4 settings-desc">Changing your password will sign you out of all sessions.</p>
+        <form @submit.prevent="changePassword()">
+            <div class="form-group">
+                <label for="pw-current">Current Password</label>
+                <input type="password" id="pw-current" class="form-input" x-model="pwCurrent" required autocomplete="current-password">
+            </div>
+            <div class="form-group">
+                <label for="pw-new">New Password</label>
+                <input type="password" id="pw-new" class="form-input" x-model="pwNew" required minlength="12" autocomplete="new-password">
+                <span class="text-sm settings-desc">Minimum 12 characters</span>
+            </div>
+            <div class="form-group">
+                <label for="pw-confirm">Confirm New Password</label>
+                <input type="password" id="pw-confirm" class="form-input" x-model="pwConfirm" required minlength="12" autocomplete="new-password">
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary btn-sm" :disabled="pwSaving || !pwCurrent || !pwNew || !pwConfirm">
+                    <span x-show="pwSaving" class="spinner" aria-hidden="true"></span>
+                    <span x-text="pwSaving ? 'Changing...' : 'Change Password'"></span>
+                </button>
+            </div>
+        </form>
+    </div>
+
+    {% if user.is_admin %}
+    <!-- Section: Administration -->
+    <h3 class="settings-section-header">
+        Administration
+        <span class="pill pill-type pill-sm">Admin</span>
+    </h3>
+
+    <!-- OIDC Providers -->
+    <div class="card mb-6">
+        <div class="d-flex justify-between items-center mb-4">
+            <h3>SSO / OIDC Providers</h3>
+            <button class="btn btn-primary btn-sm" @click="showNewProvider = !showNewProvider">Add Provider</button>
+        </div>
+
+        <!-- New Provider Form -->
+        <div x-show="showNewProvider" x-cloak class="mb-4 p-4 settings-new-provider-form">
+            <form @submit.prevent="createProvider()">
+                <div class="form-group">
+                    <label for="prov-name">Provider Name</label>
+                    <input type="text" id="prov-name" class="form-input" x-model="newProvider.name" required placeholder="e.g., Google Workspace">
+                </div>
+                <div class="form-group">
+                    <label for="prov-issuer">Issuer URL</label>
+                    <input type="text" id="prov-issuer" class="form-input" x-model="newProvider.issuer_url" required placeholder="https://accounts.google.com">
+                </div>
+                <div class="form-group">
+                    <label for="prov-client-id">Client ID</label>
+                    <input type="text" id="prov-client-id" class="form-input" x-model="newProvider.client_id" required>
+                </div>
+                <div class="form-group">
+                    <label for="prov-client-secret">Client Secret</label>
+                    <input type="password" id="prov-client-secret" class="form-input" x-model="newProvider.client_secret" required>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary btn-sm" @click="showNewProvider = false">Cancel</button>
+                    <button type="submit" class="btn btn-primary btn-sm" :disabled="saving">Create</button>
+                </div>
+            </form>
+        </div>
+
+        {% if providers.is_empty() %}
+        <!-- Server-rendered empty state -->
+        <div x-show="providers.length === 0" class="empty-state empty-state-sm">
+            <p>No SSO providers configured.</p>
+        </div>
+        {% else %}
+        <!-- Providers List -->
+        <table x-show="providers.length > 0" class="tbl">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Issuer URL</th>
+                    <th>Client ID</th>
+                    <th>Enabled</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="p in providers" :key="p.id">
+                    <tr>
+                        <td x-text="p.name"></td>
+                        <td class="mono-id" x-text="p.issuer_url"></td>
+                        <td class="mono-id" x-text="p.client_id"></td>
+                        <td>
+                            <span class="pill" :class="p.enabled ? 'pill-ok' : 'pill-warn'"
+                                  x-text="p.enabled ? 'Yes' : 'No'"></span>
+                        </td>
+                        <td>
+                            <button class="btn btn-secondary btn-sm" @click="toggleProvider(p)"
+                                    x-text="p.enabled ? 'Disable' : 'Enable'"></button>
+                            <button class="btn btn-danger btn-sm" @click="openDeleteProvider(p)">Delete</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+
+        <!-- Empty state after all deleted via JS -->
+        <div x-show="providers.length === 0" x-cloak class="empty-state empty-state-sm">
+            <p>No SSO providers configured.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- User Management -->
+    <div class="card mb-6">
+        <div class="d-flex justify-between items-center mb-4">
+            <h3>User Management</h3>
+            <a href="/users/new" class="btn btn-primary btn-sm">Add User</a>
+        </div>
+        <div x-show="usersLoading" class="page-loader page-loader-sm">
+            <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+        </div>
+        <div x-show="!usersLoading && users.length === 0" class="empty-state empty-state-sm">
+            <p>No users found.</p>
+        </div>
+        <table x-show="!usersLoading && users.length > 0" class="tbl">
+            <thead>
+                <tr>
+                    <th>Username</th>
+                    <th>Display Name</th>
+                    <th>Role</th>
+                    <th>Enabled</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="u in users" :key="u.id">
+                    <tr :class="currentUserId && u.id === currentUserId ? 'settings-current-user' : ''">
+                        <td>
+                            <span x-text="u.username"></span>
+                            <span x-show="currentUserId && u.id === currentUserId" class="pill pill-type pill-sm settings-you-badge">you</span>
+                        </td>
+                        <td x-text="u.display_name || '\u2014'"></td>
+                        <td><span class="pill pill-type" x-text="u.role"></span></td>
+                        <td>
+                            <span class="pill" :class="u.enabled ? 'pill-ok' : 'pill-warn'"
+                                  x-text="u.enabled ? 'Yes' : 'No'"></span>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    <!-- Delete Provider Modal -->
+    <div x-show="deleteProviderModal" x-cloak x-transition.opacity.duration.150ms class="modal-overlay" @click.self="deleteProviderModal = false" @keydown.escape.window="deleteProviderModal && (deleteProviderModal = false)">
+        <div class="modal">
+            <h3>Delete Provider</h3>
+            <p>Are you sure you want to delete <strong x-text="deleteProviderName"></strong>? This will remove SSO access for users authenticating through this provider.</p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" @click="deleteProviderModal = false">Cancel</button>
+                <button class="btn btn-danger" @click="confirmDeleteProvider()">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<style>
+.settings-section-header {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 24px 0 12px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.settings-section-header:first-of-type { margin-top: 0; }
+.settings-desc { color: var(--ink-soft); }
+.settings-toggle { flex-shrink: 0; }
+.settings-new-provider-form { background: var(--wash); border-radius: 8px; }
+.settings-current-user { background: var(--accent-glow); }
+.settings-you-badge { margin-left: 6px; }
+</style>
+<script>
+function settingsPage() {
+    return {
+        isAdmin: {{ user.is_admin }},
+        providers: {{ providers_json|safe }},
+        showNewProvider: false,
+        saving: false,
+        newProvider: { name: '', issuer_url: '', client_id: '', client_secret: '' },
+        users: [],
+        usersLoading: !{{ user.is_admin }},
+        advancedMode: {{ user.show_advanced }},
+        pwCurrent: '',
+        pwNew: '',
+        pwConfirm: '',
+        pwSaving: false,
+        currentUserId: null,
+        deleteProviderModal: false,
+        deleteProviderName: '',
+        deleteProviderId: null,
+        init() {
+            this.loadCurrentUser();
+            if (this.isAdmin) {
+                this.loadUsers();
+                window.addEventListener('ac:user_created', () => this.loadUsers());
+            }
+        },
+        // Advanced mode state lives ONLY in the database (user.show_advanced).
+        // Do NOT add localStorage, sessionStorage, or client-side persistence.
+        // The page reload after API success is the sync mechanism.
+        // See: recurring toggle bug fixed 5+ times due to state fragmentation.
+        async toggleAdvancedMode() {
+            try {
+                const resp = await fetch('/api/v1/settings/advanced-mode', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ enabled: this.advancedMode }),
+                });
+                if (resp.ok) {
+                    window.location.reload();
+                } else {
+                    showToast('Failed to update setting', 'error');
+                    this.advancedMode = !this.advancedMode;
+                }
+            } catch(e) {
+                showToast('Failed to update setting', 'error');
+                this.advancedMode = !this.advancedMode;
+            }
+        },
+        async loadCurrentUser() {
+            try {
+                const resp = await fetch('/api/v1/auth/me', {
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                if (resp.ok) {
+                    const json = await resp.json();
+                    const data = json.data || json;
+                    this.currentUserId = data.user ? data.user.id : data.id;
+                }
+            } catch(e) {}
+        },
+        async changePassword() {
+            if (this.pwNew !== this.pwConfirm) {
+                showToast('New passwords do not match', 'error');
+                return;
+            }
+            if (this.pwNew.length < 12) {
+                showToast('Password must be at least 12 characters', 'error');
+                return;
+            }
+            if (!this.currentUserId) {
+                showToast('Could not determine current user', 'error');
+                return;
+            }
+            this.pwSaving = true;
+            try {
+                const resp = await fetch('/api/v1/users/' + this.currentUserId + '/change-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ current_password: this.pwCurrent, new_password: this.pwNew }),
+                });
+                if (resp.ok) {
+                    window.location.href = '/login?message=Password+changed+successfully.+Please+sign+in+again.';
+                } else {
+                    const err = await resp.json().catch(() => ({}));
+                    showToast((err.error && err.error.message) || 'Failed to change password', 'error');
+                }
+            } catch(e) {
+                showToast('Network error', 'error');
+            }
+            this.pwSaving = false;
+        },
+        async loadUsers() {
+            try {
+                const resp = await fetch('/api/v1/users', {
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                if (resp.ok) {
+                    const json = await resp.json();
+                    this.users = json.data || [];
+                }
+            } catch(e) { showToast('Failed to load users', 'error'); }
+            this.usersLoading = false;
+        },
+        async refresh() {
+            try {
+                const resp = await fetch('/api/v1/oidc-providers', {
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                if (resp.ok) {
+                    const json = await resp.json();
+                    this.providers = json.data || [];
+                } else {
+                    this.providers = [];
+                }
+            } catch(e) { showToast('Failed to load OIDC providers', 'error'); }
+        },
+        async createProvider() {
+            this.saving = true;
+            try {
+                const resp = await fetch('/api/v1/oidc-providers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify(this.newProvider),
+                });
+                if (resp.ok) {
+                    this.showNewProvider = false;
+                    this.newProvider = { name: '', issuer_url: '', client_id: '', client_secret: '' };
+                    await this.refresh();
+                    showToast('Provider created', 'success');
+                } else {
+                    const err = await resp.json();
+                    showToast(err.error?.message || 'Failed to create provider', 'error');
+                }
+            } catch(e) {
+                showToast('Network error', 'error');
+            }
+            this.saving = false;
+        },
+        async toggleProvider(p) {
+            try {
+                await fetch('/api/v1/oidc-providers/' + p.id, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ enabled: !p.enabled }),
+                });
+                await this.refresh();
+            } catch(e) { showToast('Failed to update provider', 'error'); }
+        },
+        openDeleteProvider(p) {
+            this.deleteProviderName = p.name;
+            this.deleteProviderId = p.id;
+            this.deleteProviderModal = true;
+        },
+        async confirmDeleteProvider() {
+            if (!this.deleteProviderId) return;
+            try {
+                await fetch('/api/v1/oidc-providers/' + this.deleteProviderId, {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': getCsrfToken() },
+                });
+                await this.refresh();
+                showToast('Provider deleted', 'success');
+            } catch(e) { showToast('Failed to delete provider', 'error'); }
+            this.deleteProviderModal = false;
+            this.deleteProviderId = null;
+        }
+    };
+}
+</script>
+{% endblock %}

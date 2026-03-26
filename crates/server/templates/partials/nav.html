@@ -1,0 +1,60 @@
+<nav class="top-bar" aria-label="Main navigation" x-data="{ navOpen: false }">
+    <div class="top-bar-logo">
+        <div class="logo-mark">
+            <svg width="16" height="10" viewBox="0 0 220 140" fill="none" aria-hidden="true">
+                <path d="M8 18 Q8 12, 14 12 L75 55 Q82 60, 82 70 Q82 80, 75 85 L14 128 Q8 128, 8 122 Z" fill="currentColor"/>
+                <path d="M212 18 Q212 12, 206 12 L145 55 Q138 60, 138 70 Q138 80, 145 85 L206 128 Q212 128, 212 122 Z" fill="currentColor"/>
+                <rect x="84" y="44" width="52" height="52" rx="12" fill="currentColor"/>
+            </svg>
+        </div>
+        <span class="logo-text">Agent Cordon</span>
+    </div>
+    <button class="hamburger-btn" @click="navOpen = !navOpen" :aria-expanded="navOpen" aria-controls="main-nav" aria-label="Toggle navigation menu">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <g x-show="!navOpen"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></g>
+            <g x-show="navOpen"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></g>
+        </svg>
+    </button>
+    <div id="main-nav" class="top-bar-nav" :class="navOpen && 'nav-open'">
+        <a href="/dashboard" class="nav-link{% if current_page == "dashboard" %} nav-active{% endif %}">
+            <svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            <span class="nav-label">Dashboard</span>
+        </a>
+        <a href="/workspaces" class="nav-link{% if current_page == "workspaces" %} nav-active{% endif %}">
+            <svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            <span class="nav-label">Workspaces</span>
+        </a>
+        <a href="/credentials" class="nav-link{% if current_page == "credentials" %} nav-active{% endif %}">
+            <svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="5.5"/><path d="M11.5 12.5 15 9l4 0"/><path d="M15 9l0 3"/></svg>
+            <span class="nav-label">Credentials</span>
+        </a>
+        <a href="/security" class="nav-link{% if current_page == "security" || current_page == "policies" %} nav-active{% endif %}">
+            <svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <span class="nav-label">Security</span>
+        </a>
+        <a href="/mcp-servers" class="nav-link{% if current_page == "mcp-servers" %} nav-active{% endif %}">
+            <svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+            <span class="nav-label">MCP Servers</span>
+        </a>
+        <a href="/audit" class="nav-link{% if current_page == "audit" %} nav-active{% endif %}">
+            <svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            <span class="nav-label">Audit Log</span>
+        </a>
+    </div>
+    <div class="top-bar-right">
+        <button class="theme-toggle" @click="$store.theme.toggle()" :aria-label="$store.theme.isDark ? 'Switch to light mode' : 'Switch to dark mode'" title="Toggle theme">
+            <!-- Sun icon (shown in dark mode) -->
+            <svg x-show="$store.theme.isDark" x-cloak viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            <!-- Moon icon (shown in light mode) -->
+            <svg x-show="!$store.theme.isDark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <span class="user-info">{{ user.display_name.as_deref().unwrap_or(&user.username) }}</span>
+        <a href="/settings" class="nav-link settings-link{% if current_page == "settings" %} nav-active{% endif %}" title="Settings" aria-label="Settings">
+            <svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </a>
+        <button type="button" class="nav-link sign-out" @click="fetch('/api/v1/auth/logout',{method:'POST',headers:{'X-CSRF-Token':getCsrfToken()}}).then(function(){window.location.href='/login'})">
+            <svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            <span class="nav-label">Sign Out</span>
+        </button>
+    </div>
+</nav>

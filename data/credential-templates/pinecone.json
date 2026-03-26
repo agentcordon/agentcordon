@@ -1,0 +1,13 @@
+{
+  "key": "pinecone",
+  "name": "Pinecone API Key",
+  "service": "api.pinecone.io",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Api-Key",
+  "allowed_url_pattern": "https://*.pinecone.io/*",
+  "fields": ["secret_value"],
+  "description": "Pinecone vector database API key. Injected as Api-Key header.",
+  "tags": ["database", "vector", "pinecone"],
+  "sort_order": 210
+}

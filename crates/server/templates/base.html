@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en" x-data x-bind:data-theme="$store.theme.current">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Agent Cordon{% endblock %}</title>
+    <link rel="icon" href="/img/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/css/vault.css">
+    <script>
+    /* Theme initialization — runs before paint to prevent FOUC */
+    (function() {
+        var stored = localStorage.getItem('agentcordon-theme');
+        if (stored === 'dark' || stored === 'light') {
+            document.documentElement.setAttribute('data-theme', stored);
+        }
+    })();
+    </script>
+    <script>
+    function getCsrfToken() {
+        var match = document.cookie.match(/agtcrdn_csrf=([^;]+)/);
+        return match ? match[1] : '';
+    }
+
+    /* === Shared UI Utilities === */
+
+    function showToast(message, type) {
+        window.dispatchEvent(new CustomEvent('toast', { detail: { message: message || 'Something happened', type: type || 'info' } }));
+    }
+
+    function formatDateTime(ts) {
+        if (!ts) return '';
+        var d = new Date(ts);
+        return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+    }
+
+    function formatDate(ts) {
+        if (!ts) return '';
+        return new Date(ts).toLocaleDateString();
+    }
+
+    function statusClass(status) {
+        if (status === 'active') return 'pill-ok';
+        if (status === 'disabled' || status === 'revoked') return 'pill-bad';
+        if (status === 'pending') return 'pill-warn';
+        if (status === 'idle') return 'pill-type';
+        if (status === 'new') return 'pill-info';
+        return 'pill-info';
+    }
+
+    function statusLabel(status) {
+        if (!status) return 'Unknown';
+        return status.charAt(0).toUpperCase() + status.slice(1);
+    }
+
+    function credTypeLabel(type) {
+        var labels = { generic: 'API Key', aws: 'AWS', oauth2_client_credentials: 'OAuth2', api_key: 'API Key', password: 'Password', certificate: 'Certificate', ssh_key: 'SSH Key', other: 'Other' };
+        return labels[type] || type || 'Unknown';
+    }
+
+    function eventTypeLabel(type) {
+        var labels = {
+            'user_login_success': 'Login',
+            'user_login_failed': 'Login Failed',
+            'user_created': 'User Created',
+            'credential_created': 'Credential Created',
+            'credential_updated': 'Credential Updated',
+            'credential_deleted': 'Credential Deleted',
+            'credential_vended': 'Credential Vended',
+            'credential_vend_denied': 'Vend Denied',
+            'policy_changed': 'Policy Changed',
+            'workspace_registered': 'Workspace Registered',
+            'workspace_updated': 'Workspace Updated',
+            'workspace_deleted': 'Workspace Deleted',
+            'demo_token_issued': 'Token Issued',
+            'mcp_tool_call': 'MCP Tool Call',
+            'mcp_tool_denied': 'MCP Tool Denied',
+            'agent_enrolled': 'Workspace Enrolled',
+            'enrollment_approved': 'Enrollment Approved',
+            'enrollment_denied': 'Enrollment Denied'
+        };
+        if (labels[type]) return labels[type];
+        // Fallback: convert snake_case to Title Case
+        return type.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+    }
+
+    function permLabel(perm) {
+        var labels = { read: 'Read', write: 'Write', 'delete': 'Delete', delegated_use: 'Delegated Use', read_secret: 'Read Secret', admin: 'Admin' };
+        return labels[perm] || perm;
+    }
+
+    var CREDENTIAL_RSOP_ACTIONS = [
+        { key: 'access', label: 'Access' },
+        { key: 'vend_credential', label: 'Vend Credential' },
+        { key: 'list', label: 'List' },
+        { key: 'update', label: 'Update' },
+        { key: 'delete', label: 'Delete' }
+    ];
+
+    function hasLlmExposed(cred) {
+        return cred && (cred.tags || []).some(function(t) { return t === 'llm_exposed'; });
+    }
+
+    /* === Shared RSoP Helpers === */
+    function rsopPill(decision) {
+        if (decision === 'permit') return 'pill-ok';
+        if (decision === 'conditional') return 'pill-warn';
+        return 'pill-bad';
+    }
+    function rsopIcon(decision) {
+        if (decision === 'permit') return '\u2713';
+        if (decision === 'conditional') return '\u26A1';
+        return '\u2717';
+    }
+    function rsopLabel(decision) {
+        if (decision === 'permit') return 'Permitted';
+        if (decision === 'conditional') return 'Conditional';
+        return 'Denied';
+    }
+    function rsopCellDecision(matrix, principalId, action) {
+        var row = matrix.find(function(r) { return r.principal_id === principalId; });
+        if (!row || !row.results || !row.results[action]) return 'forbid';
+        return row.results[action].decision;
+    }
+    function rsopBasis(row) {
+        var allReasons = [];
+        if (row.results) {
+            Object.keys(row.results).forEach(function(k) {
+                (row.results[k].reasons || []).forEach(function(r) { allReasons.push(r); });
+            });
+        }
+        if (allReasons.length === 0) return 'policy';
+        var r = allReasons.join(' ');
+        if (r.indexOf('grant') >= 0 || r.indexOf('delegated') >= 0) return 'grant';
+        if (r.indexOf('tag') >= 0) return 'tag';
+        if (r.indexOf('owner') >= 0) return 'owner';
+        return 'policy';
+    }
+    </script>
+    <script>
+    /* Alpine.js stores and components — must be defined before Alpine loads */
+    document.addEventListener('alpine:init', function() {
+        /* Theme store */
+        Alpine.store('theme', {
+            current: localStorage.getItem('agentcordon-theme') || null,
+            get isDark() {
+                if (this.current) return this.current === 'dark';
+                return window.matchMedia('(prefers-color-scheme: dark)').matches;
+            },
+            toggle() {
+                var next = this.isDark ? 'light' : 'dark';
+                this.current = next;
+                localStorage.setItem('agentcordon-theme', next);
+            }
+        });
+
+        /* Slide panel component */
+        Alpine.data('slidePanel', function() {
+            return {
+                open: false,
+                loading: false,
+                content: '',
+                panelTitle: '',
+                detailUrl: '',
+                async show(url, title, fullUrl) {
+                    this.panelTitle = title || 'Details';
+                    this.detailUrl = fullUrl || '';
+                    this.loading = true;
+                    this.open = true;
+                    try {
+                        var resp = await fetch(url);
+                        if (resp.ok) {
+                            this.content = await resp.text();
+                        } else {
+                            this.content = '<p class="text-faint" style="padding:20px;">Failed to load details.</p>';
+                        }
+                    } catch(e) {
+                        this.content = '<p class="text-faint" style="padding:20px;">Failed to load details.</p>';
+                    }
+                    this.loading = false;
+                },
+                close() {
+                    this.open = false;
+                    this.content = '';
+                    this.panelTitle = '';
+                    this.detailUrl = '';
+                },
+                handleKeydown(e) {
+                    if (e.key === 'Escape' && this.open) {
+                        this.close();
+                    }
+                }
+            };
+        });
+    });
+    </script>
+    <script defer src="/js/alpine.min.js"></script>
+    <style>
+    [x-cloak] { display: none !important; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    .skip-link { position: absolute; top: -100%; left: 16px; z-index: 999; padding: 8px 16px; background: var(--accent); color: #fff; border-radius: var(--radius-sm, 4px); font-weight: 600; text-decoration: none; font-size: 14px; }
+    .skip-link:focus { top: 8px; }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    {% block body %}
+    <a href="#main-content" class="skip-link">Skip to content</a>
+    {% include "partials/toast.html" %}
+
+    {% if show_nav %}
+    {% include "partials/nav.html" %}
+    {% endif %}
+
+    <main id="main-content" class="{% if show_nav %}content{% else %}main-content{% endif %}">
+        {% block content %}{% endblock %}
+    </main>
+
+    {% if show_nav %}
+    <!-- Slide-in panel -->
+    <div x-data="slidePanel()" @keydown.window="handleKeydown($event)" @slide-panel-open.window="show($event.detail.url, $event.detail.title, $event.detail.fullUrl)">
+        <div class="slide-panel-backdrop" :class="{ 'slide-panel-visible': open }" @click="close()" aria-hidden="true"></div>
+        <aside class="slide-panel slide-in-panel" x-show="open" :class="{ 'slide-panel-visible': open }" role="dialog" aria-modal="true" :aria-label="panelTitle">
+            <div class="slide-panel-header">
+                <button class="slide-panel-close close-btn" @click="close()" aria-label="Close panel">&times;</button>
+            </div>
+            <div class="slide-panel-content">
+                <div x-show="loading" class="page-loader page-loader-sm">
+                    <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+                    <span class="page-loader-label">Loading...</span>
+                </div>
+                <div x-show="!loading" x-html="content"></div>
+            </div>
+            <div class="slide-panel-footer" x-show="detailUrl">
+                <a :href="detailUrl || '#'">View full details &rarr;</a>
+            </div>
+        </aside>
+    </div>
+
+    {% endif %}
+
+    {% block scripts %}{% endblock %}
+
+    {% if show_nav %}
+    <script>
+    // Global SSE listener — connects once, dispatches per-page custom events.
+    // Closes any existing connection before opening a new one to prevent leaks.
+    (function() {
+        if (window.__acEventSource) {
+            window.__acEventSource.close();
+            window.__acEventSource = null;
+        }
+        var es = new EventSource('/api/v1/events/ui');
+        window.__acEventSource = es;
+        ['workspace_created', 'workspace_updated', 'workspace_deleted', 'credential_created', 'credential_updated',
+         'credential_deleted', 'policy_changed',
+         'audit_event', 'user_created', 'user_updated', 'user_deleted',
+         'mcp_server_changed', 'enrollment_pending', 'vault_changed'
+        ].forEach(function(type) {
+            es.addEventListener(type, function(e) {
+                try {
+                    var data = JSON.parse(e.data);
+                    window.dispatchEvent(new CustomEvent('ac:' + type, { detail: data }));
+                } catch(err) {
+                    console.warn('SSE parse error:', err);
+                }
+            });
+        });
+        es.onerror = function() {
+            console.warn('SSE connection lost, reconnecting...');
+        };
+        window.addEventListener('beforeunload', function() {
+            if (window.__acEventSource) {
+                window.__acEventSource.close();
+                window.__acEventSource = null;
+            }
+        });
+    })();
+    </script>
+    {% endif %}
+    {% endblock %}
+</body>
+</html>

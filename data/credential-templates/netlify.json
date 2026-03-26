@@ -1,0 +1,13 @@
+{
+  "key": "netlify",
+  "name": "Netlify API Token",
+  "service": "api.netlify.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api.netlify.com/*",
+  "fields": ["secret_value"],
+  "description": "Netlify personal access token. Injected as Authorization: Bearer header.",
+  "tags": ["deployment", "netlify"],
+  "sort_order": 170
+}

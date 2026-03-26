@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}New User — Agent Cordon{% endblock %}
+{% block content %}
+<div x-data="userNewPage()">
+    <div class="content-header">
+        <h2>
+            <a href="/settings" style="opacity:0.6;text-decoration:none;">Settings</a> / New User
+        </h2>
+    </div>
+
+    <div class="card form-main">
+        <form @submit.prevent="createUser()">
+            <div class="form-group">
+                <label for="user-username">Username</label>
+                <input type="text" id="user-username" class="form-input" x-model="form.username" required
+                       placeholder="e.g., john.doe" maxlength="128">
+            </div>
+            <div class="form-group">
+                <label for="user-display-name">Display Name</label>
+                <input type="text" id="user-display-name" class="form-input" x-model="form.display_name"
+                       placeholder="Optional display name">
+            </div>
+            <div class="form-group">
+                <label for="user-password">Password</label>
+                <input type="password" id="user-password" class="form-input" x-model="form.password" required
+                       placeholder="Minimum 12 characters" minlength="12">
+            </div>
+            <div class="form-group">
+                <label for="user-role">Role</label>
+                <select id="user-role" class="form-input" x-model="form.role">
+                    <option value="viewer">Viewer</option>
+                    <option value="operator">Operator</option>
+                    <option value="admin">Admin</option>
+                </select>
+            </div>
+            <div class="form-actions">
+                <a href="/settings" class="btn btn-secondary">Cancel</a>
+                <button type="submit" class="btn btn-primary" :disabled="saving">Create User</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function userNewPage() {
+    return {
+        saving: false,
+        form: {
+            username: '',
+            display_name: '',
+            password: '',
+            role: 'viewer',
+        },
+        async createUser() {
+            this.saving = true;
+            try {
+                const body = {
+                    username: this.form.username,
+                    password: this.form.password,
+                    role: this.form.role,
+                };
+                if (this.form.display_name) {
+                    body.display_name = this.form.display_name;
+                }
+                const resp = await fetch('/api/v1/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify(body),
+                });
+                if (resp.ok) {
+                    window.location.href = '/settings';
+                } else {
+                    const err = await resp.json();
+                    window.dispatchEvent(new CustomEvent('toast', { detail: { message: err.error?.message || 'Failed to create user', type: 'error' } }));
+                }
+            } catch(e) {
+                window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Network error', type: 'error' } }));
+            }
+            this.saving = false;
+        }
+    };
+}
+</script>
+{% endblock %}

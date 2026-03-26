@@ -1,0 +1,506 @@
+{% extends "base.html" %}
+{% block title %}Audit Log — Agent Cordon{% endblock %}
+{% block content %}
+<div x-data="auditListPage()" x-init="init()">
+    <div class="content-header">
+        <h2>Audit Log</h2>
+        <p class="audit-page-subtitle">Complete security audit trail — every policy evaluation, credential access, and authorization decision.</p>
+        <div class="actions">
+            <div class="search-input">
+                <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input x-model="search" type="text" placeholder="Search events..." aria-label="Search audit events">
+            </div>
+            <button class="btn btn-secondary btn-sm" @click="exportCsv()">Export CSV</button>
+        </div>
+    </div>
+
+    <!-- Filter pills -->
+    <div class="audit-filters">
+        <div class="audit-filter-group">
+            <span class="audit-filter-label">Type:</span>
+            <button class="pill audit-filter-pill"
+                    :class="typeFilter.length === 0 ? 'pill-ok' : 'pill-type'"
+                    @click="typeFilter = []; typeFilterSingle = ''">All</button>
+            <template x-for="t in allEventTypes" :key="t">
+                <button class="pill audit-filter-pill"
+                        :class="typeFilter.includes(t) ? 'pill-ok' : 'pill-type'"
+                        @click="toggleTypeFilter(t)"
+                        x-text="humanEventType(t)"></button>
+            </template>
+        </div>
+        <div class="audit-filter-group">
+            <span class="audit-filter-label">Decision:</span>
+            <button class="pill audit-filter-pill"
+                    :class="!decisionFilter ? 'pill-ok' : 'pill-type'"
+                    @click="decisionFilter = ''">All</button>
+            <button class="pill audit-filter-pill"
+                    :class="decisionFilter === 'permit' ? 'pill-decision-permit' : 'pill-type'"
+                    @click="decisionFilter = decisionFilter === 'permit' ? '' : 'permit'">Permit</button>
+            <button class="pill audit-filter-pill"
+                    :class="decisionFilter === 'forbid' ? 'pill-decision-forbid' : 'pill-type'"
+                    @click="decisionFilter = decisionFilter === 'forbid' ? '' : 'forbid'">Forbid</button>
+        </div>
+    </div>
+
+    <!-- Event count -->
+    <div x-show="filteredEvents.length > 0" class="audit-event-count">
+        <span x-text="'Showing ' + filteredEvents.length + (hasMore ? '+' : '') + ' events'"></span>
+    </div>
+
+    {% if events.is_empty() %}
+    <div class="empty-state">
+        <div class="empty-glyph" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        </div>
+        <h3>No audit events yet</h3>
+        <p>Audit events will appear here as actions are performed in the system.</p>
+    </div>
+    {% else %}
+    <!-- Full-width audit table with expandable rows -->
+    <table class="tbl audit-tbl" aria-label="Audit event log">
+        <thead>
+            <tr>
+                <th class="audit-col-ts">Timestamp</th>
+                <th class="audit-col-type">Event Type</th>
+                <th class="audit-col-principal">Principal</th>
+                <th class="audit-col-resource">Resource</th>
+                <th class="audit-col-decision">Decision</th>
+                <th class="audit-col-toggle" aria-hidden="true"></th>
+            </tr>
+        </thead>
+        <!-- One tbody per event allows data row + expandable detail row -->
+        <template x-for="ev in filteredEvents" :key="ev.id">
+            <tbody>
+                <tr class="audit-row"
+                    :class="{ 'audit-row-selected': selectedId === ev.id }"
+                    @click="toggleEvent(ev.id)"
+                    @keydown.enter="toggleEvent(ev.id)"
+                    @keydown.space.prevent="toggleEvent(ev.id)"
+                    tabindex="0"
+                    role="button"
+                    :aria-expanded="selectedId === ev.id"
+                    :aria-label="humanEventType(ev.event_type) + ' by ' + ev.principal">
+                    <td class="audit-col-ts">
+                        <span class="audit-timestamp" :title="formatDateTime(ev.timestamp)" x-text="timeAgo(ev.timestamp)"></span>
+                    </td>
+                    <td class="audit-col-type">
+                        <span class="pill pill-type" x-text="humanEventType(ev.event_type)"></span>
+                    </td>
+                    <td class="audit-col-principal" x-text="ev.principal"></td>
+                    <td class="audit-col-resource">
+                        <span x-text="ev.resource_type"></span>
+                        <span x-show="ev.resource_id_short"
+                              class="mono-sm audit-resource-id"
+                              x-text="ev.resource_id_short"></span>
+                        <span x-show="ev.summary" class="audit-summary-pill" x-text="ev.summary"></span>
+                    </td>
+                    <td class="audit-col-decision">
+                        <span class="pill" :class="ev.decision_class" x-text="ev.decision"></span>
+                    </td>
+                    <td class="audit-col-toggle" aria-hidden="true">
+                        <svg class="audit-chevron"
+                             :class="{ 'audit-chevron-open': selectedId === ev.id }"
+                             width="14" height="14" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                             stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    </td>
+                </tr>
+                <!-- Expandable detail row -->
+                <tr x-show="selectedId === ev.id" class="audit-detail-row">
+                    <td colspan="6" class="audit-detail-td">
+                        <div class="audit-expand-detail">
+                            <!-- Loading -->
+                            <div x-show="detailLoading" class="audit-detail-loading">
+                                <div class="page-loader page-loader-sm">
+                                    <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+                                </div>
+                            </div>
+                            <!-- Detail content — structured key-value grid -->
+                            <div x-show="!detailLoading && detailEvent" class="audit-detail-grid-container">
+                                <div class="audit-kv-grid">
+                                    <div class="audit-kv-item">
+                                        <div class="audit-kv-label">Principal</div>
+                                        <div class="audit-kv-value" x-text="detailEvent ? (detailEvent.agent_name || detailEvent.workspace_name || detailEvent.user_name || detailEvent.device_name || detailEvent.principal || '\u2014') : ''"></div>
+                                    </div>
+                                    <div class="audit-kv-item">
+                                        <div class="audit-kv-label">Action</div>
+                                        <div class="audit-kv-value" x-text="detailEvent ? detailEvent.action : ''"></div>
+                                    </div>
+                                    <div class="audit-kv-item">
+                                        <div class="audit-kv-label">Resource Type</div>
+                                        <div class="audit-kv-value" x-text="detailEvent ? detailEvent.resource_type : ''"></div>
+                                    </div>
+                                    <div class="audit-kv-item" x-show="detailEvent && detailEvent.resource_id">
+                                        <div class="audit-kv-label">Resource ID</div>
+                                        <div class="audit-kv-value mono-sm" x-text="detailEvent ? detailEvent.resource_id : ''"></div>
+                                    </div>
+                                    <div class="audit-kv-item">
+                                        <div class="audit-kv-label">Decision</div>
+                                        <div class="audit-kv-value">
+                                            <span class="pill"
+                                                  :class="detailEvent && detailEvent.decision === 'permit' ? 'pill-ok' : (detailEvent && detailEvent.decision === 'forbid' ? 'pill-bad' : 'pill-warn')"
+                                                  x-text="detailEvent ? detailEvent.decision : ''"></span>
+                                        </div>
+                                    </div>
+                                    <div class="audit-kv-item" x-show="detailEvent && detailEvent.decision_reason">
+                                        <div class="audit-kv-label">Reason</div>
+                                        <div class="audit-kv-value">
+                                            <template x-if="detailEvent && detailEvent.metadata && detailEvent.metadata.contributing_policies && detailEvent.metadata.contributing_policies.length > 0">
+                                                <span>
+                                                    <template x-for="(cp, cpIdx) in detailEvent.metadata.contributing_policies" :key="cpIdx">
+                                                        <span>
+                                                            <a x-show="cp.id" :href="'/security/' + cp.id + (cp.statement_index !== undefined ? '#statement-' + cp.statement_index : '')"
+                                                               class="audit-policy-link"
+                                                               x-text="(cp.policy_name || cp.id || 'policy') + (cp.statement_index !== undefined ? ' §' + cp.statement_index : '')"></a>
+                                                            <span x-show="cp.effect" class="pill pill-sm" :class="cp.effect === 'permit' ? 'pill-ok' : 'pill-bad'" x-text="cp.effect"></span>
+                                                            <span x-show="cpIdx < detailEvent.metadata.contributing_policies.length - 1">, </span>
+                                                        </span>
+                                                    </template>
+                                                </span>
+                                            </template>
+                                            <template x-if="!(detailEvent && detailEvent.metadata && detailEvent.metadata.contributing_policies && detailEvent.metadata.contributing_policies.length > 0)">
+                                                <span x-text="detailEvent ? detailEvent.decision_reason : ''"></span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="audit-kv-ids">
+                                    <div class="audit-kv-item">
+                                        <div class="audit-kv-label">Timestamp</div>
+                                        <div class="audit-kv-value audit-timestamp" x-text="detailEvent ? formatDateTime(detailEvent.timestamp) : ''"></div>
+                                    </div>
+                                    <div class="audit-kv-item">
+                                        <div class="audit-kv-label">Correlation ID</div>
+                                        <div class="audit-kv-value mono-sm" x-text="detailEvent ? (detailEvent.correlation_id || '\u2014') : ''"></div>
+                                    </div>
+                                    <div class="audit-kv-item">
+                                        <div class="audit-kv-label">Event ID</div>
+                                        <div class="audit-kv-value mono-sm" x-text="detailEvent ? detailEvent.id : ''"></div>
+                                    </div>
+                                </div>
+                                <div class="audit-kv-metadata" x-show="detailEvent && detailHasMetadata()">
+                                    <div class="audit-kv-label">Metadata</div>
+                                    <button class="btn btn-secondary btn-sm"
+                                            @click.stop="metadataExpanded = !metadataExpanded"
+                                            x-text="metadataExpanded ? 'Hide JSON' : 'Show JSON'"
+                                            aria-label="Toggle metadata JSON"></button>
+                                    <pre x-show="metadataExpanded"
+                                         class="audit-metadata-pre"
+                                         x-text="detailMetadataJson()"></pre>
+                                </div>
+                            </div>
+                            <!-- Error -->
+                            <div x-show="!detailLoading && !detailEvent" class="audit-detail-error">
+                                <p>No additional details available for this event.</p>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            </tbody>
+        </template>
+    </table>
+
+    <div x-show="filteredEvents.length === 0" class="audit-tbl-empty">
+        <p>No events match your filters.</p>
+    </div>
+
+    <!-- Load more -->
+    <div x-show="hasMore" class="audit-tbl-loadmore">
+        <button class="btn btn-secondary btn-sm" @click="loadMore()" :disabled="loadingMore">
+            <span x-text="loadingMore ? 'Loading...' : 'Load more'"></span>
+        </button>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function auditListPage() {
+    return {
+        events: {{ events_json|safe }},
+        search: '',
+        typeFilter: [],
+        typeFilterSingle: '',
+        decisionFilter: '',
+        selectedId: null,
+        detailEvent: null,
+        detailLoading: false,
+        metadataExpanded: false,
+        hasMore: true,
+        loadingMore: false,
+        pageSize: 50,
+
+        init() {
+            if (this.events.length < this.pageSize) this.hasMore = false;
+            var match = window.location.pathname.match(/\/audit\/([0-9a-f-]+)$/);
+            if (match) this.toggleEvent(match[1]);
+            window.addEventListener('popstate', () => {
+                var m = window.location.pathname.match(/\/audit\/([0-9a-f-]+)$/);
+                if (m) { this.toggleEvent(m[1], true); }
+                else { this.selectedId = null; this.detailEvent = null; }
+            });
+            window.addEventListener('ac:audit_event', () => this.refreshEvents());
+        },
+
+        async toggleEvent(id, fromPopstate) {
+            if (this.selectedId === id) {
+                this.selectedId = null;
+                this.detailEvent = null;
+                this.metadataExpanded = false;
+                if (!fromPopstate) history.pushState(null, '', '/audit');
+                return;
+            }
+            this.selectedId = id;
+            this.detailEvent = null;
+            this.detailLoading = true;
+            this.metadataExpanded = false;
+            if (!fromPopstate) history.pushState(null, '', '/audit/' + id);
+            await this.loadDetail(id);
+        },
+
+        async loadDetail(id) {
+            try {
+                var resp = await fetch('/api/v1/audit/' + id);
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.detailEvent = data.data || data;
+                } else {
+                    this.detailEvent = this.buildLocalDetail(id);
+                }
+            } catch(e) {
+                this.detailEvent = this.buildLocalDetail(id);
+            }
+            this.detailLoading = false;
+        },
+
+        buildLocalDetail(id) {
+            var ev = this.events.find(function(e) { return e.id === id; });
+            if (!ev) return null;
+            var metadata = null;
+            try { metadata = JSON.parse(ev.metadata_json || '{}'); } catch(e) { metadata = {}; }
+            return {
+                id: ev.id,
+                timestamp: ev.timestamp,
+                event_type: ev.event_type,
+                principal: ev.principal,
+                action: ev.action,
+                resource_type: ev.resource_type,
+                resource_id: ev.resource_id || '',
+                decision: ev.decision,
+                decision_reason: ev.decision_reason,
+                correlation_id: ev.correlation_id,
+                metadata: metadata
+            };
+        },
+
+        detailHasMetadata() {
+            if (!this.detailEvent || !this.detailEvent.metadata) return false;
+            return Object.keys(this.detailEvent.metadata).length > 0;
+        },
+
+        detailMetadataJson() {
+            if (!this.detailEvent || !this.detailEvent.metadata) return '{}';
+            return JSON.stringify(this.detailEvent.metadata, null, 2);
+        },
+
+        async refreshEvents() {
+            try {
+                var resp = await fetch('/api/v1/audit?limit=' + this.pageSize);
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.events = (data.data || []).map(ev => this.normalizeApiEvent(ev));
+                    this.hasMore = this.events.length >= this.pageSize;
+                }
+            } catch(e) { showToast('Failed to refresh events', 'error'); }
+        },
+
+        async loadMore() {
+            this.loadingMore = true;
+            try {
+                var offset = this.events.length;
+                var resp = await fetch('/api/v1/audit?limit=' + this.pageSize + '&offset=' + offset);
+                if (resp.ok) {
+                    var data = await resp.json();
+                    var newEvents = (data.data || []).map(ev => this.normalizeApiEvent(ev));
+                    this.events = this.events.concat(newEvents);
+                    if (newEvents.length < this.pageSize) this.hasMore = false;
+                }
+            } catch(e) { showToast('Failed to load more events', 'error'); }
+            this.loadingMore = false;
+        },
+
+        normalizeApiEvent(ev) {
+            var dec = ev.decision || 'n/a';
+            var cls = dec === 'permit' ? 'pill-ok' : (dec === 'forbid' ? 'pill-bad' : 'pill-warn');
+            var rid = ev.resource_id || '';
+            var m = ev.metadata || {};
+            return {
+                id: ev.id, timestamp: ev.timestamp, event_type: ev.event_type || '',
+                principal: ev.workspace_name || ev.user_name || '\u2014',
+                action: ev.action || '', resource_type: ev.resource_type || '',
+                resource_id: rid,
+                resource_id_short: rid.length > 8 ? rid.substring(0, 8) + '...' : rid,
+                decision: dec, decision_class: cls,
+                correlation_id: ev.correlation_id || '',
+                decision_reason: ev.decision_reason || '',
+                metadata_json: JSON.stringify(m, null, 2),
+                summary: m.credential_name || m.tool || m.tool_name || m.name || m.resource_name || ''
+            };
+        },
+
+        get allEventTypes() {
+            var types = new Set();
+            this.events.forEach(function(ev) { if (ev.event_type) types.add(ev.event_type); });
+            return Array.from(types).sort();
+        },
+
+        get filteredEvents() {
+            var q = this.search.toLowerCase();
+            var tf = this.typeFilter;
+            var df = this.decisionFilter;
+            return this.events.filter(function(ev) {
+                var matchSearch = !q ||
+                    (ev.event_type && ev.event_type.toLowerCase().includes(q)) ||
+                    (ev.principal && ev.principal.toLowerCase().includes(q)) ||
+                    (ev.action && ev.action.toLowerCase().includes(q)) ||
+                    (ev.resource_type && ev.resource_type.toLowerCase().includes(q)) ||
+                    (ev.summary && ev.summary.toLowerCase().includes(q));
+                var matchType = tf.length === 0 || tf.includes(ev.event_type);
+                var matchDecision = !df || ev.decision === df;
+                return matchSearch && matchType && matchDecision;
+            });
+        },
+
+        toggleTypeFilter(val) {
+            var idx = this.typeFilter.indexOf(val);
+            if (idx >= 0) {
+                this.typeFilter.splice(idx, 1);
+            } else {
+                this.typeFilter.push(val);
+            }
+        },
+
+        setTypeFilter(val) { this.typeFilter = val ? [val] : []; },
+
+        humanEventType(t) {
+            return eventTypeLabel(t || '');
+        },
+
+        timeAgo(ts) {
+            if (!ts) return '';
+            var now = Date.now();
+            var then = new Date(ts).getTime();
+            var diff = Math.max(0, Math.floor((now - then) / 1000));
+            if (diff < 60) return 'just now';
+            if (diff < 3600) {
+                var m = Math.floor(diff / 60);
+                return m + 'm ago';
+            }
+            if (diff < 86400) {
+                var h = Math.floor(diff / 3600);
+                return h + 'h ago';
+            }
+            if (diff < 604800) {
+                var d = Math.floor(diff / 86400);
+                return d + 'd ago';
+            }
+            return formatDateTime(ts);
+        },
+
+        exportCsv() {
+            var params = new URLSearchParams();
+            params.set('format', 'csv');
+            if (this.typeFilter.length > 0) params.set('event_type', this.typeFilter.join(','));
+            if (this.decisionFilter) params.set('decision', this.decisionFilter);
+            if (this.search) params.set('search', this.search);
+            window.open('/api/v1/audit/export?' + params.toString(), '_blank');
+        },
+
+        formatDateTime: formatDateTime
+    };
+}
+</script>
+
+<style>
+/* Audit page subtitle */
+.audit-page-subtitle { color: var(--ink-faint); font-size: 0.9em; margin: -8px 0 0 0; }
+
+/* Filter bar */
+.audit-filters { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.audit-filter-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.audit-filter-label { font-size: 12px; color: var(--ink-soft); font-weight: 500; }
+.audit-filter-pill { cursor: pointer; transition: background 0.15s ease, color 0.15s ease; }
+.audit-filter-pill:hover { opacity: 0.85; }
+
+/* Decision-specific pill colors for filters */
+.pill-decision-permit { background: rgba(34, 197, 94, 0.12); color: #15803d; border: 1px solid rgba(34, 197, 94, 0.25); }
+.pill-decision-forbid { background: rgba(239, 68, 68, 0.12); color: #b91c1c; border: 1px solid rgba(239, 68, 68, 0.25); }
+[data-theme="dark"] .pill-decision-permit { background: rgba(34, 197, 94, 0.15); color: #4ade80; border-color: rgba(34, 197, 94, 0.3); }
+[data-theme="dark"] .pill-decision-forbid { background: rgba(239, 68, 68, 0.15); color: #f87171; border-color: rgba(239, 68, 68, 0.3); }
+
+/* Event count */
+.audit-event-count { font-size: 12px; color: var(--ink-faint); margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+
+/* Column widths */
+.audit-col-ts { width: 12%; }
+.audit-col-type { width: 20%; }
+.audit-col-principal { width: 16%; }
+.audit-col-resource { width: 28%; }
+.audit-col-decision { width: 12%; }
+.audit-col-toggle { width: 4%; }
+
+/* Monospace timestamps */
+.audit-timestamp { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+
+/* Summary pill inline in resource column */
+.audit-summary-pill { font-size: 11px; color: var(--ink-faint); margin-left: 6px; }
+
+/* Data rows */
+.audit-row { cursor: pointer; }
+.audit-row:hover td { background: var(--wash); }
+.audit-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.audit-row-selected td { background: var(--accent-glow); }
+.audit-row-selected:hover td { background: var(--accent-glow); }
+.audit-row td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Resource ID */
+.audit-resource-id { color: var(--ink-faint); margin-left: 4px; }
+
+/* Chevron toggle */
+.audit-chevron { transition: transform 0.15s ease; color: var(--ink-faint); }
+.audit-chevron-open { transform: rotate(180deg); }
+
+/* Expandable detail */
+.audit-detail-row td { padding: 0 !important; border-bottom: 1px solid var(--line); }
+.audit-expand-detail { padding: 12px 16px 16px 16px; background: var(--wash); border-top: 1px solid var(--line); }
+.audit-detail-loading { padding: 24px; text-align: center; }
+.audit-detail-error { padding: 16px; color: var(--danger); font-size: 14px; }
+
+/* Structured key-value detail grid */
+.audit-detail-grid-container { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+.audit-kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; margin-bottom: 12px; }
+.audit-kv-ids { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px 24px; padding-top: 12px; border-top: 1px solid var(--line); margin-bottom: 12px; }
+.audit-kv-item { display: flex; flex-direction: column; gap: 2px; }
+.audit-kv-label { font-size: 11px; font-weight: 500; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.04em; }
+.audit-kv-value { font-size: 13px; color: var(--ink); }
+.audit-kv-metadata { padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+
+/* Clickable policy links in reason */
+.audit-policy-link { color: var(--accent); text-decoration: none; font-weight: 500; }
+.audit-policy-link:hover { text-decoration: underline; }
+
+/* Empty + load more */
+.audit-tbl-empty { padding: 32px 16px; text-align: center; color: var(--ink-faint); font-size: 14px; }
+.audit-tbl-loadmore { padding: 12px; text-align: center; }
+
+/* Mobile */
+@media (max-width: 768px) {
+    .audit-tbl thead { display: none; }
+    .audit-row td { display: block; white-space: normal; padding: 4px 8px !important; }
+    .audit-col-toggle { display: none; }
+    .audit-expand-detail { padding: 8px; }
+    .audit-kv-grid { grid-template-columns: 1fr; }
+    .audit-kv-ids { grid-template-columns: 1fr; }
+}
+</style>
+{% endblock %}

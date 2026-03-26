@@ -1,0 +1,13 @@
+{
+  "key": "linear",
+  "name": "Linear API Key",
+  "service": "api.linear.app",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization",
+  "allowed_url_pattern": "https://api.linear.app/*",
+  "fields": ["secret_value"],
+  "description": "Linear API key. Injected as Authorization header.",
+  "tags": ["project-management", "linear"],
+  "sort_order": 130
+}

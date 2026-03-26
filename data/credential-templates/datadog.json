@@ -1,0 +1,13 @@
+{
+  "key": "datadog",
+  "name": "Datadog API Key",
+  "service": "api.datadoghq.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "DD-API-KEY",
+  "allowed_url_pattern": "https://api.datadoghq.com/*",
+  "fields": ["secret_value"],
+  "description": "Datadog API key. Injected as DD-API-KEY header.",
+  "tags": ["monitoring", "datadog"],
+  "sort_order": 230
+}

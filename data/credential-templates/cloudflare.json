@@ -1,0 +1,13 @@
+{
+  "key": "cloudflare",
+  "name": "Cloudflare API Token",
+  "service": "api.cloudflare.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api.cloudflare.com/*",
+  "fields": ["secret_value"],
+  "description": "Cloudflare API token. Injected as Authorization: Bearer header.",
+  "tags": ["infrastructure", "cloudflare"],
+  "sort_order": 180
+}

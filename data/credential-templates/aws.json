@@ -1,0 +1,13 @@
+{
+  "key": "aws",
+  "name": "AWS Credentials",
+  "service": "aws",
+  "credential_type": "aws",
+  "auth_type": "aws_sigv4",
+  "header": "Authorization: AWS4-HMAC-SHA256",
+  "allowed_url_pattern": "https://*.amazonaws.com/*",
+  "fields": ["access_key_id", "secret_access_key", "region", "service"],
+  "description": "AWS access credentials for SigV4 request signing. Supports any AWS service.",
+  "tags": ["aws", "cloud"],
+  "sort_order": 40
+}

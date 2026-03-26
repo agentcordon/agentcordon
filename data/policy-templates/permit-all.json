@@ -1,0 +1,8 @@
+{
+  "key": "permit-all",
+  "name": "Permit All",
+  "description": "Allow all actions on all resources. Use for development/testing only.",
+  "cedar_policy": "permit(\n  principal,\n  action,\n  resource\n);",
+  "tags": ["permissive", "development"],
+  "sort_order": 10
+}

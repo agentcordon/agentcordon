@@ -1,0 +1,5 @@
+<div class="pagination" x-show="totalPages > 1">
+    <button class="btn btn-secondary btn-sm" :disabled="currentPage <= 1" @click="goToPage(currentPage - 1)">Previous</button>
+    <span class="pagination-info" x-text="'Page ' + currentPage + ' of ' + totalPages"></span>
+    <button class="btn btn-secondary btn-sm" :disabled="currentPage >= totalPages" @click="goToPage(currentPage + 1)">Next</button>
+</div>

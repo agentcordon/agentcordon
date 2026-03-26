@@ -1,0 +1,13 @@
+{
+  "key": "gitlab",
+  "name": "GitLab Token",
+  "service": "gitlab.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "PRIVATE-TOKEN",
+  "allowed_url_pattern": "https://gitlab.com/api/*",
+  "fields": ["secret_value"],
+  "description": "GitLab personal or project access token. Injected as PRIVATE-TOKEN header.",
+  "tags": ["gitlab", "scm"],
+  "sort_order": 110
+}

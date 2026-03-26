@@ -1,0 +1,13 @@
+{
+  "key": "openai",
+  "name": "OpenAI API Key",
+  "service": "api.openai.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api.openai.com/*",
+  "fields": ["secret_value"],
+  "description": "OpenAI API key. Injected as Authorization: Bearer header.",
+  "tags": ["ai", "openai"],
+  "sort_order": 20
+}

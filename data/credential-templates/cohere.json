@@ -1,0 +1,13 @@
+{
+  "key": "cohere",
+  "name": "Cohere API Key",
+  "service": "api.cohere.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api.cohere.com/*",
+  "fields": ["secret_value"],
+  "description": "Cohere API key. Injected as Authorization: Bearer header.",
+  "tags": ["ai", "cohere"],
+  "sort_order": 80
+}

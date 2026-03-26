@@ -1,0 +1,13 @@
+{
+  "key": "mistral",
+  "name": "Mistral AI API Key",
+  "service": "api.mistral.ai",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api.mistral.ai/*",
+  "fields": ["secret_value"],
+  "description": "Mistral AI API key. Injected as Authorization: Bearer header.",
+  "tags": ["ai", "mistral"],
+  "sort_order": 70
+}

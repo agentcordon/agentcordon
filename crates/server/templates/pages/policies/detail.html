@@ -1,0 +1,754 @@
+{% extends "base.html" %}
+{% block title %}Security Policy — Agent Cordon{% endblock %}
+{% block content %}
+<div x-data="policyDetailPage()" x-init="init()">
+    <a href="/security" class="back-link">&larr; Security</a>
+    <h2 class="page-title">Security Policy Details</h2>
+    <div class="content-body">
+        <div x-show="loading" class="page-loader">
+            <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+            <span class="page-loader-label">Loading policy...</span>
+        </div>
+
+        <div x-show="notFound && !loading" class="empty-state">
+            <h3>Policy not found</h3>
+            <a href="/security" class="btn btn-primary">Back to Security</a>
+        </div>
+
+        <div x-show="policy && !loading" class="detail-card detail-card-narrow">
+            <div class="detail-header">
+                <template x-if="!editing">
+                    <h3 x-text="policy && policy.name"></h3>
+                </template>
+                <template x-if="editing">
+                    <input x-model="editForm.name" class="form-input inline-edit-title" placeholder="Policy name">
+                </template>
+                <div class="detail-header-actions">
+                    <template x-if="!editing">
+                        <div class="inline-actions-group">
+                            <button class="btn btn-secondary btn-sm" @click="startEdit()">Edit</button>
+                            <button class="btn btn-danger btn-sm" @click="openDelete()">Delete</button>
+                        </div>
+                    </template>
+                    <template x-if="editing">
+                        <div class="inline-actions-group">
+                            <button class="btn btn-ghost btn-sm" @click="rawMode = !rawMode" x-text="rawMode ? 'Structured' : 'Raw Cedar'"></button>
+                            <button class="btn btn-secondary btn-sm" @click="cancelEdit()">Cancel</button>
+                            <button class="btn btn-primary btn-sm" @click="saveEdit()" :disabled="editSubmitting">
+                                <span x-show="editSubmitting" class="spinner" aria-hidden="true"></span>
+                                <span x-text="editSubmitting ? 'Saving...' : 'Save'"></span>
+                            </button>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            <div class="detail-body">
+                <div class="detail-row">
+                    <div class="detail-label">Description</div>
+                    <div class="detail-value" x-show="!editing" x-text="(policy && policy.description) || '—'"></div>
+                    <div class="detail-value" x-show="editing">
+                        <input x-model="editForm.description" class="form-input inline-edit-input" placeholder="Optional description">
+                    </div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Status</div>
+                    <div class="detail-value" x-show="!editing">
+                        <span class="pill" :class="policy && policy.enabled ? 'pill-ok' : 'pill-warn'"
+                              x-text="policy && policy.enabled ? 'Enabled' : 'Disabled'"></span>
+                    </div>
+                    <div class="detail-value" x-show="editing">
+                        <label class="checkbox-label">
+                            <input type="checkbox" x-model="editForm.enabled" class="checkbox-input">
+                            <span x-text="editForm.enabled ? 'Enabled' : 'Disabled'"></span>
+                        </label>
+                    </div>
+                </div>
+                <!-- Read-only statement view with per-statement UI/Cedar toggle -->
+                <div class="detail-row" x-show="!editing">
+                    <div class="detail-label">Policy Statements</div>
+                    <div class="detail-value">
+                        <!-- View all as Cedar button -->
+                        <div class="cedar-view-controls">
+                            <button class="btn btn-ghost btn-sm" @click="showAllCedar = !showAllCedar"
+                                    x-text="showAllCedar ? 'Per-statement view' : 'View all as Cedar'"></button>
+                        </div>
+
+                        <!-- All-Cedar view -->
+                        <div x-show="showAllCedar" class="cedar-raw-block" x-html="highlightCedar((policy && policy.cedar_policy) || 'No policy code.')"></div>
+
+                        <!-- Per-statement view -->
+                        <div x-show="!showAllCedar" class="cedar-statements">
+                            <template x-for="(stmt, idx) in parsedStatements" :key="idx">
+                                <div class="cedar-stmt-card" :class="stmt.effect === 'forbid' ? 'cedar-stmt-forbid' : 'cedar-stmt-permit'" :id="'statement-' + idx">
+                                    <div class="cedar-stmt-header">
+                                        <span class="pill pill-sm" :class="stmt.effect === 'forbid' ? 'pill-bad' : 'pill-ok'"
+                                              x-text="stmt.effect === 'forbid' ? 'DENIES' : 'ALLOWS'"></span>
+                                        <div class="cedar-stmt-header-actions">
+                                            <button class="btn-icon btn-icon-xs cedar-stmt-toggle"
+                                                    @click.stop="toggleStatementCedar(idx)"
+                                                    :title="cedarVisible[idx] ? 'Show summary' : 'Show Cedar code'"
+                                                    :aria-label="cedarVisible[idx] ? 'Show summary' : 'Show Cedar code'">
+                                                <span x-text="cedarVisible[idx] ? 'UI' : '{}'"></span>
+                                            </button>
+                                            <button class="btn-icon btn-icon-xs cedar-stmt-link" @click.stop="copyStatementLink(idx)" title="Copy link to statement">
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <!-- UI summary view -->
+                                    <div x-show="!cedarVisible[idx]" class="cedar-readable-body">
+                                        <div class="cedar-readable-row">
+                                            <span class="cedar-readable-label">Who</span>
+                                            <span x-text="stmt.principalLabel"></span>
+                                        </div>
+                                        <div class="cedar-readable-row">
+                                            <span class="cedar-readable-label">What</span>
+                                            <span x-text="stmt.actionLabel"></span>
+                                        </div>
+                                        <div class="cedar-readable-row">
+                                            <span class="cedar-readable-label">On</span>
+                                            <span x-text="stmt.resourceLabel"></span>
+                                        </div>
+                                        <template x-if="stmt.conditionLabel">
+                                            <div class="cedar-readable-row">
+                                                <span class="cedar-readable-label">When</span>
+                                                <span class="cedar-readable-condition" x-text="stmt.conditionLabel"></span>
+                                            </div>
+                                        </template>
+                                    </div>
+                                    <!-- Cedar code view -->
+                                    <div x-show="cedarVisible[idx]" class="cedar-stmt-code">
+                                        <div class="cedar-raw-block" x-html="highlightCedar(stmt.rawCedar)"></div>
+                                    </div>
+                                </div>
+                            </template>
+                            <div x-show="parsedStatements.length === 0" class="text-sm opacity-muted">
+                                No policy statements found.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% include "partials/policy_edit_statements.html" %}
+                <div class="detail-row">
+                    <div class="detail-label">Created</div>
+                    <div class="detail-value timestamp" x-text="formatDateTime(policy && policy.created_at)"></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">Updated</div>
+                    <div class="detail-value timestamp" x-text="formatDateTime(policy && policy.updated_at)"></div>
+                </div>
+                <div class="detail-row">
+                    <div class="detail-label">ID</div>
+                    <div class="detail-value mono-sm" x-text="policy && policy.id"></div>
+                </div>
+            </div>
+        </div>
+
+        {% include "partials/policy_affected_principals.html" %}
+
+        {% include "partials/policy_tester.html" %}
+    </div>
+
+    {% include "partials/delete_modal.html" %}
+</div>
+{% endblock %}
+{% block scripts %}
+<style>
+.cedar-editor {
+    font-family: 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    resize: vertical;
+    min-height: 240px;
+    line-height: 1.6;
+    tab-size: 2;
+}
+.cedar-statements { display: flex; flex-direction: column; gap: 12px; }
+.cedar-stmt-card {
+    border: 1px solid var(--border, #333);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.cedar-stmt-permit { border-left: 3px solid var(--color-ok, #22c55e); background: rgba(34, 197, 94, 0.02); }
+.cedar-stmt-forbid { border-left: 3px solid var(--color-bad, #ef4444); background: rgba(239, 68, 68, 0.02); }
+.cedar-stmt-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary, rgba(255,255,255,0.03));
+}
+.cedar-stmt-field label {
+    display: block;
+    margin-bottom: 2px;
+}
+.cedar-readable-body {
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.cedar-readable-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 0.875rem;
+    line-height: 1.4;
+}
+.cedar-readable-label {
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.55;
+    min-width: 40px;
+    flex-shrink: 0;
+}
+.cedar-readable-condition {
+    font-family: var(--font-mono, 'SF Mono', Menlo, Consolas, monospace);
+    font-size: 0.8rem;
+    opacity: 0.85;
+}
+.cedar-raw-block {
+    font-family: var(--font-mono, 'SF Mono', Menlo, Consolas, monospace);
+    font-size: 0.85rem;
+    padding: 14px 16px;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: var(--bg-secondary, #1a1a2e);
+    border: 1px solid var(--border, #333);
+    border-radius: 8px;
+    line-height: 1.6;
+}
+/* Per-statement toggle and permalink */
+.cedar-view-controls { margin-bottom: 8px; }
+.cedar-stmt-header-actions { display: flex; gap: 4px; margin-left: auto; }
+.cedar-stmt-toggle { font-family: var(--font-mono, monospace); font-size: 11px; padding: 2px 6px; border-radius: 4px; background: var(--bg-tertiary); border: 1px solid var(--border, #333); cursor: pointer; opacity: 0.6; }
+.cedar-stmt-toggle:hover { opacity: 1; }
+.cedar-stmt-code { padding: 0; }
+.cedar-stmt-code .cedar-raw-block { border: none; border-radius: 0 0 8px 8px; margin: 0; }
+.cedar-stmt-highlight { box-shadow: 0 0 0 2px var(--accent); transition: box-shadow 0.3s ease; }
+.cedar-stmt-link { opacity: 0.4; transition: opacity 0.15s; }
+.cedar-stmt-link:hover { opacity: 1; }
+/* Cedar syntax highlighting */
+.cedar-kw { color: #c084fc; font-weight: 600; }
+.cedar-type { color: #60a5fa; }
+.cedar-str { color: #fbbf24; }
+.cedar-comment { color: #6b7280; font-style: italic; }
+.cedar-op { color: #f472b6; }
+</style>
+<script>
+function policyDetailPage() {
+    return {
+        policy: null,
+        loading: true,
+        notFound: false,
+        editing: false,
+        editSubmitting: false,
+        rawMode: false,
+        showAllCedar: false,
+        cedarVisible: {},
+        parsedStatements: [],
+        editForm: { name: '', description: '', cedar_policy: '', enabled: true },
+        editStatements: [],
+        schemaActions: [],
+        deleteModal: false,
+        deleteTargetName: '',
+        affectedPrincipals: { loading: false, loaded: false, list: [] },
+        tester: {
+            principalType: 'Workspace',
+            principalId: '',
+            action: 'access',
+            resourceType: 'Credential',
+            tags: '',
+            role: '',
+            enabled: true,
+            testing: false,
+            result: null,
+            diagnostics: [],
+        },
+
+        async init() {
+            var id = '{{ policy_id }}';
+            this.$watch('policy', (p) => {
+                if (p && p.cedar_policy) {
+                    this.parsedStatements = this.parseStatementsWithCedar(p.cedar_policy);
+                }
+            });
+            await Promise.all([this.loadPolicy(id), this.loadSchema()]);
+            // Scroll to statement if URL has fragment
+            this.$nextTick(() => {
+                var hash = window.location.hash;
+                if (hash && hash.startsWith('#statement-')) {
+                    var el = document.querySelector(hash);
+                    if (el) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        el.classList.add('cedar-stmt-highlight');
+                        setTimeout(() => el.classList.remove('cedar-stmt-highlight'), 2000);
+                    }
+                }
+            });
+        },
+
+        async loadPolicy(id) {
+            try {
+                var resp = await fetch('/api/v1/policies/' + id);
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.policy = data.data || data;
+                } else if (resp.status === 404) {
+                    this.notFound = true;
+                }
+            } catch(e) { showToast('Failed to load policy', 'error'); }
+            this.loading = false;
+        },
+
+        async loadSchema() {
+            try {
+                var resp = await fetch('/api/v1/policies/schema/reference');
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.schemaActions = (data.data && data.data.actions) || data.actions || [];
+                }
+            } catch(e) { /* non-critical */ }
+        },
+
+        highlightCedar(text) {
+            if (!text) return '';
+            // Escape HTML first
+            var escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            // Pass 1: Extract string literals into placeholders so later regexes don't match inside them
+            var strings = [];
+            escaped = escaped.replace(/("(?:[^"\\]|\\.)*")/g, function(m) {
+                var idx = strings.length;
+                strings.push(m);
+                return '__CEDAR_STR_' + idx + '__';
+            });
+            // Comments
+            escaped = escaped.replace(/(\/\/[^\n]*)/g, '<span class="cedar-comment">$1</span>');
+            // Keywords
+            escaped = escaped.replace(/\b(permit|forbid|when|unless|if|then|else|in|is|like|has)\b/g, '<span class="cedar-kw">$1</span>');
+            // Built-in identifiers
+            escaped = escaped.replace(/\b(principal|action|resource|context)\b/g, '<span class="cedar-kw">$1</span>');
+            // Type references (AgentCordon::Something)
+            escaped = escaped.replace(/(AgentCordon::[\w:]+)/g, '<span class="cedar-type">$1</span>');
+            // Operators
+            escaped = escaped.replace(/(\.\b(?:contains|containsAny|containsAll)\b)/g, '<span class="cedar-op">$1</span>');
+            // Pass 2: Restore string literals with highlighting
+            for (var i = 0; i < strings.length; i++) {
+                escaped = escaped.replace('__CEDAR_STR_' + i + '__', '<span class="cedar-str">' + strings[i] + '</span>');
+            }
+            return escaped;
+        },
+
+        startEdit() {
+            this.editForm.name = this.policy.name;
+            this.editForm.description = this.policy.description || '';
+            this.editForm.cedar_policy = this.policy.cedar_policy;
+            this.editForm.enabled = this.policy.enabled;
+            this.editStatements = this.parseCedarToEditStatements(this.policy.cedar_policy);
+            this.rawMode = false;
+            this.editing = true;
+        },
+
+        cancelEdit() { this.editing = false; },
+
+        async saveEdit() {
+            this.editSubmitting = true;
+            if (!this.rawMode) {
+                this.editForm.cedar_policy = this.statementsToCedar();
+            }
+            var body = {
+                name: this.editForm.name,
+                description: this.editForm.description,
+                cedar_policy: this.editForm.cedar_policy,
+                enabled: this.editForm.enabled
+            };
+            try {
+                var resp = await fetch('/api/v1/policies/' + this.policy.id, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify(body)
+                });
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.policy = data.data || data;
+                    this.editing = false;
+                    window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Policy saved', type: 'success' } }));
+                } else {
+                    var err = await resp.json();
+                    window.dispatchEvent(new CustomEvent('toast', { detail: { message: err.error?.message || 'Failed to save policy', type: 'error' } }));
+                }
+            } catch(e) {
+                window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Network error', type: 'error' } }));
+            }
+            this.editSubmitting = false;
+        },
+
+        parseCedarToEditStatements(text) {
+            if (!text) return [];
+            var statements = [];
+            var re = /(?:\/\/[^\n]*\n\s*)*((?:permit|forbid)\s*\([\s\S]*?;)/g;
+            var match;
+            while ((match = re.exec(text)) !== null) {
+                var code = match[1].trim();
+                var effect = code.startsWith('forbid') ? 'forbid' : 'permit';
+                var principalMatch = code.match(/principal\s+is\s+AgentCordon::(\w+)/);
+                var actionMatch = code.match(/action\s*==\s*AgentCordon::Action::"([^"]+)"/);
+                var resourceMatch = code.match(/resource\s+is\s+AgentCordon::(\w+)/);
+                var conditionMatch = code.match(/when\s*\{([\s\S]*?)\}\s*;/);
+                statements.push({
+                    effect: effect,
+                    principalType: principalMatch ? principalMatch[1] : '',
+                    action: actionMatch ? actionMatch[1] : '',
+                    resourceType: resourceMatch ? resourceMatch[1] : '',
+                    condition: conditionMatch ? conditionMatch[1].trim() : ''
+                });
+            }
+            if (statements.length === 0 && text.trim().length > 0) {
+                statements.push({ effect: 'permit', principalType: '', action: '', resourceType: '', condition: '' });
+            }
+            return statements;
+        },
+
+        statementsToCedar() {
+            return this.editStatements.map(function(stmt) {
+                var principal = stmt.principalType ? 'principal is AgentCordon::' + stmt.principalType : 'principal';
+                var action = stmt.action ? 'action == AgentCordon::Action::"' + stmt.action + '"' : 'action';
+                var resource = stmt.resourceType ? 'resource is AgentCordon::' + stmt.resourceType : 'resource';
+                var body = stmt.effect + '(\n  ' + principal + ',\n  ' + action + ',\n  ' + resource + '\n)';
+                if (stmt.condition) {
+                    body += ' when {\n  ' + stmt.condition + '\n}';
+                }
+                return body + ';';
+            }).join('\n\n');
+        },
+
+        applyTagCondition(idx, tagType, tagValue) {
+            var stmt = this.editStatements[idx];
+            if (!stmt) return;
+            stmt.tagType = tagType;
+            stmt.tagValue = tagValue || '';
+            if (tagType === 'principal_contains' && tagValue) {
+                stmt.condition = 'principal.tags.contains("' + tagValue + '")';
+            } else if (tagType === 'resource_contains' && tagValue) {
+                stmt.condition = 'resource.tags.contains("' + tagValue + '")';
+            } else if (tagType === 'tags_match') {
+                stmt.condition = 'principal.tags.containsAny(resource.tags)';
+            }
+        },
+
+        addStatement() {
+            this.editStatements.push({ effect: 'permit', principalType: '', action: '', resourceType: '', condition: '', tagType: '', tagValue: '' });
+        },
+
+        removeStatement(idx) {
+            this.editStatements.splice(idx, 1);
+        },
+
+        moveStatement(idx, direction) {
+            var newIdx = idx + direction;
+            if (newIdx < 0 || newIdx >= this.editStatements.length) return;
+            var temp = this.editStatements[idx];
+            this.editStatements[idx] = this.editStatements[newIdx];
+            this.editStatements[newIdx] = temp;
+            this.editStatements = [...this.editStatements];
+        },
+
+        openDelete() {
+            this.deleteTargetName = this.policy.name;
+            this.deleteModal = true;
+        },
+
+        async confirmDelete() {
+            try {
+                var resp = await fetch('/api/v1/policies/' + this.policy.id, {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                if (resp.ok) {
+                    window.location.href = '/security';
+                } else {
+                    window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Failed to delete policy', type: 'error' } }));
+                }
+            } catch(e) {
+                window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Network error', type: 'error' } }));
+            }
+            this.deleteModal = false;
+        },
+
+        async testPolicy() {
+            this.tester.testing = true;
+            this.tester.result = null;
+            this.tester.diagnostics = [];
+            try {
+                var resp = await fetch('/api/v1/policies/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({
+                        principal: {
+                            type: this.tester.principalType,
+                            id: this.tester.principalId || 'test',
+                            attributes: Object.assign(
+                                { enabled: this.tester.enabled },
+                                this.tester.tags.trim() ? { tags: this.tester.tags.split(',').map(function(t) { return t.trim(); }).filter(Boolean) } : {},
+                                this.tester.principalType === 'User' && this.tester.role ? { role: this.tester.role } : {}
+                            )
+                        },
+                        action: this.tester.action,
+                        resource: { type: this.tester.resourceType, attributes: {} },
+                    }),
+                });
+                if (resp.ok) {
+                    var json = await resp.json();
+                    this.tester.result = json.data.decision;
+                    this.tester.diagnostics = json.data.diagnostic_details || json.data.diagnostics || [];
+                } else {
+                    var err = await resp.json();
+                    window.dispatchEvent(new CustomEvent('toast', { detail: { message: err.error?.message || 'Test failed', type: 'error' } }));
+                }
+            } catch(e) {
+                window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Network error', type: 'error' } }));
+            }
+            this.tester.testing = false;
+        },
+
+        async loadAffectedPrincipals() {
+            this.affectedPrincipals.loading = true;
+            var policyName = this.policy.name;
+            var policyId = this.policy.id;
+            try {
+                var resp = await fetch('/api/v1/credentials');
+                if (!resp.ok) { this.affectedPrincipals.loading = false; this.affectedPrincipals.loaded = true; return; }
+                var credsData = await resp.json();
+                var creds = credsData.data || credsData || [];
+                if (creds.length === 0) { this.affectedPrincipals.loading = false; this.affectedPrincipals.loaded = true; return; }
+                var affectedMap = {};
+                for (var ci = 0; ci < creds.length; ci++) {
+                    var rsopResp = await fetch('/api/v1/policies/rsop', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                        body: JSON.stringify({ resource_type: 'Credential', resource_id: creds[ci].id })
+                    });
+                    if (!rsopResp.ok) continue;
+                    var rsopJson = await rsopResp.json();
+                    var matrix = (rsopJson.data || rsopJson).matrix || [];
+                    matrix.forEach(function(row) {
+                        if (!row.results) return;
+                        Object.keys(row.results).forEach(function(action) {
+                            var r = row.results[action];
+                            if (r.reasons && r.reasons.some(function(reasonObj) {
+                                return (reasonObj.policy_name && reasonObj.policy_name === policyName) ||
+                                       (reasonObj.policy_id && reasonObj.policy_id === policyId) ||
+                                       (typeof reasonObj === 'string' && reasonObj.indexOf(policyName) >= 0);
+                            })) {
+                                var key = row.principal_id;
+                                if (!affectedMap[key]) {
+                                    affectedMap[key] = {
+                                        principal_id: row.principal_id,
+                                        principal_name: row.principal_name || row.principal_id,
+                                        principal_type: row.principal_type,
+                                        actions: []
+                                    };
+                                }
+                                if (affectedMap[key].actions.indexOf(action) < 0) {
+                                    affectedMap[key].actions.push(action);
+                                }
+                            }
+                        });
+                    });
+                }
+                this.affectedPrincipals.list = Object.keys(affectedMap).map(function(k) { return affectedMap[k]; });
+            } catch(e) {
+                showToast('Failed to load affected principals', 'error');
+            }
+            this.affectedPrincipals.loading = false;
+            this.affectedPrincipals.loaded = true;
+        },
+
+        readableActionLabel(action) {
+            var labels = {
+                'access': 'Access (decrypt/use directly)',
+                'vend_credential': 'Vend credentials',
+                'list': 'List/view',
+                'create': 'Create',
+                'update': 'Update',
+                'delete': 'Delete',
+                'manage_permissions': 'Manage permissions',
+                'manage_policies': 'Manage policies',
+                'manage_users': 'Manage users',
+                'manage_agents': 'Manage agents',
+                'manage_enrollments': 'Manage enrollments',
+                'view_audit': 'View audit log',
+                'rotate_key': 'Rotate API key',
+                'manage_oidc_providers': 'Manage OIDC providers',
+                'manage_vaults': 'Manage vaults',
+                'rotate_encryption_key': 'Rotate encryption key',
+                'manage_mcp_servers': 'Manage MCP servers',
+                'mcp_tool_call': 'Call MCP tools',
+                'mcp_list_tools': 'List MCP tools',
+                'manage_devices': 'Manage devices',
+                'enroll_agent': 'Enroll agents',
+                'manage_tags': 'Manage tags',
+                'unprotect': 'Reveal raw secret',
+            };
+            return labels[action] || action;
+        },
+
+        readablePrincipalLabel(type) {
+            var labels = {
+                'Workspace': 'Any Workspace',
+                'User': 'Any User',
+            };
+            return type ? (labels[type] || type) : 'Anyone (any principal)';
+        },
+
+        readableResourceLabel(type) {
+            var labels = {
+                'Credential': 'Any Credential',
+                'McpServer': 'Any MCP Server',
+                'WorkspaceResource': 'Any Workspace Resource',
+                'System': 'System',
+                'PolicyResource': 'Any Policy',
+            };
+            return type ? (labels[type] || type) : 'Any resource';
+        },
+
+        readableConditionLabel(condition) {
+            if (!condition) return '';
+            var tagContains = condition.match(/^principal\.tags\.contains\("([^"]+)"\)$/);
+            if (tagContains) return 'Principal is tagged "' + tagContains[1] + '"';
+            var resTagContains = condition.match(/^resource\.tags\.contains\("([^"]+)"\)$/);
+            if (resTagContains) return 'Resource is tagged "' + resTagContains[1] + '"';
+            if (condition.indexOf('principal.tags.containsAny(resource.tags)') >= 0) {
+                return 'Principal shares at least one tag with resource';
+            }
+            var enabledMatch = condition.match(/^principal\.enabled\s*==\s*(true|false)$/);
+            if (enabledMatch) return 'Principal is ' + (enabledMatch[1] === 'true' ? 'enabled' : 'disabled');
+            return condition;
+        },
+
+        toggleStatementCedar(idx) {
+            this.cedarVisible[idx] = !this.cedarVisible[idx];
+            this.cedarVisible = Object.assign({}, this.cedarVisible);
+        },
+
+        copyStatementLink(idx) {
+            var url = window.location.origin + '/security/' + this.policy.id + '#statement-' + idx;
+            navigator.clipboard.writeText(url).then(function() {
+                showToast('Link copied', 'success');
+            });
+        },
+
+        parseStatementsWithCedar(text) {
+            if (!text) return [];
+            var self = this;
+            var statements = [];
+            var re = /(?:\/\/[^\n]*\n\s*)*((?:permit|forbid)\s*\([\s\S]*?;)/g;
+            var match;
+            while ((match = re.exec(text)) !== null) {
+                var code = match[0].trim();
+                var stmtCode = match[1].trim();
+                var effect = stmtCode.startsWith('forbid') ? 'forbid' : 'permit';
+                var principalMatch = stmtCode.match(/principal\s+is\s+AgentCordon::(\w+)/);
+                var actionMatch = stmtCode.match(/action\s*==\s*AgentCordon::Action::"([^"]+)"/);
+                var actionsMatch = stmtCode.match(/action\s+in\s*\[([\s\S]*?)\]/);
+                var resourceMatch = stmtCode.match(/resource\s+is\s+AgentCordon::(\w+)/);
+                var conditionMatch = stmtCode.match(/when\s*\{([\s\S]*?)\}\s*;/);
+
+                var principalType = principalMatch ? principalMatch[1] : '';
+                var actionName = actionMatch ? actionMatch[1] : '';
+                var resourceType = resourceMatch ? resourceMatch[1] : '';
+                var condition = conditionMatch ? conditionMatch[1].trim() : '';
+
+                var actionLabel = 'Any action';
+                if (actionName) {
+                    actionLabel = self.readableActionLabel(actionName);
+                } else if (actionsMatch) {
+                    var acts = actionsMatch[1].match(/"([^"]+)"/g);
+                    if (acts) {
+                        actionLabel = acts.map(function(a) {
+                            return self.readableActionLabel(a.replace(/"/g, ''));
+                        }).join(', ');
+                    }
+                }
+
+                statements.push({
+                    effect: effect,
+                    principalLabel: self.readablePrincipalLabel(principalType),
+                    actionLabel: actionLabel,
+                    resourceLabel: self.readableResourceLabel(resourceType),
+                    conditionLabel: self.readableConditionLabel(condition),
+                    rawCedar: code,
+                });
+            }
+            if (statements.length === 0 && text.trim().length > 0) {
+                var eff = text.includes('forbid') ? 'forbid' : 'permit';
+                statements.push({
+                    effect: eff,
+                    principalLabel: 'Anyone (any principal)',
+                    actionLabel: 'Any action',
+                    resourceLabel: 'Any resource',
+                    conditionLabel: '',
+                    rawCedar: text,
+                });
+            }
+            return statements;
+        },
+
+        parseReadableStatements(text) {
+            if (!text) return [];
+            var self = this;
+            var statements = [];
+            var re = /(?:\/\/[^\n]*\n\s*)*((?:permit|forbid)\s*\([\s\S]*?;)/g;
+            var match;
+            while ((match = re.exec(text)) !== null) {
+                var code = match[1].trim();
+                var effect = code.startsWith('forbid') ? 'forbid' : 'permit';
+                var principalMatch = code.match(/principal\s+is\s+AgentCordon::(\w+)/);
+                var actionMatch = code.match(/action\s*==\s*AgentCordon::Action::"([^"]+)"/);
+                var actionsMatch = code.match(/action\s+in\s*\[([\s\S]*?)\]/);
+                var resourceMatch = code.match(/resource\s+is\s+AgentCordon::(\w+)/);
+                var conditionMatch = code.match(/when\s*\{([\s\S]*?)\}\s*;/);
+
+                var principalType = principalMatch ? principalMatch[1] : '';
+                var actionName = actionMatch ? actionMatch[1] : '';
+                var resourceType = resourceMatch ? resourceMatch[1] : '';
+                var condition = conditionMatch ? conditionMatch[1].trim() : '';
+
+                var actionLabel = 'Any action';
+                if (actionName) {
+                    actionLabel = self.readableActionLabel(actionName);
+                } else if (actionsMatch) {
+                    var acts = actionsMatch[1].match(/"([^"]+)"/g);
+                    if (acts) {
+                        actionLabel = acts.map(function(a) {
+                            return self.readableActionLabel(a.replace(/"/g, ''));
+                        }).join(', ');
+                    }
+                }
+
+                statements.push({
+                    effect: effect,
+                    principalLabel: self.readablePrincipalLabel(principalType),
+                    actionLabel: actionLabel,
+                    resourceLabel: self.readableResourceLabel(resourceType),
+                    conditionLabel: self.readableConditionLabel(condition),
+                });
+            }
+            if (statements.length === 0 && text.trim().length > 0) {
+                var eff = text.includes('forbid') ? 'forbid' : 'permit';
+                statements.push({
+                    effect: eff,
+                    principalLabel: 'Anyone (any principal)',
+                    actionLabel: 'Any action',
+                    resourceLabel: 'Any resource',
+                    conditionLabel: '',
+                });
+            }
+            return statements;
+        },
+
+        formatDateTime: formatDateTime
+    };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,8 @@
+{
+  "key": "workspace-access",
+  "name": "Workspace Credential Access",
+  "description": "Allow workspaces to access credentials. Common starting policy for production use.",
+  "cedar_policy": "permit(\n  principal is AgentCordon::Workspace,\n  action == AgentCordon::Action::\"vend_credential\",\n  resource is AgentCordon::Credential\n) when {\n  principal.enabled\n};",
+  "tags": ["production", "workspace"],
+  "sort_order": 30
+}

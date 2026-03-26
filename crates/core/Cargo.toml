@@ -1,0 +1,44 @@
+[package]
+name = "agent-cordon-core"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["sqlite", "transforms", "http-client"]
+sqlite = ["dep:rusqlite", "dep:tokio-rusqlite"]
+postgres = ["dep:sqlx"]
+test-crypto = []
+transforms = ["dep:rhai"]
+http-client = ["dep:reqwest"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = "0.1"
+aes-gcm = "0.10"
+argon2 = "0.5"
+sha2 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+tokio-rusqlite = { version = "0.6", optional = true }
+sqlx = { workspace = true, optional = true }
+cedar-policy = "4"
+jsonwebtoken = { workspace = true }
+regex = "1"
+url = "2"
+metrics = "0.24"
+rhai = { version = "1", features = ["sync"], optional = true }
+hkdf = "0.12"
+hmac = "0.12"
+zeroize = "1"
+p256 = { version = "0.13", features = ["ecdh", "ecdsa", "jwk", "pkcs8", "pem"] }
+hex = "0.4"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+tempfile = "3"

@@ -1,0 +1,13 @@
+{
+  "key": "azure-openai",
+  "name": "Azure OpenAI API Key",
+  "service": "openai.azure.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "api-key",
+  "allowed_url_pattern": "https://*.openai.azure.com/*",
+  "fields": ["secret_value"],
+  "description": "Azure OpenAI Service API key. Injected as api-key header.",
+  "tags": ["ai", "azure", "openai"],
+  "sort_order": 60
+}

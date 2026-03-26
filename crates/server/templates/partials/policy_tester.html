@@ -1,0 +1,148 @@
+<!-- Policy Tester — included by policies/detail.html -->
+<div x-show="policy && !loading" class="detail-card detail-card-narrow mt-6">
+    <div class="detail-header">
+        <h3>Policy Tester</h3>
+        <div class="detail-header-actions">
+            <a href="/security/tester" class="btn btn-ghost btn-sm">Open Full Tester &rarr;</a>
+        </div>
+    </div>
+    <div class="detail-body">
+        <p class="inline-tester-desc">Test the currently saved policies against a simulated request.</p>
+        <div class="inline-tester-grid">
+            <div class="form-group">
+                <label for="test-principal-type" class="inline-tester-label">Principal Type</label>
+                <select id="test-principal-type" class="form-input" x-model="tester.principalType">
+                    <option value="Workspace">Workspace</option>
+                    <option value="User">User</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="test-principal-id" class="inline-tester-label">Principal ID</label>
+                <input type="text" id="test-principal-id" class="form-input" x-model="tester.principalId" placeholder="e.g., test-workspace">
+            </div>
+            <div class="form-group">
+                <label for="test-action" class="inline-tester-label">Action</label>
+                <select id="test-action" class="form-input" x-model="tester.action">
+                    <template x-for="a in schemaActions" :key="a.name">
+                        <option :value="a.name" x-text="a.name + (a.description ? ' — ' + a.description : '')"></option>
+                    </template>
+                    <option x-show="schemaActions.length === 0" value="access">access</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="test-resource-type" class="inline-tester-label">Resource Type</label>
+                <select id="test-resource-type" class="form-input" x-model="tester.resourceType">
+                    <option value="Credential">Credential</option>
+                    <option value="WorkspaceResource">Workspace</option>
+                    <option value="McpServer">MCP Server</option>
+                    <option value="System">System</option>
+                    <option value="PolicyResource">Policy</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="test-tags" class="inline-tester-label">Tags <span class="text-sm opacity-muted">(comma-separated)</span></label>
+                <input type="text" id="test-tags" class="form-input" x-model="tester.tags" placeholder="e.g., admin, production">
+            </div>
+            <div class="form-group" x-show="tester.principalType === 'User'">
+                <label for="test-role" class="inline-tester-label">Role</label>
+                <select id="test-role" class="form-input" x-model="tester.role">
+                    <option value="">None</option>
+                    <option value="admin">Admin</option>
+                    <option value="operator">Operator</option>
+                    <option value="viewer">Viewer</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" class="checkbox-input" x-model="tester.enabled">
+                    <span>Enabled</span>
+                </label>
+            </div>
+        </div>
+        <button class="btn btn-primary inline-tester-btn" @click="testPolicy()" :disabled="tester.testing">
+            <span x-text="tester.testing ? 'Testing...' : 'Test Policy'"></span>
+        </button>
+
+        <!-- Result display -->
+        <div x-show="tester.result !== null" x-cloak class="inline-tester-result">
+            <div class="inline-tester-result-card" :class="tester.result === 'permit' ? 'inline-tester-result-permit' : 'inline-tester-result-deny'">
+                <span class="inline-tester-result-icon" x-text="tester.result === 'permit' ? '✓' : '✕'"></span>
+                <span class="inline-tester-result-label" x-text="tester.result === 'permit' ? 'PERMIT' : 'DENY'"></span>
+            </div>
+            <div x-show="tester.diagnostics.length > 0" class="inline-tester-diagnostics">
+                <template x-for="(d, di) in tester.diagnostics" :key="di">
+                    <div class="inline-tester-diagnostic-item">
+                        <template x-if="typeof d === 'object' && d.policy_id">
+                            <a :href="'/security/' + d.policy_id + (d.statement_index !== undefined ? '#statement-' + d.statement_index : '')"
+                               class="audit-policy-link"
+                               x-text="(d.policy_name || d.policy_id) + (d.statement_index !== undefined ? ' §' + d.statement_index : '')"></a>
+                        </template>
+                        <template x-if="typeof d !== 'object' || !d.policy_id">
+                            <span x-text="typeof d === 'string' ? d : (d.reason || d.policy_name || JSON.stringify(d))"></span>
+                        </template>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+</div>
+<style>
+.inline-tester-desc {
+    font-size: 0.8rem;
+    opacity: 0.55;
+    margin: 0 0 16px 0;
+}
+.inline-tester-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+@media (max-width: 640px) {
+    .inline-tester-grid { grid-template-columns: 1fr; }
+}
+.inline-tester-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
+    margin-bottom: 4px;
+    display: block;
+}
+.inline-tester-btn { margin-top: 12px; }
+.inline-tester-result { margin-top: 16px; }
+.inline-tester-result-card {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 1.1rem;
+    letter-spacing: 0.03em;
+}
+.inline-tester-result-permit {
+    background: rgba(34, 197, 94, 0.1);
+    color: var(--color-ok, #22c55e);
+    border: 1px solid rgba(34, 197, 94, 0.25);
+}
+.inline-tester-result-deny {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--color-bad, #ef4444);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+}
+.inline-tester-result-icon { font-size: 1rem; }
+.inline-tester-diagnostics {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.inline-tester-diagnostic-item {
+    font-size: 0.8rem;
+    opacity: 0.6;
+    padding-left: 12px;
+    border-left: 2px solid var(--border, #333);
+    line-height: 1.4;
+}
+</style>

@@ -1,0 +1,467 @@
+{
+  "AgentCordon": {
+    "entityTypes": {
+      "Workspace": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "name": {
+              "type": "String"
+            },
+            "enabled": {
+              "type": "Boolean"
+            },
+            "tags": {
+              "type": "Set",
+              "element": {
+                "type": "String"
+              }
+            },
+            "owner": {
+              "type": "Entity",
+              "name": "AgentCordon::User",
+              "required": false
+            },
+            "parent": {
+              "type": "Entity",
+              "name": "AgentCordon::Workspace",
+              "required": false
+            }
+          }
+        }
+      },
+      "User": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "name": {
+              "type": "String"
+            },
+            "role": {
+              "type": "String"
+            },
+            "enabled": {
+              "type": "Boolean"
+            },
+            "is_root": {
+              "type": "Boolean"
+            }
+          }
+        }
+      },
+      "Credential": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "name": {
+              "type": "String"
+            },
+            "service": {
+              "type": "String"
+            },
+            "scopes": {
+              "type": "Set",
+              "element": {
+                "type": "String"
+              }
+            },
+            "owner": {
+              "type": "Entity",
+              "name": "AgentCordon::User"
+            },
+            "tags": {
+              "type": "Set",
+              "element": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "WorkspaceResource": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "name": {
+              "type": "String"
+            },
+            "enabled": {
+              "type": "Boolean"
+            },
+            "owner": {
+              "type": "Entity",
+              "name": "AgentCordon::User",
+              "required": false
+            }
+          }
+        }
+      },
+      "McpServer": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "name": {
+              "type": "String"
+            },
+            "enabled": {
+              "type": "Boolean"
+            },
+            "tags": {
+              "type": "Set",
+              "element": {
+                "type": "String"
+              }
+            },
+            "workspace": {
+              "type": "Entity",
+              "name": "AgentCordon::Workspace",
+              "required": false
+            }
+          }
+        }
+      },
+      "System": {},
+      "PolicyResource": {}
+    },
+    "actions": {
+      "access": {
+        "appliesTo": {
+          "principalTypes": ["Workspace"],
+          "resourceTypes": ["Credential"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "requested_scopes": {
+                "type": "Set",
+                "element": {
+                  "type": "String"
+                }
+              },
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "list": {
+        "appliesTo": {
+          "principalTypes": ["Workspace", "User"],
+          "resourceTypes": ["Credential", "System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "create": {
+        "appliesTo": {
+          "principalTypes": ["Workspace", "User"],
+          "resourceTypes": ["Credential", "System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "update": {
+        "appliesTo": {
+          "principalTypes": ["Workspace", "User"],
+          "resourceTypes": ["Credential"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "unprotect": {
+        "appliesTo": {
+          "principalTypes": ["Workspace", "User"],
+          "resourceTypes": ["Credential"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "appliesTo": {
+          "principalTypes": ["Workspace", "User"],
+          "resourceTypes": ["Credential", "System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "manage_policies": {
+        "appliesTo": {
+          "principalTypes": ["Workspace", "User"],
+          "resourceTypes": ["PolicyResource"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "manage_permissions": {
+        "appliesTo": {
+          "principalTypes": ["Workspace", "User"],
+          "resourceTypes": ["Credential"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "vend_credential": {
+        "appliesTo": {
+          "principalTypes": ["Workspace"],
+          "resourceTypes": ["Credential"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "requested_scopes": {
+                "type": "Set",
+                "element": {
+                  "type": "String"
+                }
+              },
+              "target_url": {
+                "type": "String"
+              },
+              "justification": {
+                "type": "String"
+              },
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "manage_users": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "manage_workspaces": {
+        "appliesTo": {
+          "principalTypes": ["Workspace", "User"],
+          "resourceTypes": ["WorkspaceResource", "System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "manage_enrollments": {
+        "appliesTo": {
+          "principalTypes": ["Workspace", "User"],
+          "resourceTypes": ["System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "view_audit": {
+        "appliesTo": {
+          "principalTypes": ["Workspace", "User"],
+          "resourceTypes": ["System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "rotate_key": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["WorkspaceResource"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "manage_oidc_providers": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "manage_vaults": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "rotate_encryption_key": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "manage_mcp_servers": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "mcp_tool_call": {
+        "appliesTo": {
+          "principalTypes": ["Workspace"],
+          "resourceTypes": ["McpServer"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "tool_name": {
+                "type": "String"
+              },
+              "credential_name": {
+                "type": "String"
+              },
+              "justification": {
+                "type": "String"
+              },
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "mcp_list_tools": {
+        "appliesTo": {
+          "principalTypes": ["Workspace"],
+          "resourceTypes": ["McpServer"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "register_workspace": {
+        "appliesTo": {
+          "principalTypes": ["Workspace"],
+          "resourceTypes": ["System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "manage_tags": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["WorkspaceResource", "System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "tag_value": {
+                "type": "String"
+              },
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

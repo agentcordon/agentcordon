@@ -1,0 +1,22 @@
+<div class="panel-header">
+    <h2>{{ workspace_name }}</h2>
+    <span class="pill pill-{{ status_class }}">{{ status }}</span>
+</div>
+<div class="panel-body">
+    <dl class="detail-list">
+        <dt>ID</dt>
+        <dd><code class="monospace">{{ workspace_id }}</code></dd>
+
+        <dt>Description</dt>
+        <dd>{% if description == "No description" %}<span class="text-faint">&mdash;</span>{% else %}{{ description }}{% endif %}</dd>
+
+        <dt>Tags</dt>
+        <dd>{% if tags == "None" %}<span class="text-faint">&mdash;</span>{% else %}{{ tags }}{% endif %}</dd>
+
+        <dt>Created</dt>
+        <dd>{{ created_at }}</dd>
+
+        <dt>Last Token</dt>
+        <dd>{{ last_token_issued }}</dd>
+    </dl>
+</div>

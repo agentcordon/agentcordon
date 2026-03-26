@@ -1,0 +1,729 @@
+{% extends "base.html" %}
+{% block title %}Policy Tester — Agent Cordon{% endblock %}
+{% block content %}
+<div x-data="policyTesterPage()" x-init="init()" @keydown.ctrl.enter.window="testPolicy()">
+    <a href="/security" class="back-link">&larr; Security</a>
+    <div class="content-header">
+        <h2>Policy Tester</h2>
+        <div class="actions">
+            <div class="tester-scenario-controls">
+                <button class="btn btn-ghost btn-sm" @click="saveScenario()" :disabled="!principal || !action || !resource" title="Save current inputs as a scenario">Save Scenario</button>
+                <div x-show="savedScenarios.length > 0" class="tester-scenario-loader">
+                    <select class="form-input form-input-sm" @change="loadScenario($event.target.value); $event.target.value = '';" aria-label="Load saved scenario">
+                        <option value="">Load scenario...</option>
+                        <template x-for="(s, idx) in savedScenarios" :key="idx">
+                            <option :value="idx" x-text="s.name"></option>
+                        </template>
+                    </select>
+                    <button class="btn btn-ghost btn-sm" @click="clearScenarios()" title="Clear all saved scenarios">&times;</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="content-body">
+        <!-- Input Bar -->
+        <div class="tester-input-bar">
+            <div class="tester-input-row">
+                <div class="form-group tester-input-field">
+                    <label for="tester-principal" class="tester-input-label">Principal</label>
+                    <select id="tester-principal" class="form-input" x-model="principal" @change="clearResults()">
+                        <option value="" disabled>Select a workspace...</option>
+                        <optgroup label="Workspaces">
+                            <template x-for="w in workspaces" :key="w.id">
+                                <option :value="'Workspace:' + w.id" x-text="w.name"></option>
+                            </template>
+                        </optgroup>
+                    </select>
+                </div>
+                <div class="form-group tester-input-field">
+                    <label for="tester-action" class="tester-input-label">Action</label>
+                    <select id="tester-action" class="form-input" x-model="action">
+                        <template x-for="a in schemaActions" :key="a.name">
+                            <option :value="a.name" x-text="a.name + (a.description ? ' — ' + a.description : '')"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="form-group tester-input-field">
+                    <label for="tester-resource" class="tester-input-label">Resource</label>
+                    <select id="tester-resource" class="form-input" x-model="resource" @change="clearResults()">
+                        <option value="" disabled>Select a resource...</option>
+                        <optgroup label="Credentials">
+                            <template x-for="c in credentials" :key="c.id">
+                                <option :value="'Credential:' + c.id" x-text="c.name"></option>
+                            </template>
+                        </optgroup>
+                        <optgroup label="MCP Servers">
+                            <template x-for="m in mcpServers" :key="m.id">
+                                <option :value="'McpServer:' + m.id" x-text="m.name"></option>
+                            </template>
+                        </optgroup>
+                        <option value="System:system">System</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="tester-action-row">
+                <button class="btn btn-primary" @click="testPolicy()" :disabled="testing || !principal || !action || !resource">
+                    <span x-text="testing ? 'Testing...' : 'Test'"></span>
+                </button>
+                <button class="btn btn-secondary" @click="testAllWorkspaces()" :disabled="testingAllWs || !action || !resource">
+                    <span x-text="testingAllWs ? 'Testing...' : 'Test All Workspaces'"></span>
+                </button>
+                <span class="tester-shortcut-hint">Ctrl+Enter to test</span>
+            </div>
+        </div>
+
+        <!-- Single test result -->
+        <div x-show="result !== null" class="tester-result-section" x-transition>
+            <div class="tester-result-card" :class="getResultClass({decision: result})">
+                <div class="tester-result-header">
+                    <div class="tester-result-decision">
+                        <span class="tester-result-icon" x-text="getResultIcon({decision: result})"></span>
+                        <div>
+                            <span class="tester-result-label" x-text="getResultLabel({decision: result})"></span>
+                            <p class="tester-result-explanation" x-text="getResultExplanation({decision: result})"></p>
+                        </div>
+                    </div>
+                    <div class="tester-result-summary">
+                        <span class="tester-result-meta" x-show="isPermit((result || '').toLowerCase()) || (result || '').toLowerCase() === 'forbid'" x-text="contributingPolicies.length + ' contributing ' + (contributingPolicies.length === 1 ? 'policy' : 'policies')"></span>
+                        <span class="tester-result-meta" x-show="!isPermit((result || '').toLowerCase()) && (result || '').toLowerCase() !== 'forbid'">No matching policy</span>
+                    </div>
+                </div>
+
+                <!-- Decision Chain -->
+                <div x-show="contributingPolicies.length > 0" class="tester-decision-chain">
+                    <h4 class="tester-chain-title">Decision Chain</h4>
+                    <div class="tester-chain-list">
+                        <template x-for="(p, idx) in contributingPolicies" :key="idx">
+                            <div class="tester-chain-item" :class="getChainItemClass(p)">
+                                <span class="tester-chain-index" x-text="idx + 1"></span>
+                                <div class="tester-chain-detail">
+                                    <template x-if="getPolicyId(p)">
+                                        <a :href="'/security/' + getPolicyId(p) + (p.statement_index !== undefined ? '#statement-' + p.statement_index : '')" class="tester-chain-link" x-text="getPolicyName(p)"></a>
+                                    </template>
+                                    <template x-if="!getPolicyId(p)">
+                                        <span class="tester-chain-name" x-text="getPolicyName(p)"></span>
+                                    </template>
+                                    <span class="tester-chain-reason" x-text="getPolicyReason(p)"></span>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Test All Workspaces matrix result -->
+        <div x-show="allWorkspacesMatrix.length > 0" class="tester-matrix-section" x-transition>
+            <h3 class="tester-matrix-title">Access Matrix — All Workspaces</h3>
+            <p class="tester-matrix-subtitle" x-text="'Action: ' + action + ' on ' + getResourceLabel()"></p>
+            <div class="tester-matrix-wrap">
+                <table class="tbl tbl-flush tester-matrix-table">
+                    <thead>
+                        <tr>
+                            <th>Workspace</th>
+                            <th>Decision</th>
+                            <th>Contributing Policies</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="row in allWorkspacesMatrix" :key="row.principal_id">
+                            <tr class="tester-matrix-row" :class="getResultClass({decision: row.decision}).replace('tester-result-', 'tester-matrix-row-')">
+                                <td>
+                                    <span class="tester-matrix-principal" x-text="row.principal_name || row.principal_id"></span>
+                                </td>
+                                <td>
+                                    <span class="tester-matrix-decision" :class="getResultClass({decision: row.decision}).replace('tester-result-', 'tester-decision-')">
+                                        <span class="tester-decision-dot"></span>
+                                        <span x-text="getResultLabel({decision: row.decision})"></span>
+                                    </span>
+                                </td>
+                                <td class="tester-matrix-policies">
+                                    <template x-for="(reason, ri) in (row.reasons || [])" :key="ri">
+                                        <template x-if="getReasonPolicyId(reason)">
+                                            <a :href="'/security/' + getReasonPolicyId(reason)" class="tester-policy-link" x-text="getReasonPolicyName(reason)"></a>
+                                        </template>
+                                    </template>
+                                    <template x-for="(reason, ri) in (row.reasons || [])" :key="'txt-'+ri">
+                                        <template x-if="!getReasonPolicyId(reason)">
+                                            <span class="tester-policy-text" x-text="typeof reason === 'string' ? reason : (reason.reason || reason.policy_name || '—')"></span>
+                                        </template>
+                                    </template>
+                                    <span x-show="!row.reasons || row.reasons.length === 0" class="opacity-muted" x-text="isPermit((row.decision || '').toLowerCase()) ? 'Default policy' : 'No matching policy'"></span>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Empty state when nothing tested yet -->
+        <div x-show="result === null && allWorkspacesMatrix.length === 0" class="tester-empty-state">
+            <div class="tester-empty-icon">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </div>
+            <h3 class="tester-empty-title">Test your policies</h3>
+            <p class="tester-empty-desc">Select a principal, action, and resource above, then click Test to see what the current policies would decide.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<style>
+/* Tester input bar */
+.tester-input-bar {
+    background: var(--bg-secondary, #1a1a2e);
+    border: 1px solid var(--border, #333);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 24px;
+}
+.tester-input-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+}
+@media (max-width: 768px) {
+    .tester-input-row { grid-template-columns: 1fr; }
+}
+.tester-input-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.6;
+    margin-bottom: 6px;
+    display: block;
+}
+.tester-action-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border, #333);
+}
+.tester-shortcut-hint {
+    font-size: 0.75rem;
+    opacity: 0.4;
+    margin-left: auto;
+    font-family: var(--font-mono, monospace);
+}
+
+/* Scenario controls */
+.tester-scenario-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.tester-scenario-loader {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* Result card */
+.tester-result-section {
+    margin-bottom: 24px;
+}
+.tester-result-card {
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border, #333);
+}
+.tester-result-permit {
+    border-left: 4px solid var(--color-ok, #22c55e);
+    background: rgba(34, 197, 94, 0.04);
+}
+.tester-result-deny {
+    border-left: 4px solid var(--color-warn, #eab308);
+    background: rgba(234, 179, 8, 0.04);
+}
+.tester-result-forbid {
+    border-left: 4px solid var(--color-bad, #ef4444);
+    background: rgba(239, 68, 68, 0.04);
+}
+.tester-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 24px;
+}
+.tester-result-decision {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.tester-result-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.25rem;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+.tester-result-permit .tester-result-icon {
+    background: rgba(34, 197, 94, 0.15);
+    color: var(--color-ok, #22c55e);
+}
+.tester-result-deny .tester-result-icon {
+    background: rgba(234, 179, 8, 0.15);
+    color: var(--color-warn, #eab308);
+}
+.tester-result-forbid .tester-result-icon {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--color-bad, #ef4444);
+}
+.tester-result-label {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+.tester-result-permit .tester-result-label { color: var(--color-ok, #22c55e); }
+.tester-result-deny .tester-result-label { color: var(--color-warn, #eab308); }
+.tester-result-forbid .tester-result-label { color: var(--color-bad, #ef4444); }
+.tester-result-meta {
+    font-size: 0.8rem;
+    opacity: 0.5;
+}
+.tester-result-explanation {
+    font-size: 0.8rem;
+    opacity: 0.5;
+    margin-top: 4px;
+}
+
+/* Decision chain */
+.tester-decision-chain {
+    border-top: 1px solid var(--border, #333);
+    padding: 16px 24px 20px;
+}
+.tester-chain-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.5;
+    margin: 0 0 12px 0;
+}
+.tester-chain-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.tester-chain-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border-left: 3px solid var(--border, #333);
+    background: var(--bg-tertiary, rgba(255,255,255,0.02));
+}
+.tester-chain-item-permit { border-left-color: var(--color-ok, #22c55e); }
+.tester-chain-item-deny { border-left-color: var(--color-warn, #eab308); }
+.tester-chain-item-forbid { border-left-color: var(--color-bad, #ef4444); }
+.tester-chain-item-neutral { border-left-color: var(--border, #555); }
+.tester-chain-index {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--bg-tertiary, rgba(255,255,255,0.06));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 600;
+    flex-shrink: 0;
+    opacity: 0.6;
+}
+.tester-chain-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+.tester-chain-link {
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: var(--color-link, #60a5fa);
+    text-decoration: none;
+}
+.tester-chain-link:hover { text-decoration: underline; }
+.tester-chain-name {
+    font-weight: 600;
+    font-size: 0.875rem;
+}
+.tester-chain-reason {
+    font-size: 0.8rem;
+    opacity: 0.55;
+    line-height: 1.4;
+}
+
+/* Access matrix */
+.tester-matrix-section {
+    margin-bottom: 24px;
+}
+.tester-matrix-title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0 0 4px 0;
+}
+.tester-matrix-subtitle {
+    font-size: 0.8rem;
+    opacity: 0.5;
+    margin: 0 0 16px 0;
+}
+.tester-matrix-wrap {
+    border: 1px solid var(--border, #333);
+    border-radius: 10px;
+    overflow: hidden;
+}
+.tester-matrix-table {
+    margin: 0;
+}
+.tester-matrix-row:hover {
+    background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+.tester-matrix-row-permit {
+    border-left: 3px solid var(--color-ok, #22c55e);
+}
+.tester-matrix-row-deny {
+    border-left: 3px solid var(--color-warn, #eab308);
+}
+.tester-matrix-row-forbid {
+    border-left: 3px solid var(--color-bad, #ef4444);
+}
+.tester-matrix-principal {
+    font-weight: 500;
+}
+.tester-matrix-decision {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+}
+.tester-decision-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.tester-decision-permit .tester-decision-dot { background: var(--color-ok, #22c55e); }
+.tester-decision-deny .tester-decision-dot { background: var(--color-warn, #eab308); }
+.tester-decision-forbid .tester-decision-dot { background: var(--color-bad, #ef4444); }
+.tester-decision-permit { color: var(--color-ok, #22c55e); }
+.tester-decision-deny { color: var(--color-warn, #eab308); }
+.tester-decision-forbid { color: var(--color-bad, #ef4444); }
+.tester-matrix-policies {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 0.8rem;
+}
+.tester-policy-link {
+    color: var(--color-link, #60a5fa);
+    text-decoration: none;
+    font-size: 0.8rem;
+}
+.tester-policy-link:hover { text-decoration: underline; }
+.tester-policy-text {
+    font-size: 0.8rem;
+    opacity: 0.6;
+}
+
+/* Empty state */
+.tester-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 60px 20px;
+    text-align: center;
+    opacity: 0.5;
+}
+.tester-empty-icon { margin-bottom: 16px; }
+.tester-empty-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 8px 0;
+}
+.tester-empty-desc {
+    font-size: 0.875rem;
+    max-width: 400px;
+    line-height: 1.5;
+    margin: 0;
+}
+</style>
+<script>
+function policyTesterPage() {
+    return {
+        workspaces: [], credentials: [], mcpServers: [], schemaActions: [],
+        principal: '', action: '', resource: '',
+        testing: false, testingAllWs: false,
+        result: null, contributingPolicies: [],
+        allWorkspacesMatrix: [],
+        savedScenarios: [],
+
+        async init() {
+            try {
+                this.savedScenarios = JSON.parse(localStorage.getItem('ac_test_scenarios') || '[]');
+            } catch(e) { this.savedScenarios = []; }
+            await Promise.all([
+                this.loadWorkspaces(),
+                this.loadCredentials(), this.loadMcpServers(),
+                this.loadSchema()
+            ]);
+        },
+
+        async loadWorkspaces() {
+            try {
+                var resp = await fetch('/api/v1/workspaces');
+                if (resp.ok) { var data = await resp.json(); this.workspaces = data.data || data || []; }
+            } catch(e) {}
+        },
+
+        async loadCredentials() {
+            try {
+                var resp = await fetch('/api/v1/credentials');
+                if (resp.ok) { var data = await resp.json(); this.credentials = data.data || data || []; }
+            } catch(e) {}
+        },
+
+        async loadMcpServers() {
+            try {
+                var resp = await fetch('/api/v1/mcp-servers');
+                if (resp.ok) { var data = await resp.json(); this.mcpServers = data.data || data || []; }
+            } catch(e) {}
+        },
+
+        async loadSchema() {
+            try {
+                var resp = await fetch('/api/v1/policies/schema/reference');
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.schemaActions = (data.data && data.data.actions) || data.actions || [];
+                }
+            } catch(e) {}
+        },
+
+        clearResults() { this.result = null; this.allWorkspacesMatrix = []; this.contributingPolicies = []; },
+
+        parsePrincipalResource(val) {
+            var parts = val.split(':');
+            return { type: parts[0], id: parts.slice(1).join(':') };
+        },
+
+        getResourceLabel() {
+            if (!this.resource) return '';
+            var r = this.parsePrincipalResource(this.resource);
+            if (r.type === 'System') return 'System';
+            var items = r.type === 'Credential' ? this.credentials :
+                        r.type === 'McpServer' ? this.mcpServers : [];
+            var match = items.find(function(i) { return i.id === r.id; });
+            return match ? match.name : r.id;
+        },
+
+        async enrichDiagnosticNames() {
+            // Fetch all policies once to resolve IDs to names
+            try {
+                var resp = await fetch('/api/v1/policies');
+                if (!resp.ok) return;
+                var json = await resp.json();
+                var policies = json.data || [];
+                var policyMap = {};
+                policies.forEach(function(p) { policyMap[p.id] = p.name; });
+
+                this.contributingPolicies = this.contributingPolicies.map(function(cp) {
+                    var pid = cp.policy_id || '';
+                    if (pid && policyMap[pid]) {
+                        cp.policy_name = policyMap[pid];
+                    }
+                    return cp;
+                });
+            } catch(e) { /* non-critical */ }
+        },
+
+        // Policy chain helpers
+        getPolicyId(p) {
+            if (typeof p === 'object' && p !== null) return p.policy_id || '';
+            return '';
+        },
+        getPolicyName(p) {
+            if (typeof p === 'object' && p !== null) {
+                var name = p.policy_name || p.reason || String(p);
+                if (p.statement_index !== undefined && p.statement_index !== null) {
+                    name += ' \u00a7' + p.statement_index;
+                }
+                return name;
+            }
+            return String(p);
+        },
+        getPolicyReason(p) {
+            if (typeof p === 'object' && p !== null) return p.reason || '';
+            return '';
+        },
+        getChainItemClass(p) {
+            var name = this.getPolicyName(p).toLowerCase();
+            if (name.indexOf('permit') >= 0 || name.indexOf('allow') >= 0 || name.indexOf('grant') >= 0) return 'tester-chain-item-permit';
+            if (name.indexOf('forbid') >= 0) return 'tester-chain-item-forbid';
+            if (name.indexOf('deny') >= 0) return 'tester-chain-item-deny';
+            return 'tester-chain-item-neutral';
+        },
+
+        // Three-state decision helpers
+        getResultClass(result) {
+            var d = (result.decision || '').toLowerCase();
+            if (d === 'permit') return 'tester-result-permit';
+            if (d === 'forbid') return 'tester-result-forbid';
+            return 'tester-result-deny';
+        },
+        getResultIcon(result) {
+            var d = (result.decision || '').toLowerCase();
+            if (d === 'permit') return '✓';
+            if (d === 'forbid') return '✕';
+            return '−';
+        },
+        getResultLabel(result) {
+            var d = (result.decision || '').toLowerCase();
+            if (d === 'permit') return 'PERMIT';
+            if (d === 'forbid') return 'FORBID';
+            return 'DENY';
+        },
+        getResultExplanation(result) {
+            var d = (result.decision || '').toLowerCase();
+            if (d === 'permit') return 'A permit policy explicitly allows this action.';
+            if (d === 'forbid') return 'A forbid policy explicitly blocks this action, overriding any permits.';
+            return 'No matching permit policy. Implicitly denied by default.';
+        },
+        isPermit(d) {
+            return d === 'permit';
+        },
+        getReasonPolicyId(reason) {
+            if (typeof reason === 'object' && reason !== null) return reason.policy_id || '';
+            return '';
+        },
+        getReasonPolicyName(reason) {
+            if (typeof reason === 'object' && reason !== null) return reason.policy_name || reason.reason || '';
+            return String(reason);
+        },
+
+        async testPolicy() {
+            this.testing = true;
+            this.result = null;
+            this.contributingPolicies = [];
+            this.allWorkspacesMatrix = [];
+            var p = this.parsePrincipalResource(this.principal);
+            var r = this.parsePrincipalResource(this.resource);
+            try {
+                var resp = await fetch('/api/v1/policies/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({
+                        principal: { type: p.type, id: p.id, attributes: {} },
+                        action: this.action,
+                        resource: { type: r.type, id: r.id, attributes: {} },
+                    }),
+                });
+                if (resp.ok) {
+                    var json = await resp.json();
+                    var d = json.data || json;
+                    this.result = d.decision;
+                    // Prefer structured diagnostic_details over plain string diagnostics
+                    var details = d.diagnostic_details || [];
+                    if (details.length > 0) {
+                        this.contributingPolicies = details;
+                    } else {
+                        this.contributingPolicies = (d.diagnostics || d.reasons || []).map(function(s) {
+                            return typeof s === 'string' ? { reason: s } : s;
+                        });
+                    }
+                    // Enrich with policy names from cache if available
+                    if (this.contributingPolicies.length > 0 && !this.contributingPolicies[0].policy_name) {
+                        await this.enrichDiagnosticNames();
+                    }
+                } else {
+                    var err = await resp.json();
+                    showToast(err.error?.message || 'Test failed', 'error');
+                }
+            } catch(e) { showToast('Network error', 'error'); }
+            this.testing = false;
+        },
+
+        async testAllWorkspaces() {
+            this.testingAllWs = true;
+            this.allWorkspacesMatrix = [];
+            this.result = null;
+            this.contributingPolicies = [];
+            var r = this.parsePrincipalResource(this.resource);
+            try {
+                var resp = await fetch('/api/v1/policies/rsop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ resource_type: r.type, resource_id: r.id }),
+                });
+                if (resp.ok) {
+                    var json = await resp.json();
+                    var rsopData = json.data || json;
+                    var matrix = rsopData.matrix || [];
+                    var action = this.action;
+                    this.allWorkspacesMatrix = matrix.map(function(row) {
+                        var decision = 'deny';
+                        var reasons = [];
+                        if (row.results && row.results[action]) {
+                            decision = row.results[action].decision || 'deny';
+                            reasons = row.results[action].reasons || [];
+                        }
+                        return {
+                            principal_id: row.principal_id,
+                            principal_name: row.principal_name,
+                            decision: decision,
+                            reasons: reasons
+                        };
+                    });
+                } else {
+                    var err = await resp.json();
+                    showToast(err.error?.message || 'RSoP failed', 'error');
+                }
+            } catch(e) { showToast('Network error', 'error'); }
+            this.testingAllWs = false;
+        },
+
+        saveScenario() {
+            var name = prompt('Scenario name:');
+            if (!name) return;
+            this.savedScenarios.push({ name: name, principal: this.principal, action: this.action, resource: this.resource });
+            try {
+                localStorage.setItem('ac_test_scenarios', JSON.stringify(this.savedScenarios));
+            } catch(e) {
+                console.warn('Could not save scenarios:', e);
+            }
+            showToast('Scenario saved', 'success');
+        },
+
+        loadScenario(idx) {
+            var s = this.savedScenarios[idx];
+            if (!s) return;
+            this.principal = s.principal;
+            this.action = s.action;
+            this.resource = s.resource;
+            this.clearResults();
+        },
+
+        clearScenarios() {
+            if (!confirm('Clear all saved scenarios?')) return;
+            this.savedScenarios = [];
+            localStorage.removeItem('ac_test_scenarios');
+            showToast('Scenarios cleared', 'success');
+        },
+
+        formatDateTime: formatDateTime
+    };
+}
+</script>
+{% endblock %}

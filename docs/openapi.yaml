@@ -1,0 +1,4240 @@
+openapi: 3.1.0
+info:
+  title: AgentCordon API
+  version: 1.6.1
+  description: |
+    AgentCordon is a self-hostable Agentic Identity Provider (IdP) that provides
+    secure, auditable, policy-controlled token brokerage for autonomous agents.
+    Agents do not directly hold long-lived credentials; every issuance and use
+    is observable via the audit log.
+  contact:
+    name: AgentCordon
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3140
+    description: Local development server
+
+tags:
+  - name: Auth (Agent)
+    description: Agent authentication — workspace identity challenge-response and JWT-based identity
+  - name: Auth (User)
+    description: User authentication — password login, logout, session info
+  - name: Agents
+    description: Agent lifecycle management (list, get, update, delete, rotate key)
+  - name: Credentials
+    description: Credential storage, retrieval, update, and secret history
+  - name: Permissions
+    description: Credential permission management (grant, revoke, set)
+  - name: Grants
+    description: Short-lived credential access grants and redemption
+  - name: Proxy
+    description: Credential-injecting HTTP proxy for upstream API calls
+  - name: Policies
+    description: Cedar policy management (CRUD, schema, validation)
+  - name: Audit
+    description: Audit event log queries
+  - name: Enrollment
+    description: Device-flow agent enrollment (initiate, poll, approve, deny)
+  - name: Users
+    description: User account management (CRUD, password changes)
+  - name: Vaults
+    description: Vault grouping and sharing for credentials
+  - name: OIDC
+    description: OpenID Connect authentication and provider management
+  - name: MCP
+    description: Model Context Protocol server management and JSON-RPC proxy
+  - name: Servers
+    description: OAuth 2.1 server (client) registration
+  - name: Devices
+    description: Device lifecycle — create, enroll, key rotation
+  - name: OAuth
+    description: OAuth 2.1 authorization server endpoints (authorize, token, metadata)
+  - name: JWKS
+    description: JSON Web Key Set endpoint for token verification
+  - name: Admin
+    description: Administrative operations (encryption key rotation)
+  - name: Stats
+    description: Dashboard statistics — aggregate counts and recent activity
+  - name: Settings
+    description: User preference management (e.g., advanced mode toggle)
+  - name: Docs
+    description: Self-discovery API documentation endpoints
+
+security:
+  - SessionCookie: []
+  - BearerJWT: []
+
+components:
+  securitySchemes:
+    WorkspaceIdentity:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Agent workspace identity JWT obtained via Ed25519 challenge-response
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: agtcrdn_session
+      description: Session cookie set after user login
+    BearerJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT obtained via workspace identity challenge-response or OAuth 2.1 token endpoint
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Agent JWT or Device JWT
+    SessionAuth:
+      type: apiKey
+      in: cookie
+      name: session
+      description: User session cookie from login
+
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        data:
+          description: Response payload (present when status is ok)
+        error:
+          $ref: '#/components/schemas/ApiError'
+
+    ApiError:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+        owner_id:
+          type: string
+          format: uuid
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_token_issued_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_token_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [active, inactive, disabled]
+
+    CredentialSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        service:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+        created_by:
+          type: string
+          format: uuid
+          nullable: true
+          description: Agent ID if created by an agent
+        created_by_user:
+          type: string
+          format: uuid
+          nullable: true
+          description: User ID if created by a user
+        created_at:
+          type: string
+          format: date-time
+        allowed_url_pattern:
+          type: string
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        expired:
+          type: boolean
+        transform_script:
+          type: string
+          nullable: true
+        transform_name:
+          type: string
+          nullable: true
+        vault:
+          type: string
+        credential_type:
+          type: string
+          enum: [generic, aws, oauth2_client_credentials]
+        tags:
+          type: array
+          items:
+            type: string
+        owner_username:
+          type: string
+          nullable: true
+
+    SecretHistoryEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        credential_id:
+          type: string
+        changed_at:
+          type: string
+          format: date-time
+        changed_by_user:
+          type: string
+          nullable: true
+        changed_by_agent:
+          type: string
+          nullable: true
+
+    AccessGrantRequest:
+      type: object
+      required: [credential_id, scopes]
+      properties:
+        credential_id:
+          type: string
+          format: uuid
+        scopes:
+          type: array
+          items:
+            type: string
+        reason:
+          type: string
+        ttl_seconds:
+          type: integer
+
+    AccessGrantResponse:
+      type: object
+      properties:
+        grant_id:
+          type: string
+          format: uuid
+        credential_name:
+          type: string
+        service:
+          type: string
+        grant_token:
+          type: string
+          description: Opaque JWT token to redeem for the secret
+        scopes:
+          type: array
+          items:
+            type: string
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+
+    GrantRedemptionRequest:
+      type: object
+      required: [grant_token]
+      properties:
+        grant_token:
+          type: string
+
+    GrantRedemptionResponse:
+      type: object
+      properties:
+        grant_id:
+          type: string
+          format: uuid
+        credential_name:
+          type: string
+        service:
+          type: string
+        secret_value:
+          type: string
+          description: The decrypted credential secret (internal endpoint only)
+        scopes:
+          type: array
+          items:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+
+    StoredPolicy:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        cedar_policy:
+          type: string
+          description: Cedar policy text
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AuditEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        correlation_id:
+          type: string
+        event_type:
+          type: string
+        agent_id:
+          type: string
+          nullable: true
+        agent_name:
+          type: string
+          nullable: true
+        user_id:
+          type: string
+          nullable: true
+        user_name:
+          type: string
+          nullable: true
+        action:
+          type: string
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+          nullable: true
+        decision:
+          type: string
+          enum: [allow, deny, error, not_applicable]
+        decision_reason:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+
+    UserInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [admin, operator, viewer]
+        is_root:
+          type: boolean
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    VaultShare:
+      type: object
+      properties:
+        id:
+          type: string
+        vault_name:
+          type: string
+        shared_with_user_id:
+          type: string
+          format: uuid
+        permission_level:
+          type: string
+          enum: [read, write, admin]
+        shared_by_user_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+
+    OidcProviderResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        issuer_url:
+          type: string
+        client_id:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        role_mapping:
+          type: object
+        auto_provision:
+          type: boolean
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    McpServerResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        upstream_url:
+          type: string
+        transport:
+          type: string
+        allowed_tools:
+          type: array
+          items:
+            type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+        created_by:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CredentialBinding:
+      type: object
+      properties:
+        credential_name:
+          type: string
+        injection_method:
+          type: string
+          enum: [header]
+        injection_target:
+          type: string
+        injection_template:
+          type: string
+
+    ServerResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        client_id:
+          type: string
+        expected_audience:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+        created_by:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateServerResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        client_id:
+          type: string
+        client_secret:
+          type: string
+          description: Only returned on creation. Cannot be retrieved again.
+        expected_audience:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+        created_by:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    DeviceResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pending, active, disabled]
+        tags:
+          type: array
+          items:
+            type: string
+        has_public_key:
+          type: boolean
+        created_by:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_authenticated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateDeviceResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          type: string
+        bootstrap_token:
+          type: string
+          description: JWT token for device enrollment. One-time use.
+
+    CredentialPermissionsResponse:
+      type: object
+      properties:
+        credential_id:
+          type: string
+          format: uuid
+        owner_agent:
+          type: string
+          format: uuid
+          nullable: true
+        owner_user:
+          type: string
+          format: uuid
+          nullable: true
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionEntry'
+
+    PermissionEntry:
+      type: object
+      properties:
+        agent_id:
+          type: string
+          format: uuid
+        permission:
+          type: string
+          enum: [read, write, delete, delegated_use]
+        granted_by:
+          type: string
+          format: uuid
+          nullable: true
+        granted_by_user:
+          type: string
+          format: uuid
+          nullable: true
+        granted_at:
+          type: string
+          format: date-time
+
+    ProxyExecuteRequest:
+      type: object
+      required: [method, url]
+      properties:
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
+        url:
+          type: string
+          description: URL with credential placeholders e.g. {{cred_name}}
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        body:
+          type: string
+
+    ProxyExecuteResponse:
+      type: object
+      properties:
+        status_code:
+          type: integer
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        body:
+          type: string
+          nullable: true
+
+    JsonRpcRequest:
+      type: object
+      required: [mcp_server, jsonrpc, method]
+      properties:
+        mcp_server:
+          type: string
+          description: Name of the registered MCP server to proxy to
+        jsonrpc:
+          type: string
+          enum: ["2.0"]
+        method:
+          type: string
+          enum: [tools/list, tools/call]
+        params:
+          type: object
+        id:
+          description: JSON-RPC request ID
+
+    JsonRpcResponse:
+      type: object
+      properties:
+        jsonrpc:
+          type: string
+        result:
+          description: Present on success
+        error:
+          type: object
+          properties:
+            code:
+              type: integer
+            message:
+              type: string
+        id:
+          description: Matches the request ID
+
+    EnrollmentSessionSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        approval_ref:
+          type: string
+        approval_code:
+          type: string
+        agent_name:
+          type: string
+        agent_description:
+          type: string
+          nullable: true
+        agent_tags:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [pending, approved, claimed, expired, denied]
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        client_ip:
+          type: string
+          nullable: true
+
+    AuthorizationServerMetadata:
+      type: object
+      properties:
+        issuer:
+          type: string
+        authorization_endpoint:
+          type: string
+        token_endpoint:
+          type: string
+        jwks_uri:
+          type: string
+        response_types_supported:
+          type: array
+          items:
+            type: string
+        grant_types_supported:
+          type: array
+          items:
+            type: string
+        code_challenge_methods_supported:
+          type: array
+          items:
+            type: string
+        token_endpoint_auth_methods_supported:
+          type: array
+          items:
+            type: string
+
+    JwkSet:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            properties:
+              kty:
+                type: string
+              crv:
+                type: string
+              x:
+                type: string
+              y:
+                type: string
+              kid:
+                type: string
+              use:
+                type: string
+              alg:
+                type: string
+
+    TokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+        expires_in:
+          type: integer
+        issued_at:
+          type: string
+          format: date-time
+
+    OAuthTokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+        scope:
+          type: string
+          nullable: true
+
+paths:
+  # ============================================================================
+  # Auth (Agent)
+  # ============================================================================
+
+  /api/v1/agents/identify:
+    post:
+      tags: [Auth (Agent)]
+      summary: Request authentication challenge
+      description: |
+        Agent sends its public key hash to request a 32-byte random challenge.
+        The challenge has a 60-second TTL and is single-use.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [public_key_hash]
+              properties:
+                public_key_hash:
+                  type: string
+                  description: "SHA-256 hash of the agent's Ed25519 public key, prefixed with 'sha256:'"
+      responses:
+        '200':
+          description: Challenge issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          challenge:
+                            type: string
+                          issued_at:
+                            type: string
+                          expires_at:
+                            type: string
+                          audience:
+                            type: string
+        '404':
+          description: Workspace identity not found
+
+  /api/v1/agents/identify/verify:
+    post:
+      tags: [Auth (Agent)]
+      summary: Submit signed challenge for identity JWT
+      description: |
+        Agent submits its Ed25519 signature over the challenge. On success,
+        receives a short-lived identity JWT (5-minute TTL).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [public_key, signature, signed_payload]
+              properties:
+                public_key:
+                  type: string
+                  description: Hex-encoded Ed25519 public key
+                signature:
+                  type: string
+                  description: Hex-encoded Ed25519 signature
+                signed_payload:
+                  type: string
+                  description: Hex-encoded signed payload
+      responses:
+        '200':
+          description: Identity JWT issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          identity_jwt:
+                            type: string
+        '401':
+          description: Invalid signature or expired challenge
+        '404':
+          description: Workspace identity not found
+
+  /api/v1/agents/register:
+    post:
+      tags: [Auth (Agent)]
+      summary: Register workspace identity
+      description: |
+        One-time registration of an agent's Ed25519 workspace identity.
+        Requires a valid approval code from the browser approval flow.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approval_code, public_key, nonce, timestamp, signature]
+              properties:
+                approval_code:
+                  type: string
+                public_key:
+                  type: string
+                nonce:
+                  type: string
+                timestamp:
+                  type: integer
+                signature:
+                  type: string
+      responses:
+        '200':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          agent_id:
+                            type: string
+                          identity_jwt:
+                            type: string
+        '401':
+          description: Invalid approval code or signature
+        '409':
+          description: Workspace already registered
+
+  /api/v1/auth/whoami:
+    get:
+      tags: [Auth (Agent)]
+      summary: Get current agent identity
+      description: Returns the authenticated agent's identity from the JWT.
+      security:
+        - BearerJWT: []
+      responses:
+        '200':
+          description: Agent identity
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Agent'
+        '401':
+          description: Missing or invalid JWT
+
+  # ============================================================================
+  # Auth (User)
+  # ============================================================================
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth (User)]
+      summary: User login
+      description: |
+        Authenticates a user with username and password. Sets session and CSRF
+        cookies on success. Rate limited per username.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login successful. Sets agtcrdn_session and agtcrdn_csrf cookies.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user:
+                            $ref: '#/components/schemas/UserInfo'
+                          expires_at:
+                            type: string
+                            format: date-time
+                          csrf_token:
+                            type: string
+        '401':
+          description: Invalid username or password
+        '429':
+          description: Too many failed login attempts
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth (User)]
+      summary: User logout
+      description: Deletes all sessions for the user and clears cookies.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Logged out successfully
+        '401':
+          description: Not authenticated
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth (User)]
+      summary: Get current user info
+      description: Returns the authenticated user's profile.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Current user info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserInfo'
+        '401':
+          description: Not authenticated
+
+  # ============================================================================
+  # Agents
+  # ============================================================================
+
+  /api/v1/agents:
+    get:
+      tags: [Agents]
+      summary: List all agents
+      description: |
+        Returns all registered agents. Requires manage_agents Cedar policy.
+        Note: agents are created via the enrollment flow, not directly.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of agents
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Agent'
+        '403':
+          description: Access denied by policy
+
+  /api/v1/agents/{id}:
+    get:
+      tags: [Agents]
+      summary: Get agent by ID
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Agent details
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Agent'
+        '404':
+          description: Agent not found
+        '403':
+          description: Access denied by policy
+
+    put:
+      tags: [Agents]
+      summary: Update agent
+      description: Update agent properties (name, description, tags, enabled).
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Agent updated
+        '404':
+          description: Agent not found
+        '403':
+          description: Access denied by policy
+
+    delete:
+      tags: [Agents]
+      summary: Delete agent
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Agent deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          deleted:
+                            type: boolean
+        '404':
+          description: Agent not found
+        '403':
+          description: Access denied by policy
+
+  /api/v1/agents/{id}/rotate-key:
+    post:
+      tags: [Agents]
+      summary: Rotate agent workspace key
+      description: |
+        Rotates the agent's workspace public key hash. The old key is invalidated.
+        Accessible by admin users (via Cedar policy).
+      security:
+        - SessionCookie: []
+        - BearerJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Workspace key rotated
+        '404':
+          description: Agent not found
+        '403':
+          description: Access denied
+
+  # ============================================================================
+  # Credentials
+  # ============================================================================
+
+  /api/v1/credentials:
+    post:
+      tags: [Credentials]
+      summary: Store a new credential
+      description: |
+        Creates a new encrypted credential. Supports types: generic, aws,
+        oauth2_client_credentials. Agents auto-receive owner permissions.
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, service]
+              properties:
+                name:
+                  type: string
+                service:
+                  type: string
+                secret_value:
+                  type: string
+                  description: Required for generic and oauth2_client_credentials types
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                metadata:
+                  type: object
+                allowed_url_pattern:
+                  type: string
+                  description: URL pattern for proxy access whitelist
+                expires_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+                transform_script:
+                  type: string
+                  description: Rhai script for transforming decrypted secret
+                transform_name:
+                  type: string
+                  description: Built-in transform name (identity, basic-auth, bearer, aws-sigv4)
+                vault:
+                  type: string
+                  default: default
+                credential_type:
+                  type: string
+                  enum: [generic, aws, oauth2_client_credentials]
+                  default: generic
+                aws_access_key_id:
+                  type: string
+                  description: For aws type credentials
+                aws_secret_access_key:
+                  type: string
+                  description: For aws type credentials
+                oauth2_client_id:
+                  type: string
+                  description: Required for oauth2_client_credentials type
+                oauth2_token_endpoint:
+                  type: string
+                  description: Required for oauth2_client_credentials type (must be HTTPS)
+                oauth2_scopes:
+                  type: string
+                  description: Space-delimited OAuth2 scopes
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Credential created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CredentialSummary'
+        '400':
+          description: Invalid input
+        '403':
+          description: Access denied by policy
+
+    get:
+      tags: [Credentials]
+      summary: List credentials
+      description: |
+        Returns credential summaries (no secret values). For agents, each
+        credential is individually evaluated against Cedar policy.
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of credential summaries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CredentialSummary'
+        '403':
+          description: Access denied by policy
+
+  /api/v1/credentials/{id}:
+    get:
+      tags: [Credentials]
+      summary: Get credential by ID
+      description: Returns a credential summary (no secret value).
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Credential summary
+        '404':
+          description: Credential not found
+        '403':
+          description: Access denied by policy
+
+    put:
+      tags: [Credentials]
+      summary: Update credential
+      description: |
+        Update credential properties. If secret_value is provided, the old
+        secret is archived to history and the new one is encrypted.
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                service:
+                  type: string
+                secret_value:
+                  type: string
+                  description: New secret value (triggers rotation)
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                metadata:
+                  type: object
+                allowed_url_pattern:
+                  type: string
+                expires_at:
+                  type: string
+                  format: date-time
+                transform_script:
+                  type: string
+                transform_name:
+                  type: string
+                vault:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Credential updated
+        '404':
+          description: Credential not found
+        '409':
+          description: Name conflict
+
+    delete:
+      tags: [Credentials]
+      summary: Delete credential
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Credential deleted
+        '404':
+          description: Credential not found
+        '403':
+          description: Access denied by policy
+
+  /api/v1/credentials/{id}/secret-history:
+    get:
+      tags: [Credentials]
+      summary: List secret rotation history
+      description: Returns metadata about previous secret versions (no secret values).
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Secret history entries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SecretHistoryEntry'
+        '404':
+          description: Credential not found
+        '403':
+          description: Access denied by policy
+
+  /api/v1/credentials/{id}/secret-history/{history_id}/restore:
+    post:
+      tags: [Credentials]
+      summary: Restore a historical secret version
+      description: |
+        Restores a previous secret as the current one. The current secret
+        is archived to history first.
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: history_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Secret restored
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          restored:
+                            type: boolean
+                          from_history_id:
+                            type: string
+        '404':
+          description: Credential or history entry not found
+        '403':
+          description: Access denied by policy
+
+  # ============================================================================
+  # Permissions
+  # ============================================================================
+
+  /api/v1/credentials/{id}/permissions:
+    get:
+      tags: [Permissions]
+      summary: Get credential permissions
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Credential permissions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CredentialPermissionsResponse'
+        '404':
+          description: Credential not found
+        '403':
+          description: Access denied by policy
+
+    post:
+      tags: [Permissions]
+      summary: Grant permission(s) to an agent
+      description: Supports single (permission field) or batch (permissions array) grants.
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id]
+              properties:
+                agent_id:
+                  type: string
+                  format: uuid
+                permission:
+                  type: string
+                  enum: [read, write, delete, delegated_use]
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                    enum: [read, write, delete, delegated_use]
+      responses:
+        '200':
+          description: Permission(s) granted
+        '400':
+          description: Invalid permission or missing required fields
+        '404':
+          description: Credential or agent not found
+
+    put:
+      tags: [Permissions]
+      summary: Set permissions (replace all)
+      description: Replaces all permissions for a credential with the provided list.
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissions]
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    type: object
+                    required: [agent_id, permission]
+                    properties:
+                      agent_id:
+                        type: string
+                        format: uuid
+                      permission:
+                        type: string
+                        enum: [read, write, delete, delegated_use]
+      responses:
+        '200':
+          description: Permissions set
+
+  /api/v1/credentials/{id}/permissions/{agent_id}/{permission}:
+    delete:
+      tags: [Permissions]
+      summary: Revoke a specific permission
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: permission
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [read, write, delete, delegated_use]
+      responses:
+        '200':
+          description: Permission revoked
+
+  # ============================================================================
+  # Grants
+  # ============================================================================
+
+  /api/v1/grants:
+    post:
+      tags: [Grants]
+      summary: Request a credential access grant
+      description: |
+        Requests a short-lived grant for a credential. Returns an opaque grant
+        token (JWT) that can be redeemed once for the actual secret. The agent
+        never receives the raw credential directly from this endpoint.
+      security:
+        - BearerJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccessGrantRequest'
+      responses:
+        '200':
+          description: Grant issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AccessGrantResponse'
+        '400':
+          description: Invalid scopes
+        '403':
+          description: Access denied by policy or credential expired
+        '404':
+          description: Credential not found
+
+  /api/v1/internal/grants/redeem:
+    post:
+      tags: [Grants]
+      summary: Redeem a grant token for the secret (internal)
+      description: |
+        **Internal endpoint** — must not be exposed to external traffic.
+        Redeems a one-time grant token and returns the decrypted secret value.
+        The grant is marked as redeemed and cannot be used again.
+      security:
+        - BearerJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantRedemptionRequest'
+      responses:
+        '200':
+          description: Grant redeemed, secret returned
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/GrantRedemptionResponse'
+        '401':
+          description: Invalid or expired grant token
+        '403':
+          description: Agent mismatch or credential expired
+        '404':
+          description: Grant not found
+        '409':
+          description: Grant already redeemed
+
+  # ============================================================================
+  # Proxy
+  # ============================================================================
+
+  /api/v1/proxy/execute:
+    post:
+      tags: [Proxy]
+      summary: Execute a proxied HTTP request with credential injection
+      description: |
+        Sends an HTTP request to an upstream API with credential values injected
+        via placeholders ({{credential_name}}). Enforces Cedar policy, URL
+        whitelisting, SSRF protection, and credential leak scanning on responses.
+      security:
+        - BearerJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProxyExecuteRequest'
+      responses:
+        '200':
+          description: Upstream response
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProxyExecuteResponse'
+        '400':
+          description: No placeholders found or invalid method
+        '403':
+          description: Access denied by policy, URL not allowed, or credential expired
+        '404':
+          description: Credential not found
+        '451':
+          description: Credential leak detected in upstream response
+        '502':
+          description: Upstream request failed
+
+  # ============================================================================
+  # Policies
+  # ============================================================================
+
+  /api/v1/policies:
+    post:
+      tags: [Policies]
+      summary: Create a Cedar policy
+      description: |
+        Creates a new Cedar policy. The policy text is validated for syntax
+        and schema compliance. The policy engine is reloaded after creation.
+        Admin only.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, cedar_policy]
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                cedar_policy:
+                  type: string
+                  description: Cedar policy text
+      responses:
+        '200':
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StoredPolicy'
+        '400':
+          description: Invalid Cedar policy syntax
+        '403':
+          description: Access denied by policy
+
+    get:
+      tags: [Policies]
+      summary: List all policies
+      description: Admin only.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of policies
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/StoredPolicy'
+        '403':
+          description: Access denied by policy
+
+  /api/v1/policies/schema:
+    get:
+      tags: [Policies]
+      summary: Get Cedar schema
+      description: Returns the Cedar schema JSON for policy authoring. Admin only.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Cedar schema JSON text
+        '403':
+          description: Access denied by policy
+
+  /api/v1/policies/{id}:
+    get:
+      tags: [Policies]
+      summary: Get policy by ID
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Policy details
+        '404':
+          description: Policy not found
+
+    put:
+      tags: [Policies]
+      summary: Update policy
+      description: |
+        Update policy properties. If cedar_policy text is updated, it is
+        validated and the policy engine is reloaded.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                cedar_policy:
+                  type: string
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Policy updated
+        '404':
+          description: Policy not found
+        '400':
+          description: Invalid Cedar policy syntax
+
+    delete:
+      tags: [Policies]
+      summary: Delete policy
+      description: Deletes the policy and reloads the policy engine. Admin only.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Policy deleted
+        '404':
+          description: Policy not found
+
+  /api/v1/policies/rsop:
+    post:
+      tags: [Policies]
+      summary: Resultant Set of Policy (RSoP)
+      description: |
+        Evaluates all active policies against every principal (agents and devices)
+        for a given resource, producing a permission matrix. Shows who can do what
+        on a specific credential or MCP server. Requires manage_policies permission.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resource_type, resource_id]
+              properties:
+                resource_type:
+                  type: string
+                  enum: [Credential, McpServer]
+                  description: Type of resource to evaluate policies against
+                resource_id:
+                  type: string
+                  format: uuid
+                  description: ID of the specific resource to evaluate
+                limit:
+                  type: integer
+                  default: 100
+                  description: Maximum number of principals to evaluate
+            example:
+              resource_type: Credential
+              resource_id: "550e8400-e29b-41d4-a716-446655440000"
+              limit: 100
+      responses:
+        '200':
+          description: Permission matrix for all principals against the resource
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  data:
+                    type: object
+                    properties:
+                      resource:
+                        type: object
+                        properties:
+                          type:
+                            type: string
+                          id:
+                            type: string
+                            format: uuid
+                          name:
+                            type: string
+                          service:
+                            type: string
+                      evaluated_at:
+                        type: string
+                        format: date-time
+                      principal_count:
+                        type: integer
+                      matrix:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            principal_type:
+                              type: string
+                              enum: [Agent, Device]
+                            principal_id:
+                              type: string
+                              format: uuid
+                            principal_name:
+                              type: string
+                            principal_tags:
+                              type: array
+                              items:
+                                type: string
+                            results:
+                              type: object
+                              description: Map of action name to decision object
+                              additionalProperties:
+                                type: object
+                                properties:
+                                  decision:
+                                    type: string
+                                    enum: [allow, deny]
+                                  reasons:
+                                    type: array
+                                    items:
+                                      type: string
+                      conditional_policies:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            policy_name:
+                              type: string
+                            policy_id:
+                              type: string
+                              format: uuid
+                            condition_type:
+                              type: string
+                            description:
+                              type: string
+        '400':
+          description: Invalid resource_type or missing required fields
+        '403':
+          description: Access denied by policy
+        '404':
+          description: Resource not found
+
+  /api/v1/policies/schema/reference:
+    get:
+      tags: [Policies]
+      summary: Human-readable action catalog
+      description: |
+        Returns a human-readable action catalog derived from the Cedar schema.
+        Lists all actions with their applicable principal types, resource types,
+        and context attributes. Useful for policy authoring. Requires manage_policies permission.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Action catalog and entity types
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  data:
+                    type: object
+                    properties:
+                      actions:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            description:
+                              type: string
+                            principal_types:
+                              type: array
+                              items:
+                                type: string
+                            resource_types:
+                              type: array
+                              items:
+                                type: string
+                            context_attributes:
+                              type: array
+                              items:
+                                type: object
+                                properties:
+                                  name:
+                                    type: string
+                                  type:
+                                    type: string
+                                  description:
+                                    type: string
+                      entity_types:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            attributes:
+                              type: array
+                              items:
+                                type: object
+                                properties:
+                                  name:
+                                    type: string
+                                  type:
+                                    type: string
+                                  required:
+                                    type: boolean
+        '403':
+          description: Access denied by policy
+
+  # ============================================================================
+  # Audit
+  # ============================================================================
+
+  /api/v1/audit:
+    get:
+      tags: [Audit]
+      summary: List audit events
+      description: |
+        Query the audit log with optional filters. Requires view_audit policy
+        unless filtering by a specific credential the caller owns.
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: resource_type
+          in: query
+          schema:
+            type: string
+          description: Filter by resource type (e.g. credential, agent)
+        - name: resource_id
+          in: query
+          schema:
+            type: string
+          description: Filter by resource ID
+        - name: user_id
+          in: query
+          schema:
+            type: string
+          description: Reserved for future use
+      responses:
+        '200':
+          description: List of audit events
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AuditEvent'
+        '403':
+          description: Access denied by policy
+
+  /api/v1/audit/{id}:
+    get:
+      tags: [Audit]
+      summary: Get audit event by ID
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Audit event details
+        '404':
+          description: Audit event not found
+        '403':
+          description: Access denied by policy
+
+  # ============================================================================
+  # Enrollment
+  # ============================================================================
+
+  /api/v1/enroll/agent:
+    post:
+      tags: [Enrollment]
+      summary: Initiate agent enrollment
+      description: |
+        Unauthenticated. An agent initiates a device-flow enrollment session.
+        Returns a session token (for polling), an approval URL, and an approval
+        code. Rate limited per IP and globally.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 128
+                description:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Enrollment session created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          session_token:
+                            type: string
+                          approval_url:
+                            type: string
+                          approval_code:
+                            type: string
+                          poll_url:
+                            type: string
+                          expires_in:
+                            type: integer
+        '403':
+          description: Enrollment is disabled
+        '429':
+          description: Rate limited
+
+  /api/v1/enroll/session/{session_token}/status:
+    get:
+      tags: [Enrollment]
+      summary: Poll enrollment session status
+      description: |
+        Unauthenticated. Polls for enrollment session approval status.
+      security: []
+      parameters:
+        - name: session_token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          status:
+                            type: string
+                            enum: [pending, approved, claimed, expired, denied]
+                          agent_id:
+                            type: string
+                            nullable: true
+                          reason:
+                            type: string
+                            nullable: true
+                            description: Reason for denial (if denied)
+        '404':
+          description: Session not found
+
+  /api/v1/enroll/approve:
+    post:
+      tags: [Enrollment]
+      summary: Approve enrollment session
+      description: Admin approves a pending enrollment session, creating the agent.
+      security:
+        - SessionCookie: []
+        - BearerJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approval_ref]
+              properties:
+                approval_ref:
+                  type: string
+      responses:
+        '200':
+          description: Enrollment approved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          approved:
+                            type: boolean
+                          agent_id:
+                            type: string
+                          agent_name:
+                            type: string
+        '404':
+          description: Session not found
+        '409':
+          description: Session is not pending or has expired
+
+  /api/v1/enroll/deny:
+    post:
+      tags: [Enrollment]
+      summary: Deny enrollment session
+      security:
+        - SessionCookie: []
+        - BearerJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approval_ref]
+              properties:
+                approval_ref:
+                  type: string
+      responses:
+        '200':
+          description: Enrollment denied
+        '404':
+          description: Session not found
+        '409':
+          description: Session is not pending
+
+  /api/v1/enroll/sessions:
+    get:
+      tags: [Enrollment]
+      summary: List pending enrollment sessions
+      description: Admin only. Returns all pending enrollment sessions.
+      security:
+        - SessionCookie: []
+        - BearerJWT: []
+      responses:
+        '200':
+          description: List of enrollment sessions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/EnrollmentSessionSummary'
+        '403':
+          description: Access denied by policy
+
+  # ============================================================================
+  # Users
+  # ============================================================================
+
+  /api/v1/users:
+    get:
+      tags: [Users]
+      summary: List all users
+      description: Admin only. Requires manage_users Cedar policy.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/UserInfo'
+        '403':
+          description: Access denied by policy
+
+    post:
+      tags: [Users]
+      summary: Create a new user
+      description: Admin only. Password must be 12-1024 characters.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  maxLength: 128
+                password:
+                  type: string
+                  minLength: 12
+                  maxLength: 1024
+                display_name:
+                  type: string
+                role:
+                  type: string
+                  enum: [admin, operator, viewer]
+                  default: viewer
+      responses:
+        '200':
+          description: User created
+        '400':
+          description: Invalid input
+        '409':
+          description: Username already exists
+
+  /api/v1/users/{id}:
+    get:
+      tags: [Users]
+      summary: Get user by ID
+      description: Self-view is always allowed; viewing others requires manage_users.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: User details
+        '404':
+          description: User not found
+
+    put:
+      tags: [Users]
+      summary: Update user
+      description: Admin only. Cannot change root user's role or disable root user.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                display_name:
+                  type: string
+                role:
+                  type: string
+                  enum: [admin, operator, viewer]
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: User updated
+        '403':
+          description: Cannot modify root user properties
+        '404':
+          description: User not found
+        '409':
+          description: Username already exists
+
+    delete:
+      tags: [Users]
+      summary: Delete user
+      description: Admin only. Cannot delete root user or yourself.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: User deleted
+        '403':
+          description: Cannot delete root user
+        '404':
+          description: User not found
+        '409':
+          description: Cannot delete your own account
+
+  /api/v1/users/{id}/change-password:
+    post:
+      tags: [Users]
+      summary: Change user password
+      description: |
+        Self-service (always allowed with current_password) or admin reset
+        (requires manage_users, no current_password needed). Invalidates all
+        sessions for the target user.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_password]
+              properties:
+                current_password:
+                  type: string
+                  description: Required when changing your own password
+                new_password:
+                  type: string
+                  minLength: 12
+                  maxLength: 1024
+      responses:
+        '200':
+          description: Password changed
+        '400':
+          description: Password does not meet requirements
+        '401':
+          description: Current password is incorrect
+
+  # ============================================================================
+  # Vaults
+  # ============================================================================
+
+  /api/v1/vaults:
+    get:
+      tags: [Vaults]
+      summary: List vault names
+      description: |
+        Returns distinct vault names. Non-root users only see vaults they own
+        credentials in or that have been shared with them.
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of vault names
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: string
+
+  /api/v1/vaults/{name}/credentials:
+    get:
+      tags: [Vaults]
+      summary: List credentials in a vault
+      description: |
+        Returns credential summaries in the named vault. Non-root users only
+        see credentials they created or in shared vaults.
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Credentials in vault
+
+  /api/v1/vaults/{name}/shares:
+    get:
+      tags: [Vaults]
+      summary: List vault shares
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of vault shares
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/VaultShare'
+
+    post:
+      tags: [Vaults]
+      summary: Share vault with a user
+      description: Users only (agents cannot share vaults). Requires manage_vaults policy.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+                permission:
+                  type: string
+                  enum: [read, write, admin]
+                  default: read
+      responses:
+        '200':
+          description: Vault shared
+        '404':
+          description: Target user not found
+
+  /api/v1/vaults/{name}/shares/{user_id}:
+    delete:
+      tags: [Vaults]
+      summary: Revoke vault sharing
+      description: Users only (agents cannot unshare). Requires manage_vaults policy.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Share revoked
+        '404':
+          description: Vault share not found
+
+  # ============================================================================
+  # OIDC
+  # ============================================================================
+
+  /api/v1/auth/oidc/authorize:
+    get:
+      tags: [OIDC]
+      summary: Initiate OIDC login
+      description: |
+        Redirects to the OIDC provider's authorization endpoint. Generates
+        state and nonce parameters for CSRF/replay protection.
+      security: []
+      parameters:
+        - name: provider
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: OIDC provider ID
+      responses:
+        '302':
+          description: Redirect to OIDC provider
+        '404':
+          description: Provider not found
+        '400':
+          description: Provider is disabled
+
+  /api/v1/auth/oidc/callback:
+    get:
+      tags: [OIDC]
+      summary: OIDC callback
+      description: |
+        Handles the IdP callback after authorization. Validates the state,
+        exchanges the code for tokens, validates the ID token, provisions or
+        finds the user, creates a session, and redirects to the UI.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+        - name: error
+          in: query
+          schema:
+            type: string
+        - name: error_description
+          in: query
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to UI with session cookies set
+
+  /api/v1/auth/oidc/providers:
+    get:
+      tags: [OIDC]
+      summary: List enabled OIDC providers (public)
+      description: |
+        Unauthenticated. Returns id and name of enabled OIDC providers
+        for the login page.
+      security: []
+      responses:
+        '200':
+          description: List of public providers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            name:
+                              type: string
+
+  /api/v1/oidc-providers:
+    post:
+      tags: [OIDC]
+      summary: Create OIDC provider
+      description: Admin only. Client secret is encrypted at rest.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, issuer_url, client_id, client_secret]
+              properties:
+                name:
+                  type: string
+                issuer_url:
+                  type: string
+                  description: Must be HTTPS (except localhost for dev)
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                  default: [openid, profile, email]
+                role_mapping:
+                  type: object
+                auto_provision:
+                  type: boolean
+                  default: true
+                enabled:
+                  type: boolean
+                  default: true
+      responses:
+        '200':
+          description: Provider created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OidcProviderResponse'
+        '400':
+          description: Invalid input
+
+    get:
+      tags: [OIDC]
+      summary: List OIDC providers
+      description: Admin only. Returns all providers (with client_id, without secrets).
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of providers
+
+  /api/v1/oidc-providers/{id}:
+    get:
+      tags: [OIDC]
+      summary: Get OIDC provider by ID
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Provider details
+        '404':
+          description: Provider not found
+
+    put:
+      tags: [OIDC]
+      summary: Update OIDC provider
+      description: Admin only. If client_secret is provided, it is re-encrypted.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                issuer_url:
+                  type: string
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                role_mapping:
+                  type: object
+                auto_provision:
+                  type: boolean
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Provider updated
+        '404':
+          description: Provider not found
+
+    delete:
+      tags: [OIDC]
+      summary: Delete OIDC provider
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Provider deleted
+        '404':
+          description: Provider not found
+
+  # ============================================================================
+  # MCP
+  # ============================================================================
+
+  /api/v1/mcp-servers:
+    post:
+      tags: [MCP]
+      summary: Register an MCP server
+      description: |
+        Admin only. Registers an MCP server with upstream URL, transport,
+        credential bindings, and optional tool allowlist.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, upstream_url]
+              properties:
+                name:
+                  type: string
+                upstream_url:
+                  type: string
+                transport:
+                  type: string
+                  enum: [http]
+                  default: http
+                tags:
+                  type: array
+                  items:
+                    type: string
+                allowed_tools:
+                  type: array
+                  items:
+                    type: string
+                enabled:
+                  type: boolean
+                  default: true
+      responses:
+        '200':
+          description: MCP server registered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/McpServerResponse'
+        '400':
+          description: Invalid input
+
+    get:
+      tags: [MCP]
+      summary: List MCP servers
+      description: Admin only.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of MCP servers
+
+  /api/v1/mcp-servers/{id}:
+    get:
+      tags: [MCP]
+      summary: Get MCP server by ID
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: MCP server details
+        '404':
+          description: Not found
+
+    put:
+      tags: [MCP]
+      summary: Update MCP server
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                upstream_url:
+                  type: string
+                transport:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+                allowed_tools:
+                  type: array
+                  items:
+                    type: string
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: MCP server updated
+        '404':
+          description: Not found
+
+    delete:
+      tags: [MCP]
+      summary: Delete MCP server
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: MCP server deleted
+        '404':
+          description: Not found
+
+  /api/v1/mcp-servers/from-catalog:
+    post:
+      tags: [MCP]
+      summary: Create MCP server from catalog
+      description: |
+        Admin only. Creates an MCP server from a predefined catalog entry.
+        Optionally override the name and deployment mode.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [catalog_slug]
+              properties:
+                catalog_slug:
+                  type: string
+                  description: Slug identifier of the catalog entry
+                name_override:
+                  type: string
+                  description: Optional custom name for the server
+                deployment_mode:
+                  type: string
+                  description: Deployment mode (e.g. docker, local)
+      responses:
+        '200':
+          description: MCP server created from catalog
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          mcp_server:
+                            $ref: '#/components/schemas/McpServerResponse'
+                          env_vars_needed:
+                            type: array
+                            items:
+                              type: string
+                          compose_snippet:
+                            type: string
+                            nullable: true
+        '400':
+          description: Invalid catalog slug or input
+        '404':
+          description: Catalog entry not found
+
+  /api/v1/mcp-servers/compose:
+    get:
+      tags: [MCP]
+      summary: Export docker-compose for all MCP servers
+      description: |
+        Admin only. Generates a docker-compose YAML snippet that includes
+        all registered MCP servers.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Docker Compose YAML for all MCP servers
+          content:
+            text/yaml:
+              schema:
+                type: string
+
+  /api/v1/mcp-servers/{id}/compose:
+    get:
+      tags: [MCP]
+      summary: Export docker-compose for a single MCP server
+      description: |
+        Admin only. Generates a docker-compose YAML snippet for a single
+        registered MCP server.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Docker Compose YAML for the MCP server
+          content:
+            text/yaml:
+              schema:
+                type: string
+        '404':
+          description: MCP server not found
+
+  /api/v1/mcp-servers/{id}/discover-tools:
+    post:
+      tags: [MCP]
+      summary: Discover tools from upstream MCP server
+      description: |
+        Admin only. Connects to the upstream MCP server and discovers
+        available tools via the tools/list JSON-RPC method.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Discovered tools
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tools:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                name:
+                                  type: string
+                                description:
+                                  type: string
+                                inputSchema:
+                                  type: object
+        '404':
+          description: MCP server not found
+
+  /api/v1/mcp-servers/{id}/generate-policies:
+    post:
+      tags: [MCP]
+      summary: Generate Cedar policies for tool access
+      description: |
+        Admin only. Generates Cedar policies that grant specified agent tags
+        access to specified tools on this MCP server.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tools, agent_tags]
+              properties:
+                tools:
+                  type: array
+                  items:
+                    type: string
+                  description: List of tool names to generate policies for
+                agent_tags:
+                  type: array
+                  items:
+                    type: string
+                  description: Agent tags to grant access to
+      responses:
+        '200':
+          description: Policies generated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          policies_created:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                id:
+                                  type: string
+                                  format: uuid
+                                name:
+                                  type: string
+                                cedar_content:
+                                  type: string
+        '404':
+          description: MCP server not found
+
+  /api/v1/mcp/proxy:
+    post:
+      tags: [MCP]
+      summary: MCP JSON-RPC proxy
+      description: |
+        Proxies JSON-RPC requests (tools/list, tools/call) to a registered MCP
+        server. Resolves credentials, injects headers, enforces Cedar policy
+        and tool allowlists, and scans responses for credential leaks.
+      security:
+        - BearerJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JsonRpcRequest'
+      responses:
+        '200':
+          description: JSON-RPC response from upstream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcResponse'
+
+  # ============================================================================
+  # Servers (OAuth Clients)
+  # ============================================================================
+
+  /api/v1/servers:
+    post:
+      tags: [Servers]
+      summary: Register an OAuth server (client)
+      description: |
+        Admin only. Creates a server with generated client_id and client_secret.
+        The client_secret is only returned on creation and cannot be retrieved again.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                expected_audience:
+                  type: string
+                enabled:
+                  type: boolean
+                  default: true
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Server created with client credentials
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CreateServerResponse'
+        '400':
+          description: Invalid input
+
+    get:
+      tags: [Servers]
+      summary: List registered servers
+      description: Admin only.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of servers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ServerResponse'
+
+  /api/v1/servers/{id}:
+    get:
+      tags: [Servers]
+      summary: Get server by ID
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Server details
+        '404':
+          description: Not found
+
+    put:
+      tags: [Servers]
+      summary: Update server
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                expected_audience:
+                  type: string
+                enabled:
+                  type: boolean
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Server updated
+        '404':
+          description: Not found
+
+    delete:
+      tags: [Servers]
+      summary: Delete server
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Server deleted
+        '404':
+          description: Not found
+
+  # ============================================================================
+  # Devices
+  # ============================================================================
+
+  /api/v1/devices:
+    post:
+      tags: [Devices]
+      summary: Create a device
+      description: |
+        Admin only. Creates a device in "pending" status and returns a
+        bootstrap token (JWT). The device uses this token to enroll by
+        providing its P-256 public key.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Device created with bootstrap token
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CreateDeviceResponse'
+
+    get:
+      tags: [Devices]
+      summary: List devices
+      description: Admin only.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of devices
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DeviceResponse'
+
+  /api/v1/devices/whoami:
+    get:
+      tags: [Devices]
+      summary: Device startup handshake
+      description: |
+        Authenticated by device self-signed ES256 JWT. Returns the device's
+        identity and current status. Used during device startup to verify
+        enrollment and connectivity.
+      security:
+        - BearerJWT: []
+      responses:
+        '200':
+          description: Device identity
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          device_id:
+                            type: string
+                            format: uuid
+                          name:
+                            type: string
+                          status:
+                            type: string
+                            enum: [pending, active, disabled]
+                          tags:
+                            type: array
+                            items:
+                              type: string
+                          authenticated_at:
+                            type: string
+                            format: date-time
+        '401':
+          description: Invalid or missing device JWT
+
+  /api/v1/devices/enroll:
+    post:
+      tags: [Devices]
+      summary: Enroll a device
+      description: |
+        Completes device enrollment by providing the bootstrap token and a
+        P-256 EC public key (JWK format). Transitions device to "active" status.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bootstrap_token, public_key]
+              properties:
+                bootstrap_token:
+                  type: string
+                public_key:
+                  type: object
+                  description: P-256 JWK with kty, crv, x, y fields
+                  properties:
+                    kty:
+                      type: string
+                      enum: [EC]
+                    crv:
+                      type: string
+                      enum: [P-256]
+                    x:
+                      type: string
+                      description: Base64url-encoded 32-byte X coordinate
+                    y:
+                      type: string
+                      description: Base64url-encoded 32-byte Y coordinate
+      responses:
+        '200':
+          description: Device enrolled
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          device_id:
+                            type: string
+                          status:
+                            type: string
+        '401':
+          description: Invalid bootstrap token
+        '409':
+          description: Device not in pending status
+
+  /api/v1/devices/{id}:
+    get:
+      tags: [Devices]
+      summary: Get device by ID
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Device details
+        '404':
+          description: Not found
+
+    put:
+      tags: [Devices]
+      summary: Update device
+      description: Update name, tags, or enabled status.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Device updated
+        '404':
+          description: Not found
+
+    delete:
+      tags: [Devices]
+      summary: Delete device
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Device deleted
+        '404':
+          description: Not found
+
+  /api/v1/devices/{id}/rotate-key:
+    post:
+      tags: [Devices]
+      summary: Rotate device public key
+      description: |
+        Authenticated by device self-signed ES256 JWT in Authorization header.
+        Replaces the device's public key with a new P-256 JWK.
+      security:
+        - BearerJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_public_key]
+              properties:
+                new_public_key:
+                  type: object
+                  description: New P-256 JWK
+      responses:
+        '200':
+          description: Key rotated
+        '401':
+          description: Invalid device JWT
+        '403':
+          description: Device ID mismatch
+
+  /api/v1/devices/{id}/agents:
+    get:
+      tags: [Devices]
+      summary: List agents enrolled through a device
+      description: |
+        Returns all agents that were enrolled through the specified device.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of agents enrolled through this device
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              format: uuid
+                            name:
+                              type: string
+                            enabled:
+                              type: boolean
+                            tags:
+                              type: array
+                              items:
+                                type: string
+                            device_id:
+                              type: string
+                              format: uuid
+        '404':
+          description: Device not found
+
+  # ============================================================================
+  # OAuth 2.1
+  # ============================================================================
+
+  /authorize:
+    get:
+      tags: [OAuth]
+      summary: OAuth authorization endpoint
+      description: |
+        Issues an authorization code for the given client. Requires PKCE with
+        S256 challenge method (plain is rejected). Currently returns JSON
+        (redirect flow deferred until consent UI exists).
+      security: []
+      parameters:
+        - name: client_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: redirect_uri
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: response_type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [code]
+        - name: code_challenge
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: code_challenge_method
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [S256]
+        - name: state
+          in: query
+          schema:
+            type: string
+        - name: scope
+          in: query
+          schema:
+            type: string
+            description: Space-delimited scopes
+      responses:
+        '200':
+          description: Authorization code issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          code:
+                            type: string
+                          state:
+                            type: string
+                            nullable: true
+        '400':
+          description: Invalid parameters or unknown client
+
+  /api/v1/oauth/token:
+    post:
+      tags: [OAuth]
+      summary: OAuth token endpoint
+      description: |
+        Exchanges credentials for an access token. Supports two grant types:
+        - `authorization_code` with PKCE verification
+        - `client_credentials` with Basic auth or body credentials
+
+        Request body is form-encoded (application/x-www-form-urlencoded).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type]
+              properties:
+                grant_type:
+                  type: string
+                  enum: [authorization_code, client_credentials]
+                code:
+                  type: string
+                  description: Required for authorization_code grant
+                redirect_uri:
+                  type: string
+                  description: Required for authorization_code grant
+                client_id:
+                  type: string
+                code_verifier:
+                  type: string
+                  description: Required for authorization_code grant (PKCE)
+                client_secret:
+                  type: string
+                  description: For client_credentials via body params
+                scope:
+                  type: string
+                  description: Space-delimited scopes for client_credentials
+      responses:
+        '200':
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthTokenResponse'
+        '400':
+          description: Invalid grant, expired code, PKCE mismatch
+        '401':
+          description: Invalid client credentials
+
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [OAuth]
+      summary: OAuth authorization server metadata (RFC 8414)
+      description: Returns the OAuth 2.1 authorization server metadata document.
+      security: []
+      responses:
+        '200':
+          description: Authorization server metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationServerMetadata'
+
+  # ============================================================================
+  # JWKS
+  # ============================================================================
+
+  /.well-known/jwks.json:
+    get:
+      tags: [JWKS]
+      summary: JSON Web Key Set
+      description: |
+        Returns the ES256 public signing key in standard JWK Set format.
+        Unauthenticated. Used by resource servers to verify AgentCordon-issued JWTs.
+        Cached with max-age=3600.
+      security: []
+      responses:
+        '200':
+          description: JWK Set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwkSet'
+
+  # ============================================================================
+  # Admin
+  # ============================================================================
+
+  /api/v1/admin/rotate-key:
+    post:
+      tags: [Admin]
+      summary: Re-encrypt all credentials under the current key
+      description: |
+        Admin only. Reads every credential, decrypts it with the current key,
+        and re-encrypts with a new nonce. Useful after an encryption key rotation.
+        Increments key_version for each credential.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Key rotation results
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          re_encrypted_count:
+                            type: integer
+                          total_credentials:
+                            type: integer
+                          errors:
+                            type: array
+                            items:
+                              type: string
+        '403':
+          description: Access denied by policy
+
+  # ============================================================================
+  # Stats (v1.8.0)
+  # ============================================================================
+
+  /api/v1/stats:
+    get:
+      tags: [Stats]
+      summary: Dashboard statistics
+      description: |
+        Returns aggregate counts for agents, credentials, devices, and the
+        10 most recent audit events. Read-only; requires `view_audit` Cedar
+        policy on System resource. Does not emit its own audit event.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Dashboard statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      agents:
+                        type: object
+                        properties:
+                          total:
+                            type: integer
+                          active:
+                            type: integer
+                      credentials:
+                        type: object
+                        properties:
+                          total:
+                            type: integer
+                          llm_exposed:
+                            type: integer
+                      devices:
+                        type: object
+                        properties:
+                          total:
+                            type: integer
+                          active:
+                            type: integer
+                      recent_events:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            event_type:
+                              type: string
+                            principal:
+                              type: string
+                            timestamp:
+                              type: string
+                              format: date-time
+                            decision:
+                              type: string
+        '403':
+          description: Access denied by policy
+
+  # ============================================================================
+  # Settings (v1.8.0)
+  # ============================================================================
+
+  /api/v1/settings/advanced-mode:
+    put:
+      tags: [Settings]
+      summary: Toggle advanced mode
+      description: |
+        Toggle the authenticated user's `show_advanced` UI preference.
+        No Cedar policy check required — users can always change their own
+        preferences. Emits a `UserUpdated` audit event.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+                  description: Whether advanced mode is enabled
+      responses:
+        '200':
+          description: Preference updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      show_advanced:
+                        type: boolean
+
+  # ============================================================================
+  # Agent Tags (v1.8.0)
+  # ============================================================================
+
+  /api/v1/agents/{id}/tags:
+    post:
+      tags: [Agents]
+      summary: Add a tag to an agent
+      description: |
+        Add a tag to the specified agent. Requires `manage_tags` Cedar policy
+        on the agent resource. Emits a `TagAdded` audit event.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tag]
+              properties:
+                tag:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+      responses:
+        '200':
+          description: Tag added
+        '403':
+          description: Denied by policy
+        '404':
+          description: Agent not found
+
+  /api/v1/agents/{id}/tags/{tag}:
+    delete:
+      tags: [Agents]
+      summary: Remove a tag from an agent
+      description: |
+        Remove a tag from the specified agent. Requires `manage_tags` Cedar
+        policy on the agent resource. Emits a `TagRemoved` audit event.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tag removed
+        '403':
+          description: Denied by policy
+        '404':
+          description: Agent not found
+
+  # ============================================================================
+  # Agent Permissions (v1.8.0)
+  # ============================================================================
+
+  /api/v1/agents/{id}/permissions:
+    get:
+      tags: [Agents]
+      summary: Issue MCP permissions JWT for an agent
+      description: |
+        Authenticates the calling device, validates the agent, evaluates Cedar
+        policies for each enabled MCP server, and returns a server-signed JWT
+        with 3-part scopes (`{device}.{server}.{action}`). TTL is 300 seconds.
+        Requires device authentication via Authorization header.
+      security:
+        - DeviceJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: MCP permissions JWT
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      token:
+                        type: string
+                        description: Server-signed JWT containing MCP scopes
+                      expires_in:
+                        type: integer
+                        description: Token TTL in seconds
+        '403':
+          description: Agent disabled or access denied
+        '404':
+          description: Agent not found
+
+  # ============================================================================
+  # Docs
+  # ============================================================================
+
+  /api/v1/docs:
+    get:
+      tags: [Docs]
+      summary: Full API documentation (JSON)
+      description: |
+        Unauthenticated. Returns the full machine-readable API documentation
+        as raw JSON (not wrapped in ApiResponse envelope). Cached for 5 minutes.
+      security: []
+      responses:
+        '200':
+          description: API documentation
+
+  /api/v1/docs/quickstart:
+    get:
+      tags: [Docs]
+      summary: Quickstart guide (JSON)
+      description: |
+        Unauthenticated. Returns a concise getting-started guide as raw JSON.
+        Cached for 5 minutes.
+      security: []
+      responses:
+        '200':
+          description: Quickstart documentation
+
+  # ============================================================================
+  # Enrollment Approval Page (HTML, not under /api/v1)
+  # ============================================================================
+
+  /enroll/approve:
+    get:
+      tags: [Enrollment]
+      summary: Enrollment approval page (HTML)
+      description: |
+        Browser-based approval page for enrollment sessions. Requires an
+        authenticated session. Returns HTML with approve/deny buttons.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: ref
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Approval reference code
+      responses:
+        '200':
+          description: HTML approval page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  # ============================================================================
+  # Enrollment Discovery (not under /api/v1)
+  # ============================================================================
+
+  /enroll.md:
+    get:
+      tags: [Enrollment]
+      summary: Agent enrollment instructions (Markdown)
+      description: |
+        Unauthenticated. Serves the agent enrollment instructions as markdown.
+        Cached for 1 hour.
+      security: []
+      responses:
+        '200':
+          description: Enrollment instructions
+          content:
+            text/markdown:
+              schema:
+                type: string

@@ -1,0 +1,15 @@
+<div x-show="deleteModal" x-cloak x-transition.opacity.duration.150ms
+     class="modal-overlay"
+     @click.self="deleteModal = false"
+     @keydown.escape.window="deleteModal && (deleteModal = false)"
+     role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
+    <div class="modal-card">
+        <h3 id="delete-modal-title">Confirm Delete</h3>
+        <p>Are you sure you want to delete <strong x-text="deleteTargetName"></strong>?</p>
+        <p style="color:var(--danger);font-size:0.85rem;">This action cannot be undone.</p>
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" @click="deleteModal = false">Cancel</button>
+            <button type="button" class="btn btn-danger" @click="confirmDelete()">Delete</button>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,13 @@
+{
+  "key": "slack",
+  "name": "Slack Bot Token",
+  "service": "slack.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://slack.com/api/*",
+  "fields": ["secret_value"],
+  "description": "Slack Bot or User OAuth token. Injected as Authorization: Bearer header.",
+  "tags": ["messaging", "slack"],
+  "sort_order": 120
+}

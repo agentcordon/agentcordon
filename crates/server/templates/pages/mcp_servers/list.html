@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}MCP Servers — Agent Cordon{% endblock %}
+{% block content %}
+<div x-data="mcpServersPage()">
+    <div class="content-header">
+        <h2>MCP Servers</h2>
+        <div class="actions">
+            <template x-if="servers.length > 0">
+                <div class="search-input">
+                    <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <input x-model="searchQuery" type="text" placeholder="Search MCP servers..." aria-label="Search MCP servers">
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <div x-show="servers.length === 0" class="empty-state">
+        <div class="empty-glyph" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+        </div>
+        <h3>No MCP servers registered</h3>
+        <p>MCP (Model Context Protocol) servers provide tools that your workspaces can use. Workspaces register their MCP servers automatically on startup.</p>
+    </div>
+
+    <div x-show="servers.length > 0" class="content-body">
+        <div class="workspace-tree">
+            <template x-for="(group, groupIdx) in workspaceGroups" :key="group.id">
+                <div class="workspace-group">
+                    <button class="workspace-group-header"
+                            @click="group.open = !group.open"
+                            :aria-expanded="group.open">
+                        <svg class="detail-section-chevron" :class="group.open && 'detail-section-chevron--open'"
+                             width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
+                                  stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        <span class="workspace-group-name" x-text="group.name"></span>
+                        <span class="pill-count" x-text="group.servers.length + ' MCP server' + (group.servers.length !== 1 ? 's' : '')"></span>
+                    </button>
+                    <div x-show="group.open" x-collapse.duration.150ms>
+                        <table class="tbl workspace-group-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Transport</th>
+                                    <th>Status</th>
+                                    <th>Tools</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="server in group.servers" :key="server.id">
+                                <tr>
+                                    <td><a :href="'/mcp-servers/' + server.id" class="cred-name" x-text="server.name"></a></td>
+                                    <td><span class="pill pill-type" x-text="server.transport"></span></td>
+                                    <td>
+                                        <span class="pill" :class="server.enabled ? 'pill-ok' : 'pill-warn'" x-text="server.enabled ? 'Active' : 'Disabled'"></span>
+                                    </td>
+                                    <td x-text="server.tools_count + ' tools'"></td>
+                                </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function mcpServersPage() {
+    return {
+        servers: {{ servers_json|safe }},
+        workspaces: {{ workspaces_json|safe }},
+        workspaceGroups: [],
+        searchQuery: '',
+        init() {
+            this.buildGroups();
+            var self = this;
+            this.$watch('searchQuery', function() { self.buildGroups(); });
+            window.addEventListener('ac:mcp_server_changed', () => this.loadServers());
+        },
+        buildGroups() {
+            var serversByWorkspace = {};
+            var self = this;
+            var query = (self.searchQuery || '').toLowerCase();
+            self.servers.forEach(function(s) {
+                if (query && s.name.toLowerCase().indexOf(query) < 0) return;
+                var did = s.workspace_id || '__unassigned__';
+                if (!serversByWorkspace[did]) serversByWorkspace[did] = [];
+                serversByWorkspace[did].push(s);
+            });
+            var groups = [];
+            var isFirstGroup = true;
+            self.workspaces.forEach(function(d) {
+                var wsServers = serversByWorkspace[d.id] || [];
+                if (wsServers.length === 0) {
+                    delete serversByWorkspace[d.id];
+                    return;
+                }
+                groups.push({
+                    id: d.id,
+                    name: d.name,
+                    open: isFirstGroup,
+                    servers: wsServers
+                });
+                isFirstGroup = false;
+                delete serversByWorkspace[d.id];
+            });
+            // Unassigned servers (no matching workspace)
+            var unassigned = serversByWorkspace['__unassigned__'] || [];
+            // Also collect servers whose workspace_id didn't match any known workspace
+            Object.keys(serversByWorkspace).forEach(function(k) {
+                if (k !== '__unassigned__') {
+                    unassigned = unassigned.concat(serversByWorkspace[k]);
+                }
+            });
+            if (unassigned.length > 0) {
+                groups.push({
+                    id: '__unassigned__',
+                    name: 'Unassigned',
+                    open: isFirstGroup,
+                    servers: unassigned
+                });
+            }
+            self.workspaceGroups = groups;
+        },
+        async loadServers() {
+            try {
+                var resp = await fetch('/api/v1/mcp-servers');
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.servers = (data.data || data || []).map(function(s) {
+                        return {
+                            id: s.id,
+                            name: s.name,
+                            upstream_url: s.upstream_url || s.url || '\u2014',
+                            transport: s.transport || s.transport_type || '',
+                            enabled: s.enabled,
+                            tools_count: s.tools_count || (s.allowed_tools ? s.allowed_tools.length : 0),
+                            workspace_id: s.workspace_id || '',
+                            workspace_name: s.workspace_name || ''
+                        };
+                    });
+                    this.buildGroups();
+                }
+            } catch(e) { showToast('Failed to load MCP servers', 'error'); }
+        }
+    };
+}
+</script>
+{% endblock %}

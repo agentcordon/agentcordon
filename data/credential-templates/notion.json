@@ -1,0 +1,13 @@
+{
+  "key": "notion",
+  "name": "Notion API Key",
+  "service": "api.notion.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api.notion.com/*",
+  "fields": ["secret_value"],
+  "description": "Notion integration token. Injected as Authorization: Bearer header.",
+  "tags": ["productivity", "notion"],
+  "sort_order": 150
+}

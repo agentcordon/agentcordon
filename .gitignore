@@ -1,0 +1,54 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# SQLite databases (but not data-defined template files)
+/data/*.db
+/data/*.db-wal
+/data/*.db-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Environment / secrets
+.env
+*.pem
+*.key
+
+# Node
+node_modules/
+package-lock.json
+
+# Claude Code (local settings are per-machine, agents/commands are shared)
+.claude/settings.local.json
+
+# UX audit output (generated, screenshots)
+docs/ux-audit/
+
+# Enterprise-only docs (exclude from public repo)
+docs/backlog-enterprise.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+docker-compose.override.yml
+
+# Test artifacts
+/tmp/
+*.png
+tools/__pycache__/
+
+# Dolt database files (added by bd init)
+.dolt/
+
+# AgentCordon workspace identity
+.agentcordon/

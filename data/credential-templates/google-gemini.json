@@ -1,0 +1,13 @@
+{
+  "key": "google-gemini",
+  "name": "Google Gemini API Key",
+  "service": "generativelanguage.googleapis.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "x-goog-api-key",
+  "allowed_url_pattern": "https://generativelanguage.googleapis.com/*",
+  "fields": ["secret_value"],
+  "description": "Google Gemini API key. Injected as x-goog-api-key header.",
+  "tags": ["ai", "google", "gemini"],
+  "sort_order": 50
+}

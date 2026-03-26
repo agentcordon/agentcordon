@@ -1,0 +1,72 @@
+[package]
+name = "agent-cordon-server"
+version.workspace = true
+edition.workspace = true
+autotests = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-cordon-server"
+path = "src/main.rs"
+
+[features]
+default = ["sqlite"]
+sqlite = ["agent-cordon-core/sqlite"]
+postgres = ["agent-cordon-core/postgres"]
+test-helpers = []
+
+[dependencies]
+agent-cordon-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["trace", "request-id", "util", "set-header", "fs"] }
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio-stream = { version = "0.1", features = ["sync"] }
+askama = "0.15"
+rust-embed = { version = "8", features = ["compression"] }
+mime_guess = "2"
+dashmap = "6"
+url = "2"
+urlencoding = "2"
+metrics = "0.24"
+sha2 = "0.10"
+hkdf = "0.12"
+rand = "0.8"
+hex = "0.4"
+zeroize = "1"
+base64 = "0.22"
+subtle = "2"
+metrics-exporter-prometheus = "0.16"
+jsonwebtoken = { workspace = true }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+
+[dev-dependencies]
+agent-cordon-server = { path = ".", features = ["test-helpers"] }
+agent-cordon-core = { path = "../core", features = ["test-crypto"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+wiremock = "0.6"
+tempfile = "3"
+serial_test = "3"
+serde_yaml = "0.9"
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+regex-lite = "0.1"
+
+# Single consolidated integration test binary.
+# All test files in tests/ are included as modules of main.rs,
+# eliminating 27 redundant link steps (~294MB each).
+[[test]]
+name = "integration"
+path = "tests/main.rs"

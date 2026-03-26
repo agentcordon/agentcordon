@@ -1,0 +1,116 @@
+<!-- Policy edit mode: structured + raw Cedar — included by policies/detail.html -->
+<!-- Structured edit mode -->
+<div class="detail-row" x-show="editing && !rawMode">
+    <div class="detail-label">Policy Statements</div>
+    <div class="detail-value">
+        <div class="cedar-statements">
+            <template x-for="(stmt, idx) in editStatements" :key="idx">
+                <div class="cedar-stmt-card" :class="stmt.effect === 'forbid' ? 'cedar-stmt-forbid' : 'cedar-stmt-permit'">
+                    <div class="cedar-stmt-header">
+                        <select x-model="stmt.effect" class="form-input form-input-sm cedar-effect-select">
+                            <option value="permit">PERMIT</option>
+                            <option value="forbid">FORBID</option>
+                        </select>
+                        <div class="cedar-stmt-controls">
+                            <button class="btn btn-ghost btn-sm" @click="moveStatement(idx, -1)" :disabled="idx === 0" title="Move up">&uarr;</button>
+                            <button class="btn btn-ghost btn-sm" @click="moveStatement(idx, 1)" :disabled="idx === editStatements.length - 1" title="Move down">&darr;</button>
+                            <button class="btn btn-ghost btn-sm" @click="removeStatement(idx)" title="Remove">&times;</button>
+                        </div>
+                    </div>
+                    <div class="cedar-stmt-body">
+                        <div class="cedar-stmt-field">
+                            <label :for="'stmt-principal-' + idx" class="cedar-stmt-field-label">Principal</label>
+                            <select :id="'stmt-principal-' + idx" x-model="stmt.principalType" class="form-input form-input-sm">
+                                <option value="">Any</option>
+                                <option value="Workspace">Workspace</option>
+                                <option value="User">User</option>
+                            </select>
+                        </div>
+                        <div class="cedar-stmt-field">
+                            <label :for="'stmt-action-' + idx" class="cedar-stmt-field-label">Action</label>
+                            <select :id="'stmt-action-' + idx" x-model="stmt.action" class="form-input form-input-sm">
+                                <option value="">Any</option>
+                                <template x-for="a in schemaActions" :key="a.name">
+                                    <option :value="a.name" x-text="a.name"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div class="cedar-stmt-field">
+                            <label :for="'stmt-resource-' + idx" class="cedar-stmt-field-label">Resource</label>
+                            <select :id="'stmt-resource-' + idx" x-model="stmt.resourceType" class="form-input form-input-sm">
+                                <option value="">Any</option>
+                                <option value="Credential">Credential</option>
+                                <option value="McpServer">MCP Server</option>
+                                <option value="WorkspaceResource">Workspace</option>
+                                <option value="System">System</option>
+                                <option value="PolicyResource">Policy</option>
+                            </select>
+                        </div>
+                        <div class="cedar-stmt-field cedar-stmt-field-full">
+                            <label :for="'stmt-condition-' + idx" class="cedar-stmt-field-label">Condition</label>
+                            <div class="cedar-condition-helpers">
+                                <select :id="'stmt-tag-type-' + idx" class="form-input form-input-sm cedar-condition-select"
+                                        @change="applyTagCondition(idx, $event.target.value, stmt.tagValue || ''); $event.target.value = '';">
+                                    <option value="">+ Tag condition...</option>
+                                    <option value="principal_contains">Principal tags contain</option>
+                                    <option value="resource_contains">Resource tags contain</option>
+                                    <option value="tags_match">Principal tags match resource tags</option>
+                                </select>
+                                <template x-if="stmt.tagType === 'principal_contains' || stmt.tagType === 'resource_contains'">
+                                    <input x-model="stmt.tagValue" class="form-input form-input-sm cedar-tag-value-input"
+                                           placeholder="tag value"
+                                           @change="applyTagCondition(idx, stmt.tagType, stmt.tagValue)">
+                                </template>
+                            </div>
+                            <input :id="'stmt-condition-' + idx" x-model="stmt.condition" class="form-input form-input-sm cedar-condition-input"
+                                   placeholder='e.g., principal.tags.contains("admin")'>
+                        </div>
+                    </div>
+                </div>
+            </template>
+            <button class="btn btn-secondary btn-sm cedar-add-stmt-btn" @click="addStatement()">+ Add Statement</button>
+        </div>
+    </div>
+</div>
+<!-- Raw Cedar edit mode -->
+<div class="detail-row" x-show="editing && rawMode">
+    <div class="detail-label">Cedar Policy</div>
+    <div class="detail-value">
+        <textarea x-model="editForm.cedar_policy" class="form-input cedar-editor" rows="14"
+            placeholder="permit(principal, action, resource) when { ... };"></textarea>
+    </div>
+</div>
+<style>
+.cedar-effect-select { width: auto; }
+.cedar-stmt-controls {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+}
+.cedar-stmt-body {
+    padding: 10px 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.cedar-stmt-field-label {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.5;
+    margin-bottom: 3px;
+}
+.cedar-stmt-field-full { grid-column: 1 / -1; }
+.cedar-condition-helpers {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.cedar-condition-select { width: auto; }
+.cedar-tag-value-input { width: 140px; }
+.cedar-condition-input { margin-top: 6px; }
+.cedar-add-stmt-btn { margin-top: 10px; }
+</style>

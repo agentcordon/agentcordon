@@ -1,0 +1,13 @@
+{
+  "key": "replicate",
+  "name": "Replicate API Token",
+  "service": "api.replicate.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api.replicate.com/*",
+  "fields": ["secret_value"],
+  "description": "Replicate API token. Injected as Authorization: Bearer header.",
+  "tags": ["ai", "replicate"],
+  "sort_order": 100
+}

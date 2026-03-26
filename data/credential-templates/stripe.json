@@ -1,0 +1,13 @@
+{
+  "key": "stripe",
+  "name": "Stripe API Key",
+  "service": "api.stripe.com",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api.stripe.com/*",
+  "fields": ["secret_value"],
+  "description": "Stripe secret API key. Injected as Authorization: Bearer header.",
+  "tags": ["payments", "stripe"],
+  "sort_order": 240
+}

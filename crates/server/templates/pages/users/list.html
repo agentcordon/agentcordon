@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Users — Agent Cordon{% endblock %}
+{% block content %}
+<div x-data="usersPage()">
+    <div class="content-header">
+        <h2>Users</h2>
+        <div class="actions">
+            <a href="/users/new" class="btn btn-primary">New User</a>
+        </div>
+    </div>
+
+    <div x-show="users.length === 0" class="empty-state">
+        <p>No users found.</p>
+    </div>
+
+    <table x-show="users.length > 0" class="tbl">
+        <thead>
+            <tr>
+                <th>Username</th>
+                <th>Display Name</th>
+                <th>Role</th>
+                <th>Enabled</th>
+                <th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+            <template x-for="u in users" :key="u.id">
+            <tr>
+                <td>
+                    <span x-text="u.username"></span>
+                    <span x-show="u.is_root" class="pill pill-warn" style="margin-left:4px;">root</span>
+                </td>
+                <td x-text="u.display_name || '\u2014'"></td>
+                <td><span class="pill pill-type" x-text="u.role"></span></td>
+                <td>
+                    <span class="pill" :class="u.enabled ? 'pill-ok' : 'pill-warn'" x-text="u.enabled ? 'Yes' : 'No'"></span>
+                </td>
+                <td class="timestamp" x-text="u.created_at"></td>
+            </tr>
+            </template>
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function usersPage() {
+    return {
+        users: {{ users_json|safe }},
+        init() {
+            window.addEventListener('ac:user_created', () => this.loadUsers());
+        },
+        async loadUsers() {
+            try {
+                var resp = await fetch('/api/v1/users');
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.users = (data.data || data || []).map(function(u) {
+                        return {
+                            id: u.id,
+                            username: u.username,
+                            display_name: u.display_name || '',
+                            role: u.role || '',
+                            enabled: u.enabled,
+                            is_root: u.is_root || false,
+                            created_at: u.created_at ? formatDateTime(u.created_at) : ''
+                        };
+                    });
+                }
+            } catch(e) { showToast('Failed to load users', 'error'); }
+        }
+    };
+}
+</script>
+{% endblock %}

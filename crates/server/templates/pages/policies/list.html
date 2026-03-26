@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+{% block title %}Security — Agent Cordon{% endblock %}
+{% block content %}
+<div x-data="policiesPage()">
+    <div class="content-header">
+        <h2>Security Policies</h2>
+        {% if user.is_admin %}
+        <div class="actions">
+            <a href="/security/new" class="btn btn-primary">New Policy</a>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if user.is_admin %}
+    <!-- Promoted Policy Tester CTA -->
+    <a href="/security/tester" class="policy-tester-cta">
+        <div class="policy-tester-cta-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <div class="policy-tester-cta-content">
+            <span class="policy-tester-cta-title">Policy Tester</span>
+            <span class="policy-tester-cta-desc">Test policies against real principals and resources to see who can do what, and why.</span>
+        </div>
+        <span class="policy-tester-cta-arrow">&rarr;</span>
+    </a>
+    {% endif %}
+
+    {% if policies.is_empty() %}
+    <!-- Empty State -->
+    <div class="empty-state">
+        <h3>No custom policies</h3>
+        <p>Using the built-in default policy.</p>
+        <p class="text-sm text-faint" style="margin-top:8px;">The default policy controls access based on user roles and workspace ownership. Admin and operator users can create custom policies.</p>
+        {% if user.is_admin %}
+        <a href="/security/new" class="btn btn-primary" style="margin-top:12px;">New Policy</a>
+        {% endif %}
+    </div>
+    {% else %}
+    <!-- Search & Filter Bar -->
+    <div class="policy-filter-bar">
+        <input type="search" class="form-input policy-search-input" placeholder="Search policies..." x-model="search" @input="filterPolicies()">
+        <select class="form-input policy-filter-select" x-model="filterType" @change="filterPolicies()">
+            <option value="all">All Policies</option>
+            <option value="system">System Only</option>
+            <option value="custom">Custom Only</option>
+            <option value="grants">Grants Only</option>
+        </select>
+        <label class="policy-grant-toggle checkbox-label" x-show="filterType === 'all' || filterType === 'custom'">
+            <input type="checkbox" class="checkbox-input" x-model="hideGrants" @change="filterPolicies()">
+            <span class="text-sm">Hide grant policies</span>
+        </label>
+    </div>
+
+    <!-- Server-rendered Policies Table -->
+    <table class="tbl tbl-clickable">
+        <thead>
+            <tr>
+                <th class="policy-col-sortable" @click="sort('name')">
+                    Name
+                    <span x-show="sortBy === 'name'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="policy-sort-indicator"></span>
+                </th>
+                <th>Description</th>
+                <th class="policy-col-sortable" @click="sort('enabled')">
+                    Enabled
+                    <span x-show="sortBy === 'enabled'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="policy-sort-indicator"></span>
+                </th>
+                <th class="policy-col-sortable" @click="sort('updated')">
+                    Updated
+                    <span x-show="sortBy === 'updated'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="policy-sort-indicator"></span>
+                </th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for policy in policies %}
+            <tr class="policy-row" tabindex="0" role="link"
+                :class="{ 'policy-row-enabled': '{{ policy.enabled }}' === 'true', 'policy-row-disabled': '{{ policy.enabled }}' !== 'true', 'policy-row-grant': '{{ policy.name }}'.startsWith('grant:') }"
+                onclick="window.location.href='/security/{{ policy.id }}'"
+                @keydown.enter="window.location.href='/security/{{ policy.id }}'"
+                @keydown.space.prevent="window.location.href='/security/{{ policy.id }}'"
+                x-show="matchesSearch($el)"
+                data-name="{{ policy.name }}"
+                data-description="{{ policy.description }}"
+                data-enabled="{{ policy.enabled }}"
+                data-updated="{{ policy.updated_at }}"
+                data-system="{{ policy.is_system }}"
+                data-grant="{{ policy.name.starts_with("grant:") }}">
+                <td>
+                    {% if policy.name.starts_with("grant:") %}
+                    <a href="/security/{{ policy.id }}" class="cred-name" title="{{ policy.name }}">
+                        {% if !policy.description.is_empty() %}{{ policy.description }}{% else %}{{ policy.name }}{% endif %}
+                    </a>
+                    {% else %}
+                    <a href="/security/{{ policy.id }}" class="cred-name">{{ policy.name }}</a>
+                    {% endif %}
+                    {% if policy.is_system %}
+                    <span class="pill pill-scope pill-sm policy-type-badge">System</span>
+                    {% else if policy.name.starts_with("grant:") %}
+                    <span class="pill pill-sm policy-type-badge policy-badge-grant">Grant</span>
+                    {% else %}
+                    <span class="pill pill-type pill-sm policy-type-badge">Custom</span>
+                    {% endif %}
+                </td>
+                <td>{% if policy.name.starts_with("grant:") %}<span class="mono-id policy-grant-label" title="{{ policy.name }}">auto-generated</span>{% else if policy.description.is_empty() %}&mdash;{% else %}{{ policy.description }}{% endif %}</td>
+                <td>
+                    <span class="pill pill-sm {% if policy.enabled %}pill-ok{% else %}pill-warn{% endif %}"
+                          onclick="event.stopPropagation()">
+                        {% if policy.enabled %}Enabled{% else %}Disabled{% endif %}
+                    </span>
+                </td>
+                <td class="timestamp" x-data x-text="formatDateTime($el.parentElement.getAttribute('data-updated'))">{{ policy.updated_at }}</td>
+                <td onclick="event.stopPropagation()">
+                    {% if user.is_admin %}
+                    <button class="btn btn-secondary btn-sm"
+                            data-policy-id="{{ policy.id }}"
+                            data-policy-enabled="{{ policy.enabled }}"
+                            @click="toggleEnabled($el.getAttribute('data-policy-id'), $el.getAttribute('data-policy-enabled') === 'true', $el)">
+                        {% if policy.enabled %}Disable{% else %}Enable{% endif %}
+                    </button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<style>
+/* Policy Tester CTA banner */
+.policy-tester-cta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 18px;
+    margin-bottom: 20px;
+    border: 1px solid rgba(96, 165, 250, 0.2);
+    border-radius: 10px;
+    background: rgba(96, 165, 250, 0.04);
+    text-decoration: none;
+    color: inherit;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.policy-tester-cta:hover {
+    background: rgba(96, 165, 250, 0.08);
+    border-color: rgba(96, 165, 250, 0.35);
+}
+.policy-tester-cta-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: rgba(96, 165, 250, 0.1);
+    color: var(--color-link, #60a5fa);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.policy-tester-cta-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+}
+.policy-tester-cta-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+.policy-tester-cta-desc {
+    font-size: 0.8rem;
+    opacity: 0.55;
+    line-height: 1.4;
+}
+.policy-tester-cta-arrow {
+    font-size: 1.1rem;
+    opacity: 0.4;
+    flex-shrink: 0;
+}
+
+/* Filter bar */
+.policy-filter-bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.policy-search-input { max-width: 320px; }
+.policy-filter-select { max-width: 160px; }
+.policy-grant-toggle { margin-left: 4px; }
+
+/* Table improvements */
+.policy-col-sortable { cursor: pointer; user-select: none; }
+.policy-sort-indicator { font-size: 0.7em; }
+.policy-row { cursor: pointer; }
+.policy-row-enabled { border-left: 3px solid var(--color-ok, #22c55e); }
+.policy-row-disabled { border-left: 3px solid var(--color-warn, #eab308); opacity: 0.7; }
+.policy-row-grant { opacity: 0.65; }
+.policy-type-badge { margin-left: 6px; }
+.policy-badge-grant {
+    background: var(--bg-tertiary, rgba(255,255,255,0.05));
+    color: var(--text-secondary, #aaa);
+}
+.policy-grant-label { font-size: 0.75em; }
+</style>
+<script>
+function policiesPage() {
+    return {
+        search: new URLSearchParams(window.location.search).get('search') || '',
+        filterType: 'all',
+        hideGrants: false,
+        sortBy: '',
+        sortDir: 'asc',
+
+        matchesSearch(el) {
+            var name = (el.getAttribute('data-name') || '').toLowerCase();
+            var desc = (el.getAttribute('data-description') || '').toLowerCase();
+            var isSystem = el.getAttribute('data-system') === 'true';
+            var isGrant = el.getAttribute('data-grant') === 'true';
+
+            // Filter type
+            if (this.filterType === 'system' && !isSystem) return false;
+            if (this.filterType === 'custom' && isSystem) return false;
+            if (this.filterType === 'grants' && !isGrant) return false;
+
+            // Hide grants toggle
+            if (this.hideGrants && isGrant) return false;
+
+            // Search
+            if (!this.search) return true;
+            var q = this.search.toLowerCase();
+            return name.indexOf(q) >= 0 || desc.indexOf(q) >= 0;
+        },
+
+        filterPolicies() {
+            // Reactivity handles visibility via x-show
+        },
+
+        sort(column) {
+            if (this.sortBy === column) {
+                this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                this.sortBy = column;
+                this.sortDir = 'asc';
+            }
+            var tbody = document.querySelector('.tbl tbody');
+            if (!tbody) return;
+            var rows = Array.from(tbody.querySelectorAll('tr'));
+            var dir = this.sortDir === 'asc' ? 1 : -1;
+            rows.sort(function(a, b) {
+                var aSystem = a.getAttribute('data-system') === 'true';
+                var bSystem = b.getAttribute('data-system') === 'true';
+                if (aSystem !== bSystem) return aSystem ? -1 : 1;
+                var va, vb;
+                if (column === 'name') {
+                    va = (a.getAttribute('data-name') || '').toLowerCase();
+                    vb = (b.getAttribute('data-name') || '').toLowerCase();
+                } else if (column === 'enabled') {
+                    va = a.getAttribute('data-enabled') || '';
+                    vb = b.getAttribute('data-enabled') || '';
+                } else if (column === 'updated') {
+                    va = a.getAttribute('data-updated') || '';
+                    vb = b.getAttribute('data-updated') || '';
+                }
+                if (va < vb) return -1 * dir;
+                if (va > vb) return 1 * dir;
+                return 0;
+            });
+            rows.forEach(function(row) { tbody.appendChild(row); });
+        },
+
+        async toggleEnabled(policyId, currentEnabled, btnEl) {
+            try {
+                const resp = await fetch('/api/v1/policies/' + policyId, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ enabled: !currentEnabled }),
+                });
+                if (resp.ok) {
+                    // Update DOM in place without full page reload
+                    var row = btnEl.closest('tr');
+                    var newEnabled = !currentEnabled;
+                    row.setAttribute('data-enabled', String(newEnabled));
+
+                    // Update pill
+                    var pill = row.querySelector('.pill.pill-ok, .pill.pill-warn');
+                    if (pill) {
+                        pill.className = 'pill pill-sm ' + (newEnabled ? 'pill-ok' : 'pill-warn');
+                        pill.textContent = newEnabled ? 'Enabled' : 'Disabled';
+                    }
+
+                    // Update button
+                    btnEl.setAttribute('data-policy-enabled', String(newEnabled));
+                    btnEl.textContent = newEnabled ? 'Disable' : 'Enable';
+
+                    // Update row class
+                    row.classList.toggle('policy-row-enabled', newEnabled);
+                    row.classList.toggle('policy-row-disabled', !newEnabled);
+
+                    showToast('Policy ' + (newEnabled ? 'enabled' : 'disabled'), 'success');
+                } else {
+                    showToast('Failed to update policy', 'error');
+                }
+            } catch(e) { showToast('Failed to update policy', 'error'); }
+        }
+    };
+}
+</script>
+{% endblock %}

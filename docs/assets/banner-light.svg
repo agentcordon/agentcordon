@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300">
+  <defs>
+    <pattern id="tartan" patternUnits="userSpaceOnUse" width="20" height="20" patternTransform="rotate(0)">
+      <rect width="20" height="20" fill="#d4551a"/>
+      <line x1="0" y1="0" x2="20" y2="0" stroke="rgba(180,60,10,0.6)" stroke-width="3"/>
+      <line x1="0" y1="10" x2="20" y2="10" stroke="rgba(220,120,50,0.4)" stroke-width="1.5"/>
+      <line x1="0" y1="0" x2="0" y2="20" stroke="rgba(180,60,10,0.6)" stroke-width="3"/>
+      <line x1="10" y1="0" x2="10" y2="20" stroke="rgba(220,120,50,0.4)" stroke-width="1.5"/>
+      <line x1="0" y1="5" x2="20" y2="5" stroke="rgba(140,40,5,0.3)" stroke-width="0.75"/>
+      <line x1="0" y1="15" x2="20" y2="15" stroke="rgba(140,40,5,0.3)" stroke-width="0.75"/>
+      <line x1="5" y1="0" x2="5" y2="20" stroke="rgba(140,40,5,0.3)" stroke-width="0.75"/>
+      <line x1="15" y1="0" x2="15" y2="20" stroke="rgba(140,40,5,0.3)" stroke-width="0.75"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="300" fill="#ffffff"/>
+
+  <!-- Particle network lines -->
+  <g stroke="rgba(212,85,26,0.06)" stroke-width="0.5">
+    <line x1="45" y1="32" x2="112" y2="78"/>
+    <line x1="112" y1="78" x2="89" y2="145"/>
+    <line x1="180" y1="55" x2="112" y2="78"/>
+    <line x1="180" y1="55" x2="245" y2="28"/>
+    <line x1="245" y1="28" x2="310" y2="62"/>
+    <line x1="310" y1="62" x2="285" y2="130"/>
+    <line x1="89" y1="145" x2="155" y2="190"/>
+    <line x1="155" y1="190" x2="210" y2="168"/>
+    <line x1="210" y1="168" x2="285" y2="130"/>
+    <line x1="155" y1="190" x2="120" y2="252"/>
+    <line x1="120" y1="252" x2="55" y2="230"/>
+    <line x1="55" y1="230" x2="30" y2="275"/>
+    <line x1="210" y1="168" x2="195" y2="245"/>
+    <line x1="195" y1="245" x2="270" y2="268"/>
+    <line x1="285" y1="130" x2="350" y2="105"/>
+    <line x1="420" y1="45" x2="490" y2="72"/>
+    <line x1="490" y1="72" x2="465" y2="140"/>
+    <line x1="560" y1="30" x2="490" y2="72"/>
+    <line x1="560" y1="30" x2="635" y2="55"/>
+    <line x1="635" y1="55" x2="700" y2="38"/>
+    <line x1="465" y1="140" x2="520" y2="185"/>
+    <line x1="520" y1="185" x2="590" y2="160"/>
+    <line x1="590" y1="160" x2="635" y2="55"/>
+    <line x1="520" y1="185" x2="485" y2="250"/>
+    <line x1="485" y1="250" x2="555" y2="275"/>
+    <line x1="590" y1="160" x2="620" y2="235"/>
+    <line x1="620" y1="235" x2="555" y2="275"/>
+    <line x1="700" y1="38" x2="775" y2="68"/>
+    <line x1="775" y1="68" x2="740" y2="142"/>
+    <line x1="740" y1="142" x2="810" y2="170"/>
+    <line x1="810" y1="170" x2="775" y2="68"/>
+    <line x1="810" y1="170" x2="860" y2="240"/>
+    <line x1="860" y1="240" x2="780" y2="262"/>
+    <line x1="780" y1="262" x2="700" y2="280"/>
+    <line x1="900" y1="50" x2="960" y2="85"/>
+    <line x1="960" y1="85" x2="935" y2="155"/>
+    <line x1="935" y1="155" x2="1000" y2="178"/>
+    <line x1="1000" y1="178" x2="1060" y2="140"/>
+    <line x1="1060" y1="140" x2="960" y2="85"/>
+    <line x1="1000" y1="178" x2="975" y2="255"/>
+    <line x1="975" y1="255" x2="905" y2="270"/>
+    <line x1="1060" y1="140" x2="1130" y2="65"/>
+    <line x1="1130" y1="65" x2="1175" y2="120"/>
+    <line x1="1175" y1="120" x2="1150" y2="195"/>
+    <line x1="1150" y1="195" x2="1060" y2="140"/>
+    <line x1="1150" y1="195" x2="1170" y2="260"/>
+    <line x1="1170" y1="260" x2="1100" y2="280"/>
+    <line x1="1100" y1="280" x2="975" y2="255"/>
+    <line x1="350" y1="105" x2="420" y2="45"/>
+    <line x1="350" y1="105" x2="340" y2="195"/>
+    <line x1="340" y1="195" x2="270" y2="268"/>
+    <line x1="340" y1="195" x2="395" y2="260"/>
+    <line x1="395" y1="260" x2="485" y2="250"/>
+  </g>
+
+  <!-- Particle dots -->
+  <g fill="rgba(212,85,26,0.15)">
+    <circle cx="45" cy="32" r="1.8"/>
+    <circle cx="112" cy="78" r="2.2"/>
+    <circle cx="89" cy="145" r="1.5"/>
+    <circle cx="180" cy="55" r="2.0"/>
+    <circle cx="245" cy="28" r="1.3"/>
+    <circle cx="310" cy="62" r="2.5"/>
+    <circle cx="285" cy="130" r="1.7"/>
+    <circle cx="155" cy="190" r="2.1"/>
+    <circle cx="210" cy="168" r="1.4"/>
+    <circle cx="120" cy="252" r="2.0"/>
+    <circle cx="55" cy="230" r="1.6"/>
+    <circle cx="30" cy="275" r="1.2"/>
+    <circle cx="195" cy="245" r="1.9"/>
+    <circle cx="270" cy="268" r="2.3"/>
+    <circle cx="350" cy="105" r="1.5"/>
+    <circle cx="420" cy="45" r="2.0"/>
+    <circle cx="490" cy="72" r="1.8"/>
+    <circle cx="465" cy="140" r="2.4"/>
+    <circle cx="560" cy="30" r="1.6"/>
+    <circle cx="635" cy="55" r="2.1"/>
+    <circle cx="700" cy="38" r="1.3"/>
+    <circle cx="520" cy="185" r="1.9"/>
+    <circle cx="590" cy="160" r="2.2"/>
+    <circle cx="485" cy="250" r="1.7"/>
+    <circle cx="555" cy="275" r="2.0"/>
+    <circle cx="620" cy="235" r="1.4"/>
+    <circle cx="775" cy="68" r="2.3"/>
+    <circle cx="740" cy="142" r="1.6"/>
+    <circle cx="810" cy="170" r="2.0"/>
+    <circle cx="860" cy="240" r="1.8"/>
+    <circle cx="780" cy="262" r="1.5"/>
+    <circle cx="700" cy="280" r="2.1"/>
+    <circle cx="900" cy="50" r="1.7"/>
+    <circle cx="960" cy="85" r="2.5"/>
+    <circle cx="935" cy="155" r="1.4"/>
+    <circle cx="1000" cy="178" r="2.0"/>
+    <circle cx="1060" cy="140" r="1.9"/>
+    <circle cx="975" cy="255" r="2.2"/>
+    <circle cx="905" cy="270" r="1.6"/>
+    <circle cx="1130" cy="65" r="1.8"/>
+    <circle cx="1175" cy="120" r="2.1"/>
+    <circle cx="1150" cy="195" r="1.5"/>
+    <circle cx="1170" cy="260" r="2.4"/>
+    <circle cx="1100" cy="280" r="1.3"/>
+    <circle cx="340" cy="195" r="1.8"/>
+    <circle cx="395" cy="260" r="2.0"/>
+  </g>
+
+  <!-- Bowtie logo (scaled ~1.14x, centered at x=350, no glow on light) -->
+  <g transform="translate(270,70) scale(1.14)">
+    <path d="M8 18 Q8 12, 14 12 L75 55 Q82 60, 82 70 Q82 80, 75 85 L14 128 Q8 128, 8 122 Z" fill="url(#tartan)"/>
+    <path d="M212 18 Q212 12, 206 12 L145 55 Q138 60, 138 70 Q138 80, 145 85 L206 128 Q212 128, 212 122 Z" fill="url(#tartan)"/>
+    <rect x="84" y="44" width="52" height="52" rx="12" fill="url(#tartan)"/>
+  </g>
+
+  <!-- Title -->
+  <text x="545" y="145" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="48" font-weight="700" fill="#1f2328">AgentCordon</text>
+
+  <!-- Tagline -->
+  <text x="545" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" fill="#656d76">Secure credential brokerage for AI agents</text>
+</svg>

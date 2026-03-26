@@ -1,0 +1,13 @@
+{
+  "key": "flyio",
+  "name": "Fly.io API Token",
+  "service": "api.fly.io",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://api.fly.io/*",
+  "fields": ["secret_value"],
+  "description": "Fly.io deploy token. Injected as Authorization: Bearer header.",
+  "tags": ["deployment", "flyio"],
+  "sort_order": 190
+}

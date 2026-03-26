@@ -1,0 +1,13 @@
+{
+  "key": "sentry",
+  "name": "Sentry Auth Token",
+  "service": "sentry.io",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "https://sentry.io/api/*",
+  "fields": ["secret_value"],
+  "description": "Sentry auth token. Injected as Authorization: Bearer header.",
+  "tags": ["monitoring", "sentry"],
+  "sort_order": 220
+}

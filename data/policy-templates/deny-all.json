@@ -1,0 +1,8 @@
+{
+  "key": "deny-all",
+  "name": "Deny All",
+  "description": "Deny all actions on all resources. Use as a baseline restrictive policy.",
+  "cedar_policy": "forbid(\n  principal,\n  action,\n  resource\n);",
+  "tags": ["restrictive", "baseline"],
+  "sort_order": 20
+}

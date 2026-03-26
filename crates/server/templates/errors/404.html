@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}404 — Agent Cordon{% endblock %}
+{% block body %}
+{% if show_nav %}
+<nav class="top-bar" style="border-bottom:1px solid var(--border);">
+    <a href="/dashboard" class="top-bar-logo">
+        <div class="logo-mark">
+            <svg width="16" height="10" viewBox="0 0 220 140" fill="none" aria-hidden="true">
+                <path d="M8 18 Q8 12, 14 12 L75 55 Q82 60, 82 70 Q82 80, 75 85 L14 128 Q8 128, 8 122 Z" fill="currentColor"/>
+                <path d="M212 18 Q212 12, 206 12 L145 55 Q138 60, 138 70 Q138 80, 145 85 L206 128 Q212 128, 212 122 Z" fill="currentColor"/>
+                <rect x="84" y="44" width="52" height="52" rx="12" fill="currentColor"/>
+            </svg>
+        </div>
+        <span class="logo-text">Agent Cordon</span>
+    </a>
+    <div style="flex:1;"></div>
+    <a href="/dashboard" class="nav-link">Dashboard</a>
+</nav>
+{% endif %}
+<div style="display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 56px);">
+    <div style="text-align:center;">
+        <h1 style="font-size:4rem;opacity:0.2;margin:0;">404</h1>
+        <p style="margin:1rem 0;">Page not found.</p>
+        <a href="/dashboard" class="btn btn-primary">Go to Dashboard</a>
+    </div>
+</div>
+{% endblock %}
