@@ -175,6 +175,17 @@
     </div>
     {% endif %}
 
+    <!-- Section: About -->
+    <h3 class="settings-section-header">About</h3>
+    <div class="card mb-6">
+        <div class="d-flex justify-between items-center">
+            <div>
+                <h3>Agent Cordon</h3>
+                <p class="text-sm mt-2 settings-desc">Version {{ version }}</p>
+            </div>
+        </div>
+    </div>
+
     <!-- Delete Provider Modal -->
     <div x-show="deleteProviderModal" x-cloak x-transition.opacity.duration.150ms class="modal-overlay" @click.self="deleteProviderModal = false" @keydown.escape.window="deleteProviderModal && (deleteProviderModal = false)">
         <div class="modal">

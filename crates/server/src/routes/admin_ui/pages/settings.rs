@@ -24,6 +24,7 @@ pub struct SettingsPage {
     pub csrf_token: String,
     pub providers: Vec<OidcProviderSummary>,
     pub providers_json: String,
+    pub version: &'static str,
 }
 
 /// GET /settings — render the settings page.
@@ -57,5 +58,6 @@ pub async fn settings_page(State(state): State<AppState>, request: Request) -> R
         csrf_token: csrf.0,
         providers,
         providers_json,
+        version: env!("CARGO_PKG_VERSION"),
     })
 }
