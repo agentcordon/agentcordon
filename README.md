@@ -49,23 +49,27 @@ sequenceDiagram
 
     Note over Agent,Ext: Credential proxy flow
     Agent->>GW: agentcordon proxy github-token GET /repos/org/repo
-    GW->>Srv: Forwarded request + workspace JWT
+    GW->>Srv: Vend request + workspace JWT
     Srv->>Cedar: Can this workspace access "github-token"?
     Cedar-->>Srv: Permit
     Srv->>Vault: Decrypt credential
-    Vault-->>Srv: Plaintext secret (never leaves server)
-    Srv->>Ext: Request with injected Authorization header
-    Ext-->>Agent: Response proxied back through CLI
+    Vault-->>Srv: Plaintext secret
+    Srv-->>GW: Credential material (ECIES-encrypted in transit)
+    GW->>Ext: GET /repos/org/repo (Authorization: Bearer ... injected)
+    Ext-->>GW: Response
+    GW-->>Agent: Response
 
     Note over Agent,Ext: MCP tool call flow
     Agent->>GW: agentcordon mcp-call stripe list_customers
-    GW->>Srv: MCP call + workspace JWT
+    GW->>Srv: Vend request + workspace JWT
     Srv->>Cedar: Can this workspace call stripe/list_customers?
     Cedar-->>Srv: Permit
     Srv->>Vault: Decrypt credential for MCP server
-    Vault-->>Srv: Plaintext secret (never leaves server)
-    Srv->>Ext: Tool invocation with injected credential
-    Ext-->>Agent: Tool result proxied back through CLI
+    Vault-->>Srv: Plaintext secret
+    Srv-->>GW: Credential material (ECIES-encrypted in transit)
+    GW->>Ext: Tool invocation (credential injected)
+    Ext-->>GW: Tool result
+    GW-->>Agent: Tool result
 ```
 
 ## See It In Action
