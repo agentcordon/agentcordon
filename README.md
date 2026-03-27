@@ -29,12 +29,18 @@ Agents authenticate to AgentCordon with a workspace identity (Ed25519 keypair). 
 
 ```mermaid
 sequenceDiagram
+    box rgb(219,234,254) Agent Host
     participant Agent as AI Agent
     participant GW as agentcordon CLI
+    end
+    box rgb(220,252,231) AgentCordon Server
     participant Srv as AgentCordon Server
     participant Cedar as Cedar Policy Engine
     participant Vault as Encrypted Vault
+    end
+    box rgb(254,243,199) External
     participant Ext as External API / MCP Server
+    end
 
     Note over Agent,GW: Workspace enrollment (one-time per project)
     Agent->>GW: Ed25519 keypair generated locally
