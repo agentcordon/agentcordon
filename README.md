@@ -35,6 +35,24 @@ Agent  ──authenticate──>  AgentCordon  ──policy check──>  Creden
                                 └──proxied request──>  GitHub / Slack / AWS / ...
 ```
 
+## See It In Action
+
+An AI agent checks a Cloudflare deployment and queries AWS IAM policies — using real credentials it never sees:
+
+<p align="center">
+  <img src="docs/assets/cloudflare_demo.gif" alt="Agent asking about Cloudflare page status, proxied through AgentCordon" width="720">
+</p>
+
+<p align="center">
+  <img src="docs/assets/aws_demo.gif" alt="AgentCordon injecting credentials for Cloudflare and AWS API calls" width="720">
+</p>
+
+Every credential access shows up in the audit trail:
+
+<p align="center">
+  <img src="docs/assets/log_nav.gif" alt="Audit log showing credential vend events with policy decisions" width="720">
+</p>
+
 ## Quick Start
 
 ```bash

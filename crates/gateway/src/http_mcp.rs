@@ -252,9 +252,14 @@ impl HttpMcpClientPool {
         cp_http: &reqwest::Client,
     ) -> Result<serde_json::Value, HttpMcpError> {
         // Cedar policy check — fail-closed.
-        let (permitted, correlation_id) =
-            crate::mcp_sync::authorize_tool_call(cp_url, workspace_jwt, cp_http, server_name, tool_name)
-                .await;
+        let (permitted, correlation_id) = crate::mcp_sync::authorize_tool_call(
+            cp_url,
+            workspace_jwt,
+            cp_http,
+            server_name,
+            tool_name,
+        )
+        .await;
 
         if !permitted {
             self.audit.emit(

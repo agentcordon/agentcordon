@@ -12,7 +12,9 @@ use agent_cordon_core::domain::audit::{
     enrich_metadata_with_policy_reasoning, AuditDecision, AuditEvent, AuditEventType,
 };
 use agent_cordon_core::domain::policy::{PolicyDecisionResult, PolicyId};
-use agent_cordon_core::policy::{actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource};
+use agent_cordon_core::policy::{
+    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
+};
 
 use crate::extractors::AuthenticatedWorkspace;
 use crate::response::{ApiError, ApiResponse};
@@ -162,11 +164,8 @@ pub(super) async fn authorize(
     }
 
     // Emit audit event.
-    let contributing_policies: Vec<String> = decision
-        .reasons
-        .iter()
-        .map(|r| r.to_string())
-        .collect();
+    let contributing_policies: Vec<String> =
+        decision.reasons.iter().map(|r| r.to_string()).collect();
 
     let event_type = if is_permit {
         AuditEventType::McpToolCallExecuted
@@ -191,12 +190,7 @@ pub(super) async fn authorize(
         "tool_name": tool_name,
         "policy_decision": decision_str,
     });
-    enrich_metadata_with_policy_reasoning(
-        &mut metadata,
-        &decision,
-        Some(&policy_ctx),
-        None,
-    );
+    enrich_metadata_with_policy_reasoning(&mut metadata, &decision, Some(&policy_ctx), None);
 
     let event = AuditEvent::builder(event_type)
         .action(&format!("mcp_tool_call/{}", tool_name))

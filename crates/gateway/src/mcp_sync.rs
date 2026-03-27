@@ -35,7 +35,10 @@ pub async fn authorize_tool_call(
         "tool_name": tool_name,
     });
 
-    match cp.post::<McpAuthorizeData, _>("/api/v1/workspaces/mcp-authorize", &body).await {
+    match cp
+        .post::<McpAuthorizeData, _>("/api/v1/workspaces/mcp-authorize", &body)
+        .await
+    {
         Ok(data) => {
             let is_permit = data.decision == "permit";
             (is_permit, data.correlation_id)

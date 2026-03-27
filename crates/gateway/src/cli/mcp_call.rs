@@ -46,10 +46,8 @@ pub async fn run(
     }
 
     // Cedar policy check — deny-by-default.
-    let (permitted, correlation_id) = crate::mcp_sync::authorize_tool_call(
-        &server_url, &jwt, &http_client, server, tool,
-    )
-    .await;
+    let (permitted, correlation_id) =
+        crate::mcp_sync::authorize_tool_call(&server_url, &jwt, &http_client, server, tool).await;
 
     if !permitted {
         audit_sender.emit(
@@ -273,15 +271,9 @@ async fn run_http_transport(
                 username: None,
                 metadata: HashMap::new(),
             };
-            let transformed = crate::credential_transform::apply(
-                &material,
-                None,
-                "POST",
-                url,
-                &headers,
-                None,
-            )
-            .map_err(|e| format!("credential transform failed: {}", e))?;
+            let transformed =
+                crate::credential_transform::apply(&material, None, "POST", url, &headers, None)
+                    .map_err(|e| format!("credential transform failed: {}", e))?;
 
             for (k, v) in transformed.headers {
                 headers.insert(k, v);

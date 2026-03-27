@@ -119,3 +119,4 @@ mod v200_workspace_registration;
 mod v200_workspace_tags;
 mod v201_mcp_authorize;
 mod vaults;
+mod workspace_delete;

@@ -16,7 +16,7 @@ services:
       dockerfile: Dockerfile
     container_name: agentcordon
     ports:
-      - "${AGTCRDN_PORT:-3141}:3140"
+      - "${AGTCRDN_PORT:-3140}:3140"
     volumes:
       - agentcordon-data:/data
     environment:

@@ -266,6 +266,9 @@ function workspaceDetailPage() {
                 });
                 if (resp.ok) {
                     window.location.href = '/workspaces';
+                } else {
+                    var err = await resp.json().catch(function() { return {}; });
+                    showToast((err.error && err.error.message) || 'Failed to delete workspace', 'error');
                 }
             } catch(e) { showToast('Failed to delete workspace', 'error'); }
             this.deleteModal = false;
