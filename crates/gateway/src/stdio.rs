@@ -263,14 +263,17 @@ async fn read_line_bounded<R: tokio::io::AsyncBufRead + Unpin>(
 ) -> Result<String, StdioError> {
     let mut buf = Vec::with_capacity(4096.min(max_bytes));
     loop {
-        let available = reader.fill_buf().await.map_err(|e| {
-            StdioError::Crashed(format!("read error: {}", e))
-        })?;
+        let available = reader
+            .fill_buf()
+            .await
+            .map_err(|e| StdioError::Crashed(format!("read error: {}", e)))?;
 
         if available.is_empty() {
             // EOF
             if buf.is_empty() {
-                return Err(StdioError::Crashed("closed stdout (process exited)".to_string()));
+                return Err(StdioError::Crashed(
+                    "closed stdout (process exited)".to_string(),
+                ));
             }
             break;
         }

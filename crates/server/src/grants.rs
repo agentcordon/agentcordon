@@ -132,4 +132,3 @@ pub async fn ensure_mcp_grant(
 
     ensure_grant(state, policy_name, cedar_text, description).await
 }
-

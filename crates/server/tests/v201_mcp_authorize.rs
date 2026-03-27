@@ -56,8 +56,7 @@ async fn test_mcp_authorize_permit_with_policy() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let ws = ctx.admin_agent.as_ref().unwrap();
 
-    let _server_id =
-        create_mcp_server_for_workspace(&*ctx.store, &ws.id, "github", true).await;
+    let _server_id = create_mcp_server_for_workspace(&*ctx.store, &ws.id, "github", true).await;
 
     let jwt = ctx_admin_jwt(&ctx).await;
 
@@ -118,8 +117,7 @@ permit(
         .await;
 
     let ws = ctx.admin_agent.as_ref().unwrap();
-    let _server_id =
-        create_mcp_server_for_workspace(&*ctx.store, &ws.id, "github", true).await;
+    let _server_id = create_mcp_server_for_workspace(&*ctx.store, &ws.id, "github", true).await;
 
     let jwt = ctx_admin_jwt(&ctx).await;
 
@@ -305,7 +303,12 @@ async fn test_mcp_authorize_disabled_server_denied() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK, "disabled-server mcp-authorize: {}", body);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "disabled-server mcp-authorize: {}",
+        body
+    );
     let data = &body["data"];
     assert_eq!(
         data["decision"].as_str().unwrap(),

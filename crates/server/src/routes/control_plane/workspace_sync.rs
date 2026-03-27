@@ -171,9 +171,7 @@ pub(super) async fn report_tools(
         .store
         .get_mcp_server_by_workspace_and_name(ws_id, &req.server_name)
         .await?
-        .ok_or_else(|| {
-            ApiError::NotFound(format!("MCP server '{}' not found", req.server_name))
-        })?;
+        .ok_or_else(|| ApiError::NotFound(format!("MCP server '{}' not found", req.server_name)))?;
 
     let tool_names: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();
     let tool_count = tool_names.len();

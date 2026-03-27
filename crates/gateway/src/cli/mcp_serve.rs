@@ -448,10 +448,8 @@ async fn handle_tools_call(
     };
 
     // Cedar policy check — deny-by-default if server unreachable.
-    let (permitted, correlation_id) = crate::mcp_sync::authorize_tool_call(
-        server_url, jwt, http, &server_name, tool_name,
-    )
-    .await;
+    let (permitted, correlation_id) =
+        crate::mcp_sync::authorize_tool_call(server_url, jwt, http, &server_name, tool_name).await;
 
     if !permitted {
         emit_tool_call_audit(

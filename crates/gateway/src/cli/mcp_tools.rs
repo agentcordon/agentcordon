@@ -109,14 +109,8 @@ pub async fn run(flags: &GlobalFlags, server_filter: Option<&str>) -> Result<(),
             }
         }
         for (srv_name, tools) in &by_server {
-            mcp_sync::report_discovered_tools(
-                &server_url,
-                &token,
-                &http_client,
-                srv_name,
-                tools,
-            )
-            .await;
+            mcp_sync::report_discovered_tools(&server_url, &token, &http_client, srv_name, tools)
+                .await;
         }
     }
 
@@ -333,15 +327,9 @@ async fn discover_tools_via_http(
                 username: None,
                 metadata: HashMap::new(),
             };
-            let transformed = crate::credential_transform::apply(
-                &material,
-                None,
-                "POST",
-                url,
-                &headers,
-                None,
-            )
-            .map_err(|e| format!("credential transform failed: {}", e))?;
+            let transformed =
+                crate::credential_transform::apply(&material, None, "POST", url, &headers, None)
+                    .map_err(|e| format!("credential transform failed: {}", e))?;
 
             for (k, v) in transformed.headers {
                 headers.insert(k, v);

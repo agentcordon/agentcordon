@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "agentcordon": {
+      "command": "/home/hotnops/.cargo/bin/agentcordon",
+      "args": [
+        "mcp-serve"
+      ]
+    }
+  }
+}
