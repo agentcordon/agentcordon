@@ -34,6 +34,10 @@ pub struct CredentialTemplate {
     pub description: String,
     pub tags: Vec<String>,
     pub sort_order: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth2_token_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth2_scopes: Option<String>,
 }
 
 #[derive(Embed)]
