@@ -27,12 +27,39 @@ AI agents need API keys. Most teams paste them into prompts or environment varia
 
 Agents authenticate to AgentCordon with a workspace identity (Ed25519 keypair). When they need to call an API, AgentCordon evaluates Cedar authorization policies and, if allowed, injects the credential into the upstream request server-side. The agent never touches the secret.
 
-```
-Agent  ──authenticate──>  AgentCordon  ──policy check──>  Credential Vault
-                                │                              │
-                                │         <──inject secret─────┘
-                                │
-                                └──proxied request──>  GitHub / Slack / AWS / ...
+```mermaid
+sequenceDiagram
+    participant Agent as AI Agent
+    participant GW as agentcordon CLI
+    participant Srv as AgentCordon Server
+    participant Cedar as Cedar Policy Engine
+    participant Vault as Encrypted Vault
+    participant Ext as External API / MCP Server
+
+    Note over Agent,GW: Workspace enrollment (one-time per project)
+    Agent->>GW: Ed25519 keypair generated locally
+    GW->>Srv: Register workspace (public key)
+    Srv-->>GW: Workspace JWT issued
+
+    Note over Agent,Ext: Credential proxy flow
+    Agent->>GW: agentcordon proxy github-token GET /repos/org/repo
+    GW->>Srv: Forwarded request + workspace JWT
+    Srv->>Cedar: Can this workspace access "github-token"?
+    Cedar-->>Srv: Permit
+    Srv->>Vault: Decrypt credential
+    Vault-->>Srv: Plaintext secret (never leaves server)
+    Srv->>Ext: Request with injected Authorization header
+    Ext-->>Agent: Response proxied back through CLI
+
+    Note over Agent,Ext: MCP tool call flow
+    Agent->>GW: agentcordon mcp-call stripe list_customers
+    GW->>Srv: MCP call + workspace JWT
+    Srv->>Cedar: Can this workspace call stripe/list_customers?
+    Cedar-->>Srv: Permit
+    Srv->>Vault: Decrypt credential for MCP server
+    Vault-->>Srv: Plaintext secret (never leaves server)
+    Srv->>Ext: Tool invocation with injected credential
+    Ext-->>Agent: Tool result proxied back through CLI
 ```
 
 ## See It In Action
