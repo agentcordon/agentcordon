@@ -27,12 +27,49 @@ AI agents need API keys. Most teams paste them into prompts or environment varia
 
 Agents authenticate to AgentCordon with a workspace identity (Ed25519 keypair). When they need to call an API, AgentCordon evaluates Cedar authorization policies and, if allowed, injects the credential into the upstream request server-side. The agent never touches the secret.
 
-```
-Agent  ──authenticate──>  AgentCordon  ──policy check──>  Credential Vault
-                                │                              │
-                                │         <──inject secret─────┘
-                                │
-                                └──proxied request──>  GitHub / Slack / AWS / ...
+```mermaid
+sequenceDiagram
+    box rgb(219,234,254) Agent Host
+    participant Agent as AI Agent
+    participant GW as agentcordon CLI
+    end
+    box rgb(220,252,231) AgentCordon Server
+    participant Srv as AgentCordon Server
+    participant Cedar as Cedar Policy Engine
+    participant Vault as Encrypted Vault
+    end
+    box rgb(254,243,199) External
+    participant Ext as External API / MCP Server
+    end
+
+    Note over Agent,GW: Workspace enrollment (one-time per project)
+    Agent->>GW: Ed25519 keypair generated locally
+    GW->>Srv: Register workspace (public key)
+    Srv-->>GW: Workspace JWT issued
+
+    Note over Agent,Ext: Credential proxy flow
+    Agent->>GW: agentcordon proxy github-token GET /repos/org/repo
+    GW->>Srv: Vend request + workspace JWT
+    Srv->>Cedar: Can this workspace access "github-token"?
+    Cedar-->>Srv: Permit
+    Srv->>Vault: Decrypt credential
+    Vault-->>Srv: Plaintext secret
+    Srv-->>GW: Credential material (ECIES-encrypted in transit)
+    GW->>Ext: GET /repos/org/repo (Authorization: Bearer ... injected)
+    Ext-->>GW: Response
+    GW-->>Agent: Response
+
+    Note over Agent,Ext: MCP tool call flow
+    Agent->>GW: agentcordon mcp-call stripe list_customers
+    GW->>Srv: Vend request + workspace JWT
+    Srv->>Cedar: Can this workspace call stripe/list_customers?
+    Cedar-->>Srv: Permit
+    Srv->>Vault: Decrypt credential for MCP server
+    Vault-->>Srv: Plaintext secret
+    Srv-->>GW: Credential material (ECIES-encrypted in transit)
+    GW->>Ext: Tool invocation (credential injected)
+    Ext-->>GW: Tool result
+    GW-->>Agent: Tool result
 ```
 
 ## See It In Action
