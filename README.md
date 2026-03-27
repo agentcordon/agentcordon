@@ -144,12 +144,10 @@ cargo fmt --all
 
 ## License
 
-[MIT](LICENSE)
-
 ---
 
 <p align="center">
-  <a href="https://agentcordon.dev">Website</a> &middot;
+  <a href="https://getcordoned.sh">Website</a> &middot;
   <a href="https://github.com/agentcordon/agentcordon/issues">Issues</a> &middot;
   <a href="https://github.com/agentcordon/agentcordon/releases">Releases</a>
 </p>
