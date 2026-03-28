@@ -32,7 +32,7 @@ RUN touch crates/core/src/lib.rs crates/server/src/main.rs
 RUN cargo build --release --bin agent-cordon-server
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
