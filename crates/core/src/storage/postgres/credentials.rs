@@ -25,7 +25,7 @@ impl CredentialStore for PostgresStore {
         let created_by_user = cred.created_by_user.as_ref().map(|id| id.0);
 
         let sql = format!(
-            "INSERT INTO credentials ({}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
+            "INSERT INTO credentials ({}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)",
             CREDENTIAL_COLUMNS
         );
         let result = sqlx::query(&sql)
@@ -48,6 +48,8 @@ impl CredentialStore for PostgresStore {
             .bind(&cred.credential_type)
             .bind(&tags)
             .bind(cred.key_version as i32)
+            .bind(&cred.description)
+            .bind(&cred.target_identity)
             .execute(&self.pool)
             .await;
 

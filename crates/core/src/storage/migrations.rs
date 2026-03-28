@@ -1,9 +1,10 @@
 use crate::error::StoreError;
 
 pub const MIGRATION_001: &str = include_str!("../../../../migrations/001_init.sql");
+pub const MIGRATION_002: &str = include_str!("../../../../migrations/002_credential_description.sql");
 
 /// All migrations in order. Each entry is (version, SQL content).
-const MIGRATIONS: [(i64, &str); 1] = [(1, MIGRATION_001)];
+const MIGRATIONS: [(i64, &str); 2] = [(1, MIGRATION_001), (2, MIGRATION_002)];
 
 /// Run all pending migrations, tracking applied versions in a `schema_migrations` table.
 ///

@@ -582,6 +582,8 @@ async fn credential_update_tags_unauthenticated_returns_401() {
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec!["original".to_string()],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     store.store_credential(&cred).await.expect("store cred");

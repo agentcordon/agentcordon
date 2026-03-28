@@ -52,6 +52,8 @@ async fn create_credential_for_test(
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     ctx.store

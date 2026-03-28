@@ -135,6 +135,8 @@ pub(crate) async fn agent_store_credential(
             expires_at: None,
             transform_script: None,
             transform_name: None,
+            description: None,
+            target_identity: None,
         },
     )?;
 

@@ -137,6 +137,8 @@ fn build_test_resource(
                 vault: "default".to_string(),
                 credential_type: "generic".to_string(),
                 tags: attrs.tags.clone().unwrap_or_default(),
+                description: None,
+                target_identity: None,
                 key_version: 1,
             };
 

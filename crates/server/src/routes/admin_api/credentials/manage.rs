@@ -36,6 +36,8 @@ pub(crate) struct UpdateCredentialRequest {
     transform_name: Option<String>,
     vault: Option<String>,
     tags: Option<Vec<String>>,
+    description: Option<String>,
+    target_identity: Option<String>,
 }
 
 pub(crate) async fn update_credential(
@@ -145,6 +147,8 @@ pub(crate) async fn update_credential(
         transform_name: req.transform_name.clone(),
         vault: req.vault.clone(),
         tags: req.tags.clone(),
+        description: req.description.clone(),
+        target_identity: req.target_identity.clone(),
         encrypted_value: new_encrypted_value,
         nonce: new_nonce,
         key_version: None,

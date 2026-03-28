@@ -100,6 +100,8 @@ pub async fn seed_demo_data(
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec!["demo".to_string()],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     store

@@ -47,6 +47,10 @@ pub(crate) struct StoreCredentialRequest {
     pub aws_service: Option<String>,
     /// Optional tags for categorization and policy matching.
     pub tags: Option<Vec<String>>,
+    /// Optional free-form description to help agents select the right credential.
+    pub description: Option<String>,
+    /// Optional target identity identifier (e.g., AWS role ARN, email, UUID).
+    pub target_identity: Option<String>,
     /// OAuth2 client ID. Required when credential_type is "oauth2_client_credentials".
     pub oauth2_client_id: Option<String>,
     /// OAuth2 token endpoint URL. Required when credential_type is "oauth2_client_credentials".
@@ -287,6 +291,8 @@ pub(crate) async fn store_credential(
             expires_at: req.expires_at,
             transform_script: req.transform_script.clone(),
             transform_name,
+            description: req.description.clone(),
+            target_identity: req.target_identity.clone(),
         },
     )?;
     state.store.store_credential(&cred).await?;

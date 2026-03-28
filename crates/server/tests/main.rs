@@ -118,5 +118,7 @@ mod v200_workspace_policy_sync;
 mod v200_workspace_registration;
 mod v200_workspace_tags;
 mod v201_mcp_authorize;
+mod v201_credential_fields;
+mod v201_provisioning;
 mod vaults;
 mod workspace_delete;

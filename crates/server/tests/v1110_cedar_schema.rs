@@ -130,6 +130,8 @@ async fn test_delegated_use_grant_creates_both_cedar_policies() {
         vault: "default".to_string(),
         credential_type: "api_key".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     ctx.store

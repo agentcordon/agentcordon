@@ -91,6 +91,8 @@ async fn rotate_encryption_key(
             transform_name: None,
             vault: None,
             tags: None,
+            description: None,
+            target_identity: None,
             encrypted_value: Some(new_encrypted),
             nonce: Some(new_nonce),
             key_version: Some(cred.key_version + 1),
