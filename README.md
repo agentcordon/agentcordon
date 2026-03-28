@@ -167,7 +167,7 @@ policies/     Default Cedar policy files
 - **Ed25519 workspace identity.** No shared secrets.
 - **Full audit.** Every credential access, policy evaluation, and token operation is logged.
 
-To report a vulnerability: security@agentcordon.dev
+To report a vulnerability: [open a security issue](https://github.com/agentcordon/agentcordon/issues/new?template=security_report.yml)
 
 ## Contributing
 
