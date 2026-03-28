@@ -162,6 +162,8 @@ pub(crate) struct CredentialRow {
     pub credential_type: String,
     pub tags: serde_json::Value,
     pub key_version: i32,
+    pub description: Option<String>,
+    pub target_identity: Option<String>,
 }
 
 impl From<CredentialRow> for StoredCredential {
@@ -185,6 +187,8 @@ impl From<CredentialRow> for StoredCredential {
             vault: r.vault,
             credential_type: r.credential_type,
             tags: serde_json::from_value(r.tags).unwrap_or_default(),
+            description: r.description,
+            target_identity: r.target_identity,
             key_version: r.key_version as i64,
         }
     }
@@ -207,6 +211,8 @@ pub(crate) struct CredentialSummaryRow {
     pub vault: String,
     pub credential_type: String,
     pub tags: serde_json::Value,
+    pub description: Option<String>,
+    pub target_identity: Option<String>,
 }
 
 impl From<CredentialSummaryRow> for CredentialSummary {
@@ -229,6 +235,8 @@ impl From<CredentialSummaryRow> for CredentialSummary {
             vault: r.vault,
             credential_type: r.credential_type,
             tags: serde_json::from_value(r.tags).unwrap_or_default(),
+            description: r.description,
+            target_identity: r.target_identity,
             owner_username: None,
         }
     }

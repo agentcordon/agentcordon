@@ -146,6 +146,8 @@ pub(crate) fn row_to_stored_credential(
     let credential_type: String = row.get(16)?;
     let tags_json: String = row.get(17)?;
     let key_version: i64 = row.get(18)?;
+    let description: Option<String> = row.get(19)?;
+    let target_identity: Option<String> = row.get(20)?;
 
     let id = Uuid::parse_str(&id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -207,6 +209,8 @@ pub(crate) fn row_to_stored_credential(
         vault,
         credential_type,
         tags,
+        description,
+        target_identity,
         key_version,
     })
 }
@@ -229,6 +233,8 @@ pub(crate) fn row_to_credential_summary(
     let vault: String = row.get(12)?;
     let credential_type: String = row.get(13)?;
     let tags_json: String = row.get(14)?;
+    let description: Option<String> = row.get(15)?;
+    let target_identity: Option<String> = row.get(16)?;
 
     let id = Uuid::parse_str(&id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -286,6 +292,8 @@ pub(crate) fn row_to_credential_summary(
         vault,
         credential_type,
         tags,
+        description,
+        target_identity,
         owner_username: None, // Populated at the route layer
     })
 }

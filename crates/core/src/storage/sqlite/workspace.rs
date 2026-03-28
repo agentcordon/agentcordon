@@ -299,31 +299,6 @@ impl SqliteStore {
             })
     }
 
-    // ---- Enrollment ----
-
-    pub(crate) async fn enroll_workspace_impl(
-        &self,
-        id: &WorkspaceId,
-        encryption_public_key: &str,
-    ) -> Result<bool, StoreError> {
-        let id_str = id.0.to_string();
-        let epk = encryption_public_key.to_string();
-        let now = chrono::Utc::now().to_rfc3339();
-        self.conn()
-            .call(move |conn| {
-                let count = conn
-                    .execute(
-                        "UPDATE workspaces SET status = 'active', encryption_public_key = ?1, enrollment_token_hash = NULL, updated_at = ?2 \
-                         WHERE id = ?3 AND status = 'pending' AND enrollment_token_hash IS NOT NULL",
-                        rusqlite::params![epk, now, id_str],
-                    )
-                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                Ok(count > 0)
-            })
-            .await
-            .map_err(|e| StoreError::Database(e.to_string()))
-    }
-
     // ---- JTI tracking ----
 
     pub(crate) async fn check_workspace_jti_impl(&self, jti: &str) -> Result<bool, StoreError> {
@@ -656,13 +631,6 @@ impl WorkspaceStore for SqliteStore {
     }
     async fn delete_workspace(&self, id: &WorkspaceId) -> Result<bool, StoreError> {
         self.delete_workspace_impl(id).await
-    }
-    async fn enroll_workspace(
-        &self,
-        id: &WorkspaceId,
-        encryption_public_key: &str,
-    ) -> Result<bool, StoreError> {
-        self.enroll_workspace_impl(id, encryption_public_key).await
     }
     async fn check_workspace_jti(&self, jti: &str) -> Result<bool, StoreError> {
         self.check_workspace_jti_impl(jti).await

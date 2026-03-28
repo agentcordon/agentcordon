@@ -147,10 +147,10 @@ pub const WORKSPACE_COLUMNS: &str = "id, name, enabled, status, pk_hash, encrypt
 pub const AUDIT_COLUMNS: &str = "id, timestamp, correlation_id, event_type, workspace_id, workspace_name, action, resource_type, resource_id, decision, decision_reason, metadata, user_id, user_name";
 
 /// Columns for the `credentials` table — full row (SELECT).
-pub const CREDENTIAL_COLUMNS: &str = "id, name, service, encrypted_value, nonce, scopes, metadata, created_by, created_at, updated_at, allowed_url_pattern, created_by_user, expires_at, transform_script, transform_name, vault, credential_type, tags, key_version";
+pub const CREDENTIAL_COLUMNS: &str = "id, name, service, encrypted_value, nonce, scopes, metadata, created_by, created_at, updated_at, allowed_url_pattern, created_by_user, expires_at, transform_script, transform_name, vault, credential_type, tags, key_version, description, target_identity";
 
 /// Columns for the `credentials` table — summary (no encrypted_value / nonce / key_version).
-pub const CREDENTIAL_SUMMARY_COLUMNS: &str = "id, name, service, scopes, metadata, created_by, created_at, allowed_url_pattern, created_by_user, expires_at, transform_script, transform_name, vault, credential_type, tags";
+pub const CREDENTIAL_SUMMARY_COLUMNS: &str = "id, name, service, scopes, metadata, created_by, created_at, allowed_url_pattern, created_by_user, expires_at, transform_script, transform_name, vault, credential_type, tags, description, target_identity";
 
 /// Columns for the `users` table (SELECT).
 pub const USER_COLUMNS: &str = "id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at, show_advanced";
@@ -395,6 +395,16 @@ pub fn build_credential_update_sql(
             .map_err(|e| StoreError::Database(format!("serialize tags: {}", e)))?;
         set_clauses.push(format!("tags = {}{}", style.param(idx), json_cast_suffix));
         params.push(CredentialParamValue::String(tags_json));
+        idx += 1;
+    }
+    if let Some(ref description) = updates.description {
+        set_clauses.push(format!("description = {}", style.param(idx)));
+        params.push(CredentialParamValue::String(description.clone()));
+        idx += 1;
+    }
+    if let Some(ref target_identity) = updates.target_identity {
+        set_clauses.push(format!("target_identity = {}", style.param(idx)));
+        params.push(CredentialParamValue::String(target_identity.clone()));
         idx += 1;
     }
     if let Some(ref encrypted_value) = updates.encrypted_value {

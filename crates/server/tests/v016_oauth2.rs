@@ -131,6 +131,8 @@ async fn store_test_credential(
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     state
@@ -190,6 +192,8 @@ async fn store_oauth2_credential(
         vault: "default".to_string(),
         credential_type: "oauth2_client_credentials".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     state
@@ -1050,6 +1054,8 @@ async fn oauth2_proxy_empty_client_id_fails() {
         vault: "default".to_string(),
         credential_type: "oauth2_client_credentials".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     store.store_credential(&cred).await.expect("store");

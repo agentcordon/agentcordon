@@ -36,7 +36,7 @@ impl SqliteStore {
                 let cred_name = cred.name.clone();
 
                 let sql = format!(
-                    "INSERT INTO credentials ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                    "INSERT INTO credentials ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                     CREDENTIAL_COLUMNS
                 );
                 conn.execute(
@@ -61,6 +61,8 @@ impl SqliteStore {
                         cred.credential_type,
                         tags_json,
                         cred.key_version,
+                        cred.description,
+                        cred.target_identity,
                     ],
                 )
                 .map_err(|e| {

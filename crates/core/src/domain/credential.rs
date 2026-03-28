@@ -41,6 +41,10 @@ pub struct StoredCredential {
     pub credential_type: String,
     /// User-defined tags for categorization and policy matching.
     pub tags: Vec<String>,
+    /// Optional free-form description to help agents select the right credential.
+    pub description: Option<String>,
+    /// Optional unique identifier of the credential's target identity (e.g., AWS role ARN, email, UUID).
+    pub target_identity: Option<String>,
     /// Encryption key version. Incremented on each key rotation.
     pub key_version: i64,
 }
@@ -83,6 +87,10 @@ pub struct CredentialSummary {
     pub credential_type: String,
     /// User-defined tags for categorization and policy matching.
     pub tags: Vec<String>,
+    /// Optional free-form description.
+    pub description: Option<String>,
+    /// Optional target identity identifier.
+    pub target_identity: Option<String>,
     /// Resolved owner username (populated at response time, not stored).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_username: Option<String>,
@@ -108,6 +116,8 @@ impl From<StoredCredential> for CredentialSummary {
             vault: cred.vault,
             credential_type: cred.credential_type,
             tags: cred.tags,
+            description: cred.description,
+            target_identity: cred.target_identity,
             owner_username: None,
         }
     }
@@ -127,6 +137,8 @@ pub struct CredentialUpdate {
     pub vault: Option<String>,
     /// Optional tags update. When provided, replaces the existing tags entirely.
     pub tags: Option<Vec<String>>,
+    pub description: Option<String>,
+    pub target_identity: Option<String>,
     /// New encrypted secret value (set by the route handler after encrypting).
     #[serde(skip)]
     pub encrypted_value: Option<Vec<u8>>,
@@ -188,6 +200,8 @@ mod tests {
             vault: "default".to_string(),
             credential_type: "generic".to_string(),
             tags: vec!["test".to_string()],
+            description: None,
+            target_identity: None,
             key_version: 1,
         }
     }

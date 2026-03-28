@@ -70,6 +70,8 @@ async fn store_test_credential(
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     state
@@ -117,6 +119,8 @@ async fn store_credential_in_vault(
         vault: vault.to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     store

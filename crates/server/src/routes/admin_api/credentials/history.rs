@@ -147,6 +147,8 @@ pub(crate) async fn restore_secret_history(
         transform_name: None,
         vault: None,
         tags: None,
+        description: None,
+        target_identity: None,
         encrypted_value: Some(historical_encrypted),
         nonce: Some(historical_nonce),
         key_version: None,

@@ -168,28 +168,6 @@ impl WorkspaceStore for PostgresStore {
         Ok(result.rows_affected() > 0)
     }
 
-    // ---- Enrollment ----
-
-    async fn enroll_workspace(
-        &self,
-        id: &WorkspaceId,
-        encryption_public_key: &str,
-    ) -> Result<bool, StoreError> {
-        let now = Utc::now();
-        let result = sqlx::query(
-            "UPDATE workspaces SET status = 'active', encryption_public_key = $1, \
-             enrollment_token_hash = NULL, updated_at = $2 \
-             WHERE id = $3 AND status = 'pending' AND enrollment_token_hash IS NOT NULL",
-        )
-        .bind(encryption_public_key)
-        .bind(now)
-        .bind(id.0)
-        .execute(&self.pool)
-        .await
-        .map_err(db_err)?;
-        Ok(result.rows_affected() > 0)
-    }
-
     // ---- JTI tracking ----
 
     async fn check_workspace_jti(&self, jti: &str) -> Result<bool, StoreError> {

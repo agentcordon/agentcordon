@@ -57,6 +57,8 @@ pub struct NewCredentialParams {
     pub expires_at: Option<DateTime<Utc>>,
     pub transform_script: Option<String>,
     pub transform_name: Option<String>,
+    pub description: Option<String>,
+    pub target_identity: Option<String>,
 }
 
 /// Strip common auth scheme prefixes (`Bearer `, `token `, `Basic `) from a
@@ -120,6 +122,8 @@ pub fn build_credential(
         vault: params.vault,
         credential_type: params.credential_type,
         tags: params.tags,
+        description: params.description,
+        target_identity: params.target_identity,
         key_version: 1,
     })
 }

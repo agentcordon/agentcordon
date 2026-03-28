@@ -139,6 +139,18 @@ pub enum CliCommand {
     McpServe,
     /// Re-scan .mcp.json, migrate new credentials, and update MCP config
     McpRefresh,
+    /// Enroll workspace using a provisioning token (CI/CD)
+    Enroll {
+        /// Provisioning token from admin
+        #[arg(long)]
+        provision_token: String,
+        /// Server URL
+        #[arg(long)]
+        server: Option<String>,
+        /// Workspace display name
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Show enrollment and server status
     Status,
 }
@@ -193,6 +205,31 @@ pub async fn run(cmd: CliCommand, flags: &GlobalFlags) {
         } => mcp_call::run(flags, &mcp_server, &tool, &arg).await,
         CliCommand::UploadMcps { file } => upload_mcps::run(flags, file.as_deref()).await,
         CliCommand::McpServe => mcp_serve::run(flags).await,
+        CliCommand::Enroll {
+            provision_token,
+            server,
+            name,
+        } => {
+            async {
+                // Enroll is a thin wrapper: ensure keys, then provision
+                init::ensure_keys_exist()?;
+                let server_url = server
+                    .or_else(|| flags.server.clone())
+                    .ok_or_else(|| "--server is required for enroll".to_string())?
+                    .trim_end_matches('/')
+                    .to_string();
+                init::run(
+                    flags,
+                    false,
+                    Some(server_url),
+                    name,
+                    false,
+                    Some(provision_token),
+                )
+                .await
+            }
+            .await
+        }
         CliCommand::McpRefresh => mcp_refresh_run(flags).await,
         CliCommand::Status => status::run(flags).await,
     };

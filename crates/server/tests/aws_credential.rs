@@ -99,6 +99,8 @@ async fn store_aws_credential(
         vault: "default".to_string(),
         credential_type: "aws".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     state
@@ -146,6 +148,8 @@ async fn store_generic_credential(
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     state
@@ -1186,6 +1190,8 @@ async fn proxy_aws_sigv4_no_region_non_aws_url_fails() {
         vault: "default".to_string(),
         credential_type: "aws".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     ctx.store.store_credential(&cred).await.expect("store");

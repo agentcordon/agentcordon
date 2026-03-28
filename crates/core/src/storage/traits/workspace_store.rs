@@ -28,17 +28,6 @@ pub trait WorkspaceStore: Send + Sync {
     async fn update_workspace(&self, workspace: &Workspace) -> Result<(), StoreError>;
     async fn delete_workspace(&self, id: &WorkspaceId) -> Result<bool, StoreError>;
 
-    // ---- Enrollment ----
-
-    /// Atomically enroll a workspace: UPDATE status to active, set encryption_public_key,
-    /// clear enrollment_token_hash -- only if status is currently 'pending' and
-    /// enrollment_token_hash IS NOT NULL. Returns true if the row was updated.
-    async fn enroll_workspace(
-        &self,
-        id: &WorkspaceId,
-        encryption_public_key: &str,
-    ) -> Result<bool, StoreError>;
-
     // ---- JTI tracking (replay prevention) ----
 
     async fn check_workspace_jti(&self, jti: &str) -> Result<bool, StoreError>;

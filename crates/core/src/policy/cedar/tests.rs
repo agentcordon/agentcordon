@@ -88,6 +88,8 @@ fn make_credential_owned_by(
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     }
 }
@@ -113,6 +115,8 @@ fn make_credential(name: &str, service: &str, scopes: Vec<&str>) -> StoredCreden
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     }
 }
@@ -144,6 +148,8 @@ fn make_credential_for_user(
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     }
 }

@@ -52,6 +52,8 @@ async fn create_credential_in_db(
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags,
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     store

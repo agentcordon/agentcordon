@@ -47,6 +47,8 @@ async fn test_consolidated_migration_creates_correct_schema() {
         transform_name: None,
         vault: "default".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
         created_by: None,
         created_by_user: None,
