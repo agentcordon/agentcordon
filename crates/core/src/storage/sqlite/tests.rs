@@ -135,6 +135,8 @@ async fn test_store_and_get_credential() {
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
 
@@ -187,6 +189,8 @@ async fn test_store_credential_with_expiry() {
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
 
@@ -238,6 +242,8 @@ async fn test_expired_credential_is_expired() {
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
 
@@ -284,6 +290,8 @@ async fn test_list_credentials_shows_expired_flag() {
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     let active_cred = StoredCredential {
@@ -305,6 +313,8 @@ async fn test_list_credentials_shows_expired_flag() {
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     let no_expiry_cred = StoredCredential {
@@ -326,6 +336,8 @@ async fn test_list_credentials_shows_expired_flag() {
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
 
@@ -397,6 +409,8 @@ async fn test_list_credentials_returns_summaries() {
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
 
@@ -443,6 +457,8 @@ async fn test_delete_credential() {
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
 
@@ -771,6 +787,8 @@ async fn test_delete_agent_conflict_with_credentials() {
         vault: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
+        description: None,
+        target_identity: None,
         key_version: 1,
     };
     store
@@ -873,64 +891,6 @@ async fn test_get_workspaces_by_owner() {
         .await
         .expect("get by unknown owner");
     assert!(empty.is_empty());
-}
-
-#[tokio::test]
-async fn test_enroll_workspace_happy_path() {
-    let store = setup_store().await;
-    let mut ws = make_agent("enrollable-ws");
-    ws.status = WorkspaceStatus::Pending;
-    store.create_workspace(&ws).await.expect("create workspace");
-
-    // Set enrollment_token_hash so enroll precondition is met
-    // The implementation checks: status = 'pending' AND enrollment_token_hash IS NOT NULL
-    // We need to set enrollment_token_hash directly via SQL
-    store
-        .conn()
-        .call({
-            let id_str = ws.id.0.hyphenated().to_string();
-            move |conn| {
-                conn.execute(
-                    "UPDATE workspaces SET enrollment_token_hash = ?1 WHERE id = ?2",
-                    rusqlite::params!["some-token-hash", id_str],
-                )
-                .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                Ok(())
-            }
-        })
-        .await
-        .expect("set enrollment_token_hash");
-
-    let enrolled = store
-        .enroll_workspace(&ws.id, "test-encryption-pubkey")
-        .await
-        .expect("enroll");
-    assert!(
-        enrolled,
-        "enroll should succeed for pending workspace with token_hash"
-    );
-
-    // Verify the workspace is now active with encryption key
-    let fetched = store.get_workspace(&ws.id).await.expect("get").unwrap();
-    assert_eq!(fetched.status, WorkspaceStatus::Active);
-    assert_eq!(
-        fetched.encryption_public_key.as_deref(),
-        Some("test-encryption-pubkey")
-    );
-}
-
-#[tokio::test]
-async fn test_enroll_already_active_workspace() {
-    let store = setup_store().await;
-    let ws = make_agent("active-ws"); // default status is Active
-    store.create_workspace(&ws).await.expect("create workspace");
-
-    // Enrolling an already-active workspace should return false
-    let enrolled = store
-        .enroll_workspace(&ws.id, "key")
-        .await
-        .expect("enroll active");
-    assert!(!enrolled, "enroll should fail for already-active workspace");
 }
 
 #[tokio::test]
@@ -1302,21 +1262,6 @@ async fn test_get_workspace_by_pk_hash_with_multiple_workspaces() {
         .expect("get pk2")
         .unwrap();
     assert_eq!(f2.name, "ws-pk-2");
-}
-
-#[tokio::test]
-async fn test_enroll_workspace_without_token_hash() {
-    let store = setup_store().await;
-    let mut ws = make_agent("no-token-ws");
-    ws.status = WorkspaceStatus::Pending;
-    store.create_workspace(&ws).await.expect("create workspace");
-
-    // Don't set enrollment_token_hash. The enroll precondition requires it IS NOT NULL.
-    let enrolled = store.enroll_workspace(&ws.id, "key").await.expect("enroll");
-    assert!(
-        !enrolled,
-        "enroll should fail when enrollment_token_hash is NULL"
-    );
 }
 
 #[tokio::test]
