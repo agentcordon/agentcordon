@@ -16,10 +16,6 @@ pub fn routes() -> Router<AppState> {
             "/agents/{id}/workspace-identity",
             axum::routing::delete(management::revoke_workspace_identity),
         )
-        .route(
-            "/agents/identity/rotate",
-            post(management::rotate_workspace_key_by_jwt),
-        )
         // Frontend management routes
         .route(
             "/workspace-identities",

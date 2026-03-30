@@ -75,12 +75,12 @@ fn mcp_permissions_expired_rejected() {
 fn mcp_permissions_wrong_audience() {
     let issuer = test_issuer();
 
-    // Issue a workspace identity token and try to validate as MCP permissions
+    // Issue a device auth token and try to validate as MCP permissions
     let now = Utc::now();
     let claims = JwtClaims {
         iss: super::ISSUER.to_string(),
         sub: Uuid::new_v4().to_string(),
-        aud: AUDIENCE_WORKSPACE_IDENTITY.to_string(),
+        aud: AUDIENCE_DEVICE_AUTH.to_string(),
         exp: (now + Duration::seconds(300)).timestamp(),
         iat: now.timestamp(),
         nbf: now.timestamp(),
@@ -91,7 +91,7 @@ fn mcp_permissions_wrong_audience() {
     let result = issuer.validate_mcp_permissions(&token);
     assert!(
         result.is_err(),
-        "workspace identity token should be rejected as MCP permissions token"
+        "device auth token should be rejected as MCP permissions token"
     );
 }
 
@@ -196,21 +196,20 @@ fn test_p256_thumbprint_known_vector() {
 // --- sign_custom_claims with ekt ---
 
 #[test]
-fn test_sign_custom_claims_with_ekt() {
-    use crate::domain::workspace::WorkspaceIdentityClaims;
-
+fn test_sign_custom_claims_with_extra_fields() {
     let issuer = test_issuer();
-    let claims = WorkspaceIdentityClaims {
-        sub: "ws-1".to_string(),
-        wkt: "wkt-hash".to_string(),
-        ekt: Some("my-ekt-thumbprint".to_string()),
-        exp: (Utc::now() + Duration::seconds(300)).timestamp(),
-        iss: super::ISSUER.to_string(),
-        aud: AUDIENCE_WORKSPACE_IDENTITY.to_string(),
-        iat: Utc::now().timestamp(),
-        nbf: Utc::now().timestamp(),
-        jti: Uuid::new_v4().to_string(),
-    };
+    let now = Utc::now();
+    let claims = serde_json::json!({
+        "sub": "ws-1",
+        "wkt": "wkt-hash",
+        "ekt": "my-ekt-thumbprint",
+        "exp": (now + Duration::seconds(300)).timestamp(),
+        "iss": super::ISSUER,
+        "aud": "agentcordon:test-custom",
+        "iat": now.timestamp(),
+        "nbf": now.timestamp(),
+        "jti": Uuid::new_v4().to_string(),
+    });
 
     let token = issuer.sign_custom_claims(&claims).unwrap();
 
@@ -231,21 +230,19 @@ fn test_sign_custom_claims_with_ekt() {
 }
 
 #[test]
-fn test_sign_custom_claims_without_ekt() {
-    use crate::domain::workspace::WorkspaceIdentityClaims;
-
+fn test_sign_custom_claims_without_extra_fields() {
     let issuer = test_issuer();
-    let claims = WorkspaceIdentityClaims {
-        sub: "ws-1".to_string(),
-        wkt: "wkt-hash".to_string(),
-        ekt: None,
-        exp: (Utc::now() + Duration::seconds(300)).timestamp(),
-        iss: super::ISSUER.to_string(),
-        aud: AUDIENCE_WORKSPACE_IDENTITY.to_string(),
-        iat: Utc::now().timestamp(),
-        nbf: Utc::now().timestamp(),
-        jti: Uuid::new_v4().to_string(),
-    };
+    let now = Utc::now();
+    let claims = serde_json::json!({
+        "sub": "ws-1",
+        "wkt": "wkt-hash",
+        "exp": (now + Duration::seconds(300)).timestamp(),
+        "iss": super::ISSUER,
+        "aud": "agentcordon:test-custom",
+        "iat": now.timestamp(),
+        "nbf": now.timestamp(),
+        "jti": Uuid::new_v4().to_string(),
+    });
 
     let token = issuer.sign_custom_claims(&claims).unwrap();
 
@@ -259,7 +256,7 @@ fn test_sign_custom_claims_without_ekt() {
     let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
     assert!(
         payload.get("ekt").is_none(),
-        "ekt must be absent when None (skip_serializing_if)"
+        "ekt must be absent when not included"
     );
 }
 

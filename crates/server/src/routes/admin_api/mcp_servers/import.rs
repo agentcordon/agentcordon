@@ -79,7 +79,8 @@ pub(super) async fn import_mcp_servers(
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| ApiError::Unauthorized("missing Authorization header".to_string()))?;
 
-    let workspace = authenticate_workspace(&state, auth_header).await?;
+    let auth = authenticate_workspace(&state, auth_header).await?;
+    let workspace = auth.workspace;
 
     // Verify the workspace_id in the request matches the authenticated workspace
     if workspace.id.0 != req.workspace_id {

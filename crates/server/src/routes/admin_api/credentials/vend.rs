@@ -351,7 +351,8 @@ pub(crate) async fn vend_credential(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| ApiError::Unauthorized("missing Authorization header".to_string()))?;
-    let workspace = authenticated_workspace::authenticate_workspace(&state, auth_header).await?;
+    let auth = authenticated_workspace::authenticate_workspace(&state, auth_header).await?;
+    auth.require_scope(agent_cordon_core::oauth2::types::OAuthScope::CredentialsVend)?;
 
     let broker_pub = match &body {
         Some(Json(req)) => req
@@ -369,7 +370,7 @@ pub(crate) async fn vend_credential(
         .await?
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
-    let response = vend_inner(&state, &workspace, &cred, corr.0, broker_pub).await?;
+    let response = vend_inner(&state, &auth.workspace, &cred, corr.0, broker_pub).await?;
     Ok(Json(ApiResponse::ok(response)))
 }
 
@@ -388,7 +389,8 @@ pub(crate) async fn vend_credential_to_device(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| ApiError::Unauthorized("workspace authentication required".to_string()))?;
-    let workspace = authenticated_workspace::authenticate_workspace(&state, auth_header).await?;
+    let auth = authenticated_workspace::authenticate_workspace(&state, auth_header).await?;
+    auth.require_scope(agent_cordon_core::oauth2::types::OAuthScope::CredentialsVend)?;
 
     let broker_pub = match &body {
         Some(Json(req)) => req
@@ -402,7 +404,7 @@ pub(crate) async fn vend_credential_to_device(
     // Look up credential scoped to workspace first, fall back to global
     let cred = match state
         .store
-        .get_credential_by_workspace_and_name(&workspace.id, &name)
+        .get_credential_by_workspace_and_name(&auth.workspace.id, &name)
         .await?
     {
         Some(c) => c,
@@ -413,6 +415,6 @@ pub(crate) async fn vend_credential_to_device(
             .ok_or_else(|| ApiError::NotFound(format!("credential '{}' not found", name)))?,
     };
 
-    let response = vend_inner(&state, &workspace, &cred, corr.0, broker_pub).await?;
+    let response = vend_inner(&state, &auth.workspace, &cred, corr.0, broker_pub).await?;
     Ok(Json(ApiResponse::ok(response)))
 }

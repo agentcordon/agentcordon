@@ -315,7 +315,7 @@ async fn token_exchange_via_device(
     let claims = serde_json::json!({
         "iss": agent_cordon_core::auth::jwt::ISSUER,
         "sub": agent.id.0.to_string(),
-        "aud": agent_cordon_core::auth::jwt::AUDIENCE_WORKSPACE_IDENTITY,
+        "aud": agent_cordon_core::auth::jwt::AUDIENCE_MCP_PERMISSIONS,
         "exp": (now + chrono::Duration::seconds(3600)).timestamp(),
         "iat": now.timestamp(),
         "nbf": now.timestamp(),
@@ -1186,7 +1186,7 @@ async fn edge_case_jwt_future_iat_accepted() {
     let claims = agent_cordon_core::auth::jwt::JwtClaims {
         iss: agent_cordon_core::auth::jwt::ISSUER.to_string(),
         sub: _agent.id.0.to_string(),
-        aud: agent_cordon_core::auth::jwt::AUDIENCE_WORKSPACE_IDENTITY.to_string(),
+        aud: agent_cordon_core::auth::jwt::AUDIENCE_MCP_PERMISSIONS.to_string(),
         exp: (now + chrono::Duration::seconds(900)).timestamp(),
         iat: (now + chrono::Duration::seconds(10)).timestamp(),
         nbf: now.timestamp(),
@@ -1219,7 +1219,7 @@ async fn edge_case_jwt_future_iat_accepted() {
     );
     let _result = issuer.validate_with_audience(
         &jwt,
-        agent_cordon_core::auth::jwt::AUDIENCE_WORKSPACE_IDENTITY,
+        agent_cordon_core::auth::jwt::AUDIENCE_MCP_PERMISSIONS,
     );
     // We document the result but don't assert pass/fail — this tests that
     // the system doesn't panic on future iat values

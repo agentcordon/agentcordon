@@ -3,7 +3,9 @@ use axum::{
     http::request::Parts,
 };
 
+use agent_cordon_core::domain::user::UserId;
 use agent_cordon_core::domain::workspace::Workspace;
+use agent_cordon_core::oauth2::types::OAuthScope;
 
 use crate::extractors::oauth::AuthenticatedOAuthWorkspace;
 use crate::response::ApiError;
@@ -12,15 +14,30 @@ use crate::state::AppState;
 /// An authenticated workspace, validated via an OAuth 2.0 Bearer token.
 ///
 /// This is the single auth extractor for all workspace requests.
-/// Internally delegates to [`AuthenticatedOAuthWorkspace`].
+/// Internally delegates to [`AuthenticatedOAuthWorkspace`] and preserves
+/// the full OAuth context (user_id and scopes) for scope enforcement.
 pub struct AuthenticatedWorkspace {
     pub workspace: Workspace,
+    pub user_id: Option<UserId>,
+    pub scopes: Vec<OAuthScope>,
 }
 
 impl AuthenticatedWorkspace {
     /// Backward-compat accessor: returns the workspace as `agent`.
     pub fn agent(&self) -> &Workspace {
         &self.workspace
+    }
+
+    /// Check that this token has the required OAuth scope.
+    pub fn require_scope(&self, scope: OAuthScope) -> Result<(), ApiError> {
+        if self.scopes.contains(&scope) {
+            Ok(())
+        } else {
+            Err(ApiError::Forbidden(format!(
+                "insufficient OAuth scope: requires {}",
+                scope
+            )))
+        }
     }
 }
 
@@ -35,6 +52,8 @@ where
         let oauth = AuthenticatedOAuthWorkspace::from_request_parts(parts, state).await?;
         Ok(AuthenticatedWorkspace {
             workspace: oauth.workspace,
+            user_id: Some(oauth.user_id),
+            scopes: oauth.scopes,
         })
     }
 }
@@ -43,10 +62,11 @@ where
 ///
 /// This is the function-based equivalent of the extractor, for callsites that
 /// need to authenticate from a raw header value rather than via Axum extractors.
+/// Returns the full AuthenticatedWorkspace including scopes.
 pub(crate) async fn authenticate_workspace(
     state: &AppState,
     auth_header: &str,
-) -> Result<Workspace, ApiError> {
+) -> Result<AuthenticatedWorkspace, ApiError> {
     let token = auth_header
         .strip_prefix("Bearer ")
         .ok_or_else(|| ApiError::Unauthorized("expected Bearer token".to_string()))?;
@@ -107,5 +127,9 @@ pub(crate) async fn authenticate_workspace(
         "workspace request authenticated via OAuth token"
     );
 
-    Ok(workspace)
+    Ok(AuthenticatedWorkspace {
+        workspace,
+        user_id: Some(access_token.user_id),
+        scopes: access_token.scopes,
+    })
 }

@@ -117,7 +117,7 @@ mod tests {
         let claims = serde_json::json!({
             "iss": agent_cordon_core::auth::jwt::ISSUER,
             "sub": agent.id.0.to_string(),
-            "aud": agent_cordon_core::auth::jwt::AUDIENCE_WORKSPACE_IDENTITY,
+            "aud": agent_cordon_core::auth::jwt::AUDIENCE_MCP_PERMISSIONS,
             "exp": (now + chrono::Duration::seconds(3600)).timestamp(),
             "iat": now.timestamp(),
             "nbf": now.timestamp(),

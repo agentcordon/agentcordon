@@ -15,7 +15,6 @@ pub const ISSUER: &str = "agentcordon-server";
 /// Well-known audience values for different token types.
 pub const AUDIENCE_MCP_PERMISSIONS: &str = "agentcordon:mcp-permissions";
 pub const AUDIENCE_DEVICE_AUTH: &str = "agentcordon:device-auth";
-pub const AUDIENCE_WORKSPACE_IDENTITY: &str = "agentcordon:workspace-identity";
 
 /// JWT claims structure for auth tokens.
 #[derive(Debug, Clone, Serialize, Deserialize)]

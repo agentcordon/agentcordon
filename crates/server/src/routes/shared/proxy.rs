@@ -88,6 +88,7 @@ async fn execute_proxy(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<ProxyExecuteRequest>,
 ) -> Result<Json<ApiResponse<ProxyExecuteResponse>>, ApiError> {
+    auth.require_scope(agent_cordon_core::oauth2::types::OAuthScope::CredentialsVend)?;
     let method = parse_method(&req.method)?;
 
     // Collect all placeholder names from url, headers, and body

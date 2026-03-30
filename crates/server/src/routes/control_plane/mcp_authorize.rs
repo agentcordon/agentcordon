@@ -53,6 +53,7 @@ pub(super) async fn authorize(
     workspace: AuthenticatedWorkspace,
     Json(req): Json<McpAuthorizeRequest>,
 ) -> Result<Json<ApiResponse<McpAuthorizeResponse>>, ApiError> {
+    workspace.require_scope(agent_cordon_core::oauth2::types::OAuthScope::McpInvoke)?;
     let correlation_id = Uuid::new_v4().to_string();
 
     // Validate inputs.
