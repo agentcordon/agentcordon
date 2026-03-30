@@ -1,7 +1,6 @@
 //! Control-plane routes — agent/device-facing API (auth, sync, JWKS).
 
 pub mod audit_stream;
-pub mod auth;
 pub mod jwks;
 pub mod mcp_authorize;
 pub mod workspace_identity;
@@ -17,7 +16,6 @@ use crate::state::AppState;
 /// API routes for the control plane (nested under `/api/v1`).
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .merge(auth::routes())
         .merge(workspace_identity::routes())
         .route("/workspaces/policies", get(workspace_sync::sync_policies))
         .route(

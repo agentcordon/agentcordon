@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "agentcordon": {
-      "command": "/home/hotnops/.cargo/bin/agentcordon",
+      "command": "/workspace/AgentCordon/target/release/agentcordon",
       "args": [
         "mcp-serve"
       ]

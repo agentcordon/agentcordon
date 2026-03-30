@@ -376,25 +376,32 @@ async fn test_mcp_permissions_token_validated_with_full_checks() {
     );
 }
 
-/// Test #12: Grant token validated with full checks.
+/// Test #12: OAuth access token is accepted for authenticated endpoints.
+///
+/// Since v3.0.0, agent auth uses opaque OAuth tokens instead of JWTs.
+/// This test validates that a properly-issued token is accepted.
 #[tokio::test]
-async fn test_grant_token_validated_with_full_checks() {
+async fn test_oauth_access_token_accepted() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
-    // Issue a workspace identity token (used as "grant" token)
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let jwt = issue_agent_jwt(&ctx.state, agent);
+    let token = issue_agent_jwt(&ctx.state, agent).await;
 
-    // Use validate_custom_audience (returns raw JSON, no struct deserialization)
-    // since workspace identity JWTs may not have all JwtClaims fields
-    let result = ctx
-        .state
-        .jwt_issuer
-        .validate_custom_audience(&jwt, "agentcordon:workspace-identity");
-    assert!(
-        result.is_ok(),
-        "valid grant token should be accepted: {:?}",
-        result.err()
+    // Use the token to make an authenticated API call
+    let (status, _body) = send_json(
+        &ctx.app,
+        axum::http::Method::GET,
+        "/api/v1/credentials",
+        Some(&token),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_ne!(
+        status,
+        axum::http::StatusCode::UNAUTHORIZED,
+        "valid OAuth token should be accepted"
     );
 }
 

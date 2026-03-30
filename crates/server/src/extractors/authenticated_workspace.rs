@@ -2,18 +2,17 @@ use axum::{
     extract::{FromRef, FromRequestParts},
     http::request::Parts,
 };
-use uuid::Uuid;
 
-use agent_cordon_core::auth::jwt::AUDIENCE_WORKSPACE_IDENTITY;
-use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
+use agent_cordon_core::domain::workspace::Workspace;
 
+use crate::extractors::oauth::AuthenticatedOAuthWorkspace;
 use crate::response::ApiError;
 use crate::state::AppState;
 
-/// An authenticated workspace, validated via a server-signed workspace identity JWT
-/// in the `Authorization: Bearer` header.
+/// An authenticated workspace, validated via an OAuth 2.0 Bearer token.
 ///
 /// This is the single auth extractor for all workspace requests.
+/// Internally delegates to [`AuthenticatedOAuthWorkspace`].
 pub struct AuthenticatedWorkspace {
     pub workspace: Workspace,
 }
@@ -33,26 +32,17 @@ where
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app_state = AppState::from_ref(state);
-
-        let auth_header = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                ApiError::Unauthorized("workspace authentication required".to_string())
-            })?;
-
-        let workspace = authenticate_workspace(&app_state, auth_header).await?;
-        Ok(AuthenticatedWorkspace { workspace })
+        let oauth = AuthenticatedOAuthWorkspace::from_request_parts(parts, state).await?;
+        Ok(AuthenticatedWorkspace {
+            workspace: oauth.workspace,
+        })
     }
 }
 
-/// Authenticate a workspace via server-signed JWT in the Authorization header.
+/// Authenticate a workspace via OAuth 2.0 Bearer token in the Authorization header.
 ///
-/// Validates the JWT against the server's own signing key (JWKS), checks audience
-/// `agentcordon:workspace-identity`, looks up the workspace, and verifies status/enabled.
-/// Anti-replay is provided by the short JWT TTL (5 min).
+/// This is the function-based equivalent of the extractor, for callsites that
+/// need to authenticate from a raw header value rather than via Axum extractors.
 pub(crate) async fn authenticate_workspace(
     state: &AppState,
     auth_header: &str,
@@ -61,55 +51,60 @@ pub(crate) async fn authenticate_workspace(
         .strip_prefix("Bearer ")
         .ok_or_else(|| ApiError::Unauthorized("expected Bearer token".to_string()))?;
 
-    // Validate JWT against server's own signing key with workspace-identity audience
-    let ws_claims = state
-        .jwt_issuer
-        .validate_custom_audience(token, AUDIENCE_WORKSPACE_IDENTITY)
-        .map_err(|e| ApiError::Unauthorized(format!("invalid workspace JWT: {}", e)))?;
+    let token_hash = crate::routes::oauth::hash_token(token);
 
-    let workspace_id_str = ws_claims
-        .get("sub")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ApiError::Unauthorized("missing sub in workspace JWT".to_string()))?;
-
-    let workspace_id = Uuid::parse_str(workspace_id_str)
-        .map_err(|_| ApiError::Unauthorized("invalid workspace_id in sub".to_string()))?;
-
-    // Look up the workspace
-    let workspace = state
+    let access_token = state
         .store
-        .get_workspace(&WorkspaceId(workspace_id))
-        .await?
-        .ok_or_else(|| ApiError::Unauthorized("workspace not found".to_string()))?;
+        .get_oauth_access_token(&token_hash)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::Unauthorized("invalid access token".to_string()))?;
 
-    if workspace.status != WorkspaceStatus::Active {
+    if access_token.revoked_at.is_some() {
         return Err(ApiError::Unauthorized(
-            "workspace is not active".to_string(),
+            "access token has been revoked".to_string(),
         ));
     }
+
+    if access_token.expires_at < chrono::Utc::now() {
+        return Err(ApiError::Unauthorized(
+            "access token has expired".to_string(),
+        ));
+    }
+
+    let client = state
+        .store
+        .get_oauth_client_by_client_id(&access_token.client_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| {
+            ApiError::Unauthorized("OAuth client not found for token".to_string())
+        })?;
+
+    if client.revoked_at.is_some() {
+        return Err(ApiError::Unauthorized(
+            "OAuth client has been revoked".to_string(),
+        ));
+    }
+
+    let workspace = state
+        .store
+        .get_workspace_by_pk_hash(&client.public_key_hash)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| {
+            ApiError::Unauthorized("workspace not found for OAuth client".to_string())
+        })?;
 
     if !workspace.enabled {
         return Err(ApiError::Forbidden("workspace is disabled".to_string()));
     }
 
-    // NOTE: JTI replay protection is intentionally NOT enforced here.
-    // Workspace identity JWTs are bearer tokens reused for multiple server calls
-    // within their short TTL (5 min). The device proxy makes several server calls
-    // per agent request (credential resolve, permissions fetch, credential vend)
-    // with the same JWT. Single-use JTI enforcement breaks this flow.
-    // Anti-replay is provided by the short TTL + server-signed JWT.
-
-    // Update last_authenticated_at
-    let now = chrono::Utc::now();
-    state
-        .store
-        .touch_workspace_authenticated(&workspace.id, &now)
-        .await?;
-
     tracing::debug!(
         workspace_id = %workspace.id.0,
-        auth_method = "workspace_identity",
-        "request authenticated via workspace identity JWT"
+        client_id = %access_token.client_id,
+        auth_method = "oauth_bearer",
+        "workspace request authenticated via OAuth token"
     );
 
     Ok(workspace)

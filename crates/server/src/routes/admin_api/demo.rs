@@ -75,22 +75,10 @@ async fn try_it(
             )
         })?;
 
-    // Mint a fresh short-lived workspace identity JWT for the demo workspace
-    let now = chrono::Utc::now();
-    let demo_claims = serde_json::json!({
-        "iss": agent_cordon_core::auth::jwt::ISSUER,
-        "sub": workspace.id.0.to_string(),
-        "aud": agent_cordon_core::auth::jwt::AUDIENCE_WORKSPACE_IDENTITY,
-        "exp": (now + chrono::Duration::seconds(300)).timestamp(),
-        "iat": now.timestamp(),
-        "nbf": now.timestamp(),
-        "jti": uuid::Uuid::new_v4().to_string(),
-        "wkt": "demo-workspace-key",
-    });
-    let token = state
-        .jwt_issuer
-        .sign_custom_claims(&demo_claims)
-        .map_err(|e| ApiError::Internal(format!("failed to issue demo workspace JWT: {e}")))?;
+    // Issue a short-lived OAuth access token for the demo workspace
+    let token = crate::routes::oauth::issue_demo_access_token(&state, &workspace)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to issue demo OAuth token: {e}")))?;
 
     // Audit: demo token issued (do NOT include the JWT value)
     let token_event = AuditEvent::builder(AuditEventType::DemoTokenIssued)

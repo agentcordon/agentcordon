@@ -421,22 +421,30 @@ fn decision_from_details(details: &serde_json::Value) -> AuditDecision {
     }
 }
 
-/// Extract the `jti` claim from a JWT without verifying signature.
-fn extract_jti_from_jwt(jwt: &str) -> String {
-    let parts: Vec<&str> = jwt.split('.').collect();
-    if parts.len() != 3 {
-        return Uuid::new_v4().to_string();
-    }
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-    if let Ok(bytes) = URL_SAFE_NO_PAD.decode(parts[1]) {
-        if let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            if let Some(jti) = payload.get("jti").and_then(|v| v.as_str()) {
-                return jti.to_string();
+/// Extract a session identifier from a token.
+///
+/// For JWTs: extracts the `jti` claim.
+/// For opaque OAuth tokens: derives a deterministic UUID from the token hash.
+fn extract_jti_from_jwt(token: &str) -> String {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() == 3 {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        if let Ok(bytes) = URL_SAFE_NO_PAD.decode(parts[1]) {
+            if let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(jti) = payload.get("jti").and_then(|v| v.as_str()) {
+                    return jti.to_string();
+                }
             }
         }
     }
-    Uuid::new_v4().to_string()
+    // For opaque tokens (OAuth), derive a deterministic session ID from the token hash.
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(token.as_bytes());
+    // Use first 16 bytes as a UUID v4-like identifier
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    Uuid::from_bytes(bytes).to_string()
 }
 
 /// Send a JSON text message over the WebSocket.

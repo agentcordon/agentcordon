@@ -301,9 +301,6 @@ impl TestAppBuilder {
             event_bus: crate::events::EventBus::new(256),
             ui_event_bus: crate::events::UiEventBus::new(16),
             sse_tracker: crate::events::SseConnectionTracker::new(5),
-            workspace_challenges: std::sync::Arc::new(tokio::sync::RwLock::new(
-                std::collections::HashMap::new(),
-            )),
             credential_templates: crate::routes::admin_api::credential_templates::load_templates(
                 None,
             ),

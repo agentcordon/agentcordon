@@ -417,19 +417,31 @@ fn decode_jwt_claims(jwt: &str) -> Value {
 // 1. JWT AUDIENCE CLAIM
 // ===========================================================================
 
+/// Since v3.0.0, agent auth uses opaque OAuth tokens instead of JWTs.
+/// This test validates that the token authenticates successfully.
 #[tokio::test]
 async fn jwt_aud_workspace_identity_has_correct_audience() {
-    let (_app, store, _enc, state) = setup_test_app().await;
+    let (app, store, _enc, state) = setup_test_app().await;
     let _root =
         create_user_in_db(&*store, "root", TEST_PASSWORD, UserRole::Admin, true, true).await;
     let (agent, api_key) =
         create_agent_in_db(&*store, "ws-aud-agent", vec!["admin"], true, None).await;
-    let jwt = get_jwt_local(&state, &agent, &api_key).await;
-    let claims = decode_jwt_claims(&jwt);
-    assert_eq!(
-        claims["aud"].as_str().unwrap(),
-        "agentcordon:workspace-identity",
-        "workspace identity JWT must have correct audience"
+    let token = get_jwt_local(&state, &agent, &api_key).await;
+
+    // OAuth tokens are opaque — verify they work for authenticated requests
+    let (status, _body) = send_json(
+        &app,
+        Method::GET,
+        "/api/v1/credentials",
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "OAuth token should authenticate"
     );
 }
 

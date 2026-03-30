@@ -1097,7 +1097,7 @@ async fn test_e2e_concurrent_credential_vends() {
             .await
             .unwrap()
             .unwrap();
-        let jwt = issue_agent_jwt(&ctx.state, &agent);
+        let jwt = issue_agent_jwt(&ctx.state, &agent).await;
         agent_jwts.push((agent_id, jwt));
     }
 

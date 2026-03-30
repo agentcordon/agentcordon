@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+{% block title %}Authorize Workspace — Agent Cordon{% endblock %}
+{% block head %}
+<style>
+/* Consent page — centered card layout */
+.consent-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+    background: var(--wash);
+}
+
+.consent-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    width: 100%;
+    max-width: 440px;
+    padding: 0;
+    overflow: hidden;
+}
+
+.consent-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 20px 28px 16px;
+    border-bottom: 1px solid var(--line);
+}
+
+.consent-header .logo-mark {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent);
+    border-radius: var(--radius-sm);
+    color: #fff;
+    flex-shrink: 0;
+}
+
+.consent-header .logo-text {
+    font-weight: 600;
+    font-size: var(--text-lg);
+    color: var(--ink);
+}
+
+.consent-body {
+    padding: 24px 28px;
+}
+
+.consent-title {
+    font-size: var(--text-xl);
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 8px;
+}
+
+.consent-desc {
+    font-size: var(--text-base);
+    color: var(--ink-soft);
+    line-height: 1.6;
+    margin-bottom: 20px;
+}
+
+.consent-desc strong {
+    color: var(--ink);
+    font-weight: 600;
+}
+
+.consent-workspace-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--accent-glow);
+    border: 1px solid rgba(212,85,26,0.15);
+    border-radius: var(--radius-sm);
+    padding: 2px 8px;
+    font-weight: 600;
+    color: var(--accent);
+    font-size: var(--text-sm);
+}
+
+/* Scope list */
+.consent-scopes {
+    list-style: none;
+    margin: 0 0 20px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+}
+
+.consent-scope-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+}
+
+.consent-scope-item:last-child {
+    border-bottom: none;
+}
+
+.consent-scope-icon {
+    font-size: 18px;
+    line-height: 1;
+    flex-shrink: 0;
+    width: 24px;
+    text-align: center;
+    padding-top: 1px;
+}
+
+.consent-scope-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.consent-scope-name {
+    font-size: var(--text-base);
+    font-weight: 500;
+    color: var(--ink);
+    line-height: 1.4;
+}
+
+.consent-scope-desc {
+    font-size: var(--text-sm);
+    color: var(--ink-faint);
+    line-height: 1.4;
+    margin-top: 2px;
+}
+
+/* User badge */
+.consent-user {
+    font-size: var(--text-sm);
+    color: var(--ink-faint);
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.consent-user strong {
+    color: var(--ink);
+    font-weight: 500;
+}
+
+/* Buttons */
+.consent-actions {
+    display: flex;
+    gap: 12px;
+}
+
+.consent-actions .btn {
+    flex: 1;
+    justify-content: center;
+    height: 40px;
+    font-size: var(--text-base);
+}
+
+.btn-approve {
+    background: var(--safe);
+    color: #fff;
+    border: none;
+}
+
+.btn-approve:hover:not(:disabled) {
+    background: #246632;
+}
+
+.btn-approve:focus-visible {
+    outline: 2px solid var(--safe);
+    outline-offset: 2px;
+}
+
+.btn-deny {
+    background: transparent;
+    color: var(--danger);
+    border: 1px solid rgba(194,48,48,0.3);
+}
+
+.btn-deny:hover:not(:disabled) {
+    background: var(--danger-hover-bg);
+}
+
+.btn-deny:focus-visible {
+    outline: 2px solid var(--danger);
+    outline-offset: 2px;
+}
+
+/* Footer */
+.consent-footer {
+    padding: 14px 28px;
+    border-top: 1px solid var(--line);
+    text-align: center;
+    font-size: var(--text-xs);
+    color: var(--ink-faint);
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+    .consent-wrap {
+        padding: 16px;
+    }
+    .consent-card {
+        border-radius: var(--radius-md);
+    }
+    .consent-header,
+    .consent-body {
+        padding-left: 20px;
+        padding-right: 20px;
+    }
+    .consent-footer {
+        padding-left: 20px;
+        padding-right: 20px;
+    }
+}
+</style>
+{% endblock %}
+{% block body %}
+<div class="consent-wrap">
+    <div class="consent-card" role="main">
+        <!-- Header -->
+        <div class="consent-header">
+            <div class="logo-mark" aria-hidden="true">
+                <svg width="14" height="9" viewBox="0 0 220 140" fill="none">
+                    <path d="M8 18 Q8 12, 14 12 L75 55 Q82 60, 82 70 Q82 80, 75 85 L14 128 Q8 128, 8 122 Z" fill="currentColor"/>
+                    <path d="M212 18 Q212 12, 206 12 L145 55 Q138 60, 138 70 Q138 80, 145 85 L206 128 Q212 128, 212 122 Z" fill="currentColor"/>
+                    <rect x="84" y="44" width="52" height="52" rx="12" fill="currentColor"/>
+                </svg>
+            </div>
+            <span class="logo-text">Agent Cordon</span>
+        </div>
+
+        <!-- Body -->
+        <div class="consent-body">
+            <h1 class="consent-title">Authorize Workspace</h1>
+            <p class="consent-desc">
+                <span class="consent-workspace-name">{{ workspace_name }}</span>
+                is requesting access to your account.
+            </p>
+
+            <!-- Requested scopes -->
+            <ul class="consent-scopes" aria-label="Requested permissions">
+                {% for scope in scopes %}
+                <li class="consent-scope-item">
+                    <span class="consent-scope-icon" aria-hidden="true">
+                        {% if scope.name == "credentials:discover" %}
+                            &#x1F50D;
+                        {% else if scope.name == "credentials:vend" %}
+                            &#x1F511;
+                        {% else if scope.name == "mcp:invoke" %}
+                            &#x26A1;
+                        {% else %}
+                            &#x1F512;
+                        {% endif %}
+                    </span>
+                    <div class="consent-scope-text">
+                        <div class="consent-scope-name">{{ scope.description }}</div>
+                        <div class="consent-scope-desc">{{ scope.name }}</div>
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
+
+            <div class="consent-user">
+                Signed in as <strong>{{ user_name }}</strong>
+            </div>
+
+            <!-- Consent form -->
+            <form method="POST" action="/api/v1/oauth/authorize">
+                <input type="hidden" name="client_id" value="{{ client_id }}">
+                <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+                <input type="hidden" name="scope" value="{% for scope in scopes %}{% if !loop.first %} {% endif %}{{ scope.name }}{% endfor %}">
+                <input type="hidden" name="state" value="{{ state }}">
+                <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+                <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <div class="consent-actions">
+                    <button type="submit" name="decision" value="deny" class="btn btn-deny">
+                        Deny
+                    </button>
+                    <button type="submit" name="decision" value="approve" class="btn btn-approve" autofocus>
+                        Approve
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div class="consent-footer">
+            Authorizing will allow this workspace to act on your behalf within the granted scopes.
+        </div>
+    </div>
+</div>
+{% endblock %}

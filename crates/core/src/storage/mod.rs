@@ -27,6 +27,7 @@ pub trait Store:
     + EnrollmentStore
     + VaultStore
     + McpStore
+    + OAuthStore
     + OidcStore
     + WorkspaceStore
 {

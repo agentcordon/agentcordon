@@ -64,7 +64,7 @@ async fn test_agent_store_creates_credential() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     let (status, body) = send_device_and_agent_auth(
         &ctx.app,
@@ -101,7 +101,7 @@ async fn test_agent_store_auto_adds_llm_exposed_tag() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     let (status, body) = send_device_and_agent_auth(
         &ctx.app,
@@ -138,7 +138,7 @@ async fn test_agent_store_merges_tags_with_llm_exposed() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     let (status, body) = send_device_and_agent_auth(
         &ctx.app,
@@ -178,7 +178,7 @@ async fn test_agent_store_no_duplicate_llm_exposed() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     let (status, body) = send_device_and_agent_auth(
         &ctx.app,
@@ -217,7 +217,7 @@ async fn test_agent_store_records_agent_identity() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     let (status, body) = send_device_and_agent_auth(
         &ctx.app,
@@ -292,7 +292,7 @@ async fn test_agent_store_missing_name_returns_error() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     let (status, body) = send_device_and_agent_auth(
         &ctx.app,
@@ -323,7 +323,7 @@ async fn test_agent_store_missing_service_returns_error() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     let (status, body) = send_device_and_agent_auth(
         &ctx.app,
@@ -354,7 +354,7 @@ async fn test_agent_store_missing_secret_returns_error() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     let (status, body) = send_device_and_agent_auth(
         &ctx.app,
@@ -389,7 +389,7 @@ async fn test_agent_store_secret_not_in_response() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     let secret = "ghp_super_secret_test_value_12345";
     let (status, body) = send_device_and_agent_auth(
@@ -431,7 +431,7 @@ async fn test_agent_store_emits_audit_event() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     let (status, _body) = send_device_and_agent_auth(
         &ctx.app,

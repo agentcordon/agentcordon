@@ -194,6 +194,28 @@ pub fn extract_csrf_from_cookie(cookie: &str) -> Option<String> {
     None
 }
 
+/// Extract the raw session token from a cookie string.
+///
+/// Parses `"agtcrdn_session=xxx; agtcrdn_csrf=yyy"` and returns `Some("xxx")`.
+pub fn extract_session_token(cookie: &str) -> Option<String> {
+    for pair in cookie.split(';') {
+        let pair = pair.trim();
+        if let Some(val) = pair.strip_prefix("agtcrdn_session=") {
+            return Some(val.to_string());
+        }
+    }
+    None
+}
+
+/// Compute the CSRF token for the OAuth consent form.
+///
+/// Mirrors the server-side HMAC computation so tests can submit valid consent forms.
+pub fn compute_consent_csrf(cookie: &str, session_hash_key: &[u8; 32]) -> String {
+    let session_token = extract_session_token(cookie).expect("cookie must contain agtcrdn_session");
+    let csrf_input = format!("{session_token}\0csrf-oauth-consent");
+    agent_cordon_core::crypto::session::hash_session_token_hmac(&csrf_input, session_hash_key)
+}
+
 // ---------------------------------------------------------------------------
 // HTTP request helpers
 // ---------------------------------------------------------------------------
@@ -306,33 +328,81 @@ pub async fn send_json_auto_csrf(
     (status, json)
 }
 
-/// Issue a test workspace identity JWT for an agent using the JWT issuer directly.
+/// Issue a test OAuth access token for an agent.
 ///
-/// This bypasses any auth flow and directly creates a valid JWT for the agent.
-/// Use this in tests where you need a JWT but don't need to test the auth flow itself.
-pub fn issue_agent_jwt(state: &agent_cordon_server::state::AppState, agent: &Agent) -> String {
+/// Creates an OAuth client (if one doesn't already exist for this workspace)
+/// and an access token in the database, returning the raw bearer token.
+/// This bypasses any auth flow and directly creates a valid token for the agent.
+pub async fn issue_agent_jwt(state: &agent_cordon_server::state::AppState, agent: &Agent) -> String {
+    use agent_cordon_core::oauth2::tokens::generate_access_token;
+    use agent_cordon_core::oauth2::types::{OAuthAccessToken, OAuthClient, OAuthScope};
+    use agent_cordon_core::domain::user::UserId;
+
     let now = chrono::Utc::now();
-    let claims = serde_json::json!({
-        "sub": agent.id.0.to_string(),
-        "aud": "agentcordon:workspace-identity",
-        "iss": agent_cordon_core::auth::jwt::ISSUER,
-        "exp": (now + chrono::Duration::seconds(3600)).timestamp(),
-        "iat": now.timestamp(),
-        "nbf": now.timestamp(),
-        "jti": uuid::Uuid::new_v4().to_string(),
-        "wkt": "test-workspace-key-thumbprint",
-    });
-    state
-        .jwt_issuer
-        .sign_custom_claims(&claims)
-        .expect("issue test JWT")
+
+    // Ensure the workspace has a pk_hash; if not, generate one
+    let pk_hash = match &agent.pk_hash {
+        Some(h) => h.clone(),
+        None => format!("test_pk_{}", agent.id.0),
+    };
+
+    // Ensure an OAuth client exists for this workspace
+    let client_id = format!("ac_test_{}", &agent.id.0.to_string()[..8]);
+    let existing = state.store.get_oauth_client_by_client_id(&client_id).await.ok().flatten();
+    let test_user_id = UserId(uuid::Uuid::nil());
+
+    if existing.is_none() {
+        // If workspace has no pk_hash, ensure one exists for lookup
+        if agent.pk_hash.is_none() {
+            let mut updated = agent.clone();
+            updated.pk_hash = Some(pk_hash.clone());
+            let _ = state.store.update_workspace(&updated).await;
+        }
+
+        let client = OAuthClient {
+            id: uuid::Uuid::new_v4(),
+            client_id: client_id.clone(),
+            client_secret_hash: None,
+            workspace_name: agent.name.clone(),
+            public_key_hash: pk_hash,
+            redirect_uris: vec!["http://localhost:9999/callback".to_string()],
+            allowed_scopes: vec![
+                OAuthScope::CredentialsDiscover,
+                OAuthScope::CredentialsVend,
+                OAuthScope::McpInvoke,
+            ],
+            created_by_user: test_user_id.clone(),
+            created_at: now,
+            revoked_at: None,
+        };
+        state.store.create_oauth_client(&client).await.expect("create test OAuth client");
+    }
+
+    // Create access token
+    let (raw_token, token_hash) = generate_access_token();
+    let token = OAuthAccessToken {
+        token_hash,
+        client_id,
+        user_id: test_user_id,
+        scopes: vec![
+            OAuthScope::CredentialsDiscover,
+            OAuthScope::CredentialsVend,
+            OAuthScope::McpInvoke,
+        ],
+        created_at: now,
+        expires_at: now + chrono::Duration::hours(1),
+        revoked_at: None,
+    };
+    state.store.create_oauth_access_token(&token).await.expect("store test OAuth token");
+
+    raw_token
 }
 
-/// Legacy compat: obtain a JWT for an agent bound to a device.
+/// Legacy compat: obtain an OAuth access token for a workspace.
 ///
-/// API key exchange has been removed. This now looks up the agent bound to
-/// the given device_id and issues a device-bound JWT directly (with `device_id`
-/// and `dkt` claims). The api_key parameter is ignored.
+/// API key exchange has been removed. This now looks up the workspace by ID
+/// and issues an OAuth access token. The device_key and api_key parameters
+/// are ignored.
 pub async fn get_jwt_via_device(
     state: &agent_cordon_server::state::AppState,
     _device_key: &p256::ecdsa::SigningKey,
@@ -349,23 +419,7 @@ pub async fn get_jwt_via_device(
         .expect("get workspace")
         .expect("workspace must exist");
 
-    // Issue workspace identity JWT
-    let now = chrono::Utc::now();
-    let exp = now + chrono::Duration::hours(1);
-    let claims = serde_json::json!({
-        "iss": agent_cordon_core::auth::jwt::ISSUER,
-        "sub": workspace.id.0.to_string(),
-        "aud": "agentcordon:workspace-identity",
-        "exp": exp.timestamp(),
-        "iat": now.timestamp(),
-        "nbf": now.timestamp(),
-        "jti": uuid::Uuid::new_v4().to_string(),
-        "wkt": workspace.pk_hash.as_deref().unwrap_or("test-workspace-key-thumbprint"),
-    });
-    state
-        .jwt_issuer
-        .sign_custom_claims(&claims)
-        .expect("sign workspace JWT")
+    issue_agent_jwt(state, &workspace).await
 }
 
 /// Send a JSON request with workspace JWT auth.
@@ -432,7 +486,7 @@ pub async fn quick_device_setup(
     _api_key: &str,
 ) -> QuickDeviceAgent {
     let (device_id, sig_key) = create_device_and_bind_agent(state, agent).await;
-    let agent_jwt = issue_agent_jwt(state, agent);
+    let agent_jwt = issue_agent_jwt(state, agent).await;
     QuickDeviceAgent {
         device_id,
         device_signing_key: sig_key,
@@ -798,7 +852,7 @@ use agent_cordon_server::test_helpers::TestContext;
 /// Get admin JWT from a TestContext via direct JWT issuance.
 pub async fn ctx_admin_jwt(ctx: &TestContext) -> String {
     let agent = ctx.admin_agent.as_ref().expect("admin agent must exist");
-    issue_agent_jwt(&ctx.state, agent)
+    issue_agent_jwt(&ctx.state, agent).await
 }
 
 /// Get a named agent's JWT from a TestContext via direct JWT issuance.
@@ -806,7 +860,7 @@ pub async fn ctx_agent_jwt(ctx: &TestContext, name: &str) -> String {
     let agent = ctx.agents.get(name).unwrap_or_else(|| {
         panic!("no agent record for '{}'", name);
     });
-    issue_agent_jwt(&ctx.state, agent)
+    issue_agent_jwt(&ctx.state, agent).await
 }
 
 /// Send a dual-auth request using the admin device from a TestContext.

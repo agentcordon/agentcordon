@@ -8,6 +8,7 @@
 pub mod admin_api;
 pub mod admin_ui;
 pub mod control_plane;
+pub mod oauth;
 pub mod shared;
 
 use axum::Router;
@@ -18,6 +19,7 @@ pub fn api_routes() -> Router<AppState> {
     Router::new()
         .merge(control_plane::routes())
         .merge(admin_api::routes())
+        .merge(oauth::routes())
         .merge(shared::proxy::routes())
         .merge(shared::docs::routes())
         .merge(shared::openapi::routes())

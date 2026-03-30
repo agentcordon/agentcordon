@@ -2,6 +2,7 @@ mod audit;
 mod credentials;
 mod enrollment;
 mod mcp;
+mod oauth;
 mod oidc;
 mod policies;
 mod rows;

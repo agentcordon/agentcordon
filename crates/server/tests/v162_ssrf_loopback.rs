@@ -84,7 +84,7 @@ async fn proxy_request(
     target_url: &str,
 ) -> (StatusCode, serde_json::Value) {
     let admin = ctx.admin_agent.as_ref().expect("admin agent");
-    let agent_jwt = issue_agent_jwt(&ctx.state, admin);
+    let agent_jwt = issue_agent_jwt(&ctx.state, admin).await;
     let dev = ctx.admin_device.as_ref().expect("admin device");
 
     send_json_dual_auth(

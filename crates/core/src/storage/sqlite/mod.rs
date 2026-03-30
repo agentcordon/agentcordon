@@ -3,6 +3,7 @@ mod credentials;
 mod enrollment;
 pub(crate) mod helpers;
 mod mcp;
+mod oauth;
 mod oidc;
 mod policies;
 mod sessions;
