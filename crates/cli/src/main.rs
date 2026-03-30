@@ -77,6 +77,12 @@ enum Command {
     /// List available MCP servers
     McpServers,
 
+    /// One-command setup: start broker, generate keys, register workspace
+    Setup {
+        /// AgentCordon server URL (e.g. http://server:3140)
+        server_url: String,
+    },
+
     /// List all available MCP tools
     McpTools,
 
@@ -126,6 +132,7 @@ fn main() -> std::process::ExitCode {
 async fn run_async(command: Command) -> Result<(), CliError> {
     match command {
         Command::Init => unreachable!(),
+        Command::Setup { server_url } => commands::setup::run(server_url).await,
         Command::Register { scopes, force } => commands::register::run(scopes, force).await,
         Command::Status => commands::status::run().await,
         Command::Credentials => commands::credentials::run().await,

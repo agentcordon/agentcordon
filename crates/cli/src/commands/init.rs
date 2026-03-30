@@ -86,17 +86,9 @@ fn generate_claude_md(pk_hash: &str) -> Result<(), CliError> {
          \n\
          AC_IDENTITY: sha256:{pk_hash}\n\
          \n\
-         ## Setup\n\
-         \n\
-         Set the broker URL before using any commands:\n\
-         \n\
-         ```sh\n\
-         export AGTCRDN_BROKER_URL=http://localhost:9876\n\
-         ```\n\
-         \n\
-         (Or the broker will be auto-discovered via ~/.agentcordon/broker.port)\n\
-         \n\
          ## Quick Start\n\
+         \n\
+         The broker is managed automatically by `agentcordon setup`.\n\
          \n\
          1. `agentcordon credentials` — list available credentials\n\
          2. `agentcordon proxy <credential> <METHOD> <url>` — authenticated API call\n\
