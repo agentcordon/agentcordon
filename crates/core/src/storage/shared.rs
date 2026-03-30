@@ -366,9 +366,14 @@ pub fn build_credential_update_sql(
         idx += 1;
     }
     if let Some(ref url_pattern) = updates.allowed_url_pattern {
-        set_clauses.push(format!("allowed_url_pattern = {}", style.param(idx)));
-        params.push(CredentialParamValue::String(url_pattern.clone()));
-        idx += 1;
+        if url_pattern.is_empty() {
+            // Empty string means "clear the restriction" — set DB column to NULL
+            set_clauses.push("allowed_url_pattern = NULL".to_string());
+        } else {
+            set_clauses.push(format!("allowed_url_pattern = {}", style.param(idx)));
+            params.push(CredentialParamValue::String(url_pattern.clone()));
+            idx += 1;
+        }
     }
     if let Some(ref expires_at) = updates.expires_at {
         set_clauses.push(format!("expires_at = {}", style.param(idx)));

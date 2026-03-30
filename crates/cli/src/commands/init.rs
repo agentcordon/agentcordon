@@ -59,6 +59,57 @@ pub fn run() -> Result<(), CliError> {
     // Add .agentcordon/ to .gitignore
     add_to_gitignore()?;
 
+    // Generate CLAUDE.md with usage instructions
+    generate_claude_md(&hash)?;
+
+    Ok(())
+}
+
+/// Generate or update CLAUDE.md with AgentCordon usage instructions.
+fn generate_claude_md(pk_hash: &str) -> Result<(), CliError> {
+    let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
+    let claude_md_path = Path::new(&base).join("CLAUDE.md");
+
+    // Only create if it doesn't exist or exists but doesn't mention AgentCordon
+    if claude_md_path.exists() {
+        let content = fs::read_to_string(&claude_md_path)
+            .map_err(|e| CliError::general(format!("failed to read CLAUDE.md: {e}")))?;
+        if content.contains("AgentCordon") {
+            return Ok(());
+        }
+    }
+
+    let content = format!(
+        "# AgentCordon\n\
+         \n\
+         This workspace uses AgentCordon for credential management.\n\
+         \n\
+         AC_IDENTITY: sha256:{pk_hash}\n\
+         \n\
+         ## Setup\n\
+         \n\
+         Set the broker URL before using any commands:\n\
+         \n\
+         ```sh\n\
+         export AGTCRDN_BROKER_URL=http://localhost:9876\n\
+         ```\n\
+         \n\
+         (Or the broker will be auto-discovered via ~/.agentcordon/broker.port)\n\
+         \n\
+         ## Quick Start\n\
+         \n\
+         1. `agentcordon credentials` — list available credentials\n\
+         2. `agentcordon proxy <credential> <METHOD> <url>` — authenticated API call\n\
+         3. `agentcordon mcp-servers` — list MCP servers\n\
+         4. `agentcordon mcp-tools` — discover MCP tools\n\
+         5. `agentcordon mcp-call <server> <tool> [--arg key=value]` — call an MCP tool\n\
+         6. `agentcordon status` — check workspace status\n"
+    );
+
+    fs::write(&claude_md_path, content)
+        .map_err(|e| CliError::general(format!("failed to write CLAUDE.md: {e}")))?;
+
+    println!("Created CLAUDE.md with AgentCordon instructions");
     Ok(())
 }
 

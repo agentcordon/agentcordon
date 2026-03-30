@@ -136,12 +136,20 @@ pub(crate) async fn update_credential(
         (None, None)
     };
 
+    // Normalize empty-string allowed_url_pattern to None (clears the restriction).
+    // The JS form sends "" when the user clears the field; we treat that as "no
+    // restriction" and set the DB column to NULL via the store's empty-string path.
+    let allowed_url_pattern = match req.allowed_url_pattern.as_deref() {
+        Some("") => Some(String::new()),
+        other => other.map(String::from),
+    };
+
     let updates = CredentialUpdate {
         name: req.name.clone(),
         service: req.service.clone(),
         scopes: req.scopes.clone(),
         metadata: req.metadata.clone(),
-        allowed_url_pattern: req.allowed_url_pattern.clone(),
+        allowed_url_pattern,
         expires_at: req.expires_at,
         transform_script: req.transform_script.clone(),
         transform_name: req.transform_name.clone(),

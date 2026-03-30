@@ -111,6 +111,28 @@ impl BrokerClient {
         handle_response(resp).await
     }
 
+    /// Send a signed POST request with an empty body. Returns raw (status, body).
+    /// Used for simple control endpoints like `/deregister`.
+    pub async fn post_signed_empty(&self, path: &str) -> Result<(u16, String), CliError> {
+        let headers = signing::sign_request(&self.keypair, "POST", path, "")?;
+        let url = format!("{}{}", self.base_url, path);
+
+        let resp = self
+            .http
+            .post(&url)
+            .headers(build_header_map(&headers)?)
+            .send()
+            .await
+            .map_err(|e| CliError::general(format!("request failed: {e}")))?;
+
+        let status = resp.status().as_u16();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| CliError::general(format!("failed to read response: {e}")))?;
+        Ok((status, text))
+    }
+
     /// Send an unsigned POST request (for registration).
     pub async fn post_unsigned<B: Serialize, T: DeserializeOwned>(
         &self,

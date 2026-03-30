@@ -39,6 +39,21 @@ pub async fn get_credentials(
             StatusCode::OK,
             axum::Json(serde_json::json!({ "data": creds })),
         ),
+        Err(crate::server_client::ServerClientError::ServerError {
+            status: 401,
+            ref body,
+        }) if body.contains("workspace not found") => {
+            tracing::warn!("server reports workspace not found — workspace may have been deleted");
+            (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({
+                    "error": {
+                        "code": "unauthorized",
+                        "message": "Workspace not found on server (workspace may have been deleted). Try: agentcordon register --force"
+                    }
+                })),
+            )
+        }
         Err(crate::server_client::ServerClientError::ServerError { status: 401, .. }) => {
             // Try reactive refresh
             if token_refresh::try_reactive_refresh(&state, &auth.pk_hash).await {
@@ -61,7 +76,7 @@ pub async fn get_credentials(
                             return (
                                 StatusCode::BAD_GATEWAY,
                                 axum::Json(serde_json::json!({
-                                    "error": { "code": "bad_gateway", "message": "Server request failed" }
+                                    "error": { "code": "bad_gateway", "message": server_error_message(&e) }
                                 })),
                             );
                         }
@@ -80,9 +95,30 @@ pub async fn get_credentials(
             (
                 StatusCode::BAD_GATEWAY,
                 axum::Json(serde_json::json!({
-                    "error": { "code": "bad_gateway", "message": "Server request failed" }
+                    "error": { "code": "bad_gateway", "message": server_error_message(&e) }
                 })),
             )
         }
+    }
+}
+
+/// Extract a user-facing message from a server client error, preserving
+/// server-side context when available instead of returning a generic string.
+fn server_error_message(e: &crate::server_client::ServerClientError) -> String {
+    match e {
+        crate::server_client::ServerClientError::ServerError { status, body } => {
+            // Try to extract the nested error message from the JSON body
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+                if let Some(msg) = parsed
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                {
+                    return format!("Server returned {status}: {msg}");
+                }
+            }
+            format!("Server returned {status}: {body}")
+        }
+        other => format!("Server request failed: {other}"),
     }
 }

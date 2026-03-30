@@ -117,13 +117,15 @@
             <div x-show="!provisionToken">
                 <p style="margin-bottom:0.75rem;color:var(--text-secondary);">Create a one-time enrollment token for CI/CD workspace registration.</p>
                 <label for="provision-name" style="display:block;margin-bottom:0.25rem;font-weight:500;">Workspace name</label>
-                <input id="provision-name" x-model="provisionName" type="text" placeholder="e.g. github-actions-prod"
+                <input id="provision-name" name="workspace_name" x-model="provisionName" type="text" placeholder="e.g. github-actions-prod"
                        style="width:100%;margin-bottom:1rem;" maxlength="128"
                        @keydown.enter="generateProvisionToken()">
+                <p x-show="!provisionName.trim()" class="text-sm" style="color:var(--ink-soft);margin-bottom:0.75rem;">Enter a workspace name above to enable token generation.</p>
                 <div class="modal-actions">
                     <button type="button" class="btn btn-secondary" @click="closeProvisionModal()">Cancel</button>
                     <button type="button" class="btn btn-primary" @click="generateProvisionToken()"
-                            :disabled="provisionGenerating || !provisionName.trim()">
+                            :disabled="provisionGenerating || !provisionName.trim()"
+                            :title="!provisionName.trim() ? 'Enter a workspace name to enable' : ''">
                         <span x-show="!provisionGenerating">Generate</span>
                         <span x-show="provisionGenerating">Generating&hellip;</span>
                     </button>

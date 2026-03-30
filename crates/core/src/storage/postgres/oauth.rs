@@ -28,6 +28,9 @@ impl OAuthStore for PostgresStore {
     async fn revoke_oauth_client(&self, _client_id: &str) -> Result<bool, StoreError> {
         Err(StoreError::Database("oauth: postgres not yet implemented".into()))
     }
+    async fn delete_oauth_client(&self, _client_id: &str) -> Result<bool, StoreError> {
+        Err(StoreError::Database("oauth: postgres not yet implemented".into()))
+    }
     async fn create_oauth_auth_code(&self, _code: &OAuthAuthCode) -> Result<(), StoreError> {
         Err(StoreError::Database("oauth: postgres not yet implemented".into()))
     }

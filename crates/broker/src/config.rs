@@ -25,6 +25,10 @@ pub struct BrokerConfig {
     /// Seconds before token expiry to trigger proactive refresh.
     #[arg(long, env = "AGTCRDN_TOKEN_TTL_BUFFER", default_value = "60")]
     pub token_ttl_buffer: u64,
+
+    /// Allow proxy requests to loopback/private addresses (for local development).
+    #[arg(long, env = "AGTCRDN_PROXY_ALLOW_LOOPBACK", default_value = "false")]
+    pub proxy_allow_loopback: bool,
 }
 
 impl BrokerConfig {

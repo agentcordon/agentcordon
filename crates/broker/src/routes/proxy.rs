@@ -72,11 +72,7 @@ pub async fn post_proxy(
     }
 
     // SSRF validation
-    let allow_loopback = std::env::var("AGTCRDN_PROXY_ALLOW_LOOPBACK")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
-
-    if !allow_loopback {
+    if !state.config.proxy_allow_loopback {
         if let Err(reason) = validate_proxy_target(&proxy_req.url) {
             return (
                 StatusCode::BAD_REQUEST,
@@ -116,6 +112,13 @@ pub async fn post_proxy(
         .await
     {
         Ok(r) => r,
+        Err(crate::server_client::ServerClientError::ServerError {
+            status: 401,
+            ref body,
+        }) if body.contains("workspace not found") => {
+            tracing::warn!("server reports workspace not found — workspace may have been deleted");
+            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Workspace not found on server (workspace may have been deleted). Try: agentcordon register --force");
+        }
         Err(crate::server_client::ServerClientError::ServerError { status: 401, .. }) => {
             // Try reactive refresh
             if token_refresh::try_reactive_refresh(&state, &auth.pk_hash).await {

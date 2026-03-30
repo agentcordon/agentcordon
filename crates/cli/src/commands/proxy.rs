@@ -25,7 +25,7 @@ struct ProxyResponse {
 struct ProxyData {
     status_code: u16,
     headers: HashMap<String, String>,
-    body: String,
+    body: serde_json::Value,
 }
 
 /// Proxy an HTTP request through the broker with credential injection.
@@ -71,35 +71,33 @@ pub async fn run(
 
     let resp: ProxyResponse = client.post("/proxy", &req).await?;
     let data = resp.data;
+    let body_str = match &data.body {
+        serde_json::Value::String(s) => s.clone(),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    };
 
     if raw_output {
-        // Just the body for piping
-        print!("{}", data.body);
+        print!("{body_str}");
         return Ok(());
     }
 
     if json_output {
-        // Pretty-print the body as JSON if possible
         println!("HTTP {}", data.status_code);
         for (k, v) in &data.headers {
             println!("{k}: {v}");
         }
         println!();
-        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&data.body) {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json_val).unwrap_or(data.body)
-            );
-        } else {
-            println!("{}", data.body);
-        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&data.body).unwrap_or(body_str)
+        );
     } else {
         println!("HTTP {}", data.status_code);
         for (k, v) in &data.headers {
             println!("{k}: {v}");
         }
         println!();
-        println!("{}", data.body);
+        println!("{body_str}");
     }
 
     if data.status_code >= 400 {

@@ -29,6 +29,11 @@ const SESSION_COOKIE_NAME: &str = "agtcrdn_session";
 /// Login path — exempt from CSRF because no session exists yet.
 const LOGIN_PATH: &str = "/api/v1/auth/login";
 
+/// OAuth authorize path — exempt because the consent form uses its own
+/// HMAC-based CSRF token embedded in a hidden form field (validated by
+/// the handler itself). Browser form POSTs cannot send custom headers.
+const OAUTH_AUTHORIZE_PATH: &str = "/api/v1/oauth/authorize";
+
 /// CSRF validation middleware.
 ///
 /// Must be applied as a layer **after** the request-id middleware and before
@@ -44,6 +49,13 @@ pub async fn csrf_protection(request: Request, next: Next) -> Response {
 
     // The login endpoint is exempt (no session exists yet).
     if request.uri().path() == LOGIN_PATH {
+        return next.run(request).await;
+    }
+
+    // The OAuth authorize endpoint is exempt — it validates its own
+    // HMAC-based CSRF token from a hidden form field, since browser
+    // form POSTs cannot include custom headers.
+    if request.uri().path() == OAUTH_AUTHORIZE_PATH {
         return next.run(request).await;
     }
 

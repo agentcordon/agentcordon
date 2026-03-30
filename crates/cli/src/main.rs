@@ -32,6 +32,12 @@ enum Command {
         /// OAuth scopes to request (default: credentials:discover credentials:vend)
         #[arg(long = "scope", num_args = 1)]
         scopes: Vec<String>,
+
+        /// Clear any existing broker registration before re-registering.
+        /// Use when the server-side workspace was deleted but the broker
+        /// still holds stale state (409 Conflict on register).
+        #[arg(long)]
+        force: bool,
     },
 
     /// Check workspace and broker status
@@ -120,7 +126,7 @@ fn main() -> std::process::ExitCode {
 async fn run_async(command: Command) -> Result<(), CliError> {
     match command {
         Command::Init => unreachable!(),
-        Command::Register { scopes } => commands::register::run(scopes).await,
+        Command::Register { scopes, force } => commands::register::run(scopes, force).await,
         Command::Status => commands::status::run().await,
         Command::Credentials => commands::credentials::run().await,
         Command::Proxy {

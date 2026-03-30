@@ -338,6 +338,44 @@ impl OAuthStore for SqliteStore {
             .map_err(|e| StoreError::Database(e.to_string()))
     }
 
+    async fn delete_oauth_client(&self, client_id: &str) -> Result<bool, StoreError> {
+        let client_id = client_id.to_string();
+        self.conn()
+            .call(move |conn| {
+                let tx = conn.transaction().map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.execute(
+                    "DELETE FROM oauth_access_tokens WHERE client_id = ?1",
+                    rusqlite::params![client_id],
+                )
+                .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.execute(
+                    "DELETE FROM oauth_refresh_tokens WHERE client_id = ?1",
+                    rusqlite::params![client_id],
+                )
+                .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.execute(
+                    "DELETE FROM oauth_auth_codes WHERE client_id = ?1",
+                    rusqlite::params![client_id],
+                )
+                .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.execute(
+                    "DELETE FROM oauth_consents WHERE client_id = ?1",
+                    rusqlite::params![client_id],
+                )
+                .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                let count = tx
+                    .execute(
+                        "DELETE FROM oauth_clients WHERE client_id = ?1",
+                        rusqlite::params![client_id],
+                    )
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.commit().map_err(tokio_rusqlite::Error::Rusqlite)?;
+                Ok(count > 0)
+            })
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))
+    }
+
     async fn create_oauth_auth_code(&self, code: &OAuthAuthCode) -> Result<(), StoreError> {
         let code = code.clone();
         let user_id_str = code.user_id.0.hyphenated().to_string();

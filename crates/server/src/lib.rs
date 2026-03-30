@@ -142,7 +142,7 @@ case ":$PATH:" in
 esac
 
 echo "Get started:"
-echo "  agentcordon init --server ${{SERVER_URL}}"
+echo "  agentcordon init && agentcordon register"
 "#
     );
 

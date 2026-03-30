@@ -18,14 +18,6 @@ pub struct ApiEnvelope<T> {
     pub data: T,
 }
 
-/// Response from `POST /api/v1/oauth/clients`.
-#[derive(Debug, Deserialize)]
-pub struct OAuthClientResponse {
-    pub client_id: String,
-    #[allow(dead_code)]
-    pub client_secret: Option<String>,
-}
-
 /// Response from `POST /api/v1/oauth/token`.
 #[derive(Debug, Deserialize)]
 pub struct TokenResponse {
@@ -121,47 +113,6 @@ impl ServerClient {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
         }
-    }
-
-    /// Register an OAuth client with the server.
-    pub async fn register_oauth_client(
-        &self,
-        workspace_name: &str,
-        redirect_uri: &str,
-        scopes: &[String],
-        public_key_hash: &str,
-    ) -> Result<OAuthClientResponse, ServerClientError> {
-        let url = format!("{}/api/v1/oauth/clients", self.base_url);
-        let body = serde_json::json!({
-            "workspace_name": workspace_name,
-            "redirect_uris": [redirect_uri],
-            "scopes": scopes,
-            "public_key_hash": public_key_hash,
-        });
-
-        let resp = self
-            .http
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
-
-        let envelope: ApiEnvelope<OAuthClientResponse> = resp
-            .json()
-            .await
-            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
-
-        Ok(envelope.data)
     }
 
     /// Exchange an authorization code for tokens.
@@ -432,7 +383,7 @@ impl ServerClient {
 
     /// Check if the server is reachable.
     pub async fn health_check(&self) -> bool {
-        let url = format!("{}/api/v1/health", self.base_url);
+        let url = format!("{}/health", self.base_url);
         matches!(
             self.http.get(&url).timeout(std::time::Duration::from_secs(5)).send().await,
             Ok(resp) if resp.status().is_success()

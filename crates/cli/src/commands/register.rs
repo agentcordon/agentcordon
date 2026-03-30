@@ -39,8 +39,20 @@ struct StatusData {
 }
 
 /// Register this workspace with the broker, initiating OAuth consent.
-pub async fn run(scopes: Vec<String>) -> Result<(), CliError> {
+pub async fn run(scopes: Vec<String>, force: bool) -> Result<(), CliError> {
     let client = BrokerClient::connect_for_registration().await?;
+
+    // If --force, clear any stale broker registration first
+    if force {
+        println!("Force mode: clearing existing broker registration...");
+        match client.post_signed_empty("/deregister").await {
+            Ok(_) => println!("Previous registration cleared."),
+            Err(_) => {
+                // Not registered or broker doesn't recognize us — that's fine
+                println!("No existing registration to clear (continuing).");
+            }
+        }
+    }
 
     let scopes = if scopes.is_empty() {
         vec![

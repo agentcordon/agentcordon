@@ -390,8 +390,9 @@ async fn test_register_missing_redirect_uri() {
 async fn test_register_no_auth() {
     let (app, _store, _state) = setup().await;
 
-    // No cookie/auth → 401
-    let (status, _body) = send_json(
+    // Client registration is a public endpoint (RFC 7591 Dynamic Client Registration).
+    // No authentication required — authorization happens in the consent flow.
+    let (status, body) = send_json(
         &app,
         Method::POST,
         "/api/v1/oauth/clients",
@@ -406,7 +407,8 @@ async fn test_register_no_auth() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::CREATED, "body: {}", body);
+    assert!(body["data"]["client_id"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -1629,4 +1631,254 @@ async fn test_refresh_token_revocation_cascades_to_access_token() {
         StatusCode::UNAUTHORIZED,
         "access token should be revoked when refresh token is revoked"
     );
+}
+
+// ===========================================================================
+// Consent-Based Workspace Creation (new workspace via consent flow)
+// ===========================================================================
+
+const TEST_PK_HASH_2: &str = "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3";
+
+#[tokio::test]
+async fn test_consent_new_workspace_renders_consent_page() {
+    let (app, store, _state) = setup().await;
+    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
+
+    let (_verifier, challenge) = generate_pkce();
+
+    let query = format!(
+        "response_type=code&workspace_name=new-ws&public_key_hash={}&redirect_uri={}&scope=credentials:discover&state=xyz&code_challenge={}&code_challenge_method=S256",
+        TEST_PK_HASH_2,
+        urlencoding::encode(TEST_REDIRECT_URI),
+        urlencoding::encode(&challenge),
+    );
+    let (status, body, _headers) = get_authorize(&app, &cookie, &query).await;
+    assert_eq!(status, StatusCode::OK, "body: {}", body);
+    assert!(body.contains("new-ws"), "consent page should show workspace name");
+    assert!(body.contains("Create"), "consent page should say Create for new workspace");
+    assert!(body.contains(TEST_PK_HASH_2), "consent page should include public_key_hash in hidden field");
+}
+
+#[tokio::test]
+async fn test_consent_new_workspace_approve_creates_client_and_issues_code() {
+    let (app, store, state) = setup().await;
+    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
+
+    let (_verifier, challenge) = generate_pkce();
+    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+
+    let form = format!(
+        "client_id=&redirect_uri={}&scope=credentials:discover&state=new-ws-state&code_challenge={}&code_challenge_method=S256&decision=approve&csrf_token={}&public_key_hash={}&workspace_name=consent-created-ws&is_new_workspace=true",
+        urlencoding::encode(TEST_REDIRECT_URI),
+        urlencoding::encode(&challenge),
+        urlencoding::encode(&consent_csrf),
+        TEST_PK_HASH_2,
+    );
+    let (status, _body, headers) = post_consent(&app, &cookie, &form).await;
+    assert!(
+        status == StatusCode::FOUND || status == StatusCode::SEE_OTHER,
+        "expected redirect, got: {} {}",
+        status,
+        _body
+    );
+
+    let location = headers
+        .iter()
+        .find(|(k, _)| k == "location")
+        .expect("Location header")
+        .1
+        .clone();
+
+    let parsed = url::Url::parse(&format!("http://localhost{}", location))
+        .or_else(|_| url::Url::parse(&location))
+        .expect("parse redirect");
+    let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
+    assert!(params.contains_key("code"), "code param missing: {}", location);
+    assert_eq!(params.get("state").map(|s| s.as_ref()), Some("new-ws-state"));
+    // New workspace flow includes client_id in callback
+    assert!(params.contains_key("client_id"), "client_id param missing in callback: {}", location);
+    let client_id = params.get("client_id").unwrap().to_string();
+    assert!(client_id.starts_with("ac_cli_"), "client_id should have expected prefix: {}", client_id);
+}
+
+#[tokio::test]
+async fn test_consent_new_workspace_full_token_exchange() {
+    let (app, store, state) = setup().await;
+    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
+
+    let pk_hash = "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4";
+    let (verifier, challenge) = generate_pkce();
+    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+
+    // Approve consent for new workspace
+    let form = format!(
+        "client_id=&redirect_uri={}&scope=credentials:discover&state=full-flow-state&code_challenge={}&code_challenge_method=S256&decision=approve&csrf_token={}&public_key_hash={}&workspace_name=full-flow-ws&is_new_workspace=true",
+        urlencoding::encode(TEST_REDIRECT_URI),
+        urlencoding::encode(&challenge),
+        urlencoding::encode(&consent_csrf),
+        pk_hash,
+    );
+    let (status, _body, headers) = post_consent(&app, &cookie, &form).await;
+    assert!(
+        status == StatusCode::FOUND || status == StatusCode::SEE_OTHER,
+        "expected redirect, got: {} {}",
+        status,
+        _body
+    );
+
+    let location = headers
+        .iter()
+        .find(|(k, _)| k == "location")
+        .expect("Location header")
+        .1
+        .clone();
+
+    let parsed = url::Url::parse(&format!("http://localhost{}", location))
+        .or_else(|_| url::Url::parse(&location))
+        .expect("parse redirect");
+    let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
+    let code = params.get("code").expect("code param missing").to_string();
+    let client_id = params.get("client_id").expect("client_id param missing").to_string();
+
+    // Exchange code for tokens
+    let token_form = format!(
+        "grant_type=authorization_code&code={}&client_id={}&redirect_uri={}&code_verifier={}",
+        urlencoding::encode(&code),
+        urlencoding::encode(&client_id),
+        urlencoding::encode(TEST_REDIRECT_URI),
+        urlencoding::encode(&verifier),
+    );
+    let (status, body) = send_form(&app, "/api/v1/oauth/token", &token_form).await;
+    assert_eq!(status, StatusCode::OK, "token exchange: {}", body);
+    assert!(body["access_token"].is_string(), "should have access_token");
+    assert!(body["refresh_token"].is_string(), "should have refresh_token");
+}
+
+#[tokio::test]
+async fn test_consent_new_workspace_deny() {
+    let (app, store, state) = setup().await;
+    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
+
+    let (_verifier, challenge) = generate_pkce();
+    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let pk_hash = "d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5";
+
+    let form = format!(
+        "client_id=&redirect_uri={}&scope=credentials:discover&state=deny-state&code_challenge={}&code_challenge_method=S256&decision=deny&csrf_token={}&public_key_hash={}&workspace_name=deny-ws&is_new_workspace=true",
+        urlencoding::encode(TEST_REDIRECT_URI),
+        urlencoding::encode(&challenge),
+        urlencoding::encode(&consent_csrf),
+        pk_hash,
+    );
+    let (status, _body, headers) = post_consent(&app, &cookie, &form).await;
+    assert!(
+        status == StatusCode::FOUND || status == StatusCode::SEE_OTHER,
+        "expected redirect, got: {} {}",
+        status,
+        _body
+    );
+
+    let location = headers
+        .iter()
+        .find(|(k, _)| k == "location")
+        .expect("Location header")
+        .1
+        .clone();
+    assert!(location.contains("error=access_denied"), "should contain error: {}", location);
+    // No client should have been created
+    assert!(!location.contains("client_id="), "no client_id on deny: {}", location);
+}
+
+#[tokio::test]
+async fn test_consent_missing_both_client_id_and_pk_hash() {
+    let (app, store, _state) = setup().await;
+    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
+
+    let (_verifier, challenge) = generate_pkce();
+
+    // No client_id and no public_key_hash
+    let query = format!(
+        "response_type=code&redirect_uri={}&scope=credentials:discover&state=xyz&code_challenge={}&code_challenge_method=S256",
+        urlencoding::encode(TEST_REDIRECT_URI),
+        urlencoding::encode(&challenge),
+    );
+    let (status, _body, _headers) = get_authorize(&app, &cookie, &query).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_consent_existing_client_still_works() {
+    let (app, store, state) = setup().await;
+    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
+
+    let pk_hash = "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6";
+
+    // Register client normally
+    let (status, body) = register_client(
+        &app,
+        &cookie,
+        &csrf,
+        "existing-client-ws",
+        pk_hash,
+        &["credentials:discover"],
+        &[TEST_REDIRECT_URI],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let client_id = body["data"]["client_id"].as_str().unwrap();
+    let client_secret = body["data"]["client_secret"].as_str().unwrap();
+
+    let (verifier, challenge) = generate_pkce();
+    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+
+    // Approve with existing client_id (backward compat path)
+    let form = format!(
+        "client_id={}&redirect_uri={}&scope=credentials:discover&state=compat-state&code_challenge={}&code_challenge_method=S256&decision=approve&csrf_token={}",
+        urlencoding::encode(client_id),
+        urlencoding::encode(TEST_REDIRECT_URI),
+        urlencoding::encode(&challenge),
+        urlencoding::encode(&consent_csrf),
+    );
+    let (status, _body, headers) = post_consent(&app, &cookie, &form).await;
+    assert!(
+        status == StatusCode::FOUND || status == StatusCode::SEE_OTHER,
+        "expected redirect, got: {} {}",
+        status,
+        _body
+    );
+
+    let location = headers
+        .iter()
+        .find(|(k, _)| k == "location")
+        .expect("Location header")
+        .1
+        .clone();
+
+    let parsed = url::Url::parse(&format!("http://localhost{}", location))
+        .or_else(|_| url::Url::parse(&location))
+        .expect("parse redirect");
+    let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
+    assert!(params.contains_key("code"), "code param missing");
+    // Existing client flow should NOT include client_id in callback
+    assert!(!params.contains_key("client_id"), "existing client flow should not include client_id");
+
+    // Exchange code for tokens (existing client requires client_secret)
+    let code = params.get("code").unwrap().to_string();
+    let token_form = format!(
+        "grant_type=authorization_code&code={}&client_id={}&client_secret={}&redirect_uri={}&code_verifier={}",
+        urlencoding::encode(&code),
+        urlencoding::encode(client_id),
+        urlencoding::encode(client_secret),
+        urlencoding::encode(TEST_REDIRECT_URI),
+        urlencoding::encode(&verifier),
+    );
+    let (status, body) = send_form(&app, "/api/v1/oauth/token", &token_form).await;
+    assert_eq!(status, StatusCode::OK, "token exchange: {}", body);
+    assert!(body["access_token"].is_string());
 }

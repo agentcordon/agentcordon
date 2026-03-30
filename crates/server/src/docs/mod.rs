@@ -285,7 +285,7 @@ fn build_auth_info(config: &AppConfig) -> AuthInfo {
             },
             steps: vec![
                 "Read GET /enroll.md for complete enrollment instructions".to_string(),
-                "Run `agentcordon init --server <url>` or visit /register to create a workspace"
+                "Run `agentcordon init` then `agentcordon register`, or visit /register to create a workspace"
                     .to_string(),
                 "Receive session_token, approval_url, and approval_code".to_string(),
                 "Ask your human to open approval_url in their browser and verify the approval_code"

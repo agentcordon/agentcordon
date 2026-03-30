@@ -111,8 +111,20 @@
         </div>
         <script>
             document.getElementById('cli-register-cmd').textContent =
-                'agentcordon init --server ' + location.origin;
+                'agentcordon init && AGTCRDN_BROKER_URL=<your-broker-url> agentcordon register';
         </script>
+
+        <div style="margin-top:1rem;padding:0.75rem 1rem;background:var(--wash);border-radius:8px;border-left:3px solid var(--accent);">
+            <p class="text-sm" style="margin:0 0 0.5rem 0;font-weight:600;">Server URL vs Broker URL</p>
+            <ul class="text-sm opacity-muted" style="margin:0;padding-left:1.25rem;">
+                <li><strong>Server URL</strong> (<code id="server-url-hint"></code>) &mdash; where the web UI and admin API live. This is the page you are on now.</li>
+                <li><strong>Broker URL</strong> (<code>AGTCRDN_BROKER_URL</code>) &mdash; where the CLI connects for credential operations. The broker is a local daemon that mediates between your CLI and the server. Set this to your broker&rsquo;s address (e.g. <code>http://localhost:9876</code>).</li>
+            </ul>
+        </div>
+        <script>
+            document.getElementById('server-url-hint').textContent = window.location.origin;
+        </script>
+
         <p class="text-sm opacity-muted mt-2">
             This command generates workspace keys, opens the approval page in your browser,
             and auto-completes when approved. No code copy-paste needed.

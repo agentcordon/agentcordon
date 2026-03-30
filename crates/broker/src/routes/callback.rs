@@ -14,6 +14,7 @@ pub struct CallbackParams {
     pub state: Option<String>,
     pub error: Option<String>,
     pub error_description: Option<String>,
+    pub client_id: Option<String>,
 }
 
 pub async fn get_callback(
@@ -64,7 +65,7 @@ pub async fn get_callback(
     };
 
     // Look up pending registration
-    let pending = {
+    let mut pending = {
         let mut pending_map = state.pending.write().await;
         match pending_map.remove(&oauth_state) {
             Some(p) => p,
@@ -76,6 +77,21 @@ pub async fn get_callback(
             }
         }
     };
+
+    // Use client_id from callback params if pending doesn't have one (new workspace flow)
+    if pending.client_id.is_empty() {
+        match &params.client_id {
+            Some(cid) if !cid.is_empty() => {
+                pending.client_id = cid.clone();
+            }
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Html(error_page("Missing client_id in callback")),
+                );
+            }
+        }
+    }
 
     // Exchange authorization code for tokens
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());

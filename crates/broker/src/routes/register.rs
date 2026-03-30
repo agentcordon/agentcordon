@@ -7,7 +7,6 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::server_client::ServerClient;
 use crate::state::{PendingRegistration, SharedState};
 
 #[derive(Debug, Deserialize)]
@@ -119,45 +118,27 @@ pub async fn post_register(
     // we read it from the config. For auto-port, the daemon sets it after bind.
     let redirect_uri = format!("http://localhost:{}/callback", state.config.port);
 
-    // 6. Register OAuth client with the server
-    let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
-
-    let client_response = match server_client
-        .register_oauth_client(&body.workspace_name, &redirect_uri, &body.scopes, &pk_hash)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to register OAuth client with server");
-            return (
-                StatusCode::BAD_GATEWAY,
-                axum::Json(serde_json::json!({
-                    "error": { "code": "bad_gateway", "message": "Failed to register with server" }
-                })),
-            );
-        }
-    };
-
-    // 7. Build authorization URL
+    // 6. Build authorization URL directly (client created during consent)
     let scope_param = body.scopes.join(" ");
     let auth_url = format!(
-        "{}/api/v1/oauth/authorize?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
+        "{}/api/v1/oauth/authorize?response_type=code&workspace_name={}&public_key_hash={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
         state.server_url,
-        urlencoding::encode(&client_response.client_id),
+        urlencoding::encode(&body.workspace_name),
+        urlencoding::encode(&pk_hash),
         urlencoding::encode(&redirect_uri),
         urlencoding::encode(&scope_param),
         urlencoding::encode(&oauth_state),
         urlencoding::encode(&code_challenge),
     );
 
-    // 8. Store pending registration
+    // 7. Store pending registration (client_id not known yet — set after callback)
     {
         let mut pending = state.pending.write().await;
         pending.insert(
             oauth_state.clone(),
             PendingRegistration {
                 workspace_name: body.workspace_name,
-                client_id: client_response.client_id,
+                client_id: String::new(),
                 code_verifier,
                 redirect_uri,
                 state: oauth_state,

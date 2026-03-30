@@ -99,8 +99,9 @@ async fn enrich_permission_names(
                 _ => entry.granted_by_name = Some("Deleted Workspace".to_string()),
             }
         } else {
-            // No granted_by — auto-grant
-            entry.granted_by_name = Some("System (auto-grant)".to_string());
+            // No granted_by recorded on the policy — show generic label
+            // TODO: add `created_by_user` to StoredPolicy so grants can show the operator who created them
+            entry.granted_by_name = Some("System".to_string());
         }
     }
 }
@@ -176,7 +177,7 @@ fn permission_to_cedar_actions(perm: &str) -> Vec<&'static str> {
     templates::permission_to_actions(perm)
 }
 
-/// Load credential, then check manage_permissions policy.
+/// Load credential, then check manage_permissions policy or credential ownership.
 async fn load_and_authorize(
     state: &AppState,
     actor: &AuthenticatedActor,
@@ -188,10 +189,13 @@ async fn load_and_authorize(
         .await?
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
+    // Try Cedar manage_permissions first (admin path)
     let decision = state.policy_engine.evaluate(
         &actor.policy_principal(),
         actions::MANAGE_PERMISSIONS,
-        &PolicyResource::Credential { credential: cred },
+        &PolicyResource::Credential {
+            credential: cred.clone(),
+        },
         &PolicyContext {
             target_url: None,
             requested_scopes: vec![],
@@ -199,11 +203,83 @@ async fn load_and_authorize(
         },
     )?;
 
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
+    if decision.decision != PolicyDecisionResult::Forbid {
+        return Ok(());
     }
 
-    Ok(())
+    // Fallback: allow if the actor owns the credential
+    match actor {
+        AuthenticatedActor::User(user) => {
+            if cred.created_by_user.as_ref() == Some(&user.id) {
+                return Ok(());
+            }
+        }
+        AuthenticatedActor::Workspace(workspace) => {
+            if cred
+                .created_by
+                .as_ref()
+                .map(|id| id.0 == workspace.id.0)
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    Err(ApiError::Forbidden("access denied by policy".to_string()))
+}
+
+/// Read-only authorization: allows manage_permissions OR credential ownership.
+/// Credential owners and workspace owners can view permissions on their resources.
+async fn authorize_read(
+    state: &AppState,
+    actor: &AuthenticatedActor,
+    cred_id: &CredentialId,
+) -> Result<(), ApiError> {
+    let cred = state
+        .store
+        .get_credential(cred_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
+
+    // Try Cedar manage_permissions first (admin path)
+    let decision = state.policy_engine.evaluate(
+        &actor.policy_principal(),
+        actions::MANAGE_PERMISSIONS,
+        &PolicyResource::Credential {
+            credential: cred.clone(),
+        },
+        &PolicyContext {
+            target_url: None,
+            requested_scopes: vec![],
+            ..Default::default()
+        },
+    )?;
+
+    if decision.decision != PolicyDecisionResult::Forbid {
+        return Ok(());
+    }
+
+    // Fallback: allow if the actor owns the credential
+    match actor {
+        AuthenticatedActor::User(user) => {
+            if cred.created_by_user.as_ref() == Some(&user.id) {
+                return Ok(());
+            }
+        }
+        AuthenticatedActor::Workspace(workspace) => {
+            if cred
+                .created_by
+                .as_ref()
+                .map(|id| id.0 == workspace.id.0)
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    Err(ApiError::Forbidden("access denied by policy".to_string()))
 }
 
 async fn get_permissions(
@@ -213,7 +289,7 @@ async fn get_permissions(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<CredentialPermissionsResponse>>, ApiError> {
     let cred_id = CredentialId(id);
-    load_and_authorize(&state, &actor, &cred_id).await?;
+    authorize_read(&state, &actor, &cred_id).await?;
 
     let cred = state
         .store

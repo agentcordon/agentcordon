@@ -30,19 +30,21 @@
         <form @submit.prevent="changePassword()">
             <div class="form-group">
                 <label for="pw-current">Current Password</label>
-                <input type="password" id="pw-current" class="form-input" x-model="pwCurrent" required autocomplete="current-password">
+                <input type="password" id="pw-current" name="current_password" class="form-input" x-model="pwCurrent" required autocomplete="current-password">
             </div>
             <div class="form-group">
                 <label for="pw-new">New Password</label>
-                <input type="password" id="pw-new" class="form-input" x-model="pwNew" required minlength="12" autocomplete="new-password">
+                <input type="password" id="pw-new" name="new_password" class="form-input" x-model="pwNew" required minlength="12" autocomplete="new-password">
                 <span class="text-sm settings-desc">Minimum 12 characters</span>
             </div>
             <div class="form-group">
                 <label for="pw-confirm">Confirm New Password</label>
-                <input type="password" id="pw-confirm" class="form-input" x-model="pwConfirm" required minlength="12" autocomplete="new-password">
+                <input type="password" id="pw-confirm" name="confirm_password" class="form-input" x-model="pwConfirm" required minlength="12" autocomplete="new-password">
             </div>
             <div class="form-actions">
-                <button type="submit" class="btn btn-primary btn-sm" :disabled="pwSaving || !pwCurrent || !pwNew || !pwConfirm">
+                <button type="submit" class="btn btn-primary btn-sm"
+                        :disabled="pwSaving || !pwCurrent || !pwNew || !pwConfirm"
+                        :title="!pwCurrent ? 'Enter your current password first' : (!pwNew || !pwConfirm) ? 'Fill in all password fields' : ''">
                     <span x-show="pwSaving" class="spinner" aria-hidden="true"></span>
                     <span x-text="pwSaving ? 'Changing...' : 'Change Password'"></span>
                 </button>
@@ -69,19 +71,19 @@
             <form @submit.prevent="createProvider()">
                 <div class="form-group">
                     <label for="prov-name">Provider Name</label>
-                    <input type="text" id="prov-name" class="form-input" x-model="newProvider.name" required placeholder="e.g., Google Workspace">
+                    <input type="text" id="prov-name" name="provider_name" class="form-input" x-model="newProvider.name" required placeholder="e.g., Google Workspace">
                 </div>
                 <div class="form-group">
                     <label for="prov-issuer">Issuer URL</label>
-                    <input type="text" id="prov-issuer" class="form-input" x-model="newProvider.issuer_url" required placeholder="https://accounts.google.com">
+                    <input type="text" id="prov-issuer" name="issuer_url" class="form-input" x-model="newProvider.issuer_url" required placeholder="https://accounts.google.com">
                 </div>
                 <div class="form-group">
                     <label for="prov-client-id">Client ID</label>
-                    <input type="text" id="prov-client-id" class="form-input" x-model="newProvider.client_id" required>
+                    <input type="text" id="prov-client-id" name="client_id" class="form-input" x-model="newProvider.client_id" required>
                 </div>
                 <div class="form-group">
                     <label for="prov-client-secret">Client Secret</label>
-                    <input type="password" id="prov-client-secret" class="form-input" x-model="newProvider.client_secret" required>
+                    <input type="password" id="prov-client-secret" name="client_secret" class="form-input" x-model="newProvider.client_secret" required>
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary btn-sm" @click="showNewProvider = false">Cancel</button>

@@ -34,6 +34,13 @@ pub async fn list_servers(
 
     match server_client.list_mcp_servers(&access_token).await {
         Ok(servers) => ok_response(serde_json::json!(servers)),
+        Err(crate::server_client::ServerClientError::ServerError {
+            status: 401,
+            ref body,
+        }) if body.contains("workspace not found") => {
+            tracing::warn!("server reports workspace not found — workspace may have been deleted");
+            error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Workspace not found on server (workspace may have been deleted). Try: agentcordon register --force")
+        }
         Err(crate::server_client::ServerClientError::ServerError { status: 401, .. }) => {
             if let Some(token) = try_refresh_and_get_token(&state, &auth.pk_hash).await {
                 match server_client.list_mcp_servers(&token).await {
@@ -76,19 +83,32 @@ pub async fn list_tools(
 
     match server_client.list_mcp_tools(&access_token).await {
         Ok(tools) => ok_response(serde_json::json!(tools)),
+        Err(crate::server_client::ServerClientError::ServerError {
+            status: 401,
+            ref body,
+        }) if body.contains("workspace not found") => {
+            tracing::warn!("server reports workspace not found — workspace may have been deleted");
+            error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Workspace not found on server (workspace may have been deleted). Try: agentcordon register --force")
+        }
         Err(crate::server_client::ServerClientError::ServerError { status: 401, .. }) => {
             if let Some(token) = try_refresh_and_get_token(&state, &auth.pk_hash).await {
                 match server_client.list_mcp_tools(&token).await {
                     Ok(tools) => ok_response(serde_json::json!(tools)),
                     Err(e) => {
-                        error_response(StatusCode::BAD_GATEWAY, "bad_gateway", { tracing::error!(error = %e, "MCP request failed"); "Server request failed" })
+                        tracing::warn!(error = %e, "MCP list-tools failed after refresh — returning empty list");
+                        ok_response(serde_json::json!([]))
                     }
                 }
             } else {
                 error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Token expired")
             }
         }
-        Err(e) => error_response(StatusCode::BAD_GATEWAY, "bad_gateway", { tracing::error!(error = %e, "MCP request failed"); "Server request failed" }),
+        Err(e) => {
+            // Return empty list instead of 502 when the server has no MCP tools
+            // endpoint or no MCP servers configured.
+            tracing::warn!(error = %e, "MCP list-tools failed — returning empty list");
+            ok_response(serde_json::json!([]))
+        }
     }
 }
 
@@ -153,6 +173,13 @@ pub async fn call_tool(
         .await
     {
         Ok(r) => r,
+        Err(crate::server_client::ServerClientError::ServerError {
+            status: 401,
+            ref body,
+        }) if body.contains("workspace not found") => {
+            tracing::warn!("server reports workspace not found — workspace may have been deleted");
+            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Workspace not found on server (workspace may have been deleted). Try: agentcordon register --force");
+        }
         Err(crate::server_client::ServerClientError::ServerError { status: 401, .. }) => {
             // Try reactive refresh
             if let Some(token) = try_refresh_and_get_token(&state, &auth.pk_hash).await {

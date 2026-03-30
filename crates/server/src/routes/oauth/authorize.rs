@@ -8,10 +8,13 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use serde::Deserialize;
+use uuid::Uuid;
 
 use agent_cordon_core::crypto::session::hash_session_token_hmac;
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
-use agent_cordon_core::oauth2::types::{OAuthAuthCode, OAuthConsent, OAuthScope};
+use agent_cordon_core::domain::user::UserId;
+use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
+use agent_cordon_core::oauth2::types::{OAuthAuthCode, OAuthClient, OAuthConsent, OAuthScope};
 
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
@@ -19,7 +22,7 @@ use crate::response::ApiError;
 use crate::state::AppState;
 use crate::utils::cookies::parse_cookie;
 
-use super::{generate_auth_code, scope_descriptions, ScopeDisplay};
+use super::{generate_auth_code, is_localhost_uri, scope_descriptions, ScopeDisplay};
 
 /// Compute a deterministic CSRF token from the session cookie using HMAC.
 ///
@@ -44,7 +47,9 @@ fn extract_session_token(headers: &axum::http::HeaderMap) -> Option<String> {
 #[derive(Deserialize)]
 pub(crate) struct AuthorizeQuery {
     response_type: String,
-    client_id: String,
+    client_id: Option<String>,
+    public_key_hash: Option<String>,
+    workspace_name: Option<String>,
     redirect_uri: String,
     scope: String,
     state: String,
@@ -64,6 +69,8 @@ struct ConsentTemplate {
     code_challenge: String,
     code_challenge_method: String,
     csrf_token: String,
+    is_new_workspace: bool,
+    public_key_hash: String,
 }
 
 /// GET /api/v1/oauth/authorize
@@ -92,67 +99,99 @@ pub(crate) async fn authorize_get(
         ));
     }
 
-    // Look up client
-    let client = state
-        .store
-        .get_oauth_client_by_client_id(&params.client_id)
-        .await?
-        .ok_or_else(|| ApiError::BadRequest("unknown client_id".into()))?;
-
-    if client.revoked_at.is_some() {
-        return Err(ApiError::BadRequest("client has been revoked".into()));
-    }
-
-    // Validate redirect_uri matches registered URIs
-    if !client.redirect_uris.contains(&params.redirect_uri) {
-        return Err(ApiError::BadRequest("redirect_uri does not match".into()));
+    // Validate redirect_uri is localhost
+    if !is_localhost_uri(&params.redirect_uri) {
+        return Err(ApiError::BadRequest(
+            "redirect_uri must be localhost".into(),
+        ));
     }
 
     // Validate requested scopes
-    let requested_scopes = OAuthScope::parse_scope_string(&params.scope)
-        .map_err(ApiError::BadRequest)?;
-    for scope in &requested_scopes {
-        if !client.allowed_scopes.contains(scope) {
-            return Err(ApiError::BadRequest(format!(
-                "scope not allowed for this client: {scope}"
-            )));
-        }
-    }
+    let requested_scopes =
+        OAuthScope::parse_scope_string(&params.scope).map_err(ApiError::BadRequest)?;
 
-    // Check for existing consent — if scopes match, skip consent page
-    if let Some(consent) = state
-        .store
-        .get_oauth_consent(&params.client_id, &auth.user.id)
-        .await?
-    {
-        let consent_covers_all = requested_scopes
-            .iter()
-            .all(|s| consent.scopes.contains(s));
-        if consent_covers_all {
-            // Silent re-authorization: generate code and redirect immediately
-            let (code, code_hash) = generate_auth_code();
-            let now = Utc::now();
+    // Determine if this is an existing client or new workspace registration
+    let (workspace_name, client_id_str, is_new_workspace, public_key_hash) =
+        if let Some(ref client_id) = params.client_id {
+            // Existing client path
+            let client = state
+                .store
+                .get_oauth_client_by_client_id(client_id)
+                .await?
+                .ok_or_else(|| ApiError::BadRequest("unknown client_id".into()))?;
 
-            let auth_code = OAuthAuthCode {
-                code_hash,
-                client_id: params.client_id.clone(),
-                user_id: auth.user.id.clone(),
-                redirect_uri: params.redirect_uri.clone(),
-                scopes: requested_scopes,
-                code_challenge: Some(code_challenge.to_string()),
-                created_at: now,
-                expires_at: now + Duration::seconds(300),
-                consumed_at: None,
-            };
-            state.store.create_oauth_auth_code(&auth_code).await?;
+            if client.revoked_at.is_some() {
+                return Err(ApiError::BadRequest("client has been revoked".into()));
+            }
 
-            let redirect_url = format!(
-                "{}?code={}&state={}",
-                params.redirect_uri,
-                urlencoding::encode(&code),
-                urlencoding::encode(&params.state)
-            );
-            return Ok(Redirect::to(&redirect_url).into_response());
+            if !client.redirect_uris.contains(&params.redirect_uri) {
+                return Err(ApiError::BadRequest(
+                    "redirect_uri does not match".into(),
+                ));
+            }
+
+            for scope in &requested_scopes {
+                if !client.allowed_scopes.contains(scope) {
+                    return Err(ApiError::BadRequest(format!(
+                        "scope not allowed for this client: {scope}"
+                    )));
+                }
+            }
+
+            (
+                client.workspace_name,
+                client_id.clone(),
+                false,
+                String::new(),
+            )
+        } else if let (Some(ref pk_hash), Some(ref ws_name)) =
+            (&params.public_key_hash, &params.workspace_name)
+        {
+            // New workspace registration path
+            validate_new_workspace_params(pk_hash, ws_name)?;
+            (ws_name.clone(), String::new(), true, pk_hash.clone())
+        } else {
+            return Err(ApiError::BadRequest(
+                "must provide either client_id or (public_key_hash and workspace_name)"
+                    .into(),
+            ));
+        };
+
+    // Check for existing consent — if scopes match, skip consent page (existing client only)
+    if !is_new_workspace {
+        if let Some(consent) = state
+            .store
+            .get_oauth_consent(&client_id_str, &auth.user.id)
+            .await?
+        {
+            let consent_covers_all = requested_scopes
+                .iter()
+                .all(|s| consent.scopes.contains(s));
+            if consent_covers_all {
+                let (code, code_hash) = generate_auth_code();
+                let now = Utc::now();
+
+                let auth_code = OAuthAuthCode {
+                    code_hash,
+                    client_id: client_id_str.clone(),
+                    user_id: auth.user.id.clone(),
+                    redirect_uri: params.redirect_uri.clone(),
+                    scopes: requested_scopes,
+                    code_challenge: Some(code_challenge.to_string()),
+                    created_at: now,
+                    expires_at: now + Duration::seconds(300),
+                    consumed_at: None,
+                };
+                state.store.create_oauth_auth_code(&auth_code).await?;
+
+                let redirect_url = format!(
+                    "{}?code={}&state={}",
+                    params.redirect_uri,
+                    urlencoding::encode(&code),
+                    urlencoding::encode(&params.state)
+                );
+                return Ok(Redirect::to(&redirect_url).into_response());
+            }
         }
     }
 
@@ -162,15 +201,17 @@ pub(crate) async fn authorize_get(
     let csrf_token = compute_csrf_token(&session_token, &state.session_hash_key);
 
     let template = ConsentTemplate {
-        workspace_name: client.workspace_name,
+        workspace_name,
         scopes: scope_descriptions(&requested_scopes),
         user_name: auth.user.username.clone(),
-        client_id: params.client_id,
+        client_id: client_id_str,
         redirect_uri: params.redirect_uri,
         state: params.state,
         code_challenge: code_challenge.to_string(),
         code_challenge_method: "S256".to_string(),
         csrf_token,
+        is_new_workspace,
+        public_key_hash,
     };
 
     match template.render() {
@@ -180,6 +221,21 @@ pub(crate) async fn authorize_get(
             Err(ApiError::Internal("template render failed".into()))
         }
     }
+}
+
+/// Validate new workspace registration parameters.
+fn validate_new_workspace_params(pk_hash: &str, ws_name: &str) -> Result<(), ApiError> {
+    if ws_name.is_empty() || ws_name.len() > 255 {
+        return Err(ApiError::BadRequest(
+            "workspace_name must be 1-255 characters".into(),
+        ));
+    }
+    if pk_hash.len() != 64 || !pk_hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ApiError::BadRequest(
+            "public_key_hash must be a 64-char hex string".into(),
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +252,12 @@ pub(crate) struct AuthorizeForm {
     code_challenge_method: String,
     decision: String,
     csrf_token: String,
+    #[serde(default)]
+    public_key_hash: String,
+    #[serde(default)]
+    workspace_name: String,
+    #[serde(default)]
+    is_new_workspace: bool,
 }
 
 /// POST /api/v1/oauth/authorize
@@ -214,34 +276,25 @@ pub(crate) async fn authorize_post(
         return Err(ApiError::Forbidden("invalid csrf_token".into()));
     }
 
-    // Validate client
-    let client = state
-        .store
-        .get_oauth_client_by_client_id(&form.client_id)
-        .await?
-        .ok_or_else(|| ApiError::BadRequest("unknown client_id".into()))?;
+    let scopes =
+        OAuthScope::parse_scope_string(&form.scope).map_err(ApiError::BadRequest)?;
 
-    if client.revoked_at.is_some() {
-        return Err(ApiError::BadRequest("client has been revoked".into()));
-    }
-
-    if !client.redirect_uris.contains(&form.redirect_uri) {
-        return Err(ApiError::BadRequest("redirect_uri does not match".into()));
-    }
-
-    let scopes = OAuthScope::parse_scope_string(&form.scope)
-        .map_err(ApiError::BadRequest)?;
-
+    // Handle deny before client creation
     if form.decision == "deny" {
-        // Audit: consent denied
+        let resource_id = if form.client_id.is_empty() {
+            "new-workspace".to_string()
+        } else {
+            form.client_id.clone()
+        };
         let event = AuditEvent::builder(AuditEventType::Oauth2TokenFailed)
             .action("oauth_consent_denied")
             .user_actor(&auth.user)
-            .resource("oauth_client", &client.id.to_string())
+            .resource("oauth_client", &resource_id)
             .correlation_id(&corr.0)
             .decision(AuditDecision::Forbid, Some("user denied consent"))
             .details(serde_json::json!({
                 "client_id": form.client_id,
+                "workspace_name": form.workspace_name,
             }))
             .build();
         if let Err(e) = state.store.append_audit_event(&event).await {
@@ -258,7 +311,9 @@ pub(crate) async fn authorize_post(
     }
 
     if form.decision != "approve" {
-        return Err(ApiError::BadRequest("decision must be 'approve' or 'deny'".into()));
+        return Err(ApiError::BadRequest(
+            "decision must be 'approve' or 'deny'".into(),
+        ));
     }
 
     // PKCE validation
@@ -271,26 +326,53 @@ pub(crate) async fn authorize_post(
         ));
     }
 
+    // Determine client_id: create new client if new workspace, or validate existing
+    let (client_id, client_uuid, is_new) = if form.is_new_workspace {
+        let new_client =
+            create_client_on_consent(&state, &auth, &corr, &form).await?;
+        let cid = new_client.client_id.clone();
+        let uuid = new_client.id;
+        (cid, uuid, true)
+    } else {
+        let client = state
+            .store
+            .get_oauth_client_by_client_id(&form.client_id)
+            .await?
+            .ok_or_else(|| ApiError::BadRequest("unknown client_id".into()))?;
+
+        if client.revoked_at.is_some() {
+            return Err(ApiError::BadRequest("client has been revoked".into()));
+        }
+
+        if !client.redirect_uris.contains(&form.redirect_uri) {
+            return Err(ApiError::BadRequest(
+                "redirect_uri does not match".into(),
+            ));
+        }
+
+        (client.client_id, client.id, false)
+    };
+
     // Generate auth code
     let (code, code_hash) = generate_auth_code();
     let now = Utc::now();
 
     let auth_code = OAuthAuthCode {
         code_hash,
-        client_id: form.client_id.clone(),
+        client_id: client_id.clone(),
         user_id: auth.user.id.clone(),
         redirect_uri: form.redirect_uri.clone(),
         scopes: scopes.clone(),
         code_challenge: Some(form.code_challenge),
         created_at: now,
-        expires_at: now + Duration::seconds(300), // 5 min TTL
+        expires_at: now + Duration::seconds(300),
         consumed_at: None,
     };
     state.store.create_oauth_auth_code(&auth_code).await?;
 
     // Upsert consent record
     let consent = OAuthConsent {
-        client_id: form.client_id.clone(),
+        client_id: client_id.clone(),
         user_id: auth.user.id.clone(),
         scopes: scopes.clone(),
         granted_at: now,
@@ -301,24 +383,137 @@ pub(crate) async fn authorize_post(
     let event = AuditEvent::builder(AuditEventType::Oauth2TokenAcquired)
         .action("oauth_consent_granted")
         .user_actor(&auth.user)
-        .resource("oauth_client", &client.id.to_string())
+        .resource("oauth_client", &client_uuid.to_string())
         .correlation_id(&corr.0)
         .decision(AuditDecision::Permit, Some("user approved consent"))
         .details(serde_json::json!({
-            "client_id": form.client_id,
+            "client_id": client_id,
             "scopes": OAuthScope::to_scope_string(&scopes),
+            "is_new_workspace": is_new,
         }))
         .build();
     if let Err(e) = state.store.append_audit_event(&event).await {
         tracing::warn!(error = %e, "failed to write audit event");
     }
 
-    let redirect_url = format!(
-        "{}?code={}&state={}",
-        form.redirect_uri,
-        urlencoding::encode(&code),
-        urlencoding::encode(&form.state)
+    // For new workspace registrations, include client_id in the callback
+    let redirect_url = if is_new {
+        format!(
+            "{}?code={}&state={}&client_id={}",
+            form.redirect_uri,
+            urlencoding::encode(&code),
+            urlencoding::encode(&form.state),
+            urlencoding::encode(&client_id),
+        )
+    } else {
+        format!(
+            "{}?code={}&state={}",
+            form.redirect_uri,
+            urlencoding::encode(&code),
+            urlencoding::encode(&form.state)
+        )
+    };
+    Ok(
+        (StatusCode::FOUND, [("Location", redirect_url.as_str())])
+            .into_response(),
+    )
+}
+
+/// Create an OAuth client and workspace record as part of the consent flow.
+async fn create_client_on_consent(
+    state: &AppState,
+    auth: &AuthenticatedUser,
+    corr: &CorrelationId,
+    form: &AuthorizeForm,
+) -> Result<OAuthClient, ApiError> {
+    // Validate params
+    validate_new_workspace_params(&form.public_key_hash, &form.workspace_name)?;
+
+    if !is_localhost_uri(&form.redirect_uri) {
+        return Err(ApiError::BadRequest(
+            "redirect_uri must be localhost".into(),
+        ));
+    }
+
+    let scopes =
+        OAuthScope::parse_scope_string(&form.scope).map_err(ApiError::BadRequest)?;
+
+    // Check for existing client with this public_key_hash
+    if let Some(existing) = state
+        .store
+        .get_oauth_client_by_public_key_hash(&form.public_key_hash)
+        .await?
+    {
+        if existing.revoked_at.is_none() {
+            return Err(ApiError::Conflict(
+                "client already registered for this public_key_hash".into(),
+            ));
+        }
+    }
+
+    let client_id = format!(
+        "ac_cli_{}",
+        &Uuid::new_v4().simple().to_string()[..12]
     );
-    Ok((StatusCode::FOUND, [("Location", redirect_url.as_str())])
-        .into_response())
+    let now = Utc::now();
+
+    // Public client (no secret) — security relies on PKCE for code exchange
+    let client = OAuthClient {
+        id: Uuid::new_v4(),
+        client_id: client_id.clone(),
+        client_secret_hash: None,
+        workspace_name: form.workspace_name.clone(),
+        public_key_hash: form.public_key_hash.clone(),
+        redirect_uris: vec![form.redirect_uri.clone()],
+        allowed_scopes: scopes,
+        created_by_user: UserId(auth.user.id.0),
+        created_at: now,
+        revoked_at: None,
+    };
+
+    state.store.create_oauth_client(&client).await?;
+
+    // Create corresponding workspace record so the token extractor can find it
+    // via get_workspace_by_pk_hash(). Without this, all workspace-authenticated
+    // operations (credentials, proxy, MCP) fail.
+    let now_ws = Utc::now();
+    let workspace = Workspace {
+        id: WorkspaceId(Uuid::new_v4()),
+        name: form.workspace_name.clone(),
+        enabled: true,
+        status: WorkspaceStatus::Active,
+        pk_hash: Some(form.public_key_hash.clone()),
+        encryption_public_key: None,
+        tags: vec![],
+        owner_id: Some(UserId(auth.user.id.0)),
+        parent_id: None,
+        tool_name: None,
+        created_at: now_ws,
+        updated_at: now_ws,
+    };
+    state.store.create_workspace(&workspace).await?;
+
+    // Audit: client created via consent
+    let event = AuditEvent::builder(AuditEventType::Oauth2TokenAcquired)
+        .action("oauth_client_created_via_consent")
+        .user_actor(&auth.user)
+        .resource("oauth_client", &client.id.to_string())
+        .correlation_id(&corr.0)
+        .decision(AuditDecision::Permit, Some("client created during consent"))
+        .details(serde_json::json!({
+            "client_id": client_id,
+            "workspace_name": form.workspace_name,
+        }))
+        .build();
+    if let Err(e) = state.store.append_audit_event(&event).await {
+        tracing::warn!(error = %e, "failed to write audit event");
+    }
+
+    tracing::info!(
+        client_id = %client_id,
+        workspace_name = %form.workspace_name,
+        "OAuth client created via consent flow"
+    );
+
+    Ok(client)
 }

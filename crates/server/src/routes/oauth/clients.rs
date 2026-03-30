@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
+use agent_cordon_core::domain::user::UserId;
 use agent_cordon_core::oauth2::types::OAuthClient;
 use agent_cordon_core::oauth2::types::OAuthScope;
 
@@ -41,13 +42,16 @@ pub(crate) struct RegisterClientResponse {
     created_at: String,
 }
 
-/// POST /api/v1/oauth/clients
+/// POST /api/v1/oauth/clients — Public endpoint (RFC 7591 Dynamic Client Registration)
+///
+/// No authentication required. Client registration just declares intent to
+/// participate in OAuth — actual authorization happens in the consent flow.
 pub(crate) async fn register_client(
     State(state): State<AppState>,
-    auth: AuthenticatedUser,
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<RegisterClientRequest>,
 ) -> Result<(axum::http::StatusCode, Json<ApiResponse<RegisterClientResponse>>), ApiError> {
+
     // Validate workspace_name
     if req.workspace_name.is_empty() || req.workspace_name.len() > 255 {
         return Err(ApiError::BadRequest(
@@ -112,7 +116,7 @@ pub(crate) async fn register_client(
         public_key_hash: req.public_key_hash.clone(),
         redirect_uris: req.redirect_uris.clone(),
         allowed_scopes: scopes.clone(),
-        created_by_user: auth.user.id.clone(),
+        created_by_user: UserId(Uuid::nil()),
         created_at: now,
         revoked_at: None,
     };
@@ -122,7 +126,10 @@ pub(crate) async fn register_client(
     // Audit event
     let event = AuditEvent::builder(AuditEventType::Oauth2TokenAcquired)
         .action("oauth_client_registered")
-        .user_actor(&auth.user)
+        .user_actor_raw(
+            &UserId(Uuid::nil()),
+            "self-registered",
+        )
         .resource("oauth_client", &client.id.to_string())
         .correlation_id(&corr.0)
         .decision(AuditDecision::Permit, Some("client registered"))
@@ -138,7 +145,7 @@ pub(crate) async fn register_client(
     tracing::info!(
         client_id = %client_id,
         workspace_name = %req.workspace_name,
-        "OAuth client registered"
+        "OAuth client registered (self-registration)"
     );
 
     let response = RegisterClientResponse {

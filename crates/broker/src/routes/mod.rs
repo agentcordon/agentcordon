@@ -1,5 +1,6 @@
 pub mod callback;
 pub mod credentials;
+pub mod deregister;
 pub mod health;
 pub mod mcp;
 pub mod proxy;
@@ -18,6 +19,7 @@ pub fn build_router(state: SharedState) -> Router {
     // Routes that require workspace Ed25519 authentication
     let authenticated = Router::new()
         .route("/status", get(status::get_status))
+        .route("/deregister", post(deregister::post_deregister))
         .route("/credentials", get(credentials::get_credentials))
         .route("/proxy", post(proxy::post_proxy))
         .route("/mcp/list-servers", post(mcp::list_servers))

@@ -239,10 +239,15 @@
 
         <!-- Body -->
         <div class="consent-body">
-            <h1 class="consent-title">Authorize Workspace</h1>
+            <h1 class="consent-title">{% if is_new_workspace %}Create &amp; Authorize Workspace{% else %}Authorize Workspace{% endif %}</h1>
             <p class="consent-desc">
+                {% if is_new_workspace %}
+                Create workspace <span class="consent-workspace-name">{{ workspace_name }}</span>
+                and grant it access to your account.
+                {% else %}
                 <span class="consent-workspace-name">{{ workspace_name }}</span>
                 is requesting access to your account.
+                {% endif %}
             </p>
 
             <!-- Requested scopes -->
@@ -281,6 +286,11 @@
                 <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
                 <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="public_key_hash" value="{{ public_key_hash }}">
+                <input type="hidden" name="workspace_name" value="{{ workspace_name }}">
+                {% if is_new_workspace %}
+                <input type="hidden" name="is_new_workspace" value="true">
+                {% endif %}
 
                 <div class="consent-actions">
                     <button type="submit" name="decision" value="deny" class="btn btn-deny">

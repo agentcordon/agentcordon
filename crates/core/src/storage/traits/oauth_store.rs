@@ -21,6 +21,8 @@ pub trait OAuthStore: Send + Sync {
     ) -> Result<Option<OAuthClient>, StoreError>;
     async fn list_oauth_clients(&self) -> Result<Vec<OAuthClient>, StoreError>;
     async fn revoke_oauth_client(&self, client_id: &str) -> Result<bool, StoreError>;
+    /// Hard-delete an OAuth client and all associated tokens, auth codes, and consents.
+    async fn delete_oauth_client(&self, client_id: &str) -> Result<bool, StoreError>;
 
     // --- Auth Codes ---
     async fn create_oauth_auth_code(&self, code: &OAuthAuthCode) -> Result<(), StoreError>;

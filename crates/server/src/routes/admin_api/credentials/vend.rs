@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use base64::engine::general_purpose::{STANDARD as B64_STANDARD, URL_SAFE_NO_PAD};
@@ -43,6 +43,32 @@ struct VendEnvelopeResponse {
     aad: String,
 }
 
+/// Optional request body for vend endpoints. The broker may provide its own
+/// ECIES public key so the server encrypts the credential to the broker
+/// rather than to the workspace's stored key.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct VendRequest {
+    /// Base64url-encoded uncompressed P-256 public key (65 bytes decoded).
+    /// When present, the server encrypts the credential envelope to this key
+    /// instead of the workspace's `encryption_public_key`.
+    #[serde(default)]
+    broker_public_key: Option<String>,
+}
+
+/// Decode a base64url-encoded uncompressed P-256 point and validate its length.
+fn parse_broker_public_key(encoded: &str) -> Result<Vec<u8>, ApiError> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| ApiError::BadRequest("invalid base64url in broker_public_key".to_string()))?;
+    if bytes.len() != 65 || bytes[0] != 0x04 {
+        return Err(ApiError::BadRequest(
+            "broker_public_key must be a 65-byte uncompressed P-256 point (0x04 || x || y)"
+                .to_string(),
+        ));
+    }
+    Ok(bytes)
+}
+
 /// Extract the encryption JWK from a workspace's `encryption_public_key` value (JWK JSON string).
 fn parse_encryption_jwk(encryption_public_key: &str) -> Result<serde_json::Value, ApiError> {
     let jwk: serde_json::Value = serde_json::from_str(encryption_public_key)
@@ -80,11 +106,16 @@ fn jwk_to_uncompressed_point(jwk: &serde_json::Value) -> Result<Vec<u8>, ApiErro
 ///
 /// Both `vend_credential` (by ID) and `vend_credential_to_device` (by name)
 /// delegate here after their unique credential lookup.
+///
+/// `broker_pub_bytes`: If `Some`, use this P-256 public key for ECIES encryption
+/// (provided by the broker in the request body). Otherwise fall back to
+/// `workspace.encryption_public_key`.
 async fn vend_inner(
     state: &AppState,
     workspace: &Workspace,
     cred: &StoredCredential,
     corr_id: String,
+    broker_pub_bytes: Option<Vec<u8>>,
 ) -> Result<VendResponse, ApiError> {
     if cred.is_expired() {
         return Err(ApiError::Forbidden("credential has expired".to_string()));
@@ -138,15 +169,19 @@ async fn vend_inner(
         cred.id.0.to_string().as_bytes(),
     )?;
 
-    // Load workspace's encryption public key
-    let encryption_key_str = workspace
-        .encryption_public_key
-        .as_ref()
-        .ok_or_else(|| ApiError::UnprocessableEntity(
-            "workspace encryption key not configured \u{2014} register with an encryption key to use credential vending".to_string(),
-        ))?;
-    let encryption_jwk = parse_encryption_jwk(encryption_key_str)?;
-    let ws_pub_bytes = jwk_to_uncompressed_point(&encryption_jwk)?;
+    // Resolve encryption public key: prefer broker-provided key, fall back to workspace key
+    let ws_pub_bytes = if let Some(broker_bytes) = broker_pub_bytes {
+        broker_bytes
+    } else {
+        let encryption_key_str = workspace
+            .encryption_public_key
+            .as_ref()
+            .ok_or_else(|| ApiError::UnprocessableEntity(
+                "workspace encryption key not configured \u{2014} provide broker_public_key in the request body or register with an encryption key".to_string(),
+            ))?;
+        let encryption_jwk = parse_encryption_jwk(encryption_key_str)?;
+        jwk_to_uncompressed_point(&encryption_jwk)?
+    };
 
     // Build AAD: workspace_id||credential_id||vend_id||timestamp
     let timestamp = now.timestamp().to_string();
@@ -310,12 +345,22 @@ pub(crate) async fn vend_credential(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
     headers: axum::http::HeaderMap,
+    body: Option<Json<VendRequest>>,
 ) -> Result<Json<ApiResponse<VendResponse>>, ApiError> {
     let auth_header = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| ApiError::Unauthorized("missing Authorization header".to_string()))?;
     let workspace = authenticated_workspace::authenticate_workspace(&state, auth_header).await?;
+
+    let broker_pub = match &body {
+        Some(Json(req)) => req
+            .broker_public_key
+            .as_deref()
+            .map(parse_broker_public_key)
+            .transpose()?,
+        None => None,
+    };
 
     let cred_id = CredentialId(id);
     let cred = state
@@ -324,7 +369,7 @@ pub(crate) async fn vend_credential(
         .await?
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
-    let response = vend_inner(&state, &workspace, &cred, corr.0).await?;
+    let response = vend_inner(&state, &workspace, &cred, corr.0, broker_pub).await?;
     Ok(Json(ApiResponse::ok(response)))
 }
 
@@ -337,12 +382,22 @@ pub(crate) async fn vend_credential_to_device(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     headers: axum::http::HeaderMap,
     Path(name): Path<String>,
+    body: Option<Json<VendRequest>>,
 ) -> Result<Json<ApiResponse<VendResponse>>, ApiError> {
     let auth_header = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| ApiError::Unauthorized("workspace authentication required".to_string()))?;
     let workspace = authenticated_workspace::authenticate_workspace(&state, auth_header).await?;
+
+    let broker_pub = match &body {
+        Some(Json(req)) => req
+            .broker_public_key
+            .as_deref()
+            .map(parse_broker_public_key)
+            .transpose()?,
+        None => None,
+    };
 
     // Look up credential scoped to workspace first, fall back to global
     let cred = match state
@@ -358,6 +413,6 @@ pub(crate) async fn vend_credential_to_device(
             .ok_or_else(|| ApiError::NotFound(format!("credential '{}' not found", name)))?,
     };
 
-    let response = vend_inner(&state, &workspace, &cred, corr.0).await?;
+    let response = vend_inner(&state, &workspace, &cred, corr.0, broker_pub).await?;
     Ok(Json(ApiResponse::ok(response)))
 }

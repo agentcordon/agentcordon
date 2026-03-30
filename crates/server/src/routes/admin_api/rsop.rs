@@ -163,7 +163,25 @@ async fn rsop(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<RsopRequest>,
 ) -> Result<Json<ApiResponse<RsopResponse>>, ApiError> {
-    check_manage_policies(&state, &auth)?;
+    // Allow admin (manage_policies) OR resource owner to view RSoP
+    let is_admin = check_manage_policies(&state, &auth).is_ok();
+    if !is_admin {
+        // Check resource ownership as fallback
+        let is_owner = match req.resource_type.as_str() {
+            "Credential" => {
+                let cred = state
+                    .store
+                    .get_credential(&CredentialId(req.resource_id))
+                    .await?;
+                cred.map(|c| c.created_by_user.as_ref() == Some(&auth.user.id))
+                    .unwrap_or(false)
+            }
+            _ => false,
+        };
+        if !is_owner {
+            return Err(ApiError::Forbidden("access denied by policy".to_string()));
+        }
+    }
 
     let limit = req.limit.unwrap_or(100).min(500);
     let now = chrono::Utc::now();

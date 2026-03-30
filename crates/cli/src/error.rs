@@ -81,12 +81,33 @@ impl fmt::Display for CliError {
 impl std::error::Error for CliError {}
 
 /// Map a broker error response code to the appropriate CliError.
+///
+/// Includes the HTTP status and reason phrase so CLI users get actionable diagnostics.
 pub fn from_broker_error(http_status: u16, code: &str, message: &str) -> CliError {
+    let reason = http_reason(http_status);
+    let detail = format!("{http_status} {reason}: {message}");
     match (http_status, code) {
-        (401, _) => CliError::auth_failed(message),
-        (403, _) => CliError::authorization_denied(message),
-        (409, _) => CliError::general(message),
-        (502, _) | (_, "bad_gateway") => CliError::upstream_error(message),
-        _ => CliError::general(message),
+        (401, _) => CliError::auth_failed(detail),
+        (403, _) => CliError::authorization_denied(detail),
+        (409, _) => CliError::general(detail),
+        (502, _) | (_, "bad_gateway") => CliError::upstream_error(detail),
+        _ => CliError::general(detail),
+    }
+}
+
+/// Return the standard HTTP reason phrase for common status codes.
+fn http_reason(status: u16) -> &'static str {
+    match status {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "Error",
     }
 }
