@@ -24,6 +24,7 @@ from tests.e2e.helpers import stop_broker
 from tests.e2e.nodes.broker import get_nodes as broker_nodes
 from tests.e2e.nodes.oauth_flow import get_nodes as oauth_nodes
 from tests.e2e.nodes.broker_proxy import get_nodes as proxy_nodes
+from tests.e2e.nodes.oauth_security import get_nodes as security_nodes
 
 
 def main():
@@ -46,6 +47,8 @@ def main():
     for node in oauth_nodes():
         runner.add_node(node)
     for node in proxy_nodes():
+        runner.add_node(node)
+    for node in security_nodes():
         runner.add_node(node)
 
     # Pre-populate context with base setup values

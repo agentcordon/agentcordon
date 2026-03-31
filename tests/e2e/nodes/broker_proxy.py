@@ -2,8 +2,7 @@
 DAG nodes for broker-mediated credential discovery and proxy:
   - credential.discover_via_broker
   - proxy.via_broker
-  - security.broker_unsigned_rejected
-  - security.cli_no_credential_material
+  - proxy.via_broker_denied
 """
 
 import json
@@ -166,133 +165,51 @@ PROXY_VIA_BROKER_NODE = DagNode(
 
 
 # ---------------------------------------------------------------------------
-# security.broker_unsigned_rejected
+# proxy.via_broker_denied
 # ---------------------------------------------------------------------------
 
-def security_broker_unsigned_rejected(ctx: dict) -> dict:
+def proxy_via_broker_denied(ctx: dict) -> dict:
     """
-    Verify that an unsigned request to the broker is rejected with 401.
+    Verify that a workspace with OAuth tokens but no Cedar permission
+    for a credential gets 403 when attempting to proxy.
 
-    Consumes: broker_url
+    The upstream target should never receive the request.
+
+    Consumes: broker_url, broker_pem_key_path
     Produces: (none — validation only)
     """
     broker_url = ctx["broker_url"]
+    pem_key_path = ctx["broker_pem_key_path"]
 
-    # Send request WITHOUT Ed25519 signature headers
-    req = urllib.request.Request(
-        f"{broker_url}/credentials",
-        method="GET",
+    # Use a credential name that the workspace has no Cedar permission for.
+    # We use a non-existent credential to ensure no grant covers it.
+    unpermitted_credential = "nonexistent-credential-no-permission"
+
+    proxy_body = json.dumps({
+        "method": "GET",
+        "url": f"{ctx.get('base_url', 'http://localhost:3140')}/health",
+        "credential": unpermitted_credential,
+        "headers": {"Accept": "application/json"},
+    })
+
+    status, headers, body = broker_request(
+        broker_url, pem_key_path, "POST", "/proxy", body=proxy_body,
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raise AssertionError(
-                f"Expected 401 for unsigned request, got {resp.status}"
-            )
-    except urllib.error.HTTPError as e:
-        assert e.code == 401, (
-            f"Expected 401 for unsigned request, got {e.code}: "
-            f"{e.read().decode() if e.fp else ''}"
-        )
-
-    # Also test with garbage signature
-    bad_headers = {
-        "X-AC-PublicKey": "00" * 32,
-        "X-AC-Timestamp": "9999999999",
-        "X-AC-Signature": "ff" * 64,
-    }
-    req2 = urllib.request.Request(
-        f"{broker_url}/credentials",
-        headers=bad_headers,
-        method="GET",
+    assert status == 403, (
+        f"Expected 403 for proxy without permission, got {status}: {body}"
     )
-
-    try:
-        with urllib.request.urlopen(req2, timeout=10) as resp:
-            raise AssertionError(
-                f"Expected 401 for bad signature, got {resp.status}"
-            )
-    except urllib.error.HTTPError as e:
-        assert e.code == 401, (
-            f"Expected 401 for bad signature, got {e.code}"
-        )
 
     return ctx
 
 
-SECURITY_BROKER_UNSIGNED_NODE = DagNode(
-    name="security.broker_unsigned_rejected",
-    fn=security_broker_unsigned_rejected,
-    depends_on=["broker.start"],
-    produces=[],
-    consumes=["broker_url"],
-    critical=False,
-    timeout=10.0,
-)
-
-
-# ---------------------------------------------------------------------------
-# security.cli_no_credential_material
-# ---------------------------------------------------------------------------
-
-def security_cli_no_credential_material(ctx: dict) -> dict:
-    """
-    After broker proxy completes, verify no credential material appears
-    in CLI-accessible outputs.
-
-    Inspects the proxy response returned to the "CLI" (our test harness)
-    and verifies no secret values, OAuth tokens, or decrypted ECIES content
-    leaked through.
-
-    Consumes: broker_url, broker_pem_key_path, broker_proxy_response
-    Produces: (none — validation only)
-    """
-    proxy_response = ctx.get("broker_proxy_response", {})
-    proxy_body_str = json.dumps(proxy_response)
-
-    # Patterns that should NEVER appear in CLI-side output
-    forbidden_patterns = [
-        "access_token",
-        "refresh_token",
-        "client_secret",
-        "private_key",
-        "-----BEGIN",
-        "ECIES",
-        "decrypted",
-    ]
-
-    for pattern in forbidden_patterns:
-        assert pattern.lower() not in proxy_body_str.lower(), (
-            f"Credential material pattern '{pattern}' found in proxy response "
-            f"returned to CLI: {proxy_body_str[:200]}..."
-        )
-
-    # The proxy response should only contain upstream response fields
-    allowed_top_keys = {"status_code", "headers", "body"}
-    actual_keys = set(proxy_response.keys())
-    unexpected = actual_keys - allowed_top_keys
-    # Allow extra metadata keys but flag credential-looking ones
-    for key in unexpected:
-        assert "token" not in key.lower(), (
-            f"Suspicious key '{key}' in proxy response (may contain token data)"
-        )
-        assert "secret" not in key.lower(), (
-            f"Suspicious key '{key}' in proxy response (may contain secret data)"
-        )
-        assert "credential" not in key.lower() or key == "credential_name", (
-            f"Suspicious key '{key}' in proxy response (may contain credential data)"
-        )
-
-    return ctx
-
-
-SECURITY_CLI_NO_CREDENTIAL_NODE = DagNode(
-    name="security.cli_no_credential_material",
-    fn=security_cli_no_credential_material,
-    depends_on=["proxy.via_broker"],
+PROXY_VIA_BROKER_DENIED_NODE = DagNode(
+    name="proxy.via_broker_denied",
+    fn=proxy_via_broker_denied,
+    depends_on=["workspace.oauth_register"],
     produces=[],
     consumes=["broker_url", "broker_pem_key_path"],
-    critical=True,
+    critical=False,
     timeout=20.0,
 )
 
@@ -302,6 +219,5 @@ def get_nodes():
     return [
         CREDENTIAL_DISCOVER_VIA_BROKER_NODE,
         PROXY_VIA_BROKER_NODE,
-        SECURITY_BROKER_UNSIGNED_NODE,
-        SECURITY_CLI_NO_CREDENTIAL_NODE,
+        PROXY_VIA_BROKER_DENIED_NODE,
     ]
