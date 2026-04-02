@@ -624,8 +624,16 @@ async fn test_audit_syslog_sd_escaping() {
     let lines: Vec<&str> = body.lines().collect();
     assert!(!lines.is_empty(), "should have at least one syslog line");
 
+    // Find the line containing our test event (other lines may be policy
+    // evaluation audit events emitted by the auditing engine).
+    let line = lines
+        .iter()
+        .find(|l| l.contains("eval\\\\action"))
+        .unwrap_or_else(|| panic!(
+            "could not find test event in syslog output: {:?}", lines
+        ));
+
     // Verify SD-PARAM escaping: " -> \", ] -> \], \ -> \\
-    let line = lines[0];
     assert!(
         line.contains("user=\"user\\\"with\\]quotes\""),
         "user_id with special chars should be SD-escaped: {}",

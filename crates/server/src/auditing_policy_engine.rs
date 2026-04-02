@@ -157,12 +157,18 @@ impl PolicyEngine for AuditingPolicyEngine {
 
         let event = builder.build();
 
-        // Fire-and-forget: spawn async store write on the tokio runtime.
+        // Write audit event synchronously so it is persisted before the
+        // caller continues.  `evaluate` is a sync trait method called from
+        // async handlers, so we bridge into async via a blocking thread.
+        // This works on both multi-threaded and current-thread runtimes.
         let store = self.store.clone();
-        tokio::task::spawn(async move {
-            if let Err(e) = store.append_audit_event(&event).await {
-                tracing::error!(error = %e, "failed to write policy audit event");
-            }
+        let handle = tokio::runtime::Handle::current();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                if let Err(e) = handle.block_on(store.append_audit_event(&event)) {
+                    tracing::error!(error = %e, "failed to write policy audit event");
+                }
+            });
         });
 
         Ok(decision)

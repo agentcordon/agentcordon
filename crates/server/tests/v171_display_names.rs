@@ -35,46 +35,6 @@ async fn setup_admin(app: &axum::Router, store: &(dyn Store + Send + Sync)) -> (
 // 6A. API Response Verification
 // ===========================================================================
 
-/// Test #1: Device response includes `name` field.
-#[tokio::test]
-#[ignore = "REMOVED: v2.0 has no /api/v1/devices/ endpoint — devices unified into workspaces"]
-async fn test_device_response_includes_name() {
-    let ctx = TestAppBuilder::new().build().await;
-    let (cookie, csrf) = setup_admin(&ctx.app, &*ctx.store).await;
-
-    // Create a device
-    let (status, body) = send_json(
-        &ctx.app,
-        Method::POST,
-        "/api/v1/workspaces",
-        None,
-        Some(&cookie),
-        Some(&csrf),
-        Some(json!({ "name": "my-laptop" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "create device: {}", body);
-    let device_id = body["data"]["id"].as_str().expect("device id");
-
-    // GET the device
-    let (status, body) = send_json(
-        &ctx.app,
-        Method::GET,
-        &format!("/api/v1/devices/{}", device_id),
-        None,
-        Some(&cookie),
-        Some(&csrf),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "get device: {}", body);
-    assert_eq!(
-        body["data"]["name"].as_str(),
-        Some("my-laptop"),
-        "device response should include name field"
-    );
-}
-
 /// Test #2: Credential response includes device_name (not just device_id).
 /// This test verifies the API response includes name resolution for cross-references.
 #[tokio::test]

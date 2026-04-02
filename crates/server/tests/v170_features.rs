@@ -15,21 +15,6 @@ mod device_tokens {
     // ===========================================================================
 
     #[tokio::test]
-    #[ignore = "REMOVED: v2.0 unified workspaces have no parent_id concept (device_id removed)"]
-    async fn test_agents_have_device_id() {
-        let ctx = TestAppBuilder::new().with_admin().build().await;
-
-        let agents = ctx.store.list_workspaces().await.expect("list agents");
-        assert!(!agents.is_empty(), "should have at least one agent");
-
-        let agent = &agents[0];
-        assert!(
-            agent.parent_id.is_some(),
-            "agent created via device enrollment should have parent_id set, got None"
-        );
-    }
-
-    #[tokio::test]
     async fn test_agent_token_timestamps_populated() {
         let ctx = TestAppBuilder::new().with_admin().build().await;
 

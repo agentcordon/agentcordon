@@ -267,28 +267,6 @@ async fn test_agent_detail_nonexistent() {
 // 3D. Devices Pages
 // ===========================================================================
 
-#[tokio::test]
-#[ignore = "REMOVED: v2.0 has no /devices page — devices unified into workspaces"]
-async fn test_devices_list_page() {
-    let (ctx, cookie) = setup().await;
-
-    let (status, content_type, _) = get_authed(&ctx.app, "/devices", &cookie).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert!(content_type.contains("text/html"));
-}
-
-#[tokio::test]
-#[ignore = "REMOVED: v2.0 has no /devices/new page — devices unified into workspaces"]
-async fn test_device_new_page() {
-    let (ctx, cookie) = setup().await;
-
-    let (status, content_type, _) = get_authed(&ctx.app, "/devices/new", &cookie).await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert!(content_type.contains("text/html"));
-}
-
 // ===========================================================================
 // 3E. Policies Pages
 // ===========================================================================
