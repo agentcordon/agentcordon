@@ -243,4 +243,3 @@ async fn test_e2e_concurrent_agent_enrollments() {
         assert!(agent.enabled, "agent {} must be enabled", agent_id,);
     }
 }
-

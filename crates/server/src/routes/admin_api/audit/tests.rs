@@ -629,9 +629,7 @@ async fn test_audit_syslog_sd_escaping() {
     let line = lines
         .iter()
         .find(|l| l.contains("eval\\\\action"))
-        .unwrap_or_else(|| panic!(
-            "could not find test event in syslog output: {:?}", lines
-        ));
+        .unwrap_or_else(|| panic!("could not find test event in syslog output: {:?}", lines));
 
     // Verify SD-PARAM escaping: " -> \", ] -> \], \ -> \\
     assert!(
