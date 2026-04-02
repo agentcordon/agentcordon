@@ -9,7 +9,7 @@ use uuid::Uuid;
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::{CredentialId, CredentialUpdate, SecretHistoryEntry};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyContext, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::extractors::AuthenticatedActor;
@@ -62,11 +62,7 @@ pub(crate) async fn list_secret_history(
         &actor.policy_principal(),
         actions::UPDATE,
         &PolicyResource::Credential { credential: cred },
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
@@ -104,11 +100,7 @@ pub(crate) async fn restore_secret_history(
         &PolicyResource::Credential {
             credential: cred.clone(),
         },
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {

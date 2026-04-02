@@ -2,7 +2,7 @@ use axum::{extract::State, Json};
 
 use agent_cordon_core::domain::credential::{CredentialId, CredentialSummary, StoredCredential};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyContext, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
 
 use crate::extractors::AuthenticatedActor;
 use crate::response::{ApiError, ApiResponse};
@@ -21,6 +21,9 @@ pub(crate) async fn list_credentials(
     State(state): State<AppState>,
     actor: AuthenticatedActor,
 ) -> Result<Json<ApiResponse<Vec<CredentialSummary>>>, ApiError> {
+    // OAuth scope gate: workspaces need credentials:discover to list
+    actor.require_scope(agent_cordon_core::oauth2::types::OAuthScope::CredentialsDiscover)?;
+
     // Batch-load all credentials in 2 queries (avoids N+1).
     let all_summaries = state.store.list_credentials().await?;
     let all_stored = state.store.list_all_stored_credentials().await?;
@@ -31,11 +34,7 @@ pub(crate) async fn list_credentials(
 
     let mut allowed_creds = Vec::new();
     let principal = actor.policy_principal();
-    let context = PolicyContext {
-        target_url: None,
-        requested_scopes: vec![],
-        ..Default::default()
-    };
+    let context = actor.policy_context(None);
 
     for summary in all_summaries {
         let cred = match cred_map.get(&summary.id) {

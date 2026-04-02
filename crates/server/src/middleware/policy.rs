@@ -33,14 +33,10 @@ use axum::{
     Router,
 };
 
-use agent_cordon_core::domain::audit::{
-    enrich_metadata_with_policy_reasoning, AuditDecision, AuditEvent, AuditEventType,
-};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource};
 
 use crate::extractors::AuthenticatedUser;
-use crate::middleware::request_id::CorrelationId;
 use crate::response::ApiError;
 use crate::state::AppState;
 
@@ -145,6 +141,12 @@ pub async fn evaluate_policy(
         PolicyResourceType::System => PolicyResource::System,
     };
 
+    // Extract correlation ID from request extensions (injected by request_id middleware).
+    let corr_id = parts
+        .extensions
+        .get::<crate::middleware::request_id::CorrelationId>()
+        .map(|c| c.0.clone());
+
     // Evaluate Cedar policy
     let result = state.policy_engine.evaluate(
         &PolicyPrincipal::User(&auth.user),
@@ -153,41 +155,14 @@ pub async fn evaluate_policy(
         &PolicyContext {
             target_url: None,
             requested_scopes: vec![],
+            correlation_id: corr_id,
             ..Default::default()
         },
     );
 
-    let corr = parts
-        .extensions
-        .get::<CorrelationId>()
-        .cloned()
-        .unwrap_or_else(|| CorrelationId("unknown".to_string()));
-
     match result {
         Ok(decision) if decision.decision == PolicyDecisionResult::Forbid => {
-            // Emit audit event for denied access with policy reasoning
-            let mut metadata = serde_json::json!({});
-            enrich_metadata_with_policy_reasoning(&mut metadata, &decision, None, None);
-            let event = AuditEvent {
-                id: uuid::Uuid::new_v4(),
-                timestamp: chrono::Utc::now(),
-                correlation_id: corr.0,
-                event_type: AuditEventType::PolicyEvaluated,
-                workspace_id: None,
-                workspace_name: None,
-                user_id: Some(auth.user.id.0.to_string()),
-                user_name: Some(auth.user.username.clone()),
-                action: policy_req.action.clone(),
-                resource_type: format!("{:?}", policy_req.resource_type),
-                resource_id: None,
-                decision: AuditDecision::Forbid,
-                decision_reason: Some(decision.reasons.join(", ")),
-                metadata,
-            };
-            if let Err(e) = state.store.append_audit_event(&event).await {
-                tracing::error!(error = %e, "failed to write policy-deny audit event");
-            }
-
+            // Audit event is emitted automatically by AuditingPolicyEngine.
             ApiError::Forbidden("access denied by policy".to_string()).into_response()
         }
         Ok(decision) => {

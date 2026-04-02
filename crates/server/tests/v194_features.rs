@@ -561,7 +561,7 @@ mod llm_exposed {
         let ctx = TestAppBuilder::new().with_admin().build().await;
 
         let agent = ctx.admin_agent.as_ref().expect("admin agent");
-        let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+        let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
         let (status, body) = send_device_and_agent_auth(
             &ctx.app,
@@ -741,7 +741,7 @@ mod llm_exposed {
         assert_eq!(status, StatusCode::OK);
 
         let agent = ctx.admin_agent.as_ref().expect("admin agent");
-        let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+        let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
         let (status, _) = send_device_and_agent_auth(
             &ctx.app,
             Method::POST,
@@ -838,7 +838,7 @@ mod llm_exposed {
         assert_eq!(status, StatusCode::OK);
 
         let agent = ctx.admin_agent.as_ref().expect("admin agent");
-        let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+        let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
         let (status, _) = send_device_and_agent_auth(
             &ctx.app,
             Method::POST,
@@ -890,7 +890,7 @@ mod llm_exposed {
         let (cookie, csrf) = setup_admin(&ctx.app, &*ctx.store).await;
 
         let agent = ctx.admin_agent.as_ref().expect("admin agent");
-        let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+        let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
         let (status, body) = send_device_and_agent_auth(
             &ctx.app,
             Method::POST,

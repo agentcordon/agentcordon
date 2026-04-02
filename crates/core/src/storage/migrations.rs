@@ -1,10 +1,12 @@
 use crate::error::StoreError;
 
 pub const MIGRATION_001: &str = include_str!("../../../../migrations/001_init.sql");
-pub const MIGRATION_002: &str = include_str!("../../../../migrations/002_credential_description.sql");
+pub const MIGRATION_002: &str =
+    include_str!("../../../../migrations/002_credential_description.sql");
+pub const MIGRATION_003: &str = include_str!("../../../../migrations/003_oauth.sql");
 
 /// All migrations in order. Each entry is (version, SQL content).
-const MIGRATIONS: [(i64, &str); 2] = [(1, MIGRATION_001), (2, MIGRATION_002)];
+const MIGRATIONS: [(i64, &str); 3] = [(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003)];
 
 /// Run all pending migrations, tracking applied versions in a `schema_migrations` table.
 ///
@@ -149,8 +151,12 @@ mod tests {
             "credential_secret_history",
             "credentials",
             "crypto_state",
-            "enrollment_sessions",
             "mcp_servers",
+            "oauth_access_tokens",
+            "oauth_auth_codes",
+            "oauth_clients",
+            "oauth_consents",
+            "oauth_refresh_tokens",
             "oidc_auth_states",
             "oidc_providers",
             "policies",

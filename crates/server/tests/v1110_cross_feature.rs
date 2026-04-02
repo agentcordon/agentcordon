@@ -67,7 +67,7 @@ async fn test_device_scoped_mcp_with_agent_upload_and_cedar_policy() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent1_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent1_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     // A1 uploads MCP
     let (status, body) = send_json_dual_auth(
@@ -338,7 +338,7 @@ async fn test_migration_then_upload_then_sync() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     // Create a pre-existing MCP via store insertion (simulating post-migration state)
     let d1_uuid = WorkspaceId(Uuid::parse_str(&dev1.device_id).unwrap());

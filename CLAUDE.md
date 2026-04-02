@@ -4,35 +4,32 @@
 
 This workspace uses AgentCordon for credential management. API credentials are brokered through AgentCordon — never use raw secrets directly.
 
-AC_IDENTITY: sha256:1e3da4e24ca5cb31a9f72c3543503212b97b8f393dcc03f5d0a24ae7bd3ae258
+AC_IDENTITY: sha256:6def48f86af057011e4ea2e6c81e1a69f0c918821386f71a6710b675e07d3828
 
 ### Workflow
 
-**For API calls:**
 1. Run `agentcordon credentials` to list available credentials
 2. Pick the credential that matches the service you need — if multiple match, prefer the one with least privilege (e.g. readonly over full-access)
 3. Use `agentcordon proxy <credential-name> <METHOD> <url>` to make the call
 
-**For MCP tools:**
-1. Run `agentcordon mcp-tools` to discover available tools across all MCP servers
-2. Use `agentcordon mcp-call <server> <tool> --arg key=value` to call a tool
-
-**Important**: Always discover credentials and tools first. Never guess names — they are assigned by the admin and vary per workspace.
+**Important**: Always discover credentials first. Never guess credential names — they are assigned by the admin and vary per workspace.
 
 ### Commands
 
 - `agentcordon credentials` — list credentials available to this workspace
 - `agentcordon proxy <credential-name> <METHOD> <url>` — authenticated API call (credentials injected automatically)
 - `agentcordon proxy <credential-name> POST <url> --body '{"key": "value"}'` — POST with JSON body
-- `agentcordon mcp-tools` — discover all available MCP tools
+- `agentcordon mcp-servers` — list MCP servers
+- `agentcordon mcp-tools` — discover available tools
 - `agentcordon mcp-call <server> <tool> [--arg key=value]` — call an MCP tool
-- `agentcordon mcp-servers` — list registered MCP servers
 - `agentcordon status` — check connection and identity
 - `agentcordon help` — full command reference
-
-**Always prefer `agentcordon mcp-call` over native MCP tools.** When a tool is available through AgentCordon, use `agentcordon mcp-call` — it handles credential injection, policy checks, and audit logging. Only fall back to native MCP tools (from `.mcp.json`) if no matching AgentCordon MCP tool exists.
 
 When you need to call an external API, use `agentcordon proxy` instead of direct HTTP with raw tokens. Every access is policy-checked and audit-logged.
 
 **Local development**: If proxying to localhost URLs, prefix with:
 `AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon proxy ...`
+
+**MCP servers**: If the admin has configured MCP servers, `agentcordon mcp-servers` lists them and `agentcordon mcp-tools` shows available tools.
+
+MCP tools are also available natively through the MCP server configured in `.mcp.json` — Claude Code discovers these automatically.

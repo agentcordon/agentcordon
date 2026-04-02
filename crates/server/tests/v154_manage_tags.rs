@@ -159,34 +159,6 @@ async fn test_admin_can_remove_tag_from_agent() {
 }
 
 #[tokio::test]
-#[ignore = "REMOVED: v2.0 has no /api/v1/devices/ endpoint — devices unified into workspaces"]
-async fn test_admin_can_add_tag_to_device() {
-    let ctx = TestAppBuilder::new().with_admin().build().await;
-    let _admin_user = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
-    let (cookie, csrf) = login_user(&ctx.app, "admin", TEST_PASSWORD).await;
-    let full_cookie = combined_cookie(&cookie, &csrf);
-
-    let (device_id, _) = create_standalone_device(&ctx.state).await;
-    let url = format!("/api/v1/devices/{}/tags", device_id);
-    let (status, body) = send_json(
-        &ctx.app,
-        Method::POST,
-        &url,
-        None,
-        Some(&full_cookie),
-        Some(&csrf),
-        Some(json!({ "tag": "device-tag" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "add tag to device: {}", body);
-    assert!(body["data"]["tags"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|t| t == "device-tag"));
-}
-
-#[tokio::test]
 async fn test_admin_can_remove_tag_from_device() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin_user = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;

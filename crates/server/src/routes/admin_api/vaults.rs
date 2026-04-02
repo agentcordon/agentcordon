@@ -11,7 +11,7 @@ use agent_cordon_core::domain::credential::CredentialSummary;
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::user::UserId;
 use agent_cordon_core::domain::vault::VaultShare;
-use agent_cordon_core::policy::{actions, PolicyContext, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
 
 use crate::extractors::AuthenticatedActor;
 use crate::middleware::request_id::CorrelationId;
@@ -42,11 +42,7 @@ async fn list_vaults(
         &actor.policy_principal(),
         actions::LIST,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
@@ -56,7 +52,7 @@ async fn list_vaults(
     let vaults = match &actor {
         AuthenticatedActor::User(user) if user.is_root => state.store.list_vaults().await?,
         AuthenticatedActor::User(user) => state.store.list_vaults_for_user(&user.id).await?,
-        AuthenticatedActor::Workspace(_) => state.store.list_vaults().await?,
+        AuthenticatedActor::Workspace { .. } => state.store.list_vaults().await?,
     };
     Ok(Json(ApiResponse::ok(vaults)))
 }
@@ -75,11 +71,7 @@ async fn list_vault_credentials(
         &actor.policy_principal(),
         actions::LIST,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
@@ -99,17 +91,13 @@ async fn list_vault_credentials(
                 .list_credentials_by_vault_for_user(&name, &user.id)
                 .await?
         }
-        AuthenticatedActor::Workspace(_) => {
+        AuthenticatedActor::Workspace { .. } => {
             // Fetch all credentials in the vault, then filter each through Cedar
             // policy evaluation to enforce tag-based and other Cedar policies.
             let all_creds = state.store.list_credentials_by_vault(&name).await?;
             let mut allowed_creds = Vec::new();
             let principal = actor.policy_principal();
-            let context = PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
-                ..Default::default()
-            };
+            let context = actor.policy_context(None);
 
             for summary in all_creds {
                 // Load the full credential for Cedar evaluation
@@ -171,7 +159,7 @@ async fn share_vault(
     // Only authenticated users can share vaults; agents cannot.
     let sharer_user_id = match &actor {
         AuthenticatedActor::User(user) => user.id.clone(),
-        AuthenticatedActor::Workspace(_) => {
+        AuthenticatedActor::Workspace { .. } => {
             return Err(ApiError::Forbidden(
                 "workspaces cannot share vaults".to_string(),
             ));
@@ -183,11 +171,7 @@ async fn share_vault(
         &actor.policy_principal(),
         actions::MANAGE_VAULTS,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
@@ -260,7 +244,7 @@ async fn unshare_vault(
     // Only authenticated users can unshare; agents cannot.
     match &actor {
         AuthenticatedActor::User(_) => {}
-        AuthenticatedActor::Workspace(_) => {
+        AuthenticatedActor::Workspace { .. } => {
             return Err(ApiError::Forbidden(
                 "workspaces cannot unshare vaults".to_string(),
             ));
@@ -272,11 +256,7 @@ async fn unshare_vault(
         &actor.policy_principal(),
         actions::MANAGE_VAULTS,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
@@ -327,11 +307,7 @@ async fn list_shares(
         &actor.policy_principal(),
         actions::LIST,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {

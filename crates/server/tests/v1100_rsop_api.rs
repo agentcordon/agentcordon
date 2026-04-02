@@ -53,23 +53,9 @@ async fn setup() -> (agent_cordon_server::test_helpers::TestContext, String) {
 }
 
 async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, String) {
-    let ctx = TestAppBuilder::new()
-        .with_config(|c| {
-            c.seed_demo = true;
-        })
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
 
-    agent_cordon_server::seed::seed_demo_data(
-        &ctx.store,
-        &ctx.encryptor,
-        &ctx.state.config,
-        &ctx.jwt_issuer,
-    )
-    .await
-    .expect("seed demo data");
-
-    // Use root user so Cedar owner-scoping doesn't hide ownerless demo credentials.
+    // Use root user so Cedar owner-scoping doesn't hide credentials.
     let _user = common::create_user_in_db(
         &*ctx.store,
         "rsop-seed-user",
@@ -81,6 +67,26 @@ async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, S
     .await;
     let cookie =
         common::login_user_combined(&ctx.app, "rsop-seed-user", common::TEST_PASSWORD).await;
+
+    // Create a test credential through the API
+    let (status, _body) = common::send_json_auto_csrf(
+        &ctx.app,
+        Method::POST,
+        "/api/v1/credentials",
+        None,
+        Some(&cookie),
+        Some(json!({
+            "name": "rsop-seed-cred",
+            "service": "test-service",
+            "credential_type": "generic",
+            "secret_value": "rsop-seed-secret"
+        })),
+    )
+    .await;
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::OK,
+        "rsop setup: create credential should succeed"
+    );
 
     (ctx, cookie)
 }

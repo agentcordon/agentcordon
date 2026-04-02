@@ -1,0 +1,54 @@
+# AgentCordon — Development Compose (Server + Broker)
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Starts both the AgentCordon server and a broker daemon.
+# The broker auto-registers with the server on first boot.
+#
+# Optional: create a .env file to override defaults.
+# See .env.example for all available options.
+
+services:
+  agentcordon:
+    image: ghcr.io/agentcordon/agentcordon:latest
+    container_name: agentcordon
+    command: ["agent-cordon-server"]
+    ports:
+      - "${AGTCRDN_PORT:-3140}:3140"
+    volumes:
+      - agentcordon-data:/data
+    environment:
+      AGTCRDN_SEED_DEMO: "${AGTCRDN_SEED_DEMO:-true}"
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3140/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    restart: unless-stopped
+
+  broker:
+    image: ghcr.io/agentcordon/agentcordon:latest
+    container_name: agentcordon-broker
+    command: ["agentcordon-broker", "--server-url", "http://agentcordon:3140"]
+    ports:
+      - "${AGTCRDN_BROKER_PORT:-3141}:3141"
+    volumes:
+      - broker-data:/data
+    environment:
+      AGTCRDN_BROKER_PORT: "3141"
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      agentcordon:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  agentcordon-data:
+  broker-data:

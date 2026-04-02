@@ -101,7 +101,7 @@
     </div>
 
     <div class="mb-5">
-        <h4 class="mb-2">2. Register with the server</h4>
+        <h4 class="mb-2">2. Set up your workspace</h4>
         <p class="text-sm opacity-muted mb-2">
             <strong>Run this from your project directory</strong> — this is where the MCP gateway config
             (<code>.mcp.json</code>) will be installed.
@@ -111,11 +111,12 @@
         </div>
         <script>
             document.getElementById('cli-register-cmd').textContent =
-                'agentcordon init --server ' + location.origin;
+                'agentcordon setup ' + window.location.origin;
         </script>
+
         <p class="text-sm opacity-muted mt-2">
-            This command generates workspace keys, opens the approval page in your browser,
-            and auto-completes when approved. No code copy-paste needed.
+            This single command starts the broker, generates workspace keys, opens the
+            approval page in your browser, and auto-completes when approved.
         </p>
         <p class="text-sm opacity-muted mt-2">
             After running the command, approve the registration in your browser.
@@ -124,12 +125,5 @@
     </div>
 </div>
 
-<div class="card mt-4">
-    <h3>Documentation</h3>
-    <p class="text-sm opacity-muted">
-        For detailed enrollment instructions, see the
-        <a href="/enroll.md" target="_blank">enrollment guide</a>.
-    </p>
-</div>
 {% endif %}
 {% endblock %}

@@ -48,7 +48,7 @@ pub(super) async fn list_mcp_servers(
             check_manage_mcp_servers(&state, &auth)?;
             Some(user.clone())
         }
-        AuthenticatedActor::Workspace(workspace) => {
+        AuthenticatedActor::Workspace { workspace, .. } => {
             // Workspaces must pass Cedar check for list on System resource
             let decision = state.policy_engine.evaluate(
                 &PolicyPrincipal::Workspace(workspace),
@@ -69,7 +69,7 @@ pub(super) async fn list_mcp_servers(
             .store
             .list_mcp_servers_by_workspace(&workspace_id)
             .await?
-    } else if let AuthenticatedActor::Workspace(workspace) = &actor {
+    } else if let AuthenticatedActor::Workspace { workspace, .. } = &actor {
         // Workspace actors are auto-scoped to their own servers
         state
             .store

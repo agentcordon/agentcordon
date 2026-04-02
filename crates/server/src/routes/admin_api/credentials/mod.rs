@@ -52,7 +52,7 @@ pub(crate) fn actor_identity_strings(
 ) -> (Option<String>, Option<String>) {
     match actor {
         crate::extractors::AuthenticatedActor::User(user) => (Some(user.id.0.to_string()), None),
-        crate::extractors::AuthenticatedActor::Workspace(workspace) => {
+        crate::extractors::AuthenticatedActor::Workspace { workspace, .. } => {
             (None, Some(workspace.id.0.to_string()))
         }
     }

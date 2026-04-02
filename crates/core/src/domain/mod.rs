@@ -2,7 +2,6 @@ pub mod agent;
 pub mod audit;
 pub mod credential;
 pub mod device;
-pub mod enrollment;
 pub mod mcp;
 pub mod oidc;
 pub mod policy;

@@ -50,9 +50,6 @@ pub enum UiEvent {
     McpServerChanged {
         server_name: String,
     },
-    EnrollmentPending {
-        enrollment_id: Uuid,
-    },
     UserUpdated {
         user_id: Uuid,
     },
@@ -80,7 +77,6 @@ impl UiEvent {
             UiEvent::AuditEvent { .. } => "audit_event",
             UiEvent::UserCreated { .. } => "user_created",
             UiEvent::McpServerChanged { .. } => "mcp_server_changed",
-            UiEvent::EnrollmentPending { .. } => "enrollment_pending",
             UiEvent::UserUpdated { .. } => "user_updated",
             UiEvent::UserDeleted { .. } => "user_deleted",
             UiEvent::VaultChanged { .. } => "vault_changed",

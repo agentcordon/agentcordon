@@ -827,7 +827,10 @@ async fn test_cross_owner_vend_denial_creates_audit_event() {
         "cross-owner vend without grants should be denied"
     );
 
-    // Check audit log for deny event
+    // Brief yield to let the AuditingPolicyEngine's fire-and-forget task complete.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Check audit log for deny event (emitted by AuditingPolicyEngine as PolicyEvaluated)
     let events = ctx
         .store
         .list_audit_events(100, 0)

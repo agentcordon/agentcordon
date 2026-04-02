@@ -35,6 +35,7 @@ use agent_cordon_core::policy::cedar::CedarPolicyEngine;
 use agent_cordon_core::storage::sqlite::SqliteStore;
 use agent_cordon_core::storage::Store;
 
+use crate::auditing_policy_engine::AuditingPolicyEngine;
 use crate::build_router;
 use crate::config::AppConfig;
 use crate::rate_limit::LoginRateLimiter;
@@ -180,13 +181,6 @@ impl TestAppBuilder {
         self
     }
 
-    /// Shorthand: enable enrollment in the config.
-    pub fn with_enrollment(self) -> Self {
-        self.with_config(|c| {
-            c.enrollment_enabled = true;
-        })
-    }
-
     /// Build the test environment.
     #[cfg(feature = "sqlite")]
     pub async fn build(self) -> TestContext {
@@ -223,16 +217,12 @@ impl TestAppBuilder {
         {
             use agent_cordon_core::domain::policy::{PolicyId, StoredPolicy};
 
-            let policy_text = self
-                .custom_policy
-                .unwrap_or_else(|| {
-                    // Start with the shipped default policy, then append the auto-enroll
-                    // rule that is commented out in default.cedar for new installations
-                    // but needed by most tests.
-                    let mut policy = include_str!("../../../policies/default.cedar").to_string();
-                    policy.push_str("\n// Auto-enroll rule (added by test harness)\npermit(\n  principal is AgentCordon::Workspace,\n  action == AgentCordon::Action::\"enroll_agent\",\n  resource is AgentCordon::System\n) when {\n  principal.enabled\n};\n");
-                    policy
-                });
+            let policy_text = self.custom_policy.unwrap_or_else(|| {
+                // Start with the shipped default policy, then append the auto-enroll
+                // rule that is commented out in default.cedar for new installations
+                // but needed by most tests.
+                include_str!("../../../policies/default.cedar").to_string()
+            });
 
             let now = chrono::Utc::now();
             let seed_policy = StoredPolicy {
@@ -259,9 +249,12 @@ impl TestAppBuilder {
             .into_iter()
             .map(|p| (p.id.0.to_string(), p.cedar_policy))
             .collect();
-        let policy_engine =
+        let cedar_engine =
             CedarPolicyEngine::new(policy_sources).expect("init policy engine from DB");
-        let policy_engine = Arc::new(policy_engine);
+        let policy_engine = Arc::new(AuditingPolicyEngine::new(
+            Arc::new(cedar_engine),
+            store.clone(),
+        ));
 
         // ---- Config ----
         let mut config = AppConfig::test_default();
@@ -301,9 +294,6 @@ impl TestAppBuilder {
             event_bus: crate::events::EventBus::new(256),
             ui_event_bus: crate::events::UiEventBus::new(16),
             sse_tracker: crate::events::SseConnectionTracker::new(5),
-            workspace_challenges: std::sync::Arc::new(tokio::sync::RwLock::new(
-                std::collections::HashMap::new(),
-            )),
             credential_templates: crate::routes::admin_api::credential_templates::load_templates(
                 None,
             ),

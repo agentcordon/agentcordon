@@ -50,7 +50,7 @@ async fn setup_test_app() -> (
     Arc<dyn Store + Send + Sync>,
     agent_cordon_server::state::AppState,
 ) {
-    let ctx = TestAppBuilder::new().with_enrollment().build().await;
+    let ctx = TestAppBuilder::new().build().await;
     (ctx.app, ctx.store, ctx.state)
 }
 

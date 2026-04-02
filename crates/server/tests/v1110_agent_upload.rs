@@ -29,7 +29,7 @@ async fn test_import_new_mcp_servers() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let (status, body) = send_json_dual_auth(
         &ctx.app,
@@ -77,7 +77,7 @@ async fn test_import_existing_mcp_no_change() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let import_body = json!({
         "device_id": dev1.device_id,
@@ -126,7 +126,7 @@ async fn test_import_existing_mcp_config_changed() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     // First import
     send_json_dual_auth(
@@ -179,7 +179,7 @@ async fn test_import_does_not_auto_create_cedar_policies() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     // Import
     let (_, import_body) = send_json_dual_auth(
@@ -239,7 +239,7 @@ async fn test_import_response_includes_mcp_ids() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let (status, body) = send_json_dual_auth(
         &ctx.app,
@@ -278,7 +278,7 @@ async fn test_import_empty_servers_array() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let (status, body) = send_json_dual_auth(
         &ctx.app,
@@ -308,7 +308,7 @@ async fn test_import_same_batch_twice_idempotent() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let batch = json!({
         "device_id": dev1.device_id,
@@ -366,7 +366,7 @@ async fn test_import_after_server_restart() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     send_json_dual_auth(
         &ctx.app,
@@ -402,7 +402,7 @@ async fn test_import_partial_overlap() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     // First batch
     send_json_dual_auth(
@@ -485,7 +485,7 @@ async fn test_import_malformed_request_returns_400() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let (status, body) = send_json_dual_auth(
         &ctx.app,
@@ -516,7 +516,7 @@ async fn test_import_server_missing_name_field() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let (status, body) = send_json_dual_auth(
         &ctx.app,
@@ -551,7 +551,7 @@ async fn test_import_very_long_mcp_name() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let long_name = "a".repeat(1000);
     let (status, body) = send_json_dual_auth(
@@ -587,7 +587,7 @@ async fn test_imported_mcp_visible_in_admin_ui() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     // Import
     send_json_dual_auth(
@@ -635,7 +635,7 @@ async fn test_imported_mcp_syncs_to_device() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     // Import
     send_json_dual_auth(
@@ -683,7 +683,7 @@ async fn test_import_agent_cannot_modify_existing_mcp() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     // Admin creates MCP via store insertion
     let d1_uuid = agent_cordon_core::domain::workspace::WorkspaceId(
@@ -756,7 +756,7 @@ async fn test_import_persists_required_credentials() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let (status, body) = send_json_dual_auth(
         &ctx.app,
@@ -804,7 +804,7 @@ async fn test_imported_mcp_default_policy_scoped_to_agent() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent1_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent1_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     // Import as agent1
     let (_, import_body) = send_json_dual_auth(
@@ -859,7 +859,7 @@ async fn test_import_audit_event_emitted() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let (status, body) = send_json_dual_auth(
         &ctx.app,
@@ -892,30 +892,10 @@ async fn test_import_audit_event_emitted() {
 #[tokio::test]
 async fn test_init_flow_with_mcp_upload() {
     // Simulate init: register agent → get JWT → call import.
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .with_enrollment()
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
 
-    let (device_id, device_key) = create_standalone_device(&ctx.state).await;
-
-    // Enroll agent through device
-    let (session_token, approval_ref) =
-        enroll_agent_through_device(&ctx.state, &device_key, &device_id, "init-agent").await;
-
-    let _admin = create_test_user(&*ctx.store, "admin1", TEST_PASSWORD, UserRole::Admin).await;
-    let admin_cookie = login_user_combined(&ctx.app, "admin1", TEST_PASSWORD).await;
-
-    // Approve enrollment — returns (agent_id_str, _)
-    let (agent_id_str, _) = approve_and_get_api_key(
-        &ctx.state,
-        &admin_cookie,
-        &extract_csrf_from_cookie(&admin_cookie).unwrap(),
-        &session_token,
-        &approval_ref,
-    )
-    .await;
+    // Create agent workspace directly (enrollment flow removed)
+    let (agent_id_str, device_key) = create_standalone_device(&ctx.state).await;
 
     // Issue a workspace JWT for the agent
     let agent_uuid: uuid::Uuid = agent_id_str.parse().expect("agent_id_str must be UUID");
@@ -927,7 +907,7 @@ async fn test_init_flow_with_mcp_upload() {
         .await
         .unwrap()
         .unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, &agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, &agent).await;
 
     // Now import MCPs (simulating what init would do)
     // In v2.0, workspace_id (aliased as device_id) must match the authenticated workspace
@@ -960,7 +940,7 @@ async fn test_init_called_twice_mcps_not_duplicated() {
 
     let dev1 = ctx.device_for("agent1");
     let agent1 = ctx.agents.get("agent1").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent1);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent1).await;
 
     let import_body = json!({
         "device_id": dev1.device_id,

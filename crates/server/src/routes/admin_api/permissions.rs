@@ -11,7 +11,7 @@ use agent_cordon_core::domain::credential::CredentialId;
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::workspace::WorkspaceId;
 use agent_cordon_core::policy::{actions, templates};
-use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{PolicyEngine, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::extractors::AuthenticatedActor;
@@ -99,8 +99,9 @@ async fn enrich_permission_names(
                 _ => entry.granted_by_name = Some("Deleted Workspace".to_string()),
             }
         } else {
-            // No granted_by — auto-grant
-            entry.granted_by_name = Some("System (auto-grant)".to_string());
+            // No granted_by recorded on the policy — show generic label
+            // TODO: add `created_by_user` to StoredPolicy so grants can show the operator who created them
+            entry.granted_by_name = Some("System".to_string());
         }
     }
 }
@@ -176,7 +177,7 @@ fn permission_to_cedar_actions(perm: &str) -> Vec<&'static str> {
     templates::permission_to_actions(perm)
 }
 
-/// Load credential, then check manage_permissions policy.
+/// Load credential, then check manage_permissions policy or credential ownership.
 async fn load_and_authorize(
     state: &AppState,
     actor: &AuthenticatedActor,
@@ -188,32 +189,99 @@ async fn load_and_authorize(
         .await?
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
+    // Try Cedar manage_permissions first (admin path)
     let decision = state.policy_engine.evaluate(
         &actor.policy_principal(),
         actions::MANAGE_PERMISSIONS,
-        &PolicyResource::Credential { credential: cred },
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
+        &PolicyResource::Credential {
+            credential: cred.clone(),
         },
+        &actor.policy_context(None),
     )?;
 
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
+    if decision.decision != PolicyDecisionResult::Forbid {
+        return Ok(());
     }
 
-    Ok(())
+    // Fallback: allow if the actor owns the credential
+    match actor {
+        AuthenticatedActor::User(user) => {
+            if cred.created_by_user.as_ref() == Some(&user.id) {
+                return Ok(());
+            }
+        }
+        AuthenticatedActor::Workspace { workspace, .. } => {
+            if cred
+                .created_by
+                .as_ref()
+                .map(|id| id.0 == workspace.id.0)
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    Err(ApiError::Forbidden("access denied by policy".to_string()))
+}
+
+/// Read-only authorization: allows manage_permissions OR credential ownership.
+/// Credential owners and workspace owners can view permissions on their resources.
+async fn authorize_read(
+    state: &AppState,
+    actor: &AuthenticatedActor,
+    cred_id: &CredentialId,
+) -> Result<(), ApiError> {
+    let cred = state
+        .store
+        .get_credential(cred_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
+
+    // Try Cedar manage_permissions first (admin path)
+    let decision = state.policy_engine.evaluate(
+        &actor.policy_principal(),
+        actions::MANAGE_PERMISSIONS,
+        &PolicyResource::Credential {
+            credential: cred.clone(),
+        },
+        &actor.policy_context(None),
+    )?;
+
+    if decision.decision != PolicyDecisionResult::Forbid {
+        return Ok(());
+    }
+
+    // Fallback: allow if the actor owns the credential
+    match actor {
+        AuthenticatedActor::User(user) => {
+            if cred.created_by_user.as_ref() == Some(&user.id) {
+                return Ok(());
+            }
+        }
+        AuthenticatedActor::Workspace { workspace, .. } => {
+            if cred
+                .created_by
+                .as_ref()
+                .map(|id| id.0 == workspace.id.0)
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    Err(ApiError::Forbidden("access denied by policy".to_string()))
 }
 
 async fn get_permissions(
     State(state): State<AppState>,
     actor: AuthenticatedActor,
-    axum::Extension(corr): axum::Extension<crate::middleware::request_id::CorrelationId>,
+    axum::Extension(_corr): axum::Extension<crate::middleware::request_id::CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<CredentialPermissionsResponse>>, ApiError> {
     let cred_id = CredentialId(id);
-    load_and_authorize(&state, &actor, &cred_id).await?;
+    authorize_read(&state, &actor, &cred_id).await?;
 
     let cred = state
         .store
@@ -255,26 +323,8 @@ async fn get_permissions(
     }
     enrich_permission_names(state.store.as_ref(), &mut entries).await;
 
-    // Audit event for permission query (compliance requirement)
-    let (ws_id, ws_name, u_id, u_name) = actor.audit_actor_fields();
-    let audit_event = agent_cordon_core::domain::audit::AuditEvent::builder(
-        agent_cordon_core::domain::audit::AuditEventType::PolicyEvaluated,
-    )
-    .action("query_permissions")
-    .actor_fields(ws_id, ws_name, u_id, u_name)
-    .resource("credential", &id.to_string())
-    .correlation_id(&corr.0)
-    .decision(
-        agent_cordon_core::domain::audit::AuditDecision::Permit,
-        Some("bypass:manage_permissions"),
-    )
-    .details(serde_json::json!({
-        "permission_count": entries.len(),
-    }))
-    .build();
-    if let Err(e) = state.store.append_audit_event(&audit_event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+    // Policy decision audit is emitted automatically by AuditingPolicyEngine
+    // (via the evaluate() calls in authorize_read above).
 
     let response = CredentialPermissionsResponse {
         credential_id: id,

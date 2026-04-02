@@ -77,16 +77,6 @@ pub struct Workspace {
     pub updated_at: DateTime<Utc>,
 }
 
-/// An in-memory challenge issued during the identify flow (not persisted).
-#[derive(Debug, Clone)]
-pub struct IdentityChallenge {
-    pub pk_hash: String,
-    /// 32-byte random challenge.
-    pub challenge: Vec<u8>,
-    pub issued_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-}
-
 /// A registration record created when an admin approves workspace registration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceRegistration {
@@ -174,26 +164,6 @@ pub fn generate_provisioning_token() -> String {
 pub fn hash_provisioning_token(token: &str) -> String {
     use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(token.as_bytes()))
-}
-
-/// Identity JWT claims — lightweight, no scopes, pure identity attestation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkspaceIdentityClaims {
-    pub sub: String,
-    /// Workspace key thumbprint: SHA-256 hex of the Ed25519 public key.
-    pub wkt: String,
-    /// Encryption key thumbprint: RFC 7638 thumbprint of the P-256 encryption public key.
-    /// Binds the encryption key to the workspace identity for ECIES credential vending.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ekt: Option<String>,
-    pub exp: i64,
-    pub iss: String,
-    pub aud: String,
-    pub iat: i64,
-    /// Not-before claim. Defaults to 0 (always valid) for backwards compatibility.
-    #[serde(default)]
-    pub nbf: i64,
-    pub jti: String,
 }
 
 #[cfg(test)]
@@ -321,64 +291,6 @@ mod tests {
         let h2 = hash_provisioning_token(token);
         assert_eq!(h1, h2, "same input must produce same hash");
         assert_eq!(h1.len(), 64);
-    }
-
-    // --- WorkspaceIdentityClaims serde ---
-
-    #[test]
-    fn test_workspace_identity_claims_serde_with_ekt() {
-        let claims = WorkspaceIdentityClaims {
-            sub: "ws-1".to_string(),
-            wkt: "abcd1234".to_string(),
-            ekt: Some("thumbprint-value".to_string()),
-            exp: 9999999999,
-            iss: "agentcordon-server".to_string(),
-            aud: "agentcordon:workspace-identity".to_string(),
-            iat: 1000000000,
-            nbf: 1000000000,
-            jti: "jti-1".to_string(),
-        };
-        let json = serde_json::to_value(&claims).unwrap();
-        assert_eq!(
-            json["ekt"], "thumbprint-value",
-            "ekt field must be present when Some"
-        );
-    }
-
-    #[test]
-    fn test_workspace_identity_claims_serde_without_ekt() {
-        let claims = WorkspaceIdentityClaims {
-            sub: "ws-1".to_string(),
-            wkt: "abcd1234".to_string(),
-            ekt: None,
-            exp: 9999999999,
-            iss: "agentcordon-server".to_string(),
-            aud: "agentcordon:workspace-identity".to_string(),
-            iat: 1000000000,
-            nbf: 1000000000,
-            jti: "jti-1".to_string(),
-        };
-        let json = serde_json::to_value(&claims).unwrap();
-        assert!(
-            json.get("ekt").is_none(),
-            "ekt field must be absent when None (skip_serializing_if)"
-        );
-    }
-
-    #[test]
-    fn test_workspace_identity_claims_nbf_default() {
-        // Deserialize JSON without nbf field
-        let json = r#"{
-            "sub": "ws-1",
-            "wkt": "abcd",
-            "exp": 9999999999,
-            "iss": "server",
-            "aud": "audience",
-            "iat": 1000000000,
-            "jti": "jti-1"
-        }"#;
-        let claims: WorkspaceIdentityClaims = serde_json::from_str(json).unwrap();
-        assert_eq!(claims.nbf, 0, "nbf must default to 0 when absent");
     }
 
     // --- Backward compatibility type aliases ---

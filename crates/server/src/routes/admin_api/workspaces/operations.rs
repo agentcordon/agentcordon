@@ -69,6 +69,7 @@ pub(super) async fn add_workspace_tag(
         },
         &PolicyContext {
             tag_value: Some(tag.clone()),
+            correlation_id: Some(corr.0.clone()),
             ..Default::default()
         },
     )?;
@@ -152,6 +153,7 @@ pub(super) async fn remove_workspace_tag(
         },
         &PolicyContext {
             tag_value: Some(tag.clone()),
+            correlation_id: Some(corr.0.clone()),
             ..Default::default()
         },
     )?;
@@ -222,6 +224,7 @@ pub(super) async fn get_workspace_permissions(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<PermissionsResponse>>, ApiError> {
     // 1. Workspace authenticated via AuthenticatedWorkspace extractor
+    let oauth_claims = auth_ws.oauth_claims;
     let caller_workspace = auth_ws.workspace;
     let workspace_name = &caller_workspace.name;
 
@@ -257,8 +260,8 @@ pub(super) async fn get_workspace_permissions(
                 tags: server.tags.clone(),
             },
             &PolicyContext {
-                tool_name: None,
-                credential_name: None,
+                correlation_id: Some(corr.0.clone()),
+                oauth_claims: oauth_claims.clone(),
                 ..Default::default()
             },
         );
@@ -277,7 +280,8 @@ pub(super) async fn get_workspace_permissions(
         actions::VEND_CREDENTIAL,
         &PolicyResource::System,
         &PolicyContext {
-            credential_name: None,
+            correlation_id: Some(corr.0.clone()),
+            oauth_claims: oauth_claims.clone(),
             ..Default::default()
         },
     );
@@ -303,6 +307,8 @@ pub(super) async fn get_workspace_permissions(
                 &PolicyResource::Credential { credential: cred },
                 &PolicyContext {
                     credential_name: Some(summary.name.clone()),
+                    correlation_id: Some(corr.0.clone()),
+                    oauth_claims: oauth_claims.clone(),
                     ..Default::default()
                 },
             );

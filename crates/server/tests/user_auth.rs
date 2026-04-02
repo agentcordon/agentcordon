@@ -1,7 +1,7 @@
 //! Integration tests for F-004: User Identity Model + Role-Based Access.
 //!
 //! Tests cover user authentication (login/logout/me), user CRUD,
-//! credential ownership, agent management, and enrollment ownership.
+//! credential ownership, and agent management.
 //!
 //! These tests spin up the full Axum router with an in-memory SQLite store
 //! and exercise the endpoints end-to-end using `tower::ServiceExt` (no TCP).
@@ -60,7 +60,6 @@ async fn setup_test_app_with_rate_limit(
     agent_cordon_server::state::AppState,
 ) {
     let ctx = TestAppBuilder::new()
-        .with_enrollment()
         .with_config(move |c| {
             c.login_max_attempts = max_attempts;
             c.login_lockout_seconds = lockout_seconds;
@@ -902,7 +901,7 @@ async fn test_agent_create_not_exposed() {
     .await;
     let cookie = login_user(&app, "admin", TEST_PASSWORD).await;
 
-    // POST /agents should not exist (enrollment is the only way to create agents)
+    // POST /workspaces should not exist as a creation endpoint here
     let (status, _body) = send_json(
         &app,
         Method::POST,
@@ -923,10 +922,6 @@ async fn test_agent_create_not_exposed() {
         "POST /agents should not be allowed"
     );
 }
-
-// ===========================================================================
-// Tests: Enrollment with Ownership
-// ===========================================================================
 
 // ===========================================================================
 // Tests: Additional edge cases

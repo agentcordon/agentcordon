@@ -741,7 +741,7 @@ async fn test_agent_cannot_self_grant_mcp_permission() {
     // Get agent dual auth
     let agent = ctx.agents.get("target").unwrap();
     let dev = ctx.device_contexts.get("target").unwrap();
-    let agent_jwt = issue_agent_jwt(&ctx.state, agent);
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
 
     // Agent attempts to grant itself MCP permission via dual auth
     let (status, body) = send_json_dual_auth(

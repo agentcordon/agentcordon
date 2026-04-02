@@ -1,7 +1,7 @@
 mod audit;
 mod credentials;
-mod enrollment;
 mod mcp;
+mod oauth;
 mod oidc;
 mod policies;
 mod rows;
@@ -17,7 +17,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::domain::credential::{CredentialId, CredentialSummary, StoredCredential};
-use crate::domain::enrollment::{EnrollmentSession, EnrollmentSessionStatus};
 use crate::domain::mcp::{McpServer, McpServerId};
 use crate::domain::oidc::{OidcAuthState, OidcProvider, OidcProviderId, OidcProviderSummary};
 use crate::domain::policy::{PolicyId, StoredPolicy};
@@ -31,9 +30,8 @@ use super::Store;
 
 // Re-export shared serialization helpers
 use crate::storage::shared::{
-    deserialize_decision, deserialize_enrollment_status, deserialize_event_type,
-    deserialize_user_role, serialize_decision, serialize_enrollment_status, serialize_event_type,
-    serialize_user_role,
+    deserialize_decision, deserialize_event_type, deserialize_user_role, serialize_decision,
+    serialize_event_type, serialize_user_role,
 };
 
 // ---------------------------------------------------------------------------

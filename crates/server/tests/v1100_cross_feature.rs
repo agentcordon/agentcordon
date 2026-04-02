@@ -23,6 +23,7 @@ async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, S
         .with_config(|c| {
             c.seed_demo = true;
         })
+        .with_admin()
         .build()
         .await;
 
@@ -33,9 +34,9 @@ async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, S
         &ctx.jwt_issuer,
     )
     .await
-    .expect("seed demo data");
+    .expect("seed example policies");
 
-    // Use root user so Cedar owner-scoping doesn't hide ownerless demo credentials.
+    // Use root user so Cedar owner-scoping doesn't hide credentials.
     let _user = common::create_user_in_db(
         &*ctx.store,
         "cross-feature-user",
@@ -47,6 +48,27 @@ async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, S
     .await;
     let cookie =
         common::login_user_combined(&ctx.app, "cross-feature-user", common::TEST_PASSWORD).await;
+
+    // Create a test credential through the API
+    let (status, _body) = common::send_json_auto_csrf(
+        &ctx.app,
+        Method::POST,
+        "/api/v1/credentials",
+        None,
+        Some(&cookie),
+        Some(serde_json::json!({
+            "name": "cross-feature-cred",
+            "service": "test-service",
+            "credential_type": "generic",
+            "secret_value": "cross-feature-secret"
+        })),
+    )
+    .await;
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::OK,
+        "cross-feature setup: create credential should succeed"
+    );
+
     (ctx, cookie)
 }
 

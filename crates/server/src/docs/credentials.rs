@@ -63,7 +63,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "GET".to_string(),
         path: "/api/v1/credentials".to_string(),
-        description: "List all credentials (summary only, no secret values).".to_string(),
+        description: "List credentials visible to the authenticated principal (summary only, no secret values). Results are filtered by Cedar policy: admins see their own credentials, workspaces see credentials with explicit grants.".to_string(),
         auth_required: true,
         request_body: None,
         response_body: Some(json!({
@@ -242,10 +242,10 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "agent_id": { "type": "string", "format": "uuid" },
+                            "agent_id": { "type": "string", "format": "uuid", "description": "Workspace UUID (named agent_id for backward compatibility)" },
                             "permission": { "type": "string", "enum": ["read", "write", "delete", "delegated_use"] },
-                            "granted_by": { "type": "string", "format": "uuid", "description": "Agent that granted this permission (null if granted by a user)" },
-                            "granted_by_user": { "type": "string", "format": "uuid", "description": "User that granted this permission (null if granted by an agent)" },
+                            "granted_by": { "type": "string", "format": "uuid", "description": "Workspace that granted this permission (null if granted by a user)" },
+                            "granted_by_user": { "type": "string", "format": "uuid", "description": "User that granted this permission (null if granted by a workspace)" },
                             "granted_at": { "type": "string", "format": "date-time" }
                         }
                     }
@@ -260,13 +260,13 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "POST".to_string(),
         path: "/api/v1/credentials/{id}/permissions".to_string(),
-        description: "Grant permission(s) on a credential to an agent. Supports both single and batch formats. Single: {\"agent_id\": \"...\", \"permission\": \"read\"}. Batch: {\"agent_id\": \"...\", \"permissions\": [\"read\", \"write\"]}. Both fields can be provided and are merged. One audit event is emitted per permission granted.".to_string(),
+        description: "Grant permission(s) on a credential to a workspace. Supports both single and batch formats. Single: {\"workspace_id\": \"...\", \"permission\": \"read\"}. Batch: {\"workspace_id\": \"...\", \"permissions\": [\"read\", \"write\"]}. The field 'agent_id' is accepted as an alias for backward compatibility. Both fields can be provided and are merged. One audit event is emitted per permission granted.".to_string(),
         auth_required: true,
         request_body: Some(json!({
             "type": "object",
-            "required": ["agent_id"],
+            "required": ["workspace_id"],
             "properties": {
-                "agent_id": { "type": "string", "format": "uuid", "description": "Target agent to grant permission to" },
+                "workspace_id": { "type": "string", "format": "uuid", "description": "Target workspace UUID to grant permission to (alias: agent_id)" },
                 "permission": { "type": "string", "enum": ["read", "write", "delete", "delegated_use"], "description": "Single permission (backward compatible)" },
                 "permissions": { "type": "array", "items": { "type": "string", "enum": ["read", "write", "delete", "delegated_use"] }, "description": "Batch permissions" }
             },
@@ -296,9 +296,9 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "required": ["agent_id", "permission"],
+                        "required": ["workspace_id", "permission"],
                         "properties": {
-                            "agent_id": { "type": "string", "format": "uuid" },
+                            "workspace_id": { "type": "string", "format": "uuid", "description": "Target workspace UUID (alias: agent_id)" },
                             "permission": { "type": "string", "enum": ["read", "write", "delete", "delegated_use"] }
                         }
                     }
@@ -327,7 +327,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
         query_params: None,
         path_params: Some(vec![
             uuid_param("id", "Credential UUID"),
-            uuid_param("agent_id", "Target agent UUID"),
+            uuid_param("agent_id", "Target workspace UUID"),
             string_param(
                 "permission",
                 "Permission to revoke (read, write, delete, delegated_use)",

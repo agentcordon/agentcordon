@@ -125,37 +125,6 @@ async fn quickstart_contains_required_sections() {
 }
 
 // ===========================================================================
-// 5. Docs response includes the proxy endpoint
-// ===========================================================================
-
-#[tokio::test]
-async fn docs_includes_proxy_execute_endpoint() {
-    let app = setup_test_app().await;
-    let (status, body, _headers) = get_raw(&app, "/api/v1/docs").await;
-
-    assert_eq!(status, StatusCode::OK);
-    let endpoints = body["endpoints"]
-        .as_array()
-        .expect("endpoints should be an array");
-
-    let proxy_ep = endpoints.iter().find(|e| {
-        e["method"].as_str() == Some("POST") && e["path"].as_str() == Some("/api/v1/proxy/execute")
-    });
-
-    assert!(
-        proxy_ep.is_some(),
-        "Docs should include POST /api/v1/proxy/execute endpoint"
-    );
-
-    let proxy_ep = proxy_ep.unwrap();
-    assert_eq!(
-        proxy_ep["auth_required"].as_bool(),
-        Some(true),
-        "Proxy endpoint should require auth"
-    );
-}
-
-// ===========================================================================
 // 6. Cache-Control header is present on both responses
 // ===========================================================================
 

@@ -18,12 +18,27 @@
         <dd><code class="monospace">{{ upstream_url }}</code></dd>
 
         <dt>Workspace</dt>
-        <dd>{{ workspace_name }}</dd>
+        <dd><a href="/workspaces/{{ workspace_id }}">{{ workspace_name }}</a></dd>
 
         <dt>Tools</dt>
-        <dd>{{ tools_count }}</dd>
+        <dd>
+            {% if tools.is_empty() %}
+            <span class="text-faint">None registered</span>
+            {% else %}
+            <span>{{ tools_count }} tool{% if tools_count != 1 %}s{% endif %}</span>
+            <ul class="panel-tools-list" role="list" aria-label="Registered tools">
+                {% for tool in tools %}
+                <li><code class="monospace">{{ tool }}</code></li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </dd>
 
         <dt>Created</dt>
         <dd>{{ created_at }}</dd>
     </dl>
+
+    <div class="panel-actions">
+        <a href="/mcp-servers/{{ server_id }}" class="btn btn-secondary btn-sm">View Full Details</a>
+    </div>
 </div>

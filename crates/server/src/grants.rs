@@ -64,6 +64,24 @@ pub async fn ensure_credential_grant(
     perm_name: &str,
     mode: &str,
 ) -> Result<StoredPolicy, ApiError> {
+    // Resolve human-readable names for the policy description.
+    let cred_name = state
+        .store
+        .get_credential(cred_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|c| c.name)
+        .unwrap_or_else(|| cred_id.0.to_string());
+    let ws_name = state
+        .store
+        .get_workspace(workspace_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|w| w.name)
+        .unwrap_or_else(|| workspace_id.0.to_string());
+
     let is_deny = mode == "deny";
     let policy_name = format!("{}:{}:{}:{}", mode, cred_id.0, workspace_id.0, cedar_action);
     let cedar_text = if is_deny {
@@ -80,9 +98,11 @@ pub async fn ensure_credential_grant(
         )
     };
     let description = format!(
-        "{} {} on credential for workspace",
+        "{} {} on \"{}\" for workspace \"{}\"",
         if is_deny { "Deny" } else { "Grant" },
         perm_name,
+        cred_name,
+        ws_name,
     );
     ensure_grant(state, policy_name, cedar_text, description).await
 }
@@ -95,6 +115,24 @@ pub async fn ensure_mcp_grant(
     permission: &str,
     mode: &str,
 ) -> Result<StoredPolicy, ApiError> {
+    // Resolve human-readable names for the policy description.
+    let server_name = state
+        .store
+        .get_mcp_server(server_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|s| s.name)
+        .unwrap_or_else(|| server_id.0.to_string());
+    let ws_name = state
+        .store
+        .get_workspace(workspace_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|w| w.name)
+        .unwrap_or_else(|| workspace_id.0.to_string());
+
     let is_deny = mode == "deny";
     let server_id_str = server_id.0.to_string();
     let workspace_id_str = workspace_id.0.to_string();
@@ -125,9 +163,11 @@ pub async fn ensure_mcp_grant(
         };
 
     let description = format!(
-        "{} {} on MCP server for workspace",
+        "{} {} on MCP server \"{}\" for workspace \"{}\"",
         if is_deny { "Deny" } else { "Grant" },
         permission,
+        server_name,
+        ws_name,
     );
 
     ensure_grant(state, policy_name, cedar_text, description).await

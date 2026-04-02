@@ -10,7 +10,13 @@
             <span class="page-loader-label">Loading policy...</span>
         </div>
 
-        <div x-show="notFound && !loading" class="empty-state">
+        <div x-show="accessDenied && !loading" class="empty-state">
+            <h3>Access Denied</h3>
+            <p>You don't have permission to view this policy.</p>
+            <a href="/security" class="btn btn-secondary">Back to Security</a>
+        </div>
+
+        <div x-show="notFound && !loading && !accessDenied" class="empty-state">
             <h3>Policy not found</h3>
             <a href="/security" class="btn btn-primary">Back to Security</a>
         </div>
@@ -241,6 +247,7 @@ function policyDetailPage() {
         policy: null,
         loading: true,
         notFound: false,
+        accessDenied: false,
         editing: false,
         editSubmitting: false,
         rawMode: false,
@@ -294,6 +301,8 @@ function policyDetailPage() {
                 if (resp.ok) {
                     var data = await resp.json();
                     this.policy = data.data || data;
+                } else if (resp.status === 403) {
+                    this.accessDenied = true;
                 } else if (resp.status === 404) {
                     this.notFound = true;
                 }
@@ -576,7 +585,6 @@ function policyDetailPage() {
                 'manage_policies': 'Manage policies',
                 'manage_users': 'Manage users',
                 'manage_agents': 'Manage agents',
-                'manage_enrollments': 'Manage enrollments',
                 'view_audit': 'View audit log',
                 'rotate_key': 'Rotate API key',
                 'manage_oidc_providers': 'Manage OIDC providers',
@@ -586,7 +594,6 @@ function policyDetailPage() {
                 'mcp_tool_call': 'Call MCP tools',
                 'mcp_list_tools': 'List MCP tools',
                 'manage_devices': 'Manage devices',
-                'enroll_agent': 'Enroll agents',
                 'manage_tags': 'Manage tags',
                 'unprotect': 'Reveal raw secret',
             };

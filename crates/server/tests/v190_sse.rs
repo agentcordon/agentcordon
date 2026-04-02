@@ -407,9 +407,6 @@ async fn test_sse_all_event_types_serialize() {
         UiEvent::McpServerChanged {
             server_name: "m".to_string(),
         },
-        UiEvent::EnrollmentPending {
-            enrollment_id: Uuid::new_v4(),
-        },
     ];
 
     for event in &events {

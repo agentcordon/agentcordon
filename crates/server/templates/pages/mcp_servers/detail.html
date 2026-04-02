@@ -10,6 +10,18 @@
         <span class="page-loader-label">Loading server...</span>
     </div>
 
+    <!-- Error States -->
+    <div x-show="!loading && accessDenied" class="empty-state">
+        <h3>Access Denied</h3>
+        <p>You don't have permission to view this MCP server.</p>
+        <a href="/mcp-servers" class="btn btn-secondary">Back to MCP Servers</a>
+    </div>
+    <div x-show="!loading && notFound && !accessDenied" class="empty-state">
+        <h3>Not Found</h3>
+        <p>This MCP server no longer exists.</p>
+        <a href="/mcp-servers" class="btn btn-secondary">Back to MCP Servers</a>
+    </div>
+
     <!-- Server Detail -->
     <div x-show="!loading && server" x-cloak>
         <div class="detail-card detail-card-narrow mcp-detail-card">
@@ -63,7 +75,7 @@
                     <div class="detail-value">
                         <span class="pill pill-type">
                             <svg class="nav-icon mcp-workspace-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
-                            <a :href="'/workspaces/' + server.workspace_id" x-text="server && server.workspace_name" class="mcp-workspace-link"></a>
+                            <a :href="'/workspaces/' + (server && server.workspace_id)" x-text="server && server.workspace_name" class="mcp-workspace-link"></a>
                         </span>
                     </div>
                 </div>
@@ -148,7 +160,7 @@
                         <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
                     </div>
                     <div x-show="!permissionsLoading && permissions.length === 0" class="empty-state empty-state-compact">
-                        <p>No permissions granted yet.</p>
+                        <p>Only automatic owner-based access applies. No explicit grants have been created.</p>
                     </div>
                     <table x-show="!permissionsLoading && permissions.length > 0" class="tbl tbl-flush">
                         <thead>
@@ -251,10 +263,10 @@
             <!-- Tools Tab -->
             <div class="tab-content" x-show="activeTab === 'tools'">
             <h3>Tools</h3>
-            <div x-show="!server.tools || server.tools.length === 0" class="empty-state empty-state-sm">
+            <div x-show="!server || !server.tools || server.tools.length === 0" class="empty-state empty-state-sm">
                 <p>No tools registered for this server.</p>
             </div>
-            <table x-show="server.tools && server.tools.length > 0" class="tbl">
+            <table x-show="server && server.tools && server.tools.length > 0" class="tbl">
                 <thead><tr><th>Name</th><th>Description</th></tr></thead>
                 <tbody>
                     <template x-for="tool in (server.tools || [])" :key="tool.name">
@@ -395,6 +407,8 @@ function mcpServerDetailPage() {
         history: [],
         historyLoading: false,
         historyLoaded: false,
+        notFound: false,
+        accessDenied: false,
         async init() {
             try {
                 const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}');
@@ -406,6 +420,10 @@ function mcpServerDetailPage() {
                     if (this.server.tools) {
                         this.server.tools.forEach(t => { this.grantTools[t.name] = false; });
                     }
+                } else if (resp.status === 403) {
+                    this.accessDenied = true;
+                } else if (resp.status === 404) {
+                    this.notFound = true;
                 }
             } catch(e) { showToast('Failed to load MCP server', 'error'); }
             this.loading = false;

@@ -73,6 +73,11 @@ pub struct PolicyContext {
     /// Optional justification string provided by the workspace for audit/compliance.
     /// Max 1024 characters. Passed into Cedar context so policies can require it.
     pub justification: Option<String>,
+    /// Correlation ID from the HTTP request, threaded into audit events.
+    pub correlation_id: Option<String>,
+    /// OAuth token claims for audit enrichment. Included in policy audit metadata
+    /// so every access decision log contains the full token context.
+    pub oauth_claims: Option<serde_json::Value>,
 }
 
 /// Trait for policy engines that evaluate authorization decisions.

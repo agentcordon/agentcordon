@@ -7,9 +7,7 @@ use uuid::Uuid;
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::mcp::{McpServer, McpServerId};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{
-    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
-};
+use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::middleware::request_id::CorrelationId;
@@ -38,6 +36,7 @@ pub(super) struct ImportMcpServerEntry {
     args: Option<Vec<String>>,
     #[allow(dead_code)]
     env: Option<HashMap<String, String>>,
+    url: Option<String>,
     tools: Option<Vec<ImportToolEntry>>,
     required_credentials: Option<Vec<String>>,
 }
@@ -68,34 +67,26 @@ pub(super) struct ImportMcpServerResult {
 /// authenticated workspace before allowing any record creation.
 pub(super) async fn import_mcp_servers(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    actor: crate::extractors::AuthenticatedActor,
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<ImportMcpServersRequest>,
 ) -> Result<Json<ApiResponse<Vec<ImportMcpServerResult>>>, ApiError> {
-    use crate::extractors::authenticated_workspace::authenticate_workspace;
-
-    let auth_header = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| ApiError::Unauthorized("missing Authorization header".to_string()))?;
-
-    let workspace = authenticate_workspace(&state, auth_header).await?;
-
-    // Verify the workspace_id in the request matches the authenticated workspace
-    if workspace.id.0 != req.workspace_id {
-        return Err(ApiError::Forbidden(
-            "workspace_id does not match authenticated workspace".to_string(),
-        ));
+    // For workspace auth: verify the workspace_id matches the authenticated workspace
+    if let crate::extractors::AuthenticatedActor::Workspace { ref workspace, .. } = actor {
+        if workspace.id.0 != req.workspace_id {
+            return Err(ApiError::Forbidden(
+                "workspace_id does not match authenticated workspace".to_string(),
+            ));
+        }
     }
 
-    // Cedar policy check: workspace must be authorized to create resources.
-    // MCP import is a workspace-driven "create" operation on System resources,
-    // governed by default Cedar policy section 1c.
+    // Cedar policy check: actor must be authorized to create resources.
+    let policy_context = actor.policy_context(Some(corr.0.clone()));
     let policy_decision = state.policy_engine.evaluate(
-        &PolicyPrincipal::Workspace(&workspace),
+        &actor.policy_principal(),
         actions::CREATE,
         &PolicyResource::System,
-        &PolicyContext::default(),
+        &policy_context,
     )?;
     if policy_decision.decision == PolicyDecisionResult::Forbid {
         return Err(ApiError::Forbidden(
@@ -155,7 +146,7 @@ pub(super) async fn import_mcp_servers(
         let upstream_url = if transport == "stdio" {
             format!("stdio://{}", name)
         } else {
-            String::new()
+            entry.url.clone().unwrap_or_default()
         };
 
         let allowed_tools = entry

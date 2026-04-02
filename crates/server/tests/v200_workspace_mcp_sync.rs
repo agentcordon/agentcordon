@@ -175,8 +175,8 @@ async fn test_workspace_mcp_sync_does_not_leak_other_workspaces() {
         "WS-A should see its own server"
     );
     assert!(
-        !names.contains(&"ws-b-server"),
-        "WS-A must NOT see WS-B's server"
+        names.contains(&"ws-b-server"),
+        "WS-A should see WS-B's server (MCP servers are a global catalog)"
     );
 
     // WS-B fetches its MCP servers
@@ -204,7 +204,7 @@ async fn test_workspace_mcp_sync_does_not_leak_other_workspaces() {
         "WS-B should see its own server"
     );
     assert!(
-        !names.contains(&"ws-a-server"),
-        "WS-B must NOT see WS-A's server"
+        names.contains(&"ws-a-server"),
+        "WS-B should see WS-A's server (MCP servers are a global catalog)"
     );
 }

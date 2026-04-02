@@ -8,9 +8,7 @@ use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::audit::{
-    enrich_metadata_with_policy_reasoning, AuditDecision, AuditEvent, AuditEventType,
-};
+use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::policy::{PolicyDecisionResult, PolicyId};
 use agent_cordon_core::policy::{
     actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
@@ -53,6 +51,7 @@ pub(super) async fn authorize(
     workspace: AuthenticatedWorkspace,
     Json(req): Json<McpAuthorizeRequest>,
 ) -> Result<Json<ApiResponse<McpAuthorizeResponse>>, ApiError> {
+    workspace.require_scope(agent_cordon_core::oauth2::types::OAuthScope::McpInvoke)?;
     let correlation_id = Uuid::new_v4().to_string();
 
     // Validate inputs.
@@ -69,11 +68,12 @@ pub(super) async fn authorize(
         ));
     }
 
-    // Look up the MCP server by workspace + name.
-    let mcp_server = state
-        .store
-        .get_mcp_server_by_workspace_and_name(&workspace.workspace.id, &server_name)
-        .await?;
+    // MCP servers are a shared catalog — look up by name across all servers,
+    // not scoped to the requesting workspace.  Cedar policy handles authorization.
+    let all_servers = state.store.list_mcp_servers().await?;
+    let mcp_server = all_servers
+        .into_iter()
+        .find(|s| s.name == server_name && s.enabled);
 
     let mcp_server = match mcp_server {
         Some(s) => s,
@@ -112,6 +112,8 @@ pub(super) async fn authorize(
     // Evaluate Cedar policy.
     let policy_ctx = PolicyContext {
         tool_name: Some(tool_name.clone()),
+        correlation_id: Some(correlation_id.clone()),
+        oauth_claims: workspace.oauth_claims.clone(),
         ..Default::default()
     };
 
@@ -163,47 +165,7 @@ pub(super) async fn authorize(
         });
     }
 
-    // Emit audit event.
-    let contributing_policies: Vec<String> =
-        decision.reasons.iter().map(|r| r.to_string()).collect();
-
-    let event_type = if is_permit {
-        AuditEventType::McpToolCallExecuted
-    } else {
-        AuditEventType::McpToolCallDenied
-    };
-
-    let audit_decision = if is_permit {
-        AuditDecision::Permit
-    } else {
-        AuditDecision::Forbid
-    };
-
-    let reason_str = if contributing_policies.is_empty() {
-        None
-    } else {
-        Some(contributing_policies.join(", "))
-    };
-
-    let mut metadata = serde_json::json!({
-        "server_name": server_name,
-        "tool_name": tool_name,
-        "policy_decision": decision_str,
-    });
-    enrich_metadata_with_policy_reasoning(&mut metadata, &decision, Some(&policy_ctx), None);
-
-    let event = AuditEvent::builder(event_type)
-        .action(&format!("mcp_tool_call/{}", tool_name))
-        .resource("mcp_server", &mcp_server.id.0.to_string())
-        .workspace_actor(&workspace.workspace.id, &workspace.workspace.name)
-        .decision(audit_decision, reason_str.as_deref())
-        .details(metadata)
-        .correlation_id(&correlation_id)
-        .build();
-
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "failed to write mcp-authorize audit event");
-    }
+    // Policy decision audit is emitted automatically by AuditingPolicyEngine.
 
     Ok(Json(ApiResponse::ok(McpAuthorizeResponse {
         decision: decision_str.to_string(),

@@ -55,7 +55,7 @@ pub(crate) async fn enrich_workspace_owner(store: &dyn Store, responses: &mut [W
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        // No POST /workspaces — enrollment is the only way to create workspaces.
+        // No POST /workspaces — workspace registration via OAuth is the creation path.
         .route("/workspaces", get(list_workspaces))
         .route(
             "/workspaces/{id}",

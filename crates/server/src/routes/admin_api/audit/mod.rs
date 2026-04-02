@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::AuditEvent;
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyContext, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
 use agent_cordon_core::storage::AuditFilter;
 
 use crate::extractors::AuthenticatedActor;
@@ -60,11 +60,7 @@ async fn list_audit(
         &actor.policy_principal(),
         actions::VIEW_AUDIT,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     let has_audit_access = decision.decision == PolicyDecisionResult::Permit;
@@ -77,7 +73,7 @@ async fn list_audit(
                 if !has_audit_access {
                     // For agents, check credential ownership
                     match &actor {
-                        AuthenticatedActor::Workspace(workspace) => {
+                        AuthenticatedActor::Workspace { workspace, .. } => {
                             let cred_id = uuid::Uuid::parse_str(rid)
                                 .map(agent_cordon_core::domain::credential::CredentialId)
                                 .map_err(|_| {
@@ -140,7 +136,7 @@ async fn list_audit(
                 Some(user.id.0.to_string())
             }
         }
-        AuthenticatedActor::Workspace(_) => q.user_id,
+        AuthenticatedActor::Workspace { .. } => q.user_id,
     };
 
     let filter = AuditFilter {
@@ -172,11 +168,7 @@ async fn get_audit_event(
         &actor.policy_principal(),
         actions::VIEW_AUDIT,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision != PolicyDecisionResult::Permit {

@@ -106,35 +106,54 @@ async fn test_mcp_permissions_jwt_has_standard_issuer() {
     );
 }
 
-/// Test #3: Agent auth JWT has standard issuer.
+/// Test #3: Agent auth token is an opaque OAuth token (not a JWT).
+///
+/// Since v3.0.0, agent auth uses OAuth 2.0 opaque bearer tokens, not JWTs.
+/// This test validates the token is accepted for API calls.
 #[tokio::test]
-async fn test_agent_auth_jwt_has_standard_issuer() {
+async fn test_agent_auth_token_is_opaque_oauth() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
-    let jwt = issue_agent_jwt(&ctx.state, agent);
-    let decoded = decode_jwt_insecure(&jwt);
+    let token = issue_agent_jwt(&ctx.state, agent).await;
 
-    let issuer = decoded["iss"].as_str().unwrap_or("");
-    assert!(!issuer.is_empty(), "agent auth JWT must have an issuer");
+    // OAuth tokens are opaque, not JWTs — they should NOT have 3 dot-separated parts
+    let parts: Vec<&str> = token.split('.').collect();
+    assert_ne!(
+        parts.len(),
+        3,
+        "agent auth token should be opaque, not a JWT"
+    );
+
+    // Verify the token works for API requests
+    let (status, _body) = send_json(
+        &ctx.app,
+        axum::http::Method::GET,
+        "/api/v1/credentials",
+        Some(&token),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_ne!(
+        status,
+        axum::http::StatusCode::UNAUTHORIZED,
+        "OAuth token should authenticate"
+    );
 }
 
-/// Test #4: All JWT types use the same issuer.
+/// Test #4: MCP permissions JWTs still use standard issuer.
+///
+/// Agent auth now uses opaque OAuth tokens, but MCP permissions are still JWTs.
 #[tokio::test]
-async fn test_all_jwt_types_same_issuer() {
+async fn test_mcp_jwt_uses_standard_issuer() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let agent = ctx.admin_agent.as_ref().expect("admin agent");
     let device_id = ctx.admin_device_id();
 
-    // Workspace identity
-    let wi_jwt = issue_agent_jwt(&ctx.state, agent);
-    let wi_issuer = decode_jwt_insecure(&wi_jwt)["iss"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-
-    // MCP permissions
+    // MCP permissions JWT
     let (mcp_jwt, _mcp_claims) = ctx
         .state
         .jwt_issuer
@@ -150,9 +169,9 @@ async fn test_all_jwt_types_same_issuer() {
         .unwrap_or("")
         .to_string();
 
-    assert_eq!(
-        wi_issuer, mcp_issuer,
-        "all JWT types should have the same issuer"
+    assert!(
+        !mcp_issuer.is_empty(),
+        "MCP permissions JWT must have an issuer"
     );
 }
 

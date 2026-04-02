@@ -69,39 +69,6 @@ mod loading_states {
     // ===========================================================================
 
     #[tokio::test]
-    #[ignore = "REMOVED: v2.0 has no /agents/{id} detail page — agents are workspaces"]
-    async fn test_agent_detail_page_has_loader() {
-        let (ctx, cookie) = setup().await;
-
-        let (agent, _) =
-            common::create_agent_in_db(&*ctx.store, "loader-agent", vec!["test"], true, None).await;
-
-        let (status, body) = get_html(&ctx.app, &format!("/agents/{}", agent.id.0), &cookie).await;
-        assert_eq!(status, StatusCode::OK);
-
-        assert!(
-            body.contains("page-loader") || body.contains("loading"),
-            "agent detail page should contain loading state indicator"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "REMOVED: v2.0 has no /devices/{id} detail page — devices unified into workspaces"]
-    async fn test_device_detail_page_has_loader() {
-        let (ctx, cookie) = setup().await;
-
-        // Use a random UUID — the page loads data via JS, so any valid UUID path works
-        let uuid = Uuid::new_v4();
-        let (status, body) = get_html(&ctx.app, &format!("/devices/{}", uuid), &cookie).await;
-        assert_eq!(status, StatusCode::OK);
-
-        assert!(
-            body.contains("page-loader") || body.contains("loading"),
-            "device detail page should contain loading state indicator"
-        );
-    }
-
-    #[tokio::test]
     async fn test_credential_detail_page_has_loader() {
         let (ctx, cookie) = setup().await;
 
@@ -199,79 +166,6 @@ mod device_agents {
     // ===========================================================================
     // 13A. Happy Path
     // ===========================================================================
-
-    #[tokio::test]
-    #[ignore = "REMOVED: v2.0 has no device_id filter — devices unified into workspaces"]
-    async fn test_agents_api_filterable_by_device() {
-        let (ctx, cookie) = setup().await;
-
-        // Get device_id for agent-1
-        let dev_ctx = ctx.device_for("device-agent-1");
-        let device_id = &dev_ctx.device_id;
-
-        // List agents filtered by device_id
-        let (status, body) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            &format!("/api/v1/agents?device_id={}", device_id),
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "list agents by device: {:?}", body);
-
-        let agents = body["data"].as_array().expect("data should be array");
-
-        // Should only contain agents bound to this specific device
-        for agent in agents {
-            let agent_device = agent.get("device_id");
-            if let Some(did) = agent_device {
-                if let Some(did_str) = did.as_str() {
-                    assert_eq!(
-                        did_str, device_id,
-                        "filtered agent should belong to the queried device"
-                    );
-                }
-            }
-        }
-
-        // If filtering is supported, we should find exactly 1 agent for this device
-        // (TestAppBuilder creates one device per agent)
-        if !agents.is_empty() {
-            let has_our_agent = agents
-                .iter()
-                .any(|a| a["name"].as_str() == Some("device-agent-1"));
-            assert!(
-                has_our_agent,
-                "filtered results should contain 'device-agent-1'"
-            );
-        }
-    }
-
-    #[tokio::test]
-    #[ignore = "REMOVED: v2.0 has no /devices/{id} detail page — devices unified into workspaces"]
-    async fn test_device_detail_html_has_agents_section() {
-        let (ctx, cookie) = setup().await;
-        let dev_ctx = ctx.device_for("device-agent-1");
-
-        let (status, body) = get_html(
-            &ctx.app,
-            &format!("/devices/{}", dev_ctx.device_id),
-            &cookie,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "device detail page");
-
-        // The template should have an "Enrolled Agents" section
-        assert!(
-            body.contains("Enrolled Agents")
-                || body.contains("enrolled-agents")
-                || body.contains("agents"),
-            "device detail page should contain agents section, body length={}",
-            body.len()
-        );
-    }
 }
 
 mod mcp_tools_display {

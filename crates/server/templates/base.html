@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Agent Cordon{% endblock %}</title>
+    <title>{% block title %}AgentCordon — Agentic Identity Provider{% endblock %}</title>
+    <meta name="description" content="AgentCordon: self-hostable identity provider for AI agents. Encrypted credential vault, Cedar policy engine, credential proxy, and full audit trail.">
+    <meta name="robots" content="noindex, nofollow">
     <link rel="icon" href="/img/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/css/vault.css">
     <script>
@@ -71,12 +73,8 @@
             'workspace_registered': 'Workspace Registered',
             'workspace_updated': 'Workspace Updated',
             'workspace_deleted': 'Workspace Deleted',
-            'demo_token_issued': 'Token Issued',
             'mcp_tool_call': 'MCP Tool Call',
             'mcp_tool_denied': 'MCP Tool Denied',
-            'agent_enrolled': 'Workspace Enrolled',
-            'enrollment_approved': 'Enrollment Approved',
-            'enrollment_denied': 'Enrollment Denied'
         };
         if (labels[type]) return labels[type];
         // Fallback: convert snake_case to Title Case
@@ -170,6 +168,10 @@
                         var resp = await fetch(url);
                         if (resp.ok) {
                             this.content = await resp.text();
+                        } else if (resp.status === 403) {
+                            this.content = '<div class="empty-state" style="padding:20px;"><h3>Access Denied</h3><p>You don\'t have permission to view this resource.</p></div>';
+                        } else if (resp.status === 404) {
+                            this.content = '<div class="empty-state" style="padding:20px;"><h3>Not Found</h3><p>This resource no longer exists.</p></div>';
                         } else {
                             this.content = '<p class="text-faint" style="padding:20px;">Failed to load details.</p>';
                         }
@@ -230,9 +232,6 @@
                 </div>
                 <div x-show="!loading" x-html="content"></div>
             </div>
-            <div class="slide-panel-footer" x-show="detailUrl">
-                <a :href="detailUrl || '#'">View full details &rarr;</a>
-            </div>
         </aside>
     </div>
 
@@ -254,7 +253,7 @@
         ['workspace_created', 'workspace_updated', 'workspace_deleted', 'credential_created', 'credential_updated',
          'credential_deleted', 'policy_changed',
          'audit_event', 'user_created', 'user_updated', 'user_deleted',
-         'mcp_server_changed', 'enrollment_pending', 'vault_changed'
+         'mcp_server_changed', 'vault_changed'
         ].forEach(function(type) {
             es.addEventListener(type, function(e) {
                 try {

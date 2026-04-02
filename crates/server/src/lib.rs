@@ -3,6 +3,7 @@
 //! Exposes the router builder and AppState so that integration tests can
 //! construct a test application without starting a TCP listener.
 
+pub mod auditing_policy_engine;
 pub mod compose;
 pub mod config;
 pub mod credential_service;
@@ -121,14 +122,21 @@ case "$OS" in
         ;;
 esac
 
-DOWNLOAD_URL="${{GITHUB_RELEASE}}/agentcordon-${{TARGET}}"
+DOWNLOAD_URL_CLI="${{GITHUB_RELEASE}}/agentcordon-${{TARGET}}"
+DOWNLOAD_URL_BROKER="${{GITHUB_RELEASE}}/agentcordon-broker-${{TARGET}}"
 
 echo "Downloading agentcordon CLI (${{TARGET}})..."
-curl -fsSL "$DOWNLOAD_URL" -o "${{INSTALL_DIR}}/agentcordon"
+curl -fsSL "$DOWNLOAD_URL_CLI" -o "${{INSTALL_DIR}}/agentcordon"
 chmod +x "${{INSTALL_DIR}}/agentcordon"
 
+echo "Downloading agentcordon-broker (${{TARGET}})..."
+curl -fsSL "$DOWNLOAD_URL_BROKER" -o "${{INSTALL_DIR}}/agentcordon-broker"
+chmod +x "${{INSTALL_DIR}}/agentcordon-broker"
+
 echo ""
-echo "agentcordon installed to ${{INSTALL_DIR}}/agentcordon"
+echo "Installed:"
+echo "  ${{INSTALL_DIR}}/agentcordon        (workspace CLI)"
+echo "  ${{INSTALL_DIR}}/agentcordon-broker  (credential broker)"
 echo ""
 
 # Check if install dir is on PATH
@@ -142,7 +150,7 @@ case ":$PATH:" in
 esac
 
 echo "Get started:"
-echo "  agentcordon init --server ${{SERVER_URL}}"
+echo "  agentcordon setup ${{SERVER_URL}}"
 "#
     );
 

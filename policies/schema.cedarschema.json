@@ -296,20 +296,6 @@
           }
         }
       },
-      "manage_enrollments": {
-        "appliesTo": {
-          "principalTypes": ["Workspace", "User"],
-          "resourceTypes": ["System"],
-          "context": {
-            "type": "Record",
-            "attributes": {
-              "timestamp": {
-                "type": "String"
-              }
-            }
-          }
-        }
-      },
       "view_audit": {
         "appliesTo": {
           "principalTypes": ["Workspace", "User"],

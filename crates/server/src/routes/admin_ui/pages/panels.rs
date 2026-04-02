@@ -188,6 +188,10 @@ struct McpServerPanel {
     upstream_url: String,
     enabled: bool,
     workspace_name: String,
+    #[allow(dead_code)] // Used by askama template (mcp_server.html)
+    workspace_id: String,
+    #[allow(dead_code)] // Used by askama template (mcp_server.html)
+    tools: Vec<String>,
     tools_count: usize,
     created_at: String,
 }
@@ -213,6 +217,9 @@ pub async fn mcp_server_partial(State(state): State<AppState>, Path(id): Path<St
         .map(|w| w.name)
         .unwrap_or_else(|| server.workspace_id.0.to_string());
 
+    let tools = server.allowed_tools.as_ref().cloned().unwrap_or_default();
+    let tools_count = tools.len();
+
     render_partial(&McpServerPanel {
         server_id: uuid.to_string(),
         server_name: server.name,
@@ -224,7 +231,9 @@ pub async fn mcp_server_partial(State(state): State<AppState>, Path(id): Path<St
         },
         enabled: server.enabled,
         workspace_name,
-        tools_count: server.allowed_tools.as_ref().map(|t| t.len()).unwrap_or(0),
+        workspace_id: server.workspace_id.0.to_string(),
+        tools,
+        tools_count,
         created_at: server.created_at.format("%Y-%m-%d %H:%M").to_string(),
     })
 }

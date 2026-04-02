@@ -137,10 +137,6 @@ pub(super) async fn get_schema_reference(
             actions::MANAGE_AGENTS,
             "View, enable, disable, or configure agents",
         ),
-        (
-            actions::MANAGE_ENROLLMENTS,
-            "Approve or deny agent enrollment requests",
-        ),
         (actions::VIEW_AUDIT, "View audit log entries"),
         (actions::ROTATE_KEY, "Rotate an agent's API key"),
         (
@@ -162,7 +158,10 @@ pub(super) async fn get_schema_reference(
             "List available tools on an MCP server",
         ),
         (actions::MANAGE_DEVICES, "Manage device registrations"),
-        (actions::ENROLL_AGENT, "Enroll a new agent via a device"),
+        (
+            actions::REGISTER_WORKSPACE,
+            "Register a new workspace via OAuth",
+        ),
         (
             actions::MANAGE_TAGS,
             "Add or remove tags on agents, devices, or system",

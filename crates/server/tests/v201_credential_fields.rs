@@ -25,7 +25,7 @@ async fn setup_test_app() -> (
     Arc<dyn Store + Send + Sync>,
     agent_cordon_server::state::AppState,
 ) {
-    let ctx = TestAppBuilder::new().with_enrollment().build().await;
+    let ctx = TestAppBuilder::new().build().await;
     (ctx.app, ctx.store, ctx.state)
 }
 
@@ -79,16 +79,8 @@ async fn test_create_credential_with_description() {
 
     // GET the credential back and verify fields persist
     let get_uri = format!("/api/v1/credentials/{}", cred_id);
-    let (status, body) = send_json(
-        &app,
-        Method::GET,
-        &get_uri,
-        None,
-        Some(&cookie),
-        None,
-        None,
-    )
-    .await;
+    let (status, body) =
+        send_json(&app, Method::GET, &get_uri, None, Some(&cookie), None, None).await;
     assert_eq!(status, StatusCode::OK, "get: {}", body);
     assert_eq!(
         body["data"]["description"], "Least-privilege read-only token",
@@ -132,16 +124,8 @@ async fn test_create_credential_without_optional_fields() {
 
     // GET the credential and verify both fields are null
     let get_uri = format!("/api/v1/credentials/{}", cred_id);
-    let (status, body) = send_json(
-        &app,
-        Method::GET,
-        &get_uri,
-        None,
-        Some(&cookie),
-        None,
-        None,
-    )
-    .await;
+    let (status, body) =
+        send_json(&app, Method::GET, &get_uri, None, Some(&cookie), None, None).await;
     assert_eq!(status, StatusCode::OK, "get: {}", body);
     assert!(
         body["data"]["description"].is_null(),
@@ -434,16 +418,8 @@ async fn test_credential_description_in_summary_response() {
 
     // GET single credential
     let get_uri = format!("/api/v1/credentials/{}", cred_id);
-    let (status, body) = send_json(
-        &app,
-        Method::GET,
-        &get_uri,
-        None,
-        Some(&cookie),
-        None,
-        None,
-    )
-    .await;
+    let (status, body) =
+        send_json(&app, Method::GET, &get_uri, None, Some(&cookie), None, None).await;
     assert_eq!(status, StatusCode::OK, "get: {}", body);
 
     let data = &body["data"];

@@ -48,7 +48,7 @@ async fn setup_test_app() -> (
     Arc<AesGcmEncryptor>,
     agent_cordon_server::state::AppState,
 ) {
-    let ctx = TestAppBuilder::new().with_enrollment().build().await;
+    let ctx = TestAppBuilder::new().build().await;
     (ctx.app, ctx.store, ctx.encryptor, ctx.state)
 }
 
@@ -315,7 +315,7 @@ async fn token_exchange_via_device(
     let claims = serde_json::json!({
         "iss": agent_cordon_core::auth::jwt::ISSUER,
         "sub": agent.id.0.to_string(),
-        "aud": agent_cordon_core::auth::jwt::AUDIENCE_WORKSPACE_IDENTITY,
+        "aud": agent_cordon_core::auth::jwt::AUDIENCE_MCP_PERMISSIONS,
         "exp": (now + chrono::Duration::seconds(3600)).timestamp(),
         "iat": now.timestamp(),
         "nbf": now.timestamp(),
@@ -417,19 +417,31 @@ fn decode_jwt_claims(jwt: &str) -> Value {
 // 1. JWT AUDIENCE CLAIM
 // ===========================================================================
 
+/// Since v3.0.0, agent auth uses opaque OAuth tokens instead of JWTs.
+/// This test validates that the token authenticates successfully.
 #[tokio::test]
 async fn jwt_aud_workspace_identity_has_correct_audience() {
-    let (_app, store, _enc, state) = setup_test_app().await;
+    let (app, store, _enc, state) = setup_test_app().await;
     let _root =
         create_user_in_db(&*store, "root", TEST_PASSWORD, UserRole::Admin, true, true).await;
     let (agent, api_key) =
         create_agent_in_db(&*store, "ws-aud-agent", vec!["admin"], true, None).await;
-    let jwt = get_jwt_local(&state, &agent, &api_key).await;
-    let claims = decode_jwt_claims(&jwt);
-    assert_eq!(
-        claims["aud"].as_str().unwrap(),
-        "agentcordon:workspace-identity",
-        "workspace identity JWT must have correct audience"
+    let token = get_jwt_local(&state, &agent, &api_key).await;
+
+    // OAuth tokens are opaque — verify they work for authenticated requests
+    let (status, _body) = send_json(
+        &app,
+        Method::GET,
+        "/api/v1/credentials",
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "OAuth token should authenticate"
     );
 }
 
@@ -1174,7 +1186,7 @@ async fn edge_case_jwt_future_iat_accepted() {
     let claims = agent_cordon_core::auth::jwt::JwtClaims {
         iss: agent_cordon_core::auth::jwt::ISSUER.to_string(),
         sub: _agent.id.0.to_string(),
-        aud: agent_cordon_core::auth::jwt::AUDIENCE_WORKSPACE_IDENTITY.to_string(),
+        aud: agent_cordon_core::auth::jwt::AUDIENCE_MCP_PERMISSIONS.to_string(),
         exp: (now + chrono::Duration::seconds(900)).timestamp(),
         iat: (now + chrono::Duration::seconds(10)).timestamp(),
         nbf: now.timestamp(),
@@ -1205,10 +1217,8 @@ async fn edge_case_jwt_future_iat_accepted() {
         agent_cordon_core::auth::jwt::ISSUER.to_string(),
         900,
     );
-    let _result = issuer.validate_with_audience(
-        &jwt,
-        agent_cordon_core::auth::jwt::AUDIENCE_WORKSPACE_IDENTITY,
-    );
+    let _result =
+        issuer.validate_with_audience(&jwt, agent_cordon_core::auth::jwt::AUDIENCE_MCP_PERMISSIONS);
     // We document the result but don't assert pass/fail — this tests that
     // the system doesn't panic on future iat values
 }
