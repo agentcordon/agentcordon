@@ -119,7 +119,11 @@ async fn test_agent_auth_token_is_opaque_oauth() {
 
     // OAuth tokens are opaque, not JWTs — they should NOT have 3 dot-separated parts
     let parts: Vec<&str> = token.split('.').collect();
-    assert_ne!(parts.len(), 3, "agent auth token should be opaque, not a JWT");
+    assert_ne!(
+        parts.len(),
+        3,
+        "agent auth token should be opaque, not a JWT"
+    );
 
     // Verify the token works for API requests
     let (status, _body) = send_json(
@@ -132,7 +136,11 @@ async fn test_agent_auth_token_is_opaque_oauth() {
         None,
     )
     .await;
-    assert_ne!(status, axum::http::StatusCode::UNAUTHORIZED, "OAuth token should authenticate");
+    assert_ne!(
+        status,
+        axum::http::StatusCode::UNAUTHORIZED,
+        "OAuth token should authenticate"
+    );
 }
 
 /// Test #4: MCP permissions JWTs still use standard issuer.

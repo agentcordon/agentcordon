@@ -38,7 +38,9 @@ impl AuthenticatedActor {
     pub fn policy_principal(&self) -> PolicyPrincipal<'_> {
         match self {
             AuthenticatedActor::User(user) => PolicyPrincipal::User(user),
-            AuthenticatedActor::Workspace { workspace, .. } => PolicyPrincipal::Workspace(workspace),
+            AuthenticatedActor::Workspace { workspace, .. } => {
+                PolicyPrincipal::Workspace(workspace)
+            }
         }
     }
 

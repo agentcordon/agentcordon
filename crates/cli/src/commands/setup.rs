@@ -73,9 +73,7 @@ async fn ensure_broker_running(server_url: &str) -> Result<String, CliError> {
         }
     }
 
-    Err(CliError::general(
-        "broker failed to start within 5 seconds",
-    ))
+    Err(CliError::general("broker failed to start within 5 seconds"))
 }
 
 /// Try to discover an already-running broker.
@@ -83,12 +81,7 @@ async fn discover_existing_broker(client: &reqwest::Client) -> Result<String, Cl
     // 1. Environment override
     if let Ok(url) = std::env::var("AGTCRDN_BROKER_URL") {
         let url = url.trim_end_matches('/').to_string();
-        if client
-            .get(format!("{url}/health"))
-            .send()
-            .await
-            .is_ok()
-        {
+        if client.get(format!("{url}/health")).send().await.is_ok() {
             return Ok(url);
         }
     }
@@ -98,12 +91,7 @@ async fn discover_existing_broker(client: &reqwest::Client) -> Result<String, Cl
     if let Ok(port_str) = std::fs::read_to_string(&port_path) {
         if let Ok(port) = port_str.trim().parse::<u16>() {
             let url = format!("http://localhost:{port}");
-            if client
-                .get(format!("{url}/health"))
-                .send()
-                .await
-                .is_ok()
-            {
+            if client.get(format!("{url}/health")).send().await.is_ok() {
                 return Ok(url);
             }
         }

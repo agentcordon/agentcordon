@@ -47,7 +47,10 @@ pub(crate) fn is_localhost_uri(uri: &str) -> bool {
         if parsed.scheme() != "http" {
             return false;
         }
-        matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1") | Some("[::1]"))
+        matches!(
+            parsed.host_str(),
+            Some("localhost") | Some("127.0.0.1") | Some("[::1]")
+        )
     } else {
         false
     }
@@ -59,7 +62,9 @@ pub(crate) struct ScopeDisplay {
     pub description: String,
 }
 
-pub(crate) fn scope_descriptions(scopes: &[agent_cordon_core::oauth2::types::OAuthScope]) -> Vec<ScopeDisplay> {
+pub(crate) fn scope_descriptions(
+    scopes: &[agent_cordon_core::oauth2::types::OAuthScope],
+) -> Vec<ScopeDisplay> {
     use agent_cordon_core::oauth2::types::OAuthScope;
     scopes
         .iter()

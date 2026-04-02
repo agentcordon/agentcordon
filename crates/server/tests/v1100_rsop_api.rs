@@ -53,10 +53,7 @@ async fn setup() -> (agent_cordon_server::test_helpers::TestContext, String) {
 }
 
 async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, String) {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
 
     // Use root user so Cedar owner-scoping doesn't hide credentials.
     let _user = common::create_user_in_db(

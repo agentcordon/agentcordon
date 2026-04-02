@@ -217,14 +217,12 @@ impl TestAppBuilder {
         {
             use agent_cordon_core::domain::policy::{PolicyId, StoredPolicy};
 
-            let policy_text = self
-                .custom_policy
-                .unwrap_or_else(|| {
-                    // Start with the shipped default policy, then append the auto-enroll
-                    // rule that is commented out in default.cedar for new installations
-                    // but needed by most tests.
-                    include_str!("../../../policies/default.cedar").to_string()
-                });
+            let policy_text = self.custom_policy.unwrap_or_else(|| {
+                // Start with the shipped default policy, then append the auto-enroll
+                // rule that is commented out in default.cedar for new installations
+                // but needed by most tests.
+                include_str!("../../../policies/default.cedar").to_string()
+            });
 
             let now = chrono::Utc::now();
             let seed_policy = StoredPolicy {

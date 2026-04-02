@@ -35,8 +35,7 @@ impl Keypair {
 
 /// Resolve the `.agentcordon/` directory from `AGTCRDN_WORKSPACE_DIR` or cwd.
 pub fn workspace_dir() -> PathBuf {
-    let base = std::env::var("AGTCRDN_WORKSPACE_DIR")
-        .unwrap_or_else(|_| ".".to_string());
+    let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(base).join(".agentcordon")
 }
 
@@ -47,9 +46,7 @@ pub fn load_keypair() -> Result<Keypair, CliError> {
     let pub_path = dir.join("workspace.pub");
 
     if !key_path.exists() {
-        return Err(CliError::general(
-            "no keypair found. Run: agentcordon init",
-        ));
+        return Err(CliError::general("no keypair found. Run: agentcordon init"));
     }
 
     // Check directory permissions
@@ -90,8 +87,8 @@ pub fn load_keypair() -> Result<Keypair, CliError> {
 
 /// Check that file/dir permissions are not more permissive than `max_mode`.
 fn check_permissions(path: &Path, max_mode: u32, label: &str) -> Result<(), CliError> {
-    let metadata = fs::metadata(path)
-        .map_err(|e| CliError::general(format!("cannot stat {label}: {e}")))?;
+    let metadata =
+        fs::metadata(path).map_err(|e| CliError::general(format!("cannot stat {label}: {e}")))?;
     let mode = metadata.permissions().mode() & 0o777;
     if mode & !max_mode != 0 {
         return Err(CliError::general(format!(

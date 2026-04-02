@@ -26,9 +26,7 @@ fn string_to_scopes(s: &str) -> Vec<OAuthScope> {
     if s.is_empty() {
         return Vec::new();
     }
-    s.split(',')
-        .filter_map(|part| part.parse().ok())
-        .collect()
+    s.split(',').filter_map(|part| part.parse().ok()).collect()
 }
 
 fn redirect_uris_to_string(uris: &[String]) -> String {
@@ -43,11 +41,7 @@ fn parse_datetime(s: &str, col: usize) -> Result<DateTime<Utc>, rusqlite::Error>
     DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                col,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
         })
 }
 
@@ -61,8 +55,7 @@ fn parse_optional_datetime(
     }
 }
 
-const CLIENT_COLUMNS: &str =
-    "id, client_id, client_secret_hash, workspace_name, public_key_hash, \
+const CLIENT_COLUMNS: &str = "id, client_id, client_secret_hash, workspace_name, public_key_hash, \
      redirect_uris, allowed_scopes, created_by_user, created_at, revoked_at";
 
 fn row_to_oauth_client(row: &rusqlite::Row<'_>) -> Result<OAuthClient, rusqlite::Error> {
@@ -342,7 +335,9 @@ impl OAuthStore for SqliteStore {
         let client_id = client_id.to_string();
         self.conn()
             .call(move |conn| {
-                let tx = conn.transaction().map_err(tokio_rusqlite::Error::Rusqlite)?;
+                let tx = conn
+                    .transaction()
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
                 tx.execute(
                     "DELETE FROM oauth_access_tokens WHERE client_id = ?1",
                     rusqlite::params![client_id],

@@ -227,7 +227,10 @@ pub async fn call_tool(
         return error_response(
             StatusCode::BAD_GATEWAY,
             "bad_gateway",
-            &format!("MCP server '{}' returned status {}", server_name, mcp_status),
+            &format!(
+                "MCP server '{}' returned status {}",
+                server_name, mcp_status
+            ),
         );
     }
 
@@ -255,7 +258,10 @@ pub async fn call_tool(
         );
     }
 
-    let result = mcp_body.get("result").cloned().unwrap_or(serde_json::json!({}));
+    let result = mcp_body
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
 
     tracing::info!(
         server_name = %server_name,

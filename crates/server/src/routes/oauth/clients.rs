@@ -51,7 +51,13 @@ pub(crate) async fn register_client(
     auth: AuthenticatedUser,
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<RegisterClientRequest>,
-) -> Result<(axum::http::StatusCode, Json<ApiResponse<RegisterClientResponse>>), ApiError> {
+) -> Result<
+    (
+        axum::http::StatusCode,
+        Json<ApiResponse<RegisterClientResponse>>,
+    ),
+    ApiError,
+> {
     if !auth.is_root {
         return Err(ApiError::Forbidden("admin access required".into()));
     }
@@ -238,8 +244,14 @@ pub(crate) async fn revoke_client(
 
     // Revoke client and all its tokens
     let revoked = state.store.revoke_oauth_client(&client_id).await?;
-    state.store.revoke_access_tokens_for_client(&client_id).await?;
-    state.store.revoke_refresh_tokens_for_client(&client_id).await?;
+    state
+        .store
+        .revoke_access_tokens_for_client(&client_id)
+        .await?;
+    state
+        .store
+        .revoke_refresh_tokens_for_client(&client_id)
+        .await?;
 
     // Audit event
     let event = AuditEvent::builder(AuditEventType::Oauth2TokenFailed)

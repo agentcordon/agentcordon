@@ -102,8 +102,8 @@ enum Command {
 
 fn main() -> std::process::ExitCode {
     // Initialize logging from AGTCRDN_LOG_LEVEL or default to warn
-    let filter = EnvFilter::try_from_env("AGTCRDN_LOG_LEVEL")
-        .unwrap_or_else(|_| EnvFilter::new("warn"));
+    let filter =
+        EnvFilter::try_from_env("AGTCRDN_LOG_LEVEL").unwrap_or_else(|_| EnvFilter::new("warn"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)

@@ -54,9 +54,7 @@ impl OAuthScope {
         if s.is_empty() {
             return Ok(Vec::new());
         }
-        s.split_whitespace()
-            .map(|part| part.parse())
-            .collect()
+        s.split_whitespace().map(|part| part.parse()).collect()
     }
 
     /// Serialize a list of scopes to a space-separated string.

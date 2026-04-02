@@ -12,10 +12,7 @@ use crate::domain::vault::VaultShare;
 use crate::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
 use crate::error::StoreError;
 
-use super::{
-    deserialize_decision, deserialize_event_type,
-    deserialize_user_role,
-};
+use super::{deserialize_decision, deserialize_event_type, deserialize_user_role};
 
 // ---------------------------------------------------------------------------
 // sqlx row types (intermediate representations)

@@ -30,9 +30,8 @@ use super::Store;
 
 // Re-export shared serialization helpers
 use crate::storage::shared::{
-    deserialize_decision, deserialize_event_type,
-    deserialize_user_role, serialize_decision, serialize_event_type,
-    serialize_user_role,
+    deserialize_decision, deserialize_event_type, deserialize_user_role, serialize_decision,
+    serialize_event_type, serialize_user_role,
 };
 
 // ---------------------------------------------------------------------------

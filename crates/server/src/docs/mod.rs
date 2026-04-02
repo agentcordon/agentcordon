@@ -758,5 +758,4 @@ mod tests {
             "JWT TTL should reflect the config value"
         );
     }
-
 }

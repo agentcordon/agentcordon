@@ -342,10 +342,13 @@ pub async fn send_json_auto_csrf(
 /// Creates an OAuth client (if one doesn't already exist for this workspace)
 /// and an access token in the database, returning the raw bearer token.
 /// This bypasses any auth flow and directly creates a valid token for the agent.
-pub async fn issue_agent_jwt(state: &agent_cordon_server::state::AppState, agent: &Agent) -> String {
+pub async fn issue_agent_jwt(
+    state: &agent_cordon_server::state::AppState,
+    agent: &Agent,
+) -> String {
+    use agent_cordon_core::domain::user::UserId;
     use agent_cordon_core::oauth2::tokens::generate_access_token;
     use agent_cordon_core::oauth2::types::{OAuthAccessToken, OAuthClient, OAuthScope};
-    use agent_cordon_core::domain::user::UserId;
 
     let now = chrono::Utc::now();
 
@@ -357,7 +360,12 @@ pub async fn issue_agent_jwt(state: &agent_cordon_server::state::AppState, agent
 
     // Ensure an OAuth client exists for this workspace
     let client_id = format!("ac_test_{}", &agent.id.0.to_string()[..8]);
-    let existing = state.store.get_oauth_client_by_client_id(&client_id).await.ok().flatten();
+    let existing = state
+        .store
+        .get_oauth_client_by_client_id(&client_id)
+        .await
+        .ok()
+        .flatten();
     let test_user_id = UserId(uuid::Uuid::nil());
 
     if existing.is_none() {
@@ -384,7 +392,11 @@ pub async fn issue_agent_jwt(state: &agent_cordon_server::state::AppState, agent
             created_at: now,
             revoked_at: None,
         };
-        state.store.create_oauth_client(&client).await.expect("create test OAuth client");
+        state
+            .store
+            .create_oauth_client(&client)
+            .await
+            .expect("create test OAuth client");
     }
 
     // Create access token
@@ -402,7 +414,11 @@ pub async fn issue_agent_jwt(state: &agent_cordon_server::state::AppState, agent
         expires_at: now + chrono::Duration::hours(1),
         revoked_at: None,
     };
-    state.store.create_oauth_access_token(&token).await.expect("store test OAuth token");
+    state
+        .store
+        .create_oauth_access_token(&token)
+        .await
+        .expect("store test OAuth token");
 
     raw_token
 }

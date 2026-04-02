@@ -42,8 +42,8 @@ pub fn save(
         serde_json::to_vec(workspaces).map_err(|e| format!("serialize failed: {}", e))?;
 
     let aes_key = derive_encryption_key(p256_key);
-    let cipher =
-        Aes256Gcm::new_from_slice(aes_key.as_ref()).map_err(|e| format!("cipher init failed: {}", e))?;
+    let cipher = Aes256Gcm::new_from_slice(aes_key.as_ref())
+        .map_err(|e| format!("cipher init failed: {}", e))?;
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce_bytes);
@@ -91,8 +91,8 @@ pub fn load(
     let nonce = Nonce::from(nonce_arr);
 
     let aes_key = derive_encryption_key(p256_key);
-    let cipher =
-        Aes256Gcm::new_from_slice(aes_key.as_ref()).map_err(|e| format!("cipher init failed: {}", e))?;
+    let cipher = Aes256Gcm::new_from_slice(aes_key.as_ref())
+        .map_err(|e| format!("cipher init failed: {}", e))?;
 
     let plaintext = cipher
         .decrypt(&nonce, ciphertext)
@@ -112,16 +112,12 @@ pub fn load(
 ///
 /// Performs an atomic write (temp + rename) and sets file permissions to 0600
 /// on Unix to protect the refresh tokens at rest.
-pub fn save_recovery(
-    path: &Path,
-    entries: &HashMap<String, RecoveryEntry>,
-) -> Result<(), String> {
+pub fn save_recovery(path: &Path, entries: &HashMap<String, RecoveryEntry>) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(entries)
         .map_err(|e| format!("serialize recovery store failed: {e}"))?;
 
     let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, &json)
-        .map_err(|e| format!("write recovery store failed: {e}"))?;
+    std::fs::write(&tmp_path, &json).map_err(|e| format!("write recovery store failed: {e}"))?;
 
     // Set restrictive permissions before renaming into place
     #[cfg(unix)]
@@ -132,8 +128,7 @@ pub fn save_recovery(
             .map_err(|e| format!("set recovery store permissions failed: {e}"))?;
     }
 
-    std::fs::rename(&tmp_path, path)
-        .map_err(|e| format!("rename recovery store failed: {e}"))?;
+    std::fs::rename(&tmp_path, path).map_err(|e| format!("rename recovery store failed: {e}"))?;
 
     Ok(())
 }

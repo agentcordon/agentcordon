@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use agent_cordon_core::domain::user::UserRole;
-use agent_cordon_core::oauth2::types::{OAuthScope, OAuthAccessToken};
+use agent_cordon_core::oauth2::types::{OAuthAccessToken, OAuthScope};
 use agent_cordon_core::storage::Store;
 
 use agent_cordon_server::test_helpers::TestAppBuilder;
@@ -232,7 +232,13 @@ async fn full_oauth_flow(
     let access_token = body["access_token"].as_str().unwrap().to_string();
     let refresh_token = body["refresh_token"].as_str().unwrap().to_string();
 
-    (client_id, client_secret, access_token, refresh_token, cookie)
+    (
+        client_id,
+        client_secret,
+        access_token,
+        refresh_token,
+        cookie,
+    )
 }
 
 // ===========================================================================
@@ -258,7 +264,11 @@ async fn test_register_oauth_client_success() {
 
     assert_eq!(status, StatusCode::CREATED, "body: {}", body);
     let client_id = body["data"]["client_id"].as_str().unwrap();
-    assert!(client_id.starts_with("ac_cli_"), "client_id format: {}", client_id);
+    assert!(
+        client_id.starts_with("ac_cli_"),
+        "client_id format: {}",
+        client_id
+    );
     assert_eq!(body["data"]["workspace_name"], "my-workspace");
     assert!(body["data"]["client_secret"].as_str().is_some());
 }
@@ -407,7 +417,11 @@ async fn test_register_no_auth() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "unauthenticated client registration should be rejected");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "unauthenticated client registration should be rejected"
+    );
 }
 
 #[tokio::test]
@@ -464,7 +478,11 @@ async fn test_authorize_renders_consent_page() {
     let (status, body, _headers) = get_authorize(&app, &cookie, &query).await;
     assert_eq!(status, StatusCode::OK, "body: {}", body);
     // Consent page should contain the workspace name
-    assert!(body.contains("consent-ws"), "consent page should show workspace name: {}", body);
+    assert!(
+        body.contains("consent-ws"),
+        "consent page should show workspace name: {}",
+        body
+    );
 }
 
 // ===========================================================================
@@ -695,8 +713,15 @@ async fn test_consent_approve_issues_code() {
         .or_else(|_| url::Url::parse(&location))
         .expect("parse redirect");
     let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
-    assert!(params.contains_key("code"), "code param missing: {}", location);
-    assert_eq!(params.get("state").map(|s| s.as_ref()), Some("test-state-123"));
+    assert!(
+        params.contains_key("code"),
+        "code param missing: {}",
+        location
+    );
+    assert_eq!(
+        params.get("state").map(|s| s.as_ref()),
+        Some("test-state-123")
+    );
 }
 
 #[tokio::test]
@@ -746,7 +771,10 @@ async fn test_consent_deny_returns_error() {
         .or_else(|_| url::Url::parse(&location))
         .expect("parse redirect");
     let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
-    assert_eq!(params.get("error").map(|s| s.as_ref()), Some("access_denied"));
+    assert_eq!(
+        params.get("error").map(|s| s.as_ref()),
+        Some("access_denied")
+    );
     assert_eq!(params.get("state").map(|s| s.as_ref()), Some("deny-state"));
 }
 
@@ -788,11 +816,21 @@ async fn test_auth_code_single_use() {
     let (status, _body, headers) = post_consent(&app, &cookie, &form).await;
     assert!(status == StatusCode::FOUND || status == StatusCode::SEE_OTHER);
 
-    let location = headers.iter().find(|(k, _)| k == "location").unwrap().1.clone();
+    let location = headers
+        .iter()
+        .find(|(k, _)| k == "location")
+        .unwrap()
+        .1
+        .clone();
     let parsed = url::Url::parse(&format!("http://localhost{}", location))
         .or_else(|_| url::Url::parse(&location))
         .expect("parse");
-    let code = parsed.query_pairs().find(|(k, _)| k == "code").unwrap().1.to_string();
+    let code = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .unwrap()
+        .1
+        .to_string();
 
     // First exchange → success
     let form1 = format!(
@@ -808,9 +846,17 @@ async fn test_auth_code_single_use() {
 
     // Second exchange with same code → 400
     let (status, body) = send_form(&app, "/api/v1/oauth/token", &form1).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "second exchange should fail: {}", body);
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "second exchange should fail: {}",
+        body
+    );
     assert!(
-        body["error"].as_str().unwrap_or("").contains("invalid_grant"),
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("invalid_grant"),
         "error should be invalid_grant: {}",
         body
     );
@@ -919,11 +965,21 @@ async fn test_token_exchange_wrong_pkce_verifier() {
         urlencoding::encode(&consent_csrf),
     );
     let (_status, _body, headers) = post_consent(&app, &cookie, &form).await;
-    let location = headers.iter().find(|(k, _)| k == "location").unwrap().1.clone();
+    let location = headers
+        .iter()
+        .find(|(k, _)| k == "location")
+        .unwrap()
+        .1
+        .clone();
     let parsed = url::Url::parse(&format!("http://localhost{}", location))
         .or_else(|_| url::Url::parse(&location))
         .expect("parse");
-    let code = parsed.query_pairs().find(|(k, _)| k == "code").unwrap().1.to_string();
+    let code = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .unwrap()
+        .1
+        .to_string();
 
     // Exchange with wrong verifier
     let form = format!(
@@ -968,11 +1024,21 @@ async fn test_token_exchange_missing_pkce_verifier() {
         urlencoding::encode(&consent_csrf),
     );
     let (_status, _body, headers) = post_consent(&app, &cookie, &form).await;
-    let location = headers.iter().find(|(k, _)| k == "location").unwrap().1.clone();
+    let location = headers
+        .iter()
+        .find(|(k, _)| k == "location")
+        .unwrap()
+        .1
+        .clone();
     let parsed = url::Url::parse(&format!("http://localhost{}", location))
         .or_else(|_| url::Url::parse(&location))
         .expect("parse");
-    let code = parsed.query_pairs().find(|(k, _)| k == "code").unwrap().1.to_string();
+    let code = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .unwrap()
+        .1
+        .to_string();
 
     // Exchange without code_verifier
     let form = format!(
@@ -1047,8 +1113,13 @@ async fn test_refresh_token_success() {
 #[tokio::test]
 async fn test_refresh_preserves_scopes() {
     let (app, store, state) = setup().await;
-    let (client_id, client_secret, _access_token, refresh_token, _cookie) =
-        full_oauth_flow(&app, &*store, &state, "credentials:discover credentials:vend").await;
+    let (client_id, client_secret, _access_token, refresh_token, _cookie) = full_oauth_flow(
+        &app,
+        &*store,
+        &state,
+        "credentials:discover credentials:vend",
+    )
+    .await;
 
     let form = format!(
         "grant_type=refresh_token&refresh_token={}&client_id={}&client_secret={}",
@@ -1080,7 +1151,10 @@ async fn test_refresh_new_access_token_different() {
     assert_eq!(status, StatusCode::OK);
 
     let new_access_token = body["access_token"].as_str().unwrap();
-    assert_ne!(new_access_token, old_access_token, "new access token must differ");
+    assert_ne!(
+        new_access_token, old_access_token,
+        "new access token must differ"
+    );
 }
 
 // ===========================================================================
@@ -1103,7 +1177,10 @@ async fn test_refresh_token_rotation() {
     let (status, body) = send_form(&app, "/api/v1/oauth/token", &form).await;
     assert_eq!(status, StatusCode::OK, "first refresh: {}", body);
     let new_refresh_token = body["refresh_token"].as_str().unwrap().to_string();
-    assert_ne!(new_refresh_token, refresh_token, "new refresh token should differ");
+    assert_ne!(
+        new_refresh_token, refresh_token,
+        "new refresh token should differ"
+    );
 
     // Try using old refresh token → should fail (revoked after rotation)
     let form_old = format!(
@@ -1113,7 +1190,12 @@ async fn test_refresh_token_rotation() {
         urlencoding::encode(&client_secret),
     );
     let (status, body) = send_form(&app, "/api/v1/oauth/token", &form_old).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "old refresh token replay: {}", body);
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "old refresh token replay: {}",
+        body
+    );
 }
 
 // ===========================================================================
@@ -1195,7 +1277,10 @@ async fn test_access_token_accepted_by_resource_endpoints() {
         created_at: now,
         updated_at: now,
     };
-    store.create_workspace(&workspace).await.expect("create workspace");
+    store
+        .create_workspace(&workspace)
+        .await
+        .expect("create workspace");
 
     let (_client_id, _client_secret, access_token, _refresh_token, _cookie) =
         full_oauth_flow(&app, &*store, &state, "credentials:discover").await;
@@ -1213,7 +1298,13 @@ async fn test_access_token_accepted_by_resource_endpoints() {
     .await;
 
     // Should be 200 (or at least not 401 — may be empty list)
-    assert_ne!(status, StatusCode::UNAUTHORIZED, "token should be accepted: {} {}", status, body);
+    assert_ne!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "token should be accepted: {} {}",
+        status,
+        body
+    );
 }
 
 #[tokio::test]
@@ -1228,14 +1319,18 @@ async fn test_expired_access_token_rejected() {
         client_id: "ac_cli_expired".to_string(),
         client_secret_hash: None,
         workspace_name: "expired-ws".to_string(),
-        public_key_hash: "e1e2e3e4e5e6e7e8e1e2e3e4e5e6e7e8e1e2e3e4e5e6e7e8e1e2e3e4e5e6e7e8".to_string(),
+        public_key_hash: "e1e2e3e4e5e6e7e8e1e2e3e4e5e6e7e8e1e2e3e4e5e6e7e8e1e2e3e4e5e6e7e8"
+            .to_string(),
         redirect_uris: vec![TEST_REDIRECT_URI.to_string()],
         allowed_scopes: vec![OAuthScope::CredentialsDiscover],
         created_by_user: admin.id.clone(),
         created_at: now,
         revoked_at: None,
     };
-    store.create_oauth_client(&client).await.expect("create client");
+    store
+        .create_oauth_client(&client)
+        .await
+        .expect("create client");
 
     // Now insert an expired access token
     let token_raw = "expired-test-token-12345678901234567890";
@@ -1252,7 +1347,10 @@ async fn test_expired_access_token_rejected() {
         expires_at: now - chrono::Duration::hours(1), // expired 1 hour ago
         revoked_at: None,
     };
-    store.create_oauth_access_token(&expired_token).await.expect("insert expired token");
+    store
+        .create_oauth_access_token(&expired_token)
+        .await
+        .expect("insert expired token");
 
     let (status, _body) = send_json(
         &app,
@@ -1264,7 +1362,11 @@ async fn test_expired_access_token_rejected() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "expired token should be rejected");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "expired token should be rejected"
+    );
 }
 
 #[tokio::test]
@@ -1279,14 +1381,18 @@ async fn test_revoked_access_token_rejected() {
         client_id: "ac_cli_revoked".to_string(),
         client_secret_hash: None,
         workspace_name: "revoked-ws".to_string(),
-        public_key_hash: "f1f2f3f4f5f6f7f8f1f2f3f4f5f6f7f8f1f2f3f4f5f6f7f8f1f2f3f4f5f6f7f8".to_string(),
+        public_key_hash: "f1f2f3f4f5f6f7f8f1f2f3f4f5f6f7f8f1f2f3f4f5f6f7f8f1f2f3f4f5f6f7f8"
+            .to_string(),
         redirect_uris: vec![TEST_REDIRECT_URI.to_string()],
         allowed_scopes: vec![OAuthScope::CredentialsDiscover],
         created_by_user: admin.id.clone(),
         created_at: now,
         revoked_at: None,
     };
-    store.create_oauth_client(&client).await.expect("create client");
+    store
+        .create_oauth_client(&client)
+        .await
+        .expect("create client");
 
     // Insert a revoked access token
     let token_raw = "revoked-test-token-12345678901234567890";
@@ -1303,7 +1409,10 @@ async fn test_revoked_access_token_rejected() {
         expires_at: now + chrono::Duration::hours(1),
         revoked_at: Some(now), // explicitly revoked
     };
-    store.create_oauth_access_token(&revoked_token).await.expect("insert revoked token");
+    store
+        .create_oauth_access_token(&revoked_token)
+        .await
+        .expect("insert revoked token");
 
     let (status, _body) = send_json(
         &app,
@@ -1315,7 +1424,11 @@ async fn test_revoked_access_token_rejected() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "revoked token should be rejected");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "revoked token should be rejected"
+    );
 }
 
 // ===========================================================================
@@ -1362,7 +1475,10 @@ async fn test_revoked_token_rejected_on_next_request() {
         created_at: now,
         updated_at: now,
     };
-    store.create_workspace(&workspace).await.expect("create workspace");
+    store
+        .create_workspace(&workspace)
+        .await
+        .expect("create workspace");
 
     let (client_id, _client_secret, access_token, _refresh_token, _cookie) =
         full_oauth_flow(&app, &*store, &state, "credentials:discover").await;
@@ -1378,7 +1494,11 @@ async fn test_revoked_token_rejected_on_next_request() {
         None,
     )
     .await;
-    assert_ne!(status, StatusCode::UNAUTHORIZED, "token should work before revocation");
+    assert_ne!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "token should work before revocation"
+    );
 
     // Revoke (client_id required for ownership verification)
     let form = format!(
@@ -1400,7 +1520,11 @@ async fn test_revoked_token_rejected_on_next_request() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "revoked token should be rejected immediately");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "revoked token should be rejected immediately"
+    );
 }
 
 // ===========================================================================
@@ -1437,7 +1561,10 @@ async fn test_client_credentials_grant() {
     assert_eq!(body["token_type"], "Bearer");
     assert!(body["access_token"].as_str().is_some());
     // client_credentials should not issue refresh token
-    assert!(body["refresh_token"].is_null(), "no refresh token for client_credentials");
+    assert!(
+        body["refresh_token"].is_null(),
+        "no refresh token for client_credentials"
+    );
 }
 
 #[tokio::test]
@@ -1475,7 +1602,8 @@ async fn test_client_credentials_wrong_secret() {
 async fn test_admin_revoke_client() {
     let (app, store, _state) = setup().await;
     // list_clients and revoke_client require is_root
-    let _admin = create_user_in_db(&*store, "admin", TEST_PASSWORD, UserRole::Admin, true, true).await;
+    let _admin =
+        create_user_in_db(&*store, "admin", TEST_PASSWORD, UserRole::Admin, true, true).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -1561,11 +1689,21 @@ async fn test_pkce_prevents_code_interception() {
         urlencoding::encode(&consent_csrf),
     );
     let (_status, _body, headers) = post_consent(&app, &cookie, &form).await;
-    let location = headers.iter().find(|(k, _)| k == "location").unwrap().1.clone();
+    let location = headers
+        .iter()
+        .find(|(k, _)| k == "location")
+        .unwrap()
+        .1
+        .clone();
     let parsed = url::Url::parse(&format!("http://localhost{}", location))
         .or_else(|_| url::Url::parse(&location))
         .expect("parse");
-    let code = parsed.query_pairs().find(|(k, _)| k == "code").unwrap().1.to_string();
+    let code = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .unwrap()
+        .1
+        .to_string();
 
     // Attacker intercepts code but doesn't have verifier — exchange without it
     let form = format!(
@@ -1576,7 +1714,12 @@ async fn test_pkce_prevents_code_interception() {
         urlencoding::encode(TEST_REDIRECT_URI),
     );
     let (status, body) = send_form(&app, "/api/v1/oauth/token", &form).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "code without verifier: {}", body);
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "code without verifier: {}",
+        body
+    );
 }
 
 // ===========================================================================
@@ -1603,7 +1746,10 @@ async fn test_refresh_token_revocation_cascades_to_access_token() {
         created_at: now,
         updated_at: now,
     };
-    store.create_workspace(&workspace).await.expect("create workspace");
+    store
+        .create_workspace(&workspace)
+        .await
+        .expect("create workspace");
 
     let (client_id, _client_secret, access_token, refresh_token, _cookie) =
         full_oauth_flow(&app, &*store, &state, "credentials:discover").await;
@@ -1657,9 +1803,18 @@ async fn test_consent_new_workspace_renders_consent_page() {
     );
     let (status, body, _headers) = get_authorize(&app, &cookie, &query).await;
     assert_eq!(status, StatusCode::OK, "body: {}", body);
-    assert!(body.contains("new-ws"), "consent page should show workspace name");
-    assert!(body.contains("Create"), "consent page should say Create for new workspace");
-    assert!(body.contains(TEST_PK_HASH_2), "consent page should include public_key_hash in hidden field");
+    assert!(
+        body.contains("new-ws"),
+        "consent page should show workspace name"
+    );
+    assert!(
+        body.contains("Create"),
+        "consent page should say Create for new workspace"
+    );
+    assert!(
+        body.contains(TEST_PK_HASH_2),
+        "consent page should include public_key_hash in hidden field"
+    );
 }
 
 #[tokio::test]
@@ -1697,12 +1852,27 @@ async fn test_consent_new_workspace_approve_creates_client_and_issues_code() {
         .or_else(|_| url::Url::parse(&location))
         .expect("parse redirect");
     let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
-    assert!(params.contains_key("code"), "code param missing: {}", location);
-    assert_eq!(params.get("state").map(|s| s.as_ref()), Some("new-ws-state"));
+    assert!(
+        params.contains_key("code"),
+        "code param missing: {}",
+        location
+    );
+    assert_eq!(
+        params.get("state").map(|s| s.as_ref()),
+        Some("new-ws-state")
+    );
     // New workspace flow includes client_id in callback
-    assert!(params.contains_key("client_id"), "client_id param missing in callback: {}", location);
+    assert!(
+        params.contains_key("client_id"),
+        "client_id param missing in callback: {}",
+        location
+    );
     let client_id = params.get("client_id").unwrap().to_string();
-    assert!(client_id.starts_with("ac_cli_"), "client_id should have expected prefix: {}", client_id);
+    assert!(
+        client_id.starts_with("ac_cli_"),
+        "client_id should have expected prefix: {}",
+        client_id
+    );
 }
 
 #[tokio::test]
@@ -1743,7 +1913,10 @@ async fn test_consent_new_workspace_full_token_exchange() {
         .expect("parse redirect");
     let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
     let code = params.get("code").expect("code param missing").to_string();
-    let client_id = params.get("client_id").expect("client_id param missing").to_string();
+    let client_id = params
+        .get("client_id")
+        .expect("client_id param missing")
+        .to_string();
 
     // Exchange code for tokens
     let token_form = format!(
@@ -1756,7 +1929,10 @@ async fn test_consent_new_workspace_full_token_exchange() {
     let (status, body) = send_form(&app, "/api/v1/oauth/token", &token_form).await;
     assert_eq!(status, StatusCode::OK, "token exchange: {}", body);
     assert!(body["access_token"].is_string(), "should have access_token");
-    assert!(body["refresh_token"].is_string(), "should have refresh_token");
+    assert!(
+        body["refresh_token"].is_string(),
+        "should have refresh_token"
+    );
 }
 
 #[tokio::test]
@@ -1790,9 +1966,17 @@ async fn test_consent_new_workspace_deny() {
         .expect("Location header")
         .1
         .clone();
-    assert!(location.contains("error=access_denied"), "should contain error: {}", location);
+    assert!(
+        location.contains("error=access_denied"),
+        "should contain error: {}",
+        location
+    );
     // No client should have been created
-    assert!(!location.contains("client_id="), "no client_id on deny: {}", location);
+    assert!(
+        !location.contains("client_id="),
+        "no client_id on deny: {}",
+        location
+    );
 }
 
 #[tokio::test]
@@ -1868,7 +2052,10 @@ async fn test_consent_existing_client_still_works() {
     let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
     assert!(params.contains_key("code"), "code param missing");
     // Existing client flow should NOT include client_id in callback
-    assert!(!params.contains_key("client_id"), "existing client flow should not include client_id");
+    assert!(
+        !params.contains_key("client_id"),
+        "existing client flow should not include client_id"
+    );
 
     // Exchange code for tokens (existing client requires client_secret)
     let code = params.get("code").unwrap().to_string();

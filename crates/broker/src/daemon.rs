@@ -35,12 +35,7 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
         .map_err(|e| format!("failed to create HTTP client: {}", e))?;
 
     // 3. Load encrypted token store, falling back to recovery store
-    let workspaces = load_with_recovery(
-        &config,
-        &encryption_key,
-        &http_client,
-    )
-    .await;
+    let workspaces = load_with_recovery(&config, &encryption_key, &http_client).await;
     info!(count = workspaces.len(), "loaded workspace tokens");
 
     // 4. Bind (before building state so we know the actual port)
@@ -142,8 +137,8 @@ fn load_or_create_keypair(path: &Path) -> Result<p256::SecretKey, String> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let metadata = std::fs::metadata(path)
-                .map_err(|e| format!("failed to stat key file: {}", e))?;
+            let metadata =
+                std::fs::metadata(path).map_err(|e| format!("failed to stat key file: {}", e))?;
             let mode = metadata.permissions().mode() & 0o777;
             if mode != 0o600 {
                 return Err(format!(
@@ -287,9 +282,7 @@ async fn recover_from_entries(
 
     // Save successfully recovered workspaces to encrypted store
     if !recovered.is_empty() {
-        if let Err(e) =
-            token_store::save(&config.token_store_path(), &recovered, encryption_key)
-        {
+        if let Err(e) = token_store::save(&config.token_store_path(), &recovered, encryption_key) {
             warn!(error = %e, "failed to save recovered tokens to encrypted store");
         }
 
@@ -298,8 +291,7 @@ async fn recover_from_entries(
             .iter()
             .map(|(k, ws)| (k.clone(), ws.to_recovery_entry()))
             .collect();
-        if let Err(e) =
-            token_store::save_recovery(&config.recovery_store_path(), &recovery_entries)
+        if let Err(e) = token_store::save_recovery(&config.recovery_store_path(), &recovery_entries)
         {
             warn!(error = %e, "failed to update recovery store after recovery");
         }

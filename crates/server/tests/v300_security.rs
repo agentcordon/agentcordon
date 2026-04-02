@@ -194,7 +194,13 @@ async fn full_oauth_flow(
     let access_token = body["access_token"].as_str().unwrap().to_string();
     let refresh_token = body["refresh_token"].as_str().unwrap().to_string();
 
-    (client_id, client_secret, access_token, refresh_token, cookie)
+    (
+        client_id,
+        client_secret,
+        access_token,
+        refresh_token,
+        cookie,
+    )
 }
 
 // ===========================================================================
@@ -221,7 +227,10 @@ async fn test_revoked_oauth_token_denied_immediately() {
         created_at: now,
         updated_at: now,
     };
-    store.create_workspace(&workspace).await.expect("create workspace");
+    store
+        .create_workspace(&workspace)
+        .await
+        .expect("create workspace");
 
     let (client_id, _client_secret, access_token, _refresh_token, _cookie) =
         full_oauth_flow(&app, &*store, &state, "credentials:discover").await;
@@ -259,7 +268,11 @@ async fn test_revoked_oauth_token_denied_immediately() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "revoked token must be rejected immediately");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "revoked token must be rejected immediately"
+    );
 }
 
 // ===========================================================================
@@ -297,7 +310,12 @@ async fn test_pkce_wrong_verifier_rejected() {
         urlencoding::encode(&consent_csrf),
     );
     let (_status, _body, headers) = post_consent(&app, &cookie, &form).await;
-    let location = headers.iter().find(|(k, _)| k == "location").unwrap().1.clone();
+    let location = headers
+        .iter()
+        .find(|(k, _)| k == "location")
+        .unwrap()
+        .1
+        .clone();
     let code = url::Url::parse(&format!("http://localhost{}", location))
         .or_else(|_| url::Url::parse(&location))
         .expect("parse")
@@ -347,7 +365,12 @@ async fn test_workspace_cannot_escalate_scopes_via_refresh() {
         urlencoding::encode(&client_secret),
     );
     let (status, body) = send_form(&app, "/api/v1/oauth/token", &form).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "scope escalation: {}", body);
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "scope escalation: {}",
+        body
+    );
     assert!(
         body["error"].as_str().unwrap_or("") == "invalid_scope",
         "should be invalid_scope: {}",
@@ -391,7 +414,12 @@ async fn test_refresh_token_bound_to_client_id() {
         urlencoding::encode(&client_secret_b),
     );
     let (status, body) = send_form(&app, "/api/v1/oauth/token", &form).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "cross-client refresh: {}", body);
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "cross-client refresh: {}",
+        body
+    );
 }
 
 // ===========================================================================
@@ -462,7 +490,10 @@ async fn test_forged_jwt_wrong_audience_rejected() {
         "nbf": now.timestamp(),
         "jti": uuid::Uuid::new_v4().to_string(),
     });
-    let jwt = state.jwt_issuer.sign_custom_claims(&claims).expect("sign JWT");
+    let jwt = state
+        .jwt_issuer
+        .sign_custom_claims(&claims)
+        .expect("sign JWT");
 
     let (status, _body) = send_json(
         &app,
@@ -526,7 +557,11 @@ async fn test_random_bearer_token_rejected() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "random token should be rejected");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "random token should be rejected"
+    );
 }
 
 // ===========================================================================
@@ -554,7 +589,10 @@ async fn test_token_for_disabled_workspace_rejected() {
         created_at: now,
         updated_at: now,
     };
-    store.create_workspace(&workspace).await.expect("create workspace");
+    store
+        .create_workspace(&workspace)
+        .await
+        .expect("create workspace");
 
     // Create an OAuth client for this pk_hash
     let admin = create_test_user(&*store, "admin-dis", TEST_PASSWORD, UserRole::Admin).await;
@@ -570,7 +608,10 @@ async fn test_token_for_disabled_workspace_rejected() {
         created_at: now,
         revoked_at: None,
     };
-    store.create_oauth_client(&client).await.expect("create client");
+    store
+        .create_oauth_client(&client)
+        .await
+        .expect("create client");
 
     // Create an access token pointing to this client
     let token_raw = "disabled-ws-token-1234567890abcdef";
@@ -587,7 +628,10 @@ async fn test_token_for_disabled_workspace_rejected() {
         expires_at: now + chrono::Duration::hours(1),
         revoked_at: None,
     };
-    store.create_oauth_access_token(&access_token).await.expect("create token");
+    store
+        .create_oauth_access_token(&access_token)
+        .await
+        .expect("create token");
 
     // Try using the token
     let (status, _body) = send_json(
@@ -630,7 +674,10 @@ async fn test_auth_code_bound_to_client() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let client_id_a = body_a["data"]["client_id"].as_str().unwrap().to_string();
-    let _client_secret_a = body_a["data"]["client_secret"].as_str().unwrap().to_string();
+    let _client_secret_a = body_a["data"]["client_secret"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Register client B
     let pk_hash_b = "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6";
@@ -646,7 +693,10 @@ async fn test_auth_code_bound_to_client() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let client_id_b = body_b["data"]["client_id"].as_str().unwrap().to_string();
-    let client_secret_b = body_b["data"]["client_secret"].as_str().unwrap().to_string();
+    let client_secret_b = body_b["data"]["client_secret"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Get a code for client A
     let (verifier, challenge) = generate_pkce();
@@ -659,7 +709,12 @@ async fn test_auth_code_bound_to_client() {
         urlencoding::encode(&consent_csrf),
     );
     let (_status, _body, headers) = post_consent(&app, &cookie, &form).await;
-    let location = headers.iter().find(|(k, _)| k == "location").unwrap().1.clone();
+    let location = headers
+        .iter()
+        .find(|(k, _)| k == "location")
+        .unwrap()
+        .1
+        .clone();
     let code = url::Url::parse(&format!("http://localhost{}", location))
         .or_else(|_| url::Url::parse(&location))
         .expect("parse")
@@ -679,5 +734,10 @@ async fn test_auth_code_bound_to_client() {
         urlencoding::encode(&verifier),
     );
     let (status, body) = send_form(&app, "/api/v1/oauth/token", &form).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "cross-client code: {}", body);
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "cross-client code: {}",
+        body
+    );
 }

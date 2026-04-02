@@ -59,10 +59,7 @@ fn compute_thumbprint_from_jwk(jwk: &Value) -> String {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no device endpoints — devices unified into workspaces"]
 async fn test_dkt_claim_present_in_device_issued_jwt() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -88,10 +85,7 @@ async fn test_dkt_claim_present_in_device_issued_jwt() {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no device endpoints — devices unified into workspaces"]
 async fn test_dkt_claim_matches_device_signing_key_thumbprint() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -145,10 +139,7 @@ async fn test_dkt_claim_matches_device_signing_key_thumbprint() {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no device endpoints — devices unified into workspaces"]
 async fn test_dkt_claim_deterministic_across_issuances() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -196,10 +187,7 @@ async fn test_dkt_claim_deterministic_across_issuances() {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no device endpoints — devices unified into workspaces"]
 async fn test_dkt_claim_differs_between_devices() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;

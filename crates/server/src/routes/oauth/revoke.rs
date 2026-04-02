@@ -42,9 +42,7 @@ pub(crate) async fn revoke_token(
         "refresh_token" => {
             try_revoke_refresh_then_access(&state, &token_hash, &req.client_id).await
         }
-        _ => {
-            try_revoke_access_then_refresh(&state, &token_hash, &req.client_id).await
-        }
+        _ => try_revoke_access_then_refresh(&state, &token_hash, &req.client_id).await,
     };
 
     // Audit event (only if we actually revoked something)
@@ -135,11 +133,7 @@ async fn try_revoke_access_then_refresh(
 }
 
 /// Revoke an access token after verifying it belongs to the given client_id.
-async fn try_revoke_access_token(
-    state: &AppState,
-    token_hash: &str,
-    client_id: &str,
-) -> bool {
+async fn try_revoke_access_token(state: &AppState, token_hash: &str, client_id: &str) -> bool {
     if let Ok(Some(at)) = state.store.get_oauth_access_token(token_hash).await {
         if at.client_id == client_id {
             return state

@@ -28,8 +28,20 @@ pub async fn run() -> Result<(), CliError> {
     }
 
     // Calculate column widths
-    let name_w = resp.data.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4);
-    let svc_w = resp.data.iter().map(|c| c.service.len()).max().unwrap_or(7).max(7);
+    let name_w = resp
+        .data
+        .iter()
+        .map(|c| c.name.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let svc_w = resp
+        .data
+        .iter()
+        .map(|c| c.service.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
     let type_w = resp
         .data
         .iter()

@@ -892,10 +892,7 @@ async fn test_import_audit_event_emitted() {
 #[tokio::test]
 async fn test_init_flow_with_mcp_upload() {
     // Simulate init: register agent → get JWT → call import.
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
 
     // Create agent workspace directly (enrollment flow removed)
     let (agent_id_str, device_key) = create_standalone_device(&ctx.state).await;

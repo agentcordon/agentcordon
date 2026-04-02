@@ -182,11 +182,7 @@ async fn test_e2e_two_minute_setup_full_flow() {
     // -----------------------------------------------------------------------
     // Step 1: Server starts
     // -----------------------------------------------------------------------
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -423,11 +419,7 @@ async fn test_e2e_two_minute_setup_full_flow() {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no enrollment flow — workspaces register directly"]
 async fn test_e2e_disabled_device_blocks_entire_chain() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -560,11 +552,7 @@ async fn test_e2e_disabled_device_blocks_entire_chain() {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no enrollment flow — workspaces register directly"]
 async fn test_e2e_agent_jwt_works_through_any_device() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -640,11 +628,7 @@ async fn test_e2e_agent_jwt_works_through_any_device() {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no enrollment flow — workspaces register directly"]
 async fn test_e2e_credential_vend_denied_by_cedar_policy() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -775,11 +759,7 @@ async fn test_e2e_credential_vend_denied_by_cedar_policy() {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no enrollment flow — workspaces register directly"]
 async fn test_e2e_revoked_permission_blocks_vend() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -861,11 +841,7 @@ async fn test_e2e_revoked_permission_blocks_vend() {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no enrollment flow — workspaces register directly"]
 async fn test_e2e_bootstrap_token_single_use() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -906,11 +882,7 @@ async fn test_e2e_bootstrap_token_single_use() {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no enrollment flow — workspaces register directly"]
 async fn test_e2e_jti_replay_blocked() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -993,11 +965,7 @@ async fn test_e2e_jti_replay_blocked() {
 /// 3 agents enroll through the same device concurrently; all approved with unique IDs.
 #[tokio::test]
 async fn test_e2e_concurrent_agent_enrollments() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -1060,11 +1028,7 @@ async fn test_e2e_concurrent_agent_enrollments() {
 #[tokio::test]
 #[ignore = "REMOVED: v2.0 has no enrollment flow — workspaces register directly"]
 async fn test_e2e_concurrent_credential_vends() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let app = agent_cordon_server::build_router(ctx.state.clone());
     let (cookie, csrf) = login_user(&app, "admin", TEST_PASSWORD).await;

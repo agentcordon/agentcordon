@@ -90,9 +90,7 @@ pub(crate) async fn authorize_get(
 ) -> Result<Response, ApiError> {
     // Validate response_type
     if params.response_type != "code" {
-        return Err(ApiError::BadRequest(
-            "response_type must be 'code'".into(),
-        ));
+        return Err(ApiError::BadRequest("response_type must be 'code'".into()));
     }
 
     // PKCE is required
@@ -133,9 +131,7 @@ pub(crate) async fn authorize_get(
             }
 
             if !client.redirect_uris.contains(&params.redirect_uri) {
-                return Err(ApiError::BadRequest(
-                    "redirect_uri does not match".into(),
-                ));
+                return Err(ApiError::BadRequest("redirect_uri does not match".into()));
             }
 
             for scope in &requested_scopes {
@@ -160,8 +156,7 @@ pub(crate) async fn authorize_get(
             (ws_name.clone(), String::new(), true, pk_hash.clone())
         } else {
             return Err(ApiError::BadRequest(
-                "must provide either client_id or (public_key_hash and workspace_name)"
-                    .into(),
+                "must provide either client_id or (public_key_hash and workspace_name)".into(),
             ));
         };
 
@@ -172,9 +167,7 @@ pub(crate) async fn authorize_get(
             .get_oauth_consent(&client_id_str, &auth.user.id)
             .await?
         {
-            let consent_covers_all = requested_scopes
-                .iter()
-                .all(|s| consent.scopes.contains(s));
+            let consent_covers_all = requested_scopes.iter().all(|s| consent.scopes.contains(s));
             if consent_covers_all {
                 let (code, code_hash) = generate_auth_code();
                 let now = Utc::now();

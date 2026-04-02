@@ -165,8 +165,10 @@ pub(super) async fn delete_workspace(
     // Cascade: hard-delete OAuth client (and tokens/codes/consents) for this workspace's pk_hash
     // so the public_key_hash UNIQUE constraint is freed for re-registration.
     if let Some(ref pk_hash) = target_workspace.pk_hash {
-        if let Ok(Some(oauth_client)) =
-            state.store.get_oauth_client_by_public_key_hash(pk_hash).await
+        if let Ok(Some(oauth_client)) = state
+            .store
+            .get_oauth_client_by_public_key_hash(pk_hash)
+            .await
         {
             state
                 .store

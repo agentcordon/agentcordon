@@ -93,10 +93,7 @@ async fn test_e2e_mcp_tool_call_audit_lifecycle() {
     // 4. Server persists with device attribution
     // 5. Event visible via admin audit API with correct metadata
 
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .build()
-        .await;
+    let ctx = TestAppBuilder::new().with_admin().build().await;
     let (addr, _handle) = start_test_server(&ctx).await;
 
     // Create admin session for API calls

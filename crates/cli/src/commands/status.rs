@@ -32,10 +32,7 @@ pub async fn run() -> Result<(), CliError> {
     }
 
     println!("Workspace: {}", client.keypair().identity());
-    println!(
-        "Registered: {}",
-        if data.registered { "yes" } else { "no" }
-    );
+    println!("Registered: {}", if data.registered { "yes" } else { "no" });
 
     if !data.scopes.is_empty() {
         println!("Scopes: {}", data.scopes.join(", "));

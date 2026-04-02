@@ -66,8 +66,7 @@ pub(crate) async fn authorize_post(
         return Err(ApiError::Forbidden("invalid csrf_token".into()));
     }
 
-    let scopes =
-        OAuthScope::parse_scope_string(&form.scope).map_err(ApiError::BadRequest)?;
+    let scopes = OAuthScope::parse_scope_string(&form.scope).map_err(ApiError::BadRequest)?;
 
     // Handle deny before client creation
     if form.decision == "deny" {
@@ -92,8 +91,7 @@ pub(crate) async fn authorize_post(
 
     // Determine client_id: create new client if new workspace, or validate existing
     let (client_id, client_uuid, is_new) = if form.is_new_workspace {
-        let new_client =
-            create_client_on_consent(&state, &auth, &corr, &form).await?;
+        let new_client = create_client_on_consent(&state, &auth, &corr, &form).await?;
         let cid = new_client.client_id.clone();
         let uuid = new_client.id;
         (cid, uuid, true)
@@ -109,9 +107,7 @@ pub(crate) async fn authorize_post(
         }
 
         if !client.redirect_uris.contains(&form.redirect_uri) {
-            return Err(ApiError::BadRequest(
-                "redirect_uri does not match".into(),
-            ));
+            return Err(ApiError::BadRequest("redirect_uri does not match".into()));
         }
 
         (client.client_id, client.id, false)
@@ -177,10 +173,7 @@ pub(crate) async fn authorize_post(
             urlencoding::encode(&form.state)
         )
     };
-    Ok(
-        (StatusCode::FOUND, [("Location", redirect_url.as_str())])
-            .into_response(),
-    )
+    Ok((StatusCode::FOUND, [("Location", redirect_url.as_str())]).into_response())
 }
 
 /// Handle the "deny" decision — audit + redirect with error.
@@ -238,8 +231,7 @@ async fn create_client_on_consent(
         ));
     }
 
-    let scopes =
-        OAuthScope::parse_scope_string(&form.scope).map_err(ApiError::BadRequest)?;
+    let scopes = OAuthScope::parse_scope_string(&form.scope).map_err(ApiError::BadRequest)?;
 
     // If an existing client for this public_key_hash exists, revoke it so the
     // new registration succeeds.  This handles `--force` re-registrations where
@@ -280,8 +272,7 @@ async fn create_client_on_consent(
     // Reuse existing workspace if it has the same name AND pk_hash (re-registration),
     // or create a new one. This prevents duplicate workspaces on `agentcordon register`
     // after a client-side state reset.
-    create_or_reuse_workspace(state, auth, &form.workspace_name, &form.public_key_hash)
-        .await?;
+    create_or_reuse_workspace(state, auth, &form.workspace_name, &form.public_key_hash).await?;
 
     // Audit: client created via consent
     let event = AuditEvent::builder(AuditEventType::Oauth2TokenAcquired)

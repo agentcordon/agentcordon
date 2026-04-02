@@ -62,10 +62,7 @@ pub async fn require_scope(
                 Err(error_response(
                     StatusCode::FORBIDDEN,
                     "forbidden",
-                    &format!(
-                        "Workspace does not have required scope: {}",
-                        required_scope
-                    ),
+                    &format!("Workspace does not have required scope: {}", required_scope),
                 ))
             }
         }
@@ -114,9 +111,7 @@ where
             status: 401,
             ref body,
         }) if body.contains("workspace not found") => {
-            tracing::warn!(
-                "server reports workspace not found — workspace may have been deleted"
-            );
+            tracing::warn!("server reports workspace not found — workspace may have been deleted");
             Err(error_response(
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",

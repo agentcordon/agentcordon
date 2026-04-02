@@ -77,10 +77,7 @@ pub async fn run(scopes: Vec<String>, force: bool) -> Result<(), CliError> {
     // Field separators prevent boundary manipulation attacks.
     let scopes_joined = scopes.join(" ");
     let sign_payload = format!("{workspace_name}\n{public_key}\n{scopes_joined}");
-    let signature = client
-        .keypair()
-        .signing_key
-        .sign(sign_payload.as_bytes());
+    let signature = client.keypair().signing_key.sign(sign_payload.as_bytes());
     let signature_hex = hex::encode(signature.to_bytes());
 
     let req = RegisterRequest {

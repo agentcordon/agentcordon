@@ -88,8 +88,7 @@ pub fn from_broker_error(http_status: u16, code: &str, message: &str) -> CliErro
     if code == "reregistration_required" {
         return CliError {
             code: ExitCode::NotRegistered,
-            message: "Workspace needs re-registration.\nRun: agentcordon setup <server_url>"
-                .into(),
+            message: "Workspace needs re-registration.\nRun: agentcordon setup <server_url>".into(),
         };
     }
 

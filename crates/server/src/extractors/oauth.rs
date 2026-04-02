@@ -8,12 +8,12 @@ use axum::{
     http::request::Parts,
 };
 
-use agent_cordon_core::domain::user::UserId;
-use agent_cordon_core::domain::workspace::Workspace;
-use agent_cordon_core::oauth2::types::OAuthScope;
 use crate::response::ApiError;
 use crate::routes::oauth::hash_token;
 use crate::state::AppState;
+use agent_cordon_core::domain::user::UserId;
+use agent_cordon_core::domain::workspace::Workspace;
+use agent_cordon_core::oauth2::types::OAuthScope;
 
 /// Authenticated workspace context derived from an OAuth 2.0 access token.
 ///

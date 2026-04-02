@@ -7,9 +7,7 @@ use uuid::Uuid;
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::mcp::{McpServer, McpServerId};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{
-    actions, PolicyEngine, PolicyResource,
-};
+use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::middleware::request_id::CorrelationId;

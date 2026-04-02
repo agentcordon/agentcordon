@@ -43,23 +43,23 @@ pub async fn run(
     // Parse extra headers
     let mut headers = HashMap::new();
     for h in &extra_headers {
-        let (key, value) = h
-            .split_once(':')
-            .ok_or_else(|| CliError::general(format!("invalid header format: {h} (expected KEY:VALUE)")))?;
+        let (key, value) = h.split_once(':').ok_or_else(|| {
+            CliError::general(format!("invalid header format: {h} (expected KEY:VALUE)"))
+        })?;
         headers.insert(key.trim().to_string(), value.trim().to_string());
     }
 
     // Handle @file body
-    let body = match body {
-        Some(b) if b.starts_with('@') => {
-            let path = &b[1..];
-            Some(
-                std::fs::read_to_string(path)
-                    .map_err(|e| CliError::general(format!("failed to read body file {path}: {e}")))?,
-            )
-        }
-        other => other,
-    };
+    let body =
+        match body {
+            Some(b) if b.starts_with('@') => {
+                let path = &b[1..];
+                Some(std::fs::read_to_string(path).map_err(|e| {
+                    CliError::general(format!("failed to read body file {path}: {e}"))
+                })?)
+            }
+            other => other,
+        };
 
     let req = ProxyRequest {
         method: method.to_uppercase(),

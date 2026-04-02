@@ -111,7 +111,11 @@ async fn handle_authorization_code(
     let code = match &req.code {
         Some(c) if !c.is_empty() => c.as_str(),
         _ => {
-            let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "code is required");
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "code is required",
+            );
             return (s, b).into_response();
         }
     };
@@ -119,7 +123,11 @@ async fn handle_authorization_code(
     let client_id = match &req.client_id {
         Some(c) if !c.is_empty() => c.as_str(),
         _ => {
-            let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "client_id is required");
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "client_id is required",
+            );
             return (s, b).into_response();
         }
     };
@@ -133,16 +141,25 @@ async fn handle_authorization_code(
         }
     };
     if client.revoked_at.is_some() {
-        let (s, b) = oauth_error(StatusCode::UNAUTHORIZED, "invalid_client", "client is revoked");
+        let (s, b) = oauth_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client is revoked",
+        );
         return (s, b).into_response();
     }
 
     // Verify client_secret if confidential
     if let Some(ref secret_hash) = client.client_secret_hash {
         match &req.client_secret {
-            Some(secret) if bool::from(hash_token(secret).as_bytes().ct_eq(secret_hash.as_bytes())) => {}
+            Some(secret)
+                if bool::from(hash_token(secret).as_bytes().ct_eq(secret_hash.as_bytes())) => {}
             _ => {
-                let (s, b) = oauth_error(StatusCode::UNAUTHORIZED, "invalid_client", "invalid client credentials");
+                let (s, b) = oauth_error(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_client",
+                    "invalid client credentials",
+                );
                 return (s, b).into_response();
             }
         }
@@ -153,27 +170,43 @@ async fn handle_authorization_code(
     let auth_code = match state.store.get_oauth_auth_code(&code_hash).await {
         Ok(Some(c)) => c,
         _ => {
-            let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "invalid authorization code");
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "invalid authorization code",
+            );
             return (s, b).into_response();
         }
     };
 
     // Validate: not expired
     if auth_code.expires_at < Utc::now() {
-        let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "authorization code has expired");
+        let (s, b) = oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "authorization code has expired",
+        );
         return (s, b).into_response();
     }
 
     // Validate: client_id matches
     if auth_code.client_id != client_id {
-        let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "client_id mismatch");
+        let (s, b) = oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "client_id mismatch",
+        );
         return (s, b).into_response();
     }
 
     // Validate: redirect_uri matches
     if let Some(ref redirect_uri) = req.redirect_uri {
         if *redirect_uri != auth_code.redirect_uri {
-            let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "redirect_uri mismatch");
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "redirect_uri mismatch",
+            );
             return (s, b).into_response();
         }
     }
@@ -183,11 +216,19 @@ async fn handle_authorization_code(
         match &req.code_verifier {
             Some(verifier) if validate_pkce(verifier, challenge) => {}
             Some(_) => {
-                let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "PKCE verification failed");
+                let (s, b) = oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_grant",
+                    "PKCE verification failed",
+                );
                 return (s, b).into_response();
             }
             None => {
-                let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "code_verifier is required");
+                let (s, b) = oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "code_verifier is required",
+                );
                 return (s, b).into_response();
             }
         }
@@ -199,12 +240,20 @@ async fn handle_authorization_code(
         Ok(true) => {} // successfully consumed
         Ok(false) => {
             // Another request already consumed this code (race condition)
-            let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "authorization code already used");
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "authorization code already used",
+            );
             return (s, b).into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to consume auth code");
-            let (s, b) = oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "internal error");
+            let (s, b) = oauth_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "internal error",
+            );
             return (s, b).into_response();
         }
     }
@@ -237,12 +286,20 @@ async fn handle_authorization_code(
 
     if let Err(e) = state.store.create_oauth_access_token(&access_token).await {
         tracing::error!(error = %e, "failed to store access token");
-        let (s, b) = oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "internal error");
+        let (s, b) = oauth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "internal error",
+        );
         return (s, b).into_response();
     }
     if let Err(e) = state.store.create_oauth_refresh_token(&refresh_token).await {
         tracing::error!(error = %e, "failed to store refresh token");
-        let (s, b) = oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "internal error");
+        let (s, b) = oauth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "internal error",
+        );
         return (s, b).into_response();
     }
 
@@ -285,7 +342,11 @@ async fn handle_refresh_token(
     let refresh_token_raw = match &req.refresh_token {
         Some(t) if !t.is_empty() => t.as_str(),
         _ => {
-            let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "refresh_token is required");
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "refresh_token is required",
+            );
             return (s, b).into_response();
         }
     };
@@ -293,7 +354,11 @@ async fn handle_refresh_token(
     let client_id = match &req.client_id {
         Some(c) if !c.is_empty() => c.as_str(),
         _ => {
-            let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "client_id is required");
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "client_id is required",
+            );
             return (s, b).into_response();
         }
     };
@@ -307,15 +372,24 @@ async fn handle_refresh_token(
         }
     };
     if client.revoked_at.is_some() {
-        let (s, b) = oauth_error(StatusCode::UNAUTHORIZED, "invalid_client", "client is revoked");
+        let (s, b) = oauth_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client is revoked",
+        );
         return (s, b).into_response();
     }
 
     if let Some(ref secret_hash) = client.client_secret_hash {
         match &req.client_secret {
-            Some(secret) if bool::from(hash_token(secret).as_bytes().ct_eq(secret_hash.as_bytes())) => {}
+            Some(secret)
+                if bool::from(hash_token(secret).as_bytes().ct_eq(secret_hash.as_bytes())) => {}
             _ => {
-                let (s, b) = oauth_error(StatusCode::UNAUTHORIZED, "invalid_client", "invalid client credentials");
+                let (s, b) = oauth_error(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_client",
+                    "invalid client credentials",
+                );
                 return (s, b).into_response();
             }
         }
@@ -326,23 +400,39 @@ async fn handle_refresh_token(
     let stored_rt = match state.store.get_oauth_refresh_token(&rt_hash).await {
         Ok(Some(t)) => t,
         _ => {
-            let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "invalid refresh token");
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "invalid refresh token",
+            );
             return (s, b).into_response();
         }
     };
 
     if stored_rt.revoked_at.is_some() {
-        let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "refresh token has been revoked");
+        let (s, b) = oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "refresh token has been revoked",
+        );
         return (s, b).into_response();
     }
 
     if stored_rt.expires_at < Utc::now() {
-        let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "refresh token has expired");
+        let (s, b) = oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "refresh token has expired",
+        );
         return (s, b).into_response();
     }
 
     if stored_rt.client_id != client_id {
-        let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "client_id mismatch");
+        let (s, b) = oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "client_id mismatch",
+        );
         return (s, b).into_response();
     }
 
@@ -357,7 +447,11 @@ async fn handle_refresh_token(
         };
         for s in &requested {
             if !stored_rt.scopes.contains(s) {
-                let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_scope", "requested scope exceeds original grant");
+                let (s, b) = oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_scope",
+                    "requested scope exceeds original grant",
+                );
                 return (s, b).into_response();
             }
         }
@@ -369,7 +463,10 @@ async fn handle_refresh_token(
     // Revoke old refresh token (rotation)
     let _ = state.store.revoke_oauth_refresh_token(&rt_hash).await;
     // Revoke the old access token associated with the old refresh token
-    let _ = state.store.revoke_access_tokens_for_refresh_token(&rt_hash).await;
+    let _ = state
+        .store
+        .revoke_access_tokens_for_refresh_token(&rt_hash)
+        .await;
 
     // Issue new tokens
     let now = Utc::now();
@@ -398,12 +495,20 @@ async fn handle_refresh_token(
 
     if let Err(e) = state.store.create_oauth_access_token(&new_access).await {
         tracing::error!(error = %e, "failed to store new access token");
-        let (s, b) = oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "internal error");
+        let (s, b) = oauth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "internal error",
+        );
         return (s, b).into_response();
     }
     if let Err(e) = state.store.create_oauth_refresh_token(&new_refresh).await {
         tracing::error!(error = %e, "failed to store new refresh token");
-        let (s, b) = oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "internal error");
+        let (s, b) = oauth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "internal error",
+        );
         return (s, b).into_response();
     }
 
@@ -446,14 +551,22 @@ async fn handle_client_credentials(
     let client_id = match &req.client_id {
         Some(c) if !c.is_empty() => c.as_str(),
         _ => {
-            let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "client_id is required");
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "client_id is required",
+            );
             return (s, b).into_response();
         }
     };
     let client_secret = match &req.client_secret {
         Some(s) if !s.is_empty() => s.as_str(),
         _ => {
-            let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "client_secret is required for client_credentials");
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "client_secret is required for client_credentials",
+            );
             return (s, b).into_response();
         }
     };
@@ -467,14 +580,27 @@ async fn handle_client_credentials(
         }
     };
     if client.revoked_at.is_some() {
-        let (s, b) = oauth_error(StatusCode::UNAUTHORIZED, "invalid_client", "client is revoked");
+        let (s, b) = oauth_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_client",
+            "client is revoked",
+        );
         return (s, b).into_response();
     }
 
     match &client.client_secret_hash {
-        Some(secret_hash) if bool::from(hash_token(client_secret).as_bytes().ct_eq(secret_hash.as_bytes())) => {}
+        Some(secret_hash)
+            if bool::from(
+                hash_token(client_secret)
+                    .as_bytes()
+                    .ct_eq(secret_hash.as_bytes()),
+            ) => {}
         _ => {
-            let (s, b) = oauth_error(StatusCode::UNAUTHORIZED, "invalid_client", "invalid client credentials");
+            let (s, b) = oauth_error(
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+                "invalid client credentials",
+            );
             return (s, b).into_response();
         }
     }
@@ -485,7 +611,11 @@ async fn handle_client_credentials(
             Ok(requested) => {
                 for s in &requested {
                     if !client.allowed_scopes.contains(s) {
-                        let (s, b) = oauth_error(StatusCode::BAD_REQUEST, "invalid_scope", "requested scope not allowed");
+                        let (s, b) = oauth_error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_scope",
+                            "requested scope not allowed",
+                        );
                         return (s, b).into_response();
                     }
                 }
@@ -516,7 +646,11 @@ async fn handle_client_credentials(
 
     if let Err(e) = state.store.create_oauth_access_token(&access_token).await {
         tracing::error!(error = %e, "failed to store access token");
-        let (s, b) = oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "internal error");
+        let (s, b) = oauth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "internal error",
+        );
         return (s, b).into_response();
     }
 

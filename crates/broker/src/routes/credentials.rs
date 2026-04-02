@@ -19,7 +19,14 @@ pub async fn get_credentials(
         .unwrap();
 
     // Scope pre-check: workspace must have credentials:discover
-    if let Err(e) = require_scope(&state, &auth.pk_hash, "credentials:discover", "credentials.list").await {
+    if let Err(e) = require_scope(
+        &state,
+        &auth.pk_hash,
+        "credentials:discover",
+        "credentials.list",
+    )
+    .await
+    {
         return e;
     }
 

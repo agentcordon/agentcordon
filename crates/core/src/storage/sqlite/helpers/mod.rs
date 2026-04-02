@@ -16,8 +16,7 @@ use crate::domain::workspace::WorkspaceId;
 // ---------------------------------------------------------------------------
 
 pub(crate) use crate::storage::shared::{
-    deserialize_decision,
-    deserialize_event_type, deserialize_user_role, serialize_decision,
+    deserialize_decision, deserialize_event_type, deserialize_user_role, serialize_decision,
     serialize_event_type, serialize_metadata, serialize_scopes, serialize_tags,
     serialize_user_role,
 };

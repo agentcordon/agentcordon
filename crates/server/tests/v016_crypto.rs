@@ -1217,10 +1217,8 @@ async fn edge_case_jwt_future_iat_accepted() {
         agent_cordon_core::auth::jwt::ISSUER.to_string(),
         900,
     );
-    let _result = issuer.validate_with_audience(
-        &jwt,
-        agent_cordon_core::auth::jwt::AUDIENCE_MCP_PERMISSIONS,
-    );
+    let _result =
+        issuer.validate_with_audience(&jwt, agent_cordon_core::auth::jwt::AUDIENCE_MCP_PERMISSIONS);
     // We document the result but don't assert pass/fail — this tests that
     // the system doesn't panic on future iat values
 }

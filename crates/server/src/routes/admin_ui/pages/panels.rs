@@ -217,11 +217,7 @@ pub async fn mcp_server_partial(State(state): State<AppState>, Path(id): Path<St
         .map(|w| w.name)
         .unwrap_or_else(|| server.workspace_id.0.to_string());
 
-    let tools = server
-        .allowed_tools
-        .as_ref()
-        .cloned()
-        .unwrap_or_default();
+    let tools = server.allowed_tools.as_ref().cloned().unwrap_or_default();
     let tools_count = tools.len();
 
     render_partial(&McpServerPanel {

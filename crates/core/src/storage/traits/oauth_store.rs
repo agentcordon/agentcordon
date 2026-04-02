@@ -42,10 +42,8 @@ pub trait OAuthStore: Send + Sync {
     async fn revoke_access_tokens_for_client(&self, client_id: &str) -> Result<u32, StoreError>;
 
     // --- Refresh Tokens ---
-    async fn create_oauth_refresh_token(
-        &self,
-        token: &OAuthRefreshToken,
-    ) -> Result<(), StoreError>;
+    async fn create_oauth_refresh_token(&self, token: &OAuthRefreshToken)
+        -> Result<(), StoreError>;
     async fn get_oauth_refresh_token(
         &self,
         token_hash: &str,

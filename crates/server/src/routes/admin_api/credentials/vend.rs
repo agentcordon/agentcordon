@@ -334,8 +334,15 @@ pub(crate) async fn vend_credential(
         .await?
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
-    let response =
-        vend_inner(&state, &auth.workspace, &cred, corr.0, broker_pub, auth.oauth_claims).await?;
+    let response = vend_inner(
+        &state,
+        &auth.workspace,
+        &cred,
+        corr.0,
+        broker_pub,
+        auth.oauth_claims,
+    )
+    .await?;
     Ok(Json(ApiResponse::ok(response)))
 }
 
@@ -380,7 +387,14 @@ pub(crate) async fn vend_credential_to_device(
             .ok_or_else(|| ApiError::NotFound(format!("credential '{}' not found", name)))?,
     };
 
-    let response =
-        vend_inner(&state, &auth.workspace, &cred, corr.0, broker_pub, auth.oauth_claims).await?;
+    let response = vend_inner(
+        &state,
+        &auth.workspace,
+        &cred,
+        corr.0,
+        broker_pub,
+        auth.oauth_claims,
+    )
+    .await?;
     Ok(Json(ApiResponse::ok(response)))
 }

@@ -174,9 +174,7 @@ impl BrokerClient {
 }
 
 /// Build a reqwest::header::HeaderMap from signing headers.
-fn build_header_map(
-    headers: &SignedHeaders,
-) -> Result<reqwest::header::HeaderMap, CliError> {
+fn build_header_map(headers: &SignedHeaders) -> Result<reqwest::header::HeaderMap, CliError> {
     let mut map = reqwest::header::HeaderMap::new();
     map.insert(
         "X-AC-PublicKey",
@@ -203,9 +201,7 @@ fn build_header_map(
 }
 
 /// Handle broker response: deserialize on success, map errors on failure.
-async fn handle_response<T: DeserializeOwned>(
-    resp: reqwest::Response,
-) -> Result<T, CliError> {
+async fn handle_response<T: DeserializeOwned>(resp: reqwest::Response) -> Result<T, CliError> {
     let status = resp.status().as_u16();
 
     if (200..300).contains(&status) {
@@ -216,10 +212,7 @@ async fn handle_response<T: DeserializeOwned>(
         serde_json::from_str(&body)
             .map_err(|e| CliError::general(format!("invalid response JSON: {e}")))
     } else {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_default();
+        let body = resp.text().await.unwrap_or_default();
 
         if let Ok(err_resp) = serde_json::from_str::<BrokerErrorResponse>(&body) {
             Err(error::from_broker_error(

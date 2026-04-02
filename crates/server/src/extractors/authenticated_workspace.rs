@@ -102,9 +102,7 @@ pub(crate) async fn authenticate_workspace(
         .get_oauth_client_by_client_id(&access_token.client_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| {
-            ApiError::Unauthorized("OAuth client not found for token".to_string())
-        })?;
+        .ok_or_else(|| ApiError::Unauthorized("OAuth client not found for token".to_string()))?;
 
     if client.revoked_at.is_some() {
         return Err(ApiError::Unauthorized(
