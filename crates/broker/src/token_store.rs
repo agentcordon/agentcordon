@@ -238,8 +238,8 @@ mod tests {
     fn test_load_missing_file_returns_empty() {
         let key = p256::SecretKey::random(&mut OsRng);
         let path = std::path::PathBuf::from("/tmp/nonexistent_token_store_test");
-        let result = load(&path, &key).unwrap();
-        assert!(result.is_empty());
+        let result = load(&path, &key);
+        assert!(result.is_err(), "load() should return Err for missing file");
     }
 
     #[test]
