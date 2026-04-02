@@ -1117,7 +1117,7 @@ async fn no_bootstrap_admin_env_var_in_config() {
     // bootstrap_admin proves F-009 is complete.
     let config = AppConfig::test_default();
     // Verify config can be created without any bootstrap admin reference
-    assert!(config.enrollment_ttl_seconds > 0, "config should be valid");
+    assert!(config.jwt_ttl_seconds > 0, "config should be valid");
 }
 
 // ===========================================================================

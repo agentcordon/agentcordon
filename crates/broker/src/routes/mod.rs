@@ -2,6 +2,7 @@ pub mod callback;
 pub mod credentials;
 pub mod deregister;
 pub mod health;
+pub mod helpers;
 pub mod mcp;
 pub mod proxy;
 pub mod register;

@@ -62,6 +62,9 @@ pub fn run() -> Result<(), CliError> {
     // Generate CLAUDE.md with usage instructions
     generate_claude_md(&hash)?;
 
+    // Create stub .mcp.json if it doesn't already exist
+    generate_mcp_json_stub()?;
+
     Ok(())
 }
 
@@ -102,6 +105,27 @@ fn generate_claude_md(pk_hash: &str) -> Result<(), CliError> {
         .map_err(|e| CliError::general(format!("failed to write CLAUDE.md: {e}")))?;
 
     println!("Created CLAUDE.md with AgentCordon instructions");
+    Ok(())
+}
+
+/// Create a stub `.mcp.json` if one doesn't already exist.
+///
+/// Claude Code uses this file to discover MCP servers. The stub is empty
+/// (no servers configured) but its presence signals that MCP is available.
+/// AgentCordon's HTTP MCP servers are accessed via the broker, not `.mcp.json`.
+fn generate_mcp_json_stub() -> Result<(), CliError> {
+    let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
+    let mcp_json_path = Path::new(&base).join(".mcp.json");
+
+    if mcp_json_path.exists() {
+        return Ok(());
+    }
+
+    let content = "{\n  \"mcpServers\": {}\n}\n";
+    fs::write(&mcp_json_path, content)
+        .map_err(|e| CliError::general(format!("failed to write .mcp.json: {e}")))?;
+
+    println!("Created .mcp.json stub");
     Ok(())
 }
 

@@ -5,124 +5,28 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::domain::credential::{CredentialId, CredentialSummary, StoredCredential};
-use crate::domain::enrollment::{EnrollmentSession, EnrollmentSessionStatus};
 use crate::domain::policy::{PolicyId, StoredPolicy};
 use crate::domain::session::Session;
 use crate::domain::user::{User, UserId};
 use crate::domain::vault::VaultShare;
 use crate::domain::workspace::WorkspaceId;
-use crate::error::StoreError;
 
 // ---------------------------------------------------------------------------
 // Re-export shared serialization helpers (used by both SQLite and Postgres)
 // ---------------------------------------------------------------------------
 
 pub(crate) use crate::storage::shared::{
-    deserialize_decision, deserialize_enrollment_status as deserialize_enrollment_session_status,
+    deserialize_decision,
     deserialize_event_type, deserialize_user_role, serialize_decision,
-    serialize_enrollment_status as serialize_enrollment_session_status_shared,
     serialize_event_type, serialize_metadata, serialize_scopes, serialize_tags,
     serialize_user_role,
 };
-
-/// Wrapper for enrollment status serialization that returns String (backwards compat with callers).
-pub(crate) fn serialize_enrollment_session_status(s: &EnrollmentSessionStatus) -> String {
-    serialize_enrollment_session_status_shared(s).to_string()
-}
 
 // ---------------------------------------------------------------------------
 // SQLite-specific row mapping functions (below)
 // These cannot be shared because SQLite uses rusqlite::Row with string-encoded
 // UUIDs/dates, while Postgres uses sqlx::FromRow with native types.
 // ---------------------------------------------------------------------------
-
-pub(crate) fn row_to_enrollment_session(
-    row: &rusqlite::Row<'_>,
-) -> Result<EnrollmentSession, rusqlite::Error> {
-    let id_str: String = row.get(0)?;
-    let session_token_hash: String = row.get(1)?;
-    let approval_ref: String = row.get(2)?;
-    let approval_code: String = row.get(3)?;
-    let agent_name: String = row.get(4)?;
-    let agent_description: Option<String> = row.get(5)?;
-    let agent_tags_json: String = row.get(6)?;
-    let status_str: String = row.get(7)?;
-    let created_at_str: String = row.get(8)?;
-    let expires_at_str: String = row.get(9)?;
-    let approved_by: Option<String> = row.get(10)?;
-    let approved_at_str: Option<String> = row.get(11)?;
-    let claimed_at_str: Option<String> = row.get(12)?;
-    let client_ip: Option<String> = row.get(13)?;
-    let claim_attempts: u32 = row.get(14)?;
-    let workspace_id_str: Option<String> = row.get(15)?;
-
-    let id = Uuid::parse_str(&id_str).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-    })?;
-    let agent_tags: Vec<String> = serde_json::from_str(&agent_tags_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
-    })?;
-    let status = deserialize_enrollment_session_status(&status_str).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            7,
-            rusqlite::types::Type::Text,
-            Box::new(StoreErrorWrapper(e)),
-        )
-    })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let expires_at = DateTime::parse_from_rfc3339(&expires_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let approved_at = approved_at_str
-        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-        .map(|dt| dt.with_timezone(&Utc));
-    let claimed_at = claimed_at_str
-        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-        .map(|dt| dt.with_timezone(&Utc));
-    let workspace_id = workspace_id_str
-        .map(|s| Uuid::parse_str(&s).map(WorkspaceId))
-        .transpose()
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(15, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-
-    Ok(EnrollmentSession {
-        id,
-        session_token_hash,
-        approval_ref,
-        approval_code,
-        agent_name,
-        agent_description,
-        agent_tags,
-        status,
-        created_at,
-        expires_at,
-        approved_by,
-        approved_at,
-        claimed_at,
-        client_ip,
-        claim_attempts,
-        workspace_id,
-    })
-}
-
-/// Wrapper to make StoreError implement std::error::Error for rusqlite conversion.
-#[derive(Debug)]
-pub(crate) struct StoreErrorWrapper(pub(crate) StoreError);
-
-impl std::fmt::Display for StoreErrorWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.0)
-    }
-}
-
-impl std::error::Error for StoreErrorWrapper {}
 
 pub(crate) fn row_to_stored_credential(
     row: &rusqlite::Row<'_>,

@@ -22,6 +22,10 @@ pub fn routes() -> Router<AppState> {
             "/workspaces/mcp-servers",
             get(workspace_sync::sync_mcp_servers),
         )
+        .route(
+            "/workspaces/mcp-tools",
+            get(workspace_sync::sync_mcp_tools),
+        )
         .route("/workspaces/mcp-authorize", post(mcp_authorize::authorize))
         .route(
             "/workspaces/audit-stream",

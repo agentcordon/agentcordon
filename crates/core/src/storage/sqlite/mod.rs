@@ -1,6 +1,5 @@
 mod audit;
 mod credentials;
-mod enrollment;
 pub(crate) mod helpers;
 mod mcp;
 mod oauth;

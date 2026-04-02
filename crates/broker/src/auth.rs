@@ -138,7 +138,7 @@ pub async fn auth_middleware(
     {
         let workspaces = state.workspaces.read().await;
         if !workspaces.contains_key(&hash) {
-            return auth_error_response();
+            return reregistration_required_response();
         }
     }
 
@@ -165,6 +165,19 @@ fn auth_error_response() -> Response {
             "error": {
                 "code": "unauthorized",
                 "message": "Signature verification failed"
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn reregistration_required_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(serde_json::json!({
+            "error": {
+                "code": "reregistration_required",
+                "message": "Workspace not registered with this broker. Run: agentcordon setup <server_url>"
             }
         })),
     )

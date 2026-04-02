@@ -9,7 +9,6 @@
                 <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 <input x-model="search" type="text" placeholder="Search workspaces..." aria-label="Search workspaces">
             </div>
-            <button @click="provisionModal = true" class="btn btn-secondary">Generate Enrollment Token</button>
             <a href="/register" class="btn btn-primary">Register Workspace</a>
         </div>
     </div>
@@ -104,62 +103,7 @@
         </div>
     </div>
 
-    <!-- Provisioning Token Modal -->
-    <div x-show="provisionModal" x-cloak x-transition.opacity.duration.150ms
-         class="modal-overlay"
-         @click.self="closeProvisionModal()"
-         @keydown.escape.window="provisionModal && closeProvisionModal()"
-         role="dialog" aria-modal="true" aria-labelledby="provision-modal-title">
-        <div class="modal-card" style="max-width:520px;">
-            <h3 id="provision-modal-title">Generate Enrollment Token</h3>
 
-            <!-- Step 1: Name input -->
-            <div x-show="!provisionToken">
-                <p style="margin-bottom:0.75rem;color:var(--text-secondary);">Create a one-time enrollment token for CI/CD workspace registration.</p>
-                <label for="provision-name" style="display:block;margin-bottom:0.25rem;font-weight:500;">Workspace name</label>
-                <input id="provision-name" name="workspace_name" x-model="provisionName" type="text" placeholder="e.g. github-actions-prod"
-                       style="width:100%;margin-bottom:1rem;" maxlength="128"
-                       @keydown.enter="generateProvisionToken()">
-                <p x-show="!provisionName.trim()" class="text-sm" style="color:var(--ink-soft);margin-bottom:0.75rem;">Enter a workspace name above to enable token generation.</p>
-                <div class="modal-actions">
-                    <button type="button" class="btn btn-secondary" @click="closeProvisionModal()">Cancel</button>
-                    <button type="button" class="btn btn-primary" @click="generateProvisionToken()"
-                            :disabled="provisionGenerating || !provisionName.trim()"
-                            :title="!provisionName.trim() ? 'Enter a workspace name to enable' : ''">
-                        <span x-show="!provisionGenerating">Generate</span>
-                        <span x-show="provisionGenerating">Generating&hellip;</span>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Step 2: Token display -->
-            <div x-show="provisionToken">
-                <p style="margin-bottom:0.5rem;color:var(--danger);font-weight:500;">This token is shown only once. Copy it now.</p>
-
-                <label style="display:block;margin-bottom:0.25rem;font-weight:500;">Enrollment token</label>
-                <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;">
-                    <code style="flex:1;padding:0.5rem;background:var(--bg-secondary);border-radius:4px;word-break:break-all;font-size:0.8rem;" x-text="provisionToken"></code>
-                    <button type="button" class="btn btn-secondary" @click="copyToClipboard(provisionToken)" title="Copy token">Copy</button>
-                </div>
-
-                <label style="display:block;margin-bottom:0.25rem;font-weight:500;">Environment variables</label>
-                <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;">
-                    <pre style="flex:1;padding:0.5rem;background:var(--bg-secondary);border-radius:4px;font-size:0.8rem;margin:0;white-space:pre-wrap;word-break:break-all;" x-text="provisionEnv"></pre>
-                    <button type="button" class="btn btn-secondary" @click="copyToClipboard(provisionEnv)" title="Copy env">Copy</button>
-                </div>
-
-                <label style="display:block;margin-bottom:0.25rem;font-weight:500;">CLI command</label>
-                <div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
-                    <code style="flex:1;padding:0.5rem;background:var(--bg-secondary);border-radius:4px;font-size:0.8rem;word-break:break-all;" x-text="provisionCliCmd"></code>
-                    <button type="button" class="btn btn-secondary" @click="copyToClipboard(provisionCliCmd)" title="Copy CLI command">Copy</button>
-                </div>
-
-                <div class="modal-actions">
-                    <button type="button" class="btn btn-primary" @click="closeProvisionModal()">Done</button>
-                </div>
-            </div>
-        </div>
-    </div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -172,13 +116,6 @@ function workspaceListPage() {
         selectedId: null,
         detailHtml: '',
         detailLoading: false,
-        provisionModal: false,
-        provisionName: '',
-        provisionToken: null,
-        provisionEnv: '',
-        provisionCliCmd: '',
-        provisionGenerating: false,
-
         init() {
             // Auto-select from URL if /workspaces/{id}
             var match = window.location.pathname.match(/\/workspaces\/([0-9a-f-]+)$/);
@@ -249,6 +186,9 @@ function workspaceListPage() {
                         oldScript.parentNode.replaceChild(newScript, oldScript);
                     });
                     this.$nextTick(() => { Alpine.initTree(container); });
+                } else if (resp.status === 403) {
+                    this.detailHtml = '';
+                    this.$refs.detailContainer.innerHTML = '<div class="empty-state"><h3>Access Denied</h3><p>You don\'t have permission to view this workspace.</p></div>';
                 } else {
                     this.detailHtml = '';
                     this.$refs.detailContainer.innerHTML = '<div class="empty-state"><h3>Workspace not found</h3></div>';
@@ -296,47 +236,12 @@ function workspaceListPage() {
             }
         },
 
-        async generateProvisionToken() {
-            if (!this.provisionName.trim() || this.provisionGenerating) return;
-            this.provisionGenerating = true;
-            try {
-                var resp = await fetch('/api/v1/workspaces/provision', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
-                    body: JSON.stringify({ name: this.provisionName.trim() })
-                });
-                if (!resp.ok) {
-                    var err = await resp.json().catch(function() { return {}; });
-                    showToast(err.error || 'Failed to generate token', 'error');
-                    return;
-                }
-                var data = await resp.json();
-                var d = data.data || data;
-                this.provisionToken = d.token;
-                this.provisionEnv = d.env_snippet || '';
-                this.provisionCliCmd = 'agentcordon enroll --provision-token ' + d.token + ' --server ' + (d.server_url || window.location.origin) + ' --name ' + JSON.stringify(this.provisionName.trim());
-            } catch(e) {
-                showToast('Failed to generate enrollment token', 'error');
-            } finally {
-                this.provisionGenerating = false;
-            }
-        },
-
         copyToClipboard(text) {
             navigator.clipboard.writeText(text).then(function() {
                 showToast('Copied to clipboard', 'info');
             }).catch(function() {
                 showToast('Failed to copy', 'error');
             });
-        },
-
-        closeProvisionModal() {
-            this.provisionModal = false;
-            this.provisionName = '';
-            this.provisionToken = null;
-            this.provisionEnv = '';
-            this.provisionCliCmd = '';
-            this.provisionGenerating = false;
         },
 
         statusClass: statusClass,

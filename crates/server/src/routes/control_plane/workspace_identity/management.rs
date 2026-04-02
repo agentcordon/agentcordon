@@ -2,21 +2,16 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use chrono::{Duration, Utc};
-use serde::Deserialize;
+use chrono::Utc;
 use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
-use agent_cordon_core::domain::workspace::{
-    self, Workspace, WorkspaceId, WorkspaceRegistration, WorkspaceStatus,
-};
+use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
 
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
 use crate::state::AppState;
-
-use super::REGISTRATION_TTL_SECONDS;
 
 // ============================================================================
 // Revocation
@@ -64,80 +59,6 @@ pub(super) async fn revoke_workspace_identity(
 
     Ok(Json(ApiResponse::ok(
         serde_json::json!({ "revoked": true }),
-    )))
-}
-
-// ============================================================================
-// JSON Admin Approval (test/frontend API)
-// ============================================================================
-
-#[derive(Deserialize)]
-pub(super) struct JsonApproveRequest {
-    pk_hash: String,
-    code_challenge: String,
-}
-
-/// POST /api/v1/workspace-identities/register
-/// JSON admin approval — creates a registration and returns the approval code.
-pub(super) async fn json_approve_registration(
-    State(state): State<AppState>,
-    auth: AuthenticatedUser,
-    axum::Extension(corr): axum::Extension<CorrelationId>,
-    Json(req): Json<JsonApproveRequest>,
-) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let pk_hash = req.pk_hash.trim().to_string();
-    let pk_hash = pk_hash
-        .strip_prefix("sha256:")
-        .unwrap_or(&pk_hash)
-        .to_string();
-    let code_challenge = req.code_challenge.trim().to_string();
-
-    if pk_hash.len() != 64 || !pk_hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ApiError::BadRequest("invalid pk_hash".to_string()));
-    }
-    if code_challenge.len() != 64 || !code_challenge.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ApiError::BadRequest("invalid code_challenge".to_string()));
-    }
-
-    // Workspace owner is always the user who approves the registration.
-    let owner_id = auth.user.id.0.to_string();
-
-    let approval_code = workspace::generate_approval_code();
-    let code_hash = workspace::hash_approval_code(&approval_code);
-    let now = Utc::now();
-
-    let registration = WorkspaceRegistration {
-        pk_hash: pk_hash.clone(),
-        code_challenge,
-        code_hash,
-        approval_code: Some(approval_code.clone()),
-        expires_at: now + Duration::seconds(REGISTRATION_TTL_SECONDS),
-        attempts: 0,
-        max_attempts: 5,
-        approved_by: Some(owner_id),
-        created_at: now,
-    };
-
-    state
-        .store
-        .create_workspace_registration(&registration)
-        .await?;
-
-    // Audit
-    let event = AuditEvent::builder(AuditEventType::WorkspaceRegistered)
-        .action("approve_workspace_registration")
-        .user_actor(&auth.user)
-        .resource("workspace_registration", &pk_hash)
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some("bypass:admin"))
-        .details(serde_json::json!({ "pk_hash_fingerprint": &pk_hash[..16] }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
-
-    Ok(Json(ApiResponse::ok(
-        serde_json::json!({ "approval_code": approval_code }),
     )))
 }
 

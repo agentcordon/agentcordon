@@ -2695,6 +2695,56 @@ a.dash-card-link:hover {
     text-decoration: underline;
 }
 
+/* Panel grant section (credential quick-grant in slide-in panel) */
+.panel-grant-section {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+}
+.panel-grant-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0 0 10px;
+}
+.panel-grant-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.panel-grant-select {
+    font-size: 13px;
+    padding: 6px 10px;
+    min-height: 44px;
+}
+.panel-actions {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+}
+
+/* Panel tools list (MCP server slide-in panel) */
+.panel-tools-list {
+    list-style: none;
+    padding: 0;
+    margin: 6px 0 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.panel-tools-list li {
+    display: inline-block;
+}
+.panel-tools-list code {
+    font-size: 11px;
+    background: var(--wash);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    color: var(--ink-soft);
+}
+
 @media (max-width: 768px) {
     .slide-panel {
         width: 100vw;

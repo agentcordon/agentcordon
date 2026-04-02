@@ -4,7 +4,6 @@ use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::CredentialId;
 use agent_cordon_core::domain::mcp::McpServerId;
 use agent_cordon_core::domain::policy::{PolicyDecisionResult, StoredPolicy};
@@ -211,6 +210,7 @@ async fn rsop(
                 let context = PolicyContext {
                     requested_scopes: cred.scopes.clone(),
                     credential_name: Some(cred.name.clone()),
+                    correlation_id: Some(corr.0.clone()),
                     ..Default::default()
                 };
 
@@ -242,7 +242,10 @@ async fn rsop(
                     service: None,
                 };
 
-                let context = PolicyContext::default();
+                let context = PolicyContext {
+                    correlation_id: Some(corr.0.clone()),
+                    ..Default::default()
+                };
 
                 let resource = PolicyResource::McpServer {
                     id: server.id.0.to_string(),
@@ -321,22 +324,8 @@ async fn rsop(
     // Detect conditional policies
     let conditional_policies = detect_conditional_policies(&all_policies);
 
-    // Audit event for RSoP evaluation
-    let event = AuditEvent::builder(AuditEventType::PolicyEvaluated)
-        .action("policy_rsop_evaluated")
-        .user_actor(&auth.user)
-        .resource(&req.resource_type, &req.resource_id.to_string())
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some("bypass:rsop_evaluation"))
-        .details(serde_json::json!({
-            "resource_name": resource_meta.name,
-            "principal_count": matrix.len(),
-            "limit": limit,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+    // Policy decision audit is emitted automatically by AuditingPolicyEngine
+    // for each evaluate() call in the matrix loop above.
 
     Ok(Json(ApiResponse::ok(RsopResponse {
         resource: resource_meta,

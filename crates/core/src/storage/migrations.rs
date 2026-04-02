@@ -154,7 +154,6 @@ mod tests {
             "credential_secret_history",
             "credentials",
             "crypto_state",
-            "enrollment_sessions",
             "mcp_servers",
             "oauth_access_tokens",
             "oauth_auth_codes",

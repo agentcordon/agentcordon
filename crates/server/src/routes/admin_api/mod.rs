@@ -4,7 +4,6 @@ mod admin;
 mod audit;
 pub mod credential_templates;
 pub(crate) mod credentials;
-mod demo;
 mod mcp_proxy;
 mod mcp_servers;
 pub(crate) mod oidc_auth;
@@ -68,7 +67,6 @@ pub fn routes() -> Router<AppState> {
         .merge(mcp_proxy::routes())
         .merge(stats::routes())
         .merge(admin::routes())
-        .merge(demo::routes())
         .merge(credential_templates::routes())
         .merge(policy_templates::routes())
         .merge(rsop::routes())

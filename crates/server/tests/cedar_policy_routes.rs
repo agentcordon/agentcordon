@@ -4,14 +4,14 @@
 //! now correctly delegate to the Cedar policy engine for authorization.
 //!
 //! Key behaviors tested:
-//! - Admin users can access audit, user-management, policy, enrollment, and agent routes
+//! - Admin users can access audit, user-management, policy, and agent routes
 //! - Operator users can access audit routes (Cedar grants view_audit to operators)
 //! - Viewer users can access audit routes (Cedar grants view_audit to viewers)
 //! - Non-admin users are denied user management (Cedar denies manage_users)
 //! - Non-admin users are denied policy management (Cedar denies manage_policies)
 //! - Root users bypass Cedar entirely (root_bypass)
-//! - Operator users can manage enrollments and agents (Cedar grants these)
-//! - Viewer users are denied enrollment and agent management
+//! - Operator users can manage agents (Cedar grants these)
+//! - Viewer users are denied agent management
 
 use std::sync::Arc;
 
@@ -46,7 +46,7 @@ async fn setup_test_app() -> (
     Arc<dyn Store + Send + Sync>,
     agent_cordon_server::state::AppState,
 ) {
-    let ctx = TestAppBuilder::new().with_enrollment().build().await;
+    let ctx = TestAppBuilder::new().build().await;
     (ctx.app, ctx.store, ctx.state)
 }
 

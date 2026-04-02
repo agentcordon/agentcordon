@@ -3,7 +3,6 @@ use uuid::Uuid;
 
 use crate::domain::audit::AuditEvent;
 use crate::domain::credential::{CredentialId, CredentialSummary, StoredCredential};
-use crate::domain::enrollment::EnrollmentSession;
 use crate::domain::mcp::{McpServer, McpServerId};
 use crate::domain::oidc::{OidcAuthState, OidcProvider, OidcProviderId, OidcProviderSummary};
 use crate::domain::policy::{PolicyId, StoredPolicy};
@@ -14,7 +13,7 @@ use crate::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
 use crate::error::StoreError;
 
 use super::{
-    deserialize_decision, deserialize_enrollment_status, deserialize_event_type,
+    deserialize_decision, deserialize_event_type,
     deserialize_user_role,
 };
 
@@ -277,49 +276,6 @@ impl AuditRow {
             decision: deserialize_decision(&self.decision)?,
             decision_reason: self.decision_reason,
             metadata: self.metadata,
-        })
-    }
-}
-
-#[derive(sqlx::FromRow)]
-pub(crate) struct EnrollmentRow {
-    pub id: Uuid,
-    pub session_token_hash: String,
-    pub approval_ref: String,
-    pub approval_code: String,
-    pub agent_name: String,
-    pub agent_description: Option<String>,
-    pub agent_tags: serde_json::Value,
-    pub status: String,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-    pub approved_by: Option<String>,
-    pub approved_at: Option<DateTime<Utc>>,
-    pub claimed_at: Option<DateTime<Utc>>,
-    pub client_ip: Option<String>,
-    pub claim_attempts: i32,
-    pub workspace_id: Option<Uuid>,
-}
-
-impl EnrollmentRow {
-    pub fn into_session(self) -> Result<EnrollmentSession, StoreError> {
-        Ok(EnrollmentSession {
-            id: self.id,
-            session_token_hash: self.session_token_hash,
-            approval_ref: self.approval_ref,
-            approval_code: self.approval_code,
-            agent_name: self.agent_name,
-            agent_description: self.agent_description,
-            agent_tags: serde_json::from_value(self.agent_tags).unwrap_or_default(),
-            status: deserialize_enrollment_status(&self.status)?,
-            created_at: self.created_at,
-            expires_at: self.expires_at,
-            approved_by: self.approved_by,
-            approved_at: self.approved_at,
-            claimed_at: self.claimed_at,
-            client_ip: self.client_ip,
-            claim_attempts: self.claim_attempts as u32,
-            workspace_id: self.workspace_id.map(WorkspaceId),
         })
     }
 }

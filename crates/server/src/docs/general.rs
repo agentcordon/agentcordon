@@ -88,7 +88,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
             string_param("action", "Filter by action name (e.g., 'create', 'delete')", false),
             string_param("decision", "Filter by decision (e.g., 'permit', 'forbid')", false),
             string_param("event_type", "Filter by event type (e.g., 'agent_created', 'credential_created')", false),
-            string_param("agent_id", "Filter by agent ID (UUID)", false),
+            string_param("agent_id", "Filter by workspace ID (UUID)", false),
             string_param("agent_name", "Filter by agent name", false),
             string_param("user_id", "Filter by user ID", false),
             string_param("device_id", "Filter by device ID (UUID)", false),
@@ -125,68 +125,6 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
         query_params: None,
         path_params: Some(vec![uuid_param("id", "Audit event UUID")]),
         error_codes: vec!["unauthorized".to_string(), "forbidden".to_string(), "not_found".to_string()],
-    });
-
-    // -----------------------------------------------------------------------
-    // Demo
-    // -----------------------------------------------------------------------
-    endpoints.push(EndpointDoc {
-        method: "DELETE".to_string(),
-        path: "/api/v1/demo".to_string(),
-        description: "Remove all demo seed data (demo-agent, demo-api-key, demo-device, demo-allow-proxy policy). Audit events are preserved. Requires session authentication.".to_string(),
-        auth_required: true,
-        request_body: None,
-        response_body: Some(json!({
-            "type": "object",
-            "properties": {
-                "deleted": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Names of deleted demo resources"
-                }
-            }
-        })),
-        query_params: None,
-        path_params: None,
-        error_codes: vec!["unauthorized".to_string()],
-    });
-
-    // -----------------------------------------------------------------------
-    // Proxy
-    // -----------------------------------------------------------------------
-    endpoints.push(EndpointDoc {
-        method: "POST".to_string(),
-        path: "/api/v1/proxy/execute".to_string(),
-        description: "Internal credential proxy endpoint (device-facing only). Requires device+agent dual authentication. Agents should use the device's POST /proxy endpoint instead.".to_string(),
-        auth_required: true,
-        request_body: Some(json!({
-            "type": "object",
-            "required": ["method", "url"],
-            "properties": {
-                "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] },
-                "url": { "type": "string", "description": "Target URL (may contain {{credential-name}} placeholders)" },
-                "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Headers (values may contain placeholders)" },
-                "body": { "type": "string", "description": "Request body (may contain placeholders)" }
-            }
-        })),
-        response_body: Some(json!({
-            "type": "object",
-            "properties": {
-                "status_code": { "type": "integer" },
-                "headers": { "type": "object", "additionalProperties": { "type": "string" } },
-                "body": { "type": "string", "nullable": true }
-            }
-        })),
-        query_params: None,
-        path_params: None,
-        error_codes: vec![
-            "unauthorized".to_string(),
-            "forbidden".to_string(),
-            "not_found".to_string(),
-            "bad_request".to_string(),
-            "bad_gateway".to_string(),
-            "credential_leak_detected".to_string(),
-        ],
     });
 
     // -----------------------------------------------------------------------

@@ -8,7 +8,6 @@
 
 use crate::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use crate::domain::credential::CredentialUpdate;
-use crate::domain::enrollment::EnrollmentSessionStatus;
 use crate::domain::user::UserRole;
 use crate::error::StoreError;
 use crate::storage::AuditFilter;
@@ -59,34 +58,6 @@ pub fn deserialize_decision(s: &str) -> Result<AuditDecision, StoreError> {
         "allow" => Ok(AuditDecision::Permit),
         "deny" => Ok(AuditDecision::Forbid),
         other => Err(StoreError::Database(format!("unknown decision: {}", other))),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Enrollment status serialization
-// ---------------------------------------------------------------------------
-
-pub fn serialize_enrollment_status(s: &EnrollmentSessionStatus) -> &'static str {
-    match s {
-        EnrollmentSessionStatus::Pending => "pending",
-        EnrollmentSessionStatus::Approved => "approved",
-        EnrollmentSessionStatus::Claimed => "claimed",
-        EnrollmentSessionStatus::Expired => "expired",
-        EnrollmentSessionStatus::Denied => "denied",
-    }
-}
-
-pub fn deserialize_enrollment_status(s: &str) -> Result<EnrollmentSessionStatus, StoreError> {
-    match s {
-        "pending" => Ok(EnrollmentSessionStatus::Pending),
-        "approved" => Ok(EnrollmentSessionStatus::Approved),
-        "claimed" => Ok(EnrollmentSessionStatus::Claimed),
-        "expired" => Ok(EnrollmentSessionStatus::Expired),
-        "denied" => Ok(EnrollmentSessionStatus::Denied),
-        other => Err(StoreError::Database(format!(
-            "unknown enrollment session status: {}",
-            other
-        ))),
     }
 }
 
@@ -167,9 +138,6 @@ pub const SERVER_COLUMNS: &str = "id, name, client_id, client_secret_hash, expec
 
 /// Columns for the `mcp_servers` table (SELECT).
 pub const MCP_SERVER_COLUMNS: &str = "id, workspace_id, name, upstream_url, transport, credential_bindings, allowed_tools, enabled, created_by, created_at, updated_at, tags, required_credentials";
-
-/// Columns for the `enrollment_sessions` table (SELECT).
-pub const ENROLLMENT_COLUMNS: &str = "id, session_token_hash, approval_ref, approval_code, agent_name, agent_description, agent_tags, status, created_at, expires_at, approved_by, approved_at, claimed_at, client_ip, claim_attempts, workspace_id";
 
 /// Columns for the `oidc_providers` table (SELECT, full).
 pub const OIDC_PROVIDER_COLUMNS: &str = "id, name, issuer_url, client_id, encrypted_client_secret, nonce, scopes, role_mapping, auto_provision, enabled, username_claim, created_at, updated_at";

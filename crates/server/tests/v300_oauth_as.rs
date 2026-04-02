@@ -25,13 +25,13 @@ use agent_cordon_server::test_helpers::TestAppBuilder;
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/// Build test app with enrollment enabled and return (Router, Store, AppState).
+/// Build test app and return (Router, Store, AppState).
 async fn setup() -> (
     Router,
     Arc<dyn Store + Send + Sync>,
     agent_cordon_server::state::AppState,
 ) {
-    let ctx = TestAppBuilder::new().with_enrollment().build().await;
+    let ctx = TestAppBuilder::new().build().await;
     (ctx.app, ctx.store, ctx.state)
 }
 
@@ -161,7 +161,7 @@ async fn full_oauth_flow(
     scopes_str: &str,
 ) -> (String, String, String, String, String) {
     // Create admin user and login
-    let _admin = create_test_user(store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(app, "admin", TEST_PASSWORD).await;
 
     // Register client
@@ -242,7 +242,7 @@ async fn full_oauth_flow(
 #[tokio::test]
 async fn test_register_oauth_client_success() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -266,7 +266,7 @@ async fn test_register_oauth_client_success() {
 #[tokio::test]
 async fn test_register_client_with_all_scopes() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -288,7 +288,7 @@ async fn test_register_client_with_all_scopes() {
 #[tokio::test]
 async fn test_register_client_minimal_scopes() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -315,7 +315,7 @@ async fn test_register_client_minimal_scopes() {
 #[tokio::test]
 async fn test_register_same_workspace_twice_conflict() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, _body) = register_client(
@@ -351,7 +351,7 @@ async fn test_register_same_workspace_twice_conflict() {
 #[tokio::test]
 async fn test_register_invalid_scopes() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -370,7 +370,7 @@ async fn test_register_invalid_scopes() {
 #[tokio::test]
 async fn test_register_missing_redirect_uri() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -390,9 +390,9 @@ async fn test_register_missing_redirect_uri() {
 async fn test_register_no_auth() {
     let (app, _store, _state) = setup().await;
 
-    // Client registration is a public endpoint (RFC 7591 Dynamic Client Registration).
-    // No authentication required — authorization happens in the consent flow.
-    let (status, body) = send_json(
+    // Client registration requires root admin authentication.
+    // Unauthenticated requests should be rejected.
+    let (status, _body) = send_json(
         &app,
         Method::POST,
         "/api/v1/oauth/clients",
@@ -407,14 +407,13 @@ async fn test_register_no_auth() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "body: {}", body);
-    assert!(body["data"]["client_id"].as_str().is_some());
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "unauthenticated client registration should be rejected");
 }
 
 #[tokio::test]
 async fn test_register_non_localhost_redirect_uri() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -437,7 +436,7 @@ async fn test_register_non_localhost_redirect_uri() {
 #[tokio::test]
 async fn test_authorize_renders_consent_page() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     // Register a client first
@@ -475,7 +474,7 @@ async fn test_authorize_renders_consent_page() {
 #[tokio::test]
 async fn test_authorize_invalid_client_id() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (_verifier, challenge) = generate_pkce();
@@ -491,7 +490,7 @@ async fn test_authorize_invalid_client_id() {
 #[tokio::test]
 async fn test_authorize_missing_code_challenge() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -520,7 +519,7 @@ async fn test_authorize_missing_code_challenge() {
 #[tokio::test]
 async fn test_authorize_unsupported_challenge_method() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -549,7 +548,7 @@ async fn test_authorize_unsupported_challenge_method() {
 #[tokio::test]
 async fn test_authorize_scope_exceeds_client_registration() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     // Register with only credentials:discover
@@ -582,7 +581,7 @@ async fn test_authorize_scope_exceeds_client_registration() {
 #[tokio::test]
 async fn test_authorize_invalid_redirect_uri() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -614,7 +613,7 @@ async fn test_authorize_invalid_redirect_uri() {
 #[tokio::test]
 async fn test_authorize_missing_response_type() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -650,7 +649,7 @@ async fn test_authorize_missing_response_type() {
 #[tokio::test]
 async fn test_consent_approve_issues_code() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -703,7 +702,7 @@ async fn test_consent_approve_issues_code() {
 #[tokio::test]
 async fn test_consent_deny_returns_error() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -758,7 +757,7 @@ async fn test_consent_deny_returns_error() {
 #[tokio::test]
 async fn test_auth_code_single_use() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -861,7 +860,7 @@ async fn test_refresh_token_is_opaque() {
 #[tokio::test]
 async fn test_token_exchange_content_type() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
 
     // Send JSON body to /oauth/token instead of form-urlencoded → should fail
     let request = Request::builder()
@@ -891,7 +890,7 @@ async fn test_token_exchange_content_type() {
 #[tokio::test]
 async fn test_token_exchange_wrong_pkce_verifier() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -941,7 +940,7 @@ async fn test_token_exchange_wrong_pkce_verifier() {
 #[tokio::test]
 async fn test_token_exchange_missing_pkce_verifier() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -1220,7 +1219,7 @@ async fn test_access_token_accepted_by_resource_endpoints() {
 #[tokio::test]
 async fn test_expired_access_token_rejected() {
     let (app, store, _state) = setup().await;
-    let admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
 
     // Create an OAuth client first (FK constraint)
     let now = chrono::Utc::now();
@@ -1271,7 +1270,7 @@ async fn test_expired_access_token_rejected() {
 #[tokio::test]
 async fn test_revoked_access_token_rejected() {
     let (app, store, _state) = setup().await;
-    let admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
 
     // Create an OAuth client first (FK constraint)
     let now = chrono::Utc::now();
@@ -1330,13 +1329,14 @@ async fn test_revoked_access_token_rejected() {
 #[tokio::test]
 async fn test_token_revocation_success() {
     let (app, store, state) = setup().await;
-    let (_client_id, _client_secret, access_token, _refresh_token, _cookie) =
+    let (client_id, _client_secret, access_token, _refresh_token, _cookie) =
         full_oauth_flow(&app, &*store, &state, "credentials:discover").await;
 
-    // Revoke the access token
+    // Revoke the access token (client_id required for ownership verification)
     let form = format!(
-        "token={}&token_type_hint=access_token",
+        "token={}&token_type_hint=access_token&client_id={}",
         urlencoding::encode(&access_token),
+        urlencoding::encode(&client_id),
     );
     let (status, body) = send_form(&app, "/api/v1/oauth/revoke", &form).await;
     assert_eq!(status, StatusCode::OK, "revoke: {}", body);
@@ -1364,7 +1364,7 @@ async fn test_revoked_token_rejected_on_next_request() {
     };
     store.create_workspace(&workspace).await.expect("create workspace");
 
-    let (_client_id, _client_secret, access_token, _refresh_token, _cookie) =
+    let (client_id, _client_secret, access_token, _refresh_token, _cookie) =
         full_oauth_flow(&app, &*store, &state, "credentials:discover").await;
 
     // Verify token works first
@@ -1380,10 +1380,11 @@ async fn test_revoked_token_rejected_on_next_request() {
     .await;
     assert_ne!(status, StatusCode::UNAUTHORIZED, "token should work before revocation");
 
-    // Revoke
+    // Revoke (client_id required for ownership verification)
     let form = format!(
-        "token={}&token_type_hint=access_token",
+        "token={}&token_type_hint=access_token&client_id={}",
         urlencoding::encode(&access_token),
+        urlencoding::encode(&client_id),
     );
     let (status, _) = send_form(&app, "/api/v1/oauth/revoke", &form).await;
     assert_eq!(status, StatusCode::OK);
@@ -1409,7 +1410,7 @@ async fn test_revoked_token_rejected_on_next_request() {
 #[tokio::test]
 async fn test_client_credentials_grant() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -1442,7 +1443,7 @@ async fn test_client_credentials_grant() {
 #[tokio::test]
 async fn test_client_credentials_wrong_secret() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -1531,7 +1532,7 @@ async fn test_admin_revoke_client() {
 #[tokio::test]
 async fn test_pkce_prevents_code_interception() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -1604,13 +1605,14 @@ async fn test_refresh_token_revocation_cascades_to_access_token() {
     };
     store.create_workspace(&workspace).await.expect("create workspace");
 
-    let (_client_id, _client_secret, access_token, refresh_token, _cookie) =
+    let (client_id, _client_secret, access_token, refresh_token, _cookie) =
         full_oauth_flow(&app, &*store, &state, "credentials:discover").await;
 
-    // Revoke the refresh token
+    // Revoke the refresh token (client_id required for ownership verification)
     let form = format!(
-        "token={}&token_type_hint=refresh_token",
+        "token={}&token_type_hint=refresh_token&client_id={}",
         urlencoding::encode(&refresh_token),
+        urlencoding::encode(&client_id),
     );
     let (status, _) = send_form(&app, "/api/v1/oauth/revoke", &form).await;
     assert_eq!(status, StatusCode::OK);
@@ -1642,7 +1644,7 @@ const TEST_PK_HASH_2: &str = "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
 #[tokio::test]
 async fn test_consent_new_workspace_renders_consent_page() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (_verifier, challenge) = generate_pkce();
@@ -1663,7 +1665,7 @@ async fn test_consent_new_workspace_renders_consent_page() {
 #[tokio::test]
 async fn test_consent_new_workspace_approve_creates_client_and_issues_code() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (_verifier, challenge) = generate_pkce();
@@ -1706,7 +1708,7 @@ async fn test_consent_new_workspace_approve_creates_client_and_issues_code() {
 #[tokio::test]
 async fn test_consent_new_workspace_full_token_exchange() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let pk_hash = "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4";
@@ -1760,7 +1762,7 @@ async fn test_consent_new_workspace_full_token_exchange() {
 #[tokio::test]
 async fn test_consent_new_workspace_deny() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (_verifier, challenge) = generate_pkce();
@@ -1796,7 +1798,7 @@ async fn test_consent_new_workspace_deny() {
 #[tokio::test]
 async fn test_consent_missing_both_client_id_and_pk_hash() {
     let (app, store, _state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (_verifier, challenge) = generate_pkce();
@@ -1814,7 +1816,7 @@ async fn test_consent_missing_both_client_id_and_pk_hash() {
 #[tokio::test]
 async fn test_consent_existing_client_still_works() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let pk_hash = "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6";

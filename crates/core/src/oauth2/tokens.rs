@@ -4,6 +4,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 /// Generate a cryptographically random authorization code.
 ///
@@ -49,6 +50,11 @@ pub fn generate_client_secret() -> (String, String) {
 }
 
 /// SHA-256 hash a token string and return hex-encoded digest.
+///
+/// Plain SHA-256 (not HMAC) is appropriate here because OAuth tokens are
+/// generated from 32 cryptographically random bytes (256 bits of entropy),
+/// making offline brute-force infeasible regardless of keyed hashing.
+/// Session tokens use HMAC-SHA256 because they may carry lower entropy.
 pub fn hash_token(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
@@ -61,19 +67,7 @@ pub fn hash_token(token: &str) -> String {
 pub fn validate_pkce(code_verifier: &str, code_challenge: &str) -> bool {
     let digest = Sha256::digest(code_verifier.as_bytes());
     let expected = URL_SAFE_NO_PAD.encode(digest);
-    constant_time_eq(expected.as_bytes(), code_challenge.as_bytes())
-}
-
-/// Constant-time byte comparison to prevent timing side-channels.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    bool::from(expected.as_bytes().ct_eq(code_challenge.as_bytes()))
 }
 
 /// Generate 32 random bytes, base64url-encoded (no padding).
@@ -159,9 +153,10 @@ mod tests {
     }
 
     #[test]
-    fn test_constant_time_eq() {
-        assert!(constant_time_eq(b"hello", b"hello"));
-        assert!(!constant_time_eq(b"hello", b"world"));
-        assert!(!constant_time_eq(b"hello", b"hell"));
+    fn test_constant_time_eq_via_subtle() {
+        assert!(bool::from(b"hello".ct_eq(b"hello")));
+        assert!(!bool::from(b"hello".ct_eq(b"world")));
+        // Different lengths always return false
+        assert!(!bool::from(b"hello".ct_eq(b"hell")));
     }
 }

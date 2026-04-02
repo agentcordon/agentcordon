@@ -15,6 +15,9 @@ pub enum OAuthScope {
     /// Vend (retrieve) credential values via the proxy.
     #[serde(rename = "credentials:vend")]
     CredentialsVend,
+    /// Discover available MCP servers and tools.
+    #[serde(rename = "mcp:discover")]
+    McpDiscover,
     /// Invoke MCP tools.
     #[serde(rename = "mcp:invoke")]
     McpInvoke,
@@ -25,6 +28,7 @@ impl std::fmt::Display for OAuthScope {
         match self {
             OAuthScope::CredentialsDiscover => f.write_str("credentials:discover"),
             OAuthScope::CredentialsVend => f.write_str("credentials:vend"),
+            OAuthScope::McpDiscover => f.write_str("mcp:discover"),
             OAuthScope::McpInvoke => f.write_str("mcp:invoke"),
         }
     }
@@ -37,6 +41,7 @@ impl std::str::FromStr for OAuthScope {
         match s {
             "credentials:discover" => Ok(OAuthScope::CredentialsDiscover),
             "credentials:vend" => Ok(OAuthScope::CredentialsVend),
+            "mcp:discover" => Ok(OAuthScope::McpDiscover),
             "mcp:invoke" => Ok(OAuthScope::McpInvoke),
             other => Err(format!("unknown OAuth scope: {}", other)),
         }

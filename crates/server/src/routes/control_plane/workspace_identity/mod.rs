@@ -7,9 +7,6 @@ use axum::{
 
 use crate::state::AppState;
 
-/// Registration code TTL in seconds (5 minutes).
-pub(crate) const REGISTRATION_TTL_SECONDS: i64 = 300;
-
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -28,9 +25,5 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/workspace-identities/{id}",
             axum::routing::delete(management::revoke_workspace_identity_by_id),
-        )
-        .route(
-            "/workspace-identities/register",
-            post(management::json_approve_registration),
         )
 }

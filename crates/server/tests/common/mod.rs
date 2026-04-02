@@ -81,6 +81,15 @@ pub async fn create_test_user(
     create_user_in_db(store, username, password, role, false, true).await
 }
 
+/// Convenience: create a root admin user (is_root=true, enabled=true).
+pub async fn create_root_user(
+    store: &(dyn Store + Send + Sync),
+    username: &str,
+    password: &str,
+) -> User {
+    create_user_in_db(store, username, password, UserRole::Admin, true, true).await
+}
+
 // ---------------------------------------------------------------------------
 // Agent helpers
 // ---------------------------------------------------------------------------

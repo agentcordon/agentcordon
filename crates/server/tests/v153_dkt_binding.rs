@@ -61,7 +61,6 @@ fn compute_thumbprint_from_jwk(jwk: &Value) -> String {
 async fn test_dkt_claim_present_in_device_issued_jwt() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -91,7 +90,6 @@ async fn test_dkt_claim_present_in_device_issued_jwt() {
 async fn test_dkt_claim_matches_device_signing_key_thumbprint() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -149,7 +147,6 @@ async fn test_dkt_claim_matches_device_signing_key_thumbprint() {
 async fn test_dkt_claim_deterministic_across_issuances() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -201,7 +198,6 @@ async fn test_dkt_claim_deterministic_across_issuances() {
 async fn test_dkt_claim_differs_between_devices() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;

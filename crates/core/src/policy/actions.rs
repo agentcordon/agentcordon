@@ -14,7 +14,6 @@ pub const MANAGE_PERMISSIONS: &str = "manage_permissions";
 pub const VEND_CREDENTIAL: &str = "vend_credential";
 pub const MANAGE_USERS: &str = "manage_users";
 pub const MANAGE_WORKSPACES: &str = "manage_workspaces";
-pub const MANAGE_ENROLLMENTS: &str = "manage_enrollments";
 pub const VIEW_AUDIT: &str = "view_audit";
 pub const ROTATE_KEY: &str = "rotate_key";
 pub const MANAGE_OIDC_PROVIDERS: &str = "manage_oidc_providers";
@@ -29,4 +28,3 @@ pub const MANAGE_TAGS: &str = "manage_tags";
 // Backward-compat aliases (removed in later phases)
 pub const MANAGE_AGENTS: &str = MANAGE_WORKSPACES;
 pub const MANAGE_DEVICES: &str = MANAGE_WORKSPACES;
-pub const ENROLL_AGENT: &str = REGISTER_WORKSPACE;

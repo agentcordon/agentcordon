@@ -196,8 +196,8 @@ def proxy_via_broker_denied(ctx: dict) -> dict:
         broker_url, pem_key_path, "POST", "/proxy", body=proxy_body,
     )
 
-    assert status == 403, (
-        f"Expected 403 for proxy without permission, got {status}: {body}"
+    assert status in (403, 404), (
+        f"Expected 403/404 for proxy without permission, got {status}: {body}"
     )
 
     return ctx

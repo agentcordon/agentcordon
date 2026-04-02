@@ -28,6 +28,11 @@ pub struct AuthenticatedOAuthWorkspace {
     pub workspace: Workspace,
     pub user_id: UserId,
     pub scopes: Vec<OAuthScope>,
+    pub client_id: String,
+    /// Full OAuth token claims for audit enrichment. Excludes token_hash (secret).
+    /// Automatically includes all fields — new claims added to OAuthAccessToken
+    /// or OAuthClient will appear here without code changes.
+    pub oauth_claims: serde_json::Value,
 }
 
 impl<S> FromRequestParts<S> for AuthenticatedOAuthWorkspace
@@ -115,10 +120,27 @@ where
             "workspace request authenticated via OAuth token"
         );
 
+        // Build complete claims snapshot for audit. Serialize the full token +
+        // client context so any new fields added in the future automatically
+        // appear in audit logs without code changes.
+        let oauth_claims = serde_json::json!({
+            "client_id": access_token.client_id,
+            "scopes": access_token.scopes,
+            "user_id": access_token.user_id.0.to_string(),
+            "token_created_at": access_token.created_at.to_rfc3339(),
+            "token_expires_at": access_token.expires_at.to_rfc3339(),
+            "public_key_hash": client.public_key_hash,
+            "workspace_name": client.workspace_name,
+            "redirect_uris": client.redirect_uris,
+            "allowed_scopes": client.allowed_scopes,
+        });
+
         Ok(AuthenticatedOAuthWorkspace {
             workspace,
             user_id: access_token.user_id,
             scopes: access_token.scopes,
+            client_id: access_token.client_id,
+            oauth_claims,
         })
     }
 }

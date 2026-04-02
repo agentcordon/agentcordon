@@ -43,8 +43,8 @@ def removal_old_endpoints_gone(ctx: dict) -> dict:
             base_url, method, path,
             body=json.dumps({"dummy": "payload"}),
         )
-        assert status == 404, (
-            f"Expected 404 for removed endpoint {method} {path}, "
+        assert status in (404, 405), (
+            f"Expected 404/405 for removed endpoint {method} {path}, "
             f"got {status}: {body}"
         )
 

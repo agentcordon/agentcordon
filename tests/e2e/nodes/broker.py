@@ -24,28 +24,56 @@ def broker_start(ctx: dict) -> dict:
     """
     Start the broker daemon, wait for health, store broker_url in context.
 
+    If a broker is already running on port 9876, reuse it instead of starting
+    a new one.
+
     Consumes: base_url
     Produces: broker_url, broker_port, broker_process, broker_data_dir, broker_pem_key_path
     """
     base_url = ctx["base_url"]
 
+    # Check if a broker is already running (e.g. dev-server.sh started it)
+    for candidate_url in ["http://localhost:9090", "http://localhost:9876"]:
+        try:
+            req = urllib.request.Request(f"{candidate_url}/health")
+            resp = urllib.request.urlopen(req, timeout=2)
+            health = json.loads(resp.read())
+            if health.get("status") == "ok":
+                ctx["broker_url"] = candidate_url
+                ctx["broker_port"] = int(candidate_url.rsplit(":", 1)[1])
+                ctx["broker_process"] = None
+                ctx["broker_data_dir"] = "/tmp/dev-broker-data"
+                return ctx
+        except Exception:
+            pass
+
     # Create a temp directory for broker data
     broker_data_dir = tempfile.mkdtemp(prefix="ac_broker_e2e_")
     ctx["broker_data_dir"] = broker_data_dir
 
-    # Determine broker binary location
-    cargo_target = os.environ.get(
-        "CARGO_TARGET_DIR",
-        os.path.join(os.environ.get("AC_PROJECT_ROOT", "."), "target"),
-    )
-    broker_binary = os.path.join(cargo_target, "debug", "agentcordon-broker")
+    # Search for broker binary in multiple locations
+    search_paths = [
+        os.environ.get("AGTCRDN_BROKER_BIN", ""),
+        os.path.expanduser("~/.local/bin/agentcordon-broker"),
+        os.path.join(
+            os.environ.get("CARGO_TARGET_DIR",
+                           os.path.join(os.environ.get("AC_PROJECT_ROOT", "."), "target")),
+            "debug", "agentcordon-broker",
+        ),
+        os.path.join("AgentCordon", "target", "debug", "agentcordon-broker"),
+        os.path.join("target", "debug", "agentcordon-broker"),
+    ]
 
-    if not os.path.isfile(broker_binary):
-        # Try relative to working directory
-        broker_binary = os.path.join("target", "debug", "agentcordon-broker")
-    if not os.path.isfile(broker_binary):
+    broker_binary = None
+    for path in search_paths:
+        if path and os.path.isfile(path):
+            broker_binary = path
+            break
+
+    if not broker_binary:
         raise FileNotFoundError(
-            f"Broker binary not found. Build with: cargo build -p agentcordon-broker"
+            f"Broker binary not found in any of: {[p for p in search_paths if p]}. "
+            f"Build with: cargo build -p agentcordon-broker"
         )
 
     proc, port, broker_url = start_broker(

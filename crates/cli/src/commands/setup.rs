@@ -17,6 +17,8 @@ pub async fn run(server_url: String) -> Result<(), CliError> {
     let scopes = vec![
         "credentials:discover".to_string(),
         "credentials:vend".to_string(),
+        "mcp:discover".to_string(),
+        "mcp:invoke".to_string(),
     ];
     super::register::run(scopes, false).await?;
 

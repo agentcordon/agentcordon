@@ -995,23 +995,6 @@ fn admin_user_can_manage_agents() {
 }
 
 #[test]
-fn admin_user_can_manage_enrollments() {
-    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    let admin = make_user("admin-user", UserRole::Admin, false);
-
-    let result = engine
-        .evaluate(
-            &PolicyPrincipal::User(&admin),
-            "manage_enrollments",
-            &PolicyResource::System,
-            &empty_ctx(),
-        )
-        .expect("evaluate");
-
-    assert_eq!(result.decision, PolicyDecisionResult::Permit);
-}
-
-#[test]
 fn admin_user_can_view_audit() {
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
     let admin = make_user("admin-user", UserRole::Admin, false);
@@ -1166,23 +1149,6 @@ fn operator_user_can_manage_agents() {
             &PolicyPrincipal::User(&operator),
             "manage_workspaces",
             &PolicyResource::WorkspaceResource { workspace: agent },
-            &empty_ctx(),
-        )
-        .expect("evaluate");
-
-    assert_eq!(result.decision, PolicyDecisionResult::Permit);
-}
-
-#[test]
-fn operator_user_can_manage_enrollments() {
-    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    let operator = make_user("ops-user", UserRole::Operator, false);
-
-    let result = engine
-        .evaluate(
-            &PolicyPrincipal::User(&operator),
-            "manage_enrollments",
-            &PolicyResource::System,
             &empty_ctx(),
         )
         .expect("evaluate");
@@ -1376,23 +1342,6 @@ fn viewer_user_cannot_manage_agents() {
             &PolicyPrincipal::User(&viewer),
             "manage_workspaces",
             &PolicyResource::WorkspaceResource { workspace: agent },
-            &empty_ctx(),
-        )
-        .expect("evaluate");
-
-    assert_eq!(result.decision, PolicyDecisionResult::Forbid);
-}
-
-#[test]
-fn viewer_user_cannot_manage_enrollments() {
-    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    let viewer = make_user("view-user", UserRole::Viewer, false);
-
-    let result = engine
-        .evaluate(
-            &PolicyPrincipal::User(&viewer),
-            "manage_enrollments",
-            &PolicyResource::System,
             &empty_ctx(),
         )
         .expect("evaluate");

@@ -184,7 +184,7 @@ async fn test_e2e_two_minute_setup_full_flow() {
     // -----------------------------------------------------------------------
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
+
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -425,7 +425,7 @@ async fn test_e2e_two_minute_setup_full_flow() {
 async fn test_e2e_disabled_device_blocks_entire_chain() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
+
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -562,7 +562,7 @@ async fn test_e2e_disabled_device_blocks_entire_chain() {
 async fn test_e2e_agent_jwt_works_through_any_device() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
+
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -642,7 +642,7 @@ async fn test_e2e_agent_jwt_works_through_any_device() {
 async fn test_e2e_credential_vend_denied_by_cedar_policy() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
+
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -777,7 +777,7 @@ async fn test_e2e_credential_vend_denied_by_cedar_policy() {
 async fn test_e2e_revoked_permission_blocks_vend() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
+
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -863,7 +863,7 @@ async fn test_e2e_revoked_permission_blocks_vend() {
 async fn test_e2e_bootstrap_token_single_use() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
+
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -908,7 +908,7 @@ async fn test_e2e_bootstrap_token_single_use() {
 async fn test_e2e_jti_replay_blocked() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
+
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -995,7 +995,7 @@ async fn test_e2e_jti_replay_blocked() {
 async fn test_e2e_concurrent_agent_enrollments() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
+
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -1062,7 +1062,7 @@ async fn test_e2e_concurrent_agent_enrollments() {
 async fn test_e2e_concurrent_credential_vends() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
+
         .build()
         .await;
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;

@@ -20,6 +20,9 @@ pub struct AuthenticatedWorkspace {
     pub workspace: Workspace,
     pub user_id: Option<UserId>,
     pub scopes: Vec<OAuthScope>,
+    pub client_id: Option<String>,
+    /// Full OAuth token claims for audit. See [`AuthenticatedOAuthWorkspace::oauth_claims`].
+    pub oauth_claims: Option<serde_json::Value>,
 }
 
 impl AuthenticatedWorkspace {
@@ -54,6 +57,8 @@ where
             workspace: oauth.workspace,
             user_id: Some(oauth.user_id),
             scopes: oauth.scopes,
+            client_id: Some(oauth.client_id),
+            oauth_claims: Some(oauth.oauth_claims),
         })
     }
 }
@@ -127,9 +132,24 @@ pub(crate) async fn authenticate_workspace(
         "workspace request authenticated via OAuth token"
     );
 
+    // Build complete claims snapshot for audit, matching the extractor path.
+    let oauth_claims = serde_json::json!({
+        "client_id": access_token.client_id,
+        "scopes": access_token.scopes,
+        "user_id": access_token.user_id.0.to_string(),
+        "token_created_at": access_token.created_at.to_rfc3339(),
+        "token_expires_at": access_token.expires_at.to_rfc3339(),
+        "public_key_hash": client.public_key_hash,
+        "workspace_name": client.workspace_name,
+        "redirect_uris": client.redirect_uris,
+        "allowed_scopes": client.allowed_scopes,
+    });
+
     Ok(AuthenticatedWorkspace {
         workspace,
         user_id: Some(access_token.user_id),
         scopes: access_token.scopes,
+        client_id: Some(access_token.client_id),
+        oauth_claims: Some(oauth_claims),
     })
 }

@@ -15,8 +15,6 @@ pub struct AppConfig {
     /// Log output format: "json" (default) or "pretty".
     pub log_format: String,
     pub static_dir: Option<String>,
-    pub enrollment_enabled: bool,
-    pub enrollment_ttl_seconds: u64,
     pub jwt_ttl_seconds: u64,
     pub proxy_timeout_seconds: u64,
     /// Allow proxying to loopback/private addresses (for testing only).
@@ -84,8 +82,6 @@ impl AppConfig {
             log_level: "warn".to_string(),
             log_format: "json".to_string(),
             static_dir: None,
-            enrollment_enabled: false,
-            enrollment_ttl_seconds: 900,
             jwt_ttl_seconds: 900,
             proxy_timeout_seconds: 30,
             proxy_allow_loopback: true,
@@ -249,13 +245,6 @@ impl AppConfig {
             log_level: env::var("AGTCRDN_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
             log_format: env::var("AGTCRDN_LOG_FORMAT").unwrap_or_else(|_| "json".to_string()),
             static_dir: env::var("AGTCRDN_STATIC_DIR").ok(),
-            enrollment_enabled: env::var("AGTCRDN_ENROLLMENT_ENABLED")
-                .map(|v| v != "false" && v != "0")
-                .unwrap_or(true),
-            enrollment_ttl_seconds: env::var("AGTCRDN_ENROLLMENT_TTL")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(900),
             jwt_ttl_seconds: env::var("AGTCRDN_JWT_TTL")
                 .ok()
                 .and_then(|v| v.parse().ok())

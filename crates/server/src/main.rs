@@ -10,8 +10,9 @@ use agent_cordon_core::crypto::key_derivation::{
 use agent_cordon_core::crypto::password::hash_password_async;
 use agent_cordon_core::domain::user::{User, UserId, UserRole};
 use agent_cordon_core::policy::cedar::CedarPolicyEngine;
-use agent_cordon_core::policy::PolicyEngine;
 use agent_cordon_core::storage::Store;
+
+use agent_cordon_server::auditing_policy_engine::AuditingPolicyEngine;
 
 use agent_cordon_server::build_router;
 use agent_cordon_server::config::AppConfig;
@@ -42,16 +43,9 @@ async fn main() {
     let store = init_store(&config).await;
     seed_default_policy(&*store).await;
     agent_cordon_server::migrations::migrate_mcp_policy_names_to_ids(&*store).await;
-    let policy_engine = load_policy_engine(&*store).await;
+    let cedar_engine = load_policy_engine(&*store).await;
+    let policy_engine = Arc::new(AuditingPolicyEngine::new(cedar_engine, store.clone()));
     bootstrap_root_user(&*store, &config).await;
-    seed_demo_data_and_reload_policies(
-        &store,
-        &crypto.encryptor,
-        &config,
-        &crypto.jwt_issuer,
-        &policy_engine,
-    )
-    .await;
 
     let login_rate_limiter = Arc::new(LoginRateLimiter::new(
         config.login_max_attempts,
@@ -316,38 +310,6 @@ async fn bootstrap_root_user(store: &(dyn Store + Send + Sync), config: &AppConf
     }
 }
 
-async fn seed_demo_data_and_reload_policies(
-    store: &Arc<dyn Store + Send + Sync>,
-    encryptor: &Arc<AesGcmEncryptor>,
-    config: &AppConfig,
-    jwt_issuer: &Arc<JwtIssuer>,
-    policy_engine: &Arc<CedarPolicyEngine>,
-) {
-    match agent_cordon_server::seed::seed_demo_data(store, encryptor, config, jwt_issuer).await {
-        Ok(count) if count > 0 => {
-            let db_policies = store
-                .get_all_enabled_policies()
-                .await
-                .expect("failed to reload policies after seed");
-            let sources: Vec<(String, String)> = db_policies
-                .into_iter()
-                .map(|p| (p.id.0.to_string(), p.cedar_policy))
-                .collect();
-            policy_engine
-                .reload_policies(sources)
-                .expect("failed to reload policy engine after seed");
-            tracing::info!(
-                seeded_count = count,
-                "reloaded policy engine after seeding demo data"
-            );
-        }
-        Ok(_) => {}
-        Err(e) => {
-            tracing::error!(error = %e, "failed to seed demo data");
-        }
-    }
-}
-
 fn spawn_cleanup_task(app_state: &AppState, config: &AppConfig) {
     let store = app_state.store.clone();
     let rate_limiter = app_state.login_rate_limiter.clone();
@@ -366,19 +328,6 @@ fn spawn_cleanup_task(app_state: &AppState, config: &AppConfig) {
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "session cleanup failed");
-                }
-            }
-            match store.expire_enrollment_sessions().await {
-                Ok(count) => {
-                    if count > 0 {
-                        tracing::info!(
-                            expired_enrollment_sessions = count,
-                            "enrollment session cleanup completed"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "enrollment session cleanup failed");
                 }
             }
             match store.cleanup_expired_oidc_states().await {

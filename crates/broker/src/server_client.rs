@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// HTTP client for server communication (OAuth, credential vend, MCP).
+#[derive(Clone)]
 pub struct ServerClient {
     http: reqwest::Client,
     base_url: String,
@@ -78,6 +79,7 @@ pub struct McpServerSummary {
     #[serde(default)]
     pub tools: Vec<String>,
     pub transport: Option<String>,
+    pub url: Option<String>,
 }
 
 /// MCP tool summary from the server.
@@ -206,7 +208,8 @@ impl ServerClient {
     ) -> Result<VendResponse, ServerClientError> {
         let url = format!(
             "{}/api/v1/credentials/vend-device/{}",
-            self.base_url, credential_name
+            self.base_url,
+            urlencoding::encode(credential_name)
         );
 
         let body = serde_json::json!({

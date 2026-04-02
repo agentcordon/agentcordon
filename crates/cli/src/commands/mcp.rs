@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,11 @@ struct McpServer {
     transport: String,
 }
 
-/// List available MCP servers.
+/// List available MCP servers, deduplicated by name.
+///
+/// Multiple workspaces may import the same server, so the server-side catalog
+/// can contain duplicates. We deduplicate by keeping the first occurrence of
+/// each server name.
 pub async fn list_servers() -> Result<(), CliError> {
     let client = BrokerClient::connect().await?;
     let resp: McpServersResponse = client.post("/mcp/list-servers", &serde_json::json!({})).await?;
@@ -30,9 +34,16 @@ pub async fn list_servers() -> Result<(), CliError> {
         return Ok(());
     }
 
-    let name_w = resp.data.iter().map(|s| s.name.len()).max().unwrap_or(4).max(4);
-    let desc_w = resp
+    // Deduplicate by server name (keep first occurrence)
+    let mut seen = HashSet::new();
+    let deduped: Vec<&McpServer> = resp
         .data
+        .iter()
+        .filter(|s| seen.insert(&s.name))
+        .collect();
+
+    let name_w = deduped.iter().map(|s| s.name.len()).max().unwrap_or(4).max(4);
+    let desc_w = deduped
         .iter()
         .map(|s| s.description.as_deref().unwrap_or("-").len())
         .max()
@@ -44,7 +55,7 @@ pub async fn list_servers() -> Result<(), CliError> {
         "NAME", "DESCRIPTION"
     );
 
-    for server in &resp.data {
+    for server in &deduped {
         let desc = server.description.as_deref().unwrap_or("-");
         let tools = server.tools.join(", ");
         println!(

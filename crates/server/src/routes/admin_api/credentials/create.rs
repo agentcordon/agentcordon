@@ -6,7 +6,7 @@ use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType
 use agent_cordon_core::domain::credential::CredentialSummary;
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::policy::actions;
-use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{PolicyEngine, PolicyResource};
 use agent_cordon_core::transform::MAX_TRANSFORM_SCRIPT_SIZE;
 
 use crate::credential_service::{self, NewCredentialParams};
@@ -75,11 +75,7 @@ pub(crate) async fn store_credential(
         &actor.policy_principal(),
         actions::CREATE,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(Some(corr.0.clone())),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
@@ -247,7 +243,7 @@ pub(crate) async fn store_credential(
     // Determine creator identity: user or workspace
     let (created_by, created_by_user) = match &actor {
         AuthenticatedActor::User(user) => (None, Some(user.id.clone())),
-        AuthenticatedActor::Workspace(workspace) => {
+        AuthenticatedActor::Workspace { workspace, .. } => {
             (Some(workspace.id.clone()), workspace.owner_id.clone())
         }
     };

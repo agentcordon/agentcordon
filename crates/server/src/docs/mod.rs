@@ -13,7 +13,6 @@
 //! - `agents` — Agent CRUD
 //! - `credentials` — Credentials, permissions, and templates
 //! - `policies` — Cedar policies, RSoP, schema reference
-//! - `enrollment` — Enrollment v2 device flow
 //! - `mcp` — MCP servers and proxy
 //! - `vaults` — Vault management and sharing
 //! - `oidc` — OIDC authentication and provider management
@@ -21,7 +20,6 @@
 
 mod agents;
 mod credentials;
-mod enrollment;
 mod general;
 mod mcp;
 mod oidc;
@@ -58,7 +56,6 @@ pub struct ServerInfo {
 #[derive(Serialize, Clone)]
 pub struct AuthInfo {
     pub methods: Vec<AuthMethodDoc>,
-    pub enrollment: EnrollmentDoc,
 }
 
 #[derive(Serialize, Clone)]
@@ -70,14 +67,6 @@ pub struct AuthMethodDoc {
     pub token_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl_seconds: Option<u64>,
-}
-
-#[derive(Serialize, Clone)]
-pub struct EnrollmentDoc {
-    pub enabled: bool,
-    pub endpoint: String,
-    pub flow_description: String,
-    pub steps: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -144,7 +133,7 @@ pub struct QuickstartDoc {
 // ---------------------------------------------------------------------------
 
 /// Build the full API documentation. Accepts `AppConfig` so that dynamic
-/// values such as `enrollment_enabled` and `jwt_ttl_seconds` are reflected.
+/// values such as `jwt_ttl_seconds` are reflected.
 pub fn build_api_docs(config: &AppConfig) -> ApiDocumentation {
     ApiDocumentation {
         server: build_server_info(),
@@ -159,32 +148,19 @@ pub fn build_api_docs(config: &AppConfig) -> ApiDocumentation {
 pub fn build_quickstart_doc(config: &AppConfig) -> QuickstartDoc {
     QuickstartDoc {
         authentication: json!({
-            "overview": "AgentCordon uses workspace enrollment and JWT authentication. Agents enroll via the CLI (`agentcordon init`), receive a JWT, and use it for all authenticated requests.",
+            "overview": "AgentCordon uses OAuth-based workspace registration and JWT authentication. Agents register via the CLI (`agentcordon register`), receive a JWT, and use it for all authenticated requests.",
             "jwt": {
-                "description": "Agents authenticate using server-issued JWTs via workspace identity enrollment.",
+                "description": "Agents authenticate using server-issued JWTs via OAuth workspace registration.",
                 "header": "Authorization: Bearer <access_token>",
                 "ttl_seconds": config.jwt_ttl_seconds
-            },
-            "enrollment": {
-                "enabled": config.enrollment_enabled,
-                "description": "New agents self-register via the enrollment flow. Use `agentcordon init` or visit /register to start. An admin approves in their browser. The agent is then registered and can authenticate. See GET /enroll.md for full instructions.",
-                "discovery_url": "/enroll.md",
-                "steps": [
-                    "Read GET /enroll.md for detailed instructions",
-                    "Run `agentcordon init` or visit /register to create a workspace",
-                    "Present approval_url and approval_code to your human",
-                    "Human opens URL in browser, verifies code, clicks Approve",
-                    "Poll GET /api/v1/enroll/session/{session_token}/status",
-                    "First poll after approval confirms the agent is registered"
-                ]
             },
             "response_envelope": {
                 "description": "All authenticated endpoints (except /api/v1/docs and /api/v1/docs/quickstart) wrap responses in {\"data\": ...} for success and {\"error\": {\"code\": ..., \"message\": ...}} for errors."
             }
         }),
         proxy: json!({
-            "overview": "The credential proxy lets agents use external services through AgentCordon without seeing raw credentials. Agents use the CLI (`agentcordon proxy`) or call POST /api/v1/proxy/execute directly with a workspace JWT.",
-            "endpoint": "POST /api/v1/proxy/execute",
+            "overview": "The credential proxy lets agents use external services through AgentCordon without seeing raw credentials. Agents use the CLI (`agentcordon proxy`) which communicates through the OAuth broker.",
+            "endpoint": "agentcordon proxy <name> <METHOD> <target>",
             "cli_command": "agentcordon proxy <name> GET <target>",
             "auth_required": true,
             "placeholder_syntax": "{{credential-name}}",
@@ -192,7 +168,7 @@ pub fn build_quickstart_doc(config: &AppConfig) -> QuickstartDoc {
                 "1. An admin stores a credential via the web UI or API",
                 "2. Grant your agent permission to the credential (the creator gets full permissions automatically)",
                 "3. Agent discovers credentials: GET /api/v1/credentials (or `agentcordon credentials list`)",
-                "4. Agent proxies via CLI: `agentcordon proxy <name> GET <target>` or POST /api/v1/proxy/execute with {\"credential_id\": \"<id>\", \"target_url\": \"https://...\", \"method\": \"GET\", \"headers\": {}}",
+                "4. Agent proxies via CLI: `agentcordon proxy <name> GET <target>` — the CLI handles credential injection through the broker.",
                 "5. The server resolves the credential, applies transforms, and makes the upstream request. The agent never sees the raw credential."
             ],
             "example_request": {
@@ -269,34 +245,12 @@ fn build_auth_info(config: &AppConfig) -> AuthInfo {
         methods: vec![AuthMethodDoc {
             method: "jwt".to_string(),
             description:
-                "Agents authenticate using server-issued JWTs via workspace identity enrollment."
+                "Agents authenticate using server-issued JWTs via OAuth workspace registration."
                     .to_string(),
             header: "Authorization: Bearer <jwt>".to_string(),
             token_endpoint: None,
             ttl_seconds: Some(config.jwt_ttl_seconds),
         }],
-        enrollment: EnrollmentDoc {
-            enabled: config.enrollment_enabled,
-            endpoint: "/register".to_string(),
-            flow_description: if config.enrollment_enabled {
-                "Self-enrollment is enabled. Use `agentcordon init` or visit /register to start. An admin approves in their browser. The agent is then registered. For full instructions, see GET /enroll.md.".to_string()
-            } else {
-                "Self-enrollment is disabled. Agents must be created by an admin.".to_string()
-            },
-            steps: vec![
-                "Read GET /enroll.md for complete enrollment instructions".to_string(),
-                "Run `agentcordon init` then `agentcordon register`, or visit /register to create a workspace"
-                    .to_string(),
-                "Receive session_token, approval_url, and approval_code".to_string(),
-                "Ask your human to open approval_url in their browser and verify the approval_code"
-                    .to_string(),
-                "Human clicks Approve on the browser page".to_string(),
-                "Poll GET /api/v1/enroll/session/{session_token}/status until status is 'approved'"
-                    .to_string(),
-                "First poll after approval confirms the agent is registered".to_string(),
-                "The server issues JWTs for authenticated workspace requests".to_string(),
-            ],
-        },
     }
 }
 
@@ -360,8 +314,8 @@ fn build_error_format() -> ErrorFormatDoc {
 
 fn build_proxy_guide() -> ProxyGuideDoc {
     ProxyGuideDoc {
-        endpoint: "POST /api/v1/proxy/execute".to_string(),
-        description: "Execute an HTTP request through the credential proxy. Requires workspace JWT authentication. Agents can call this directly or use `agentcordon proxy` via the CLI.".to_string(),
+        endpoint: "agentcordon proxy <name> <METHOD> <target>".to_string(),
+        description: "Execute an HTTP request through the credential proxy. Agents use `agentcordon proxy` via the CLI, which communicates through the OAuth broker.".to_string(),
         placeholder_syntax: "{{credential-name}}".to_string(),
         request_schema: json!({
             "type": "object",
@@ -407,7 +361,7 @@ fn build_proxy_guide() -> ProxyGuideDoc {
             "1. Store a credential via POST /api/v1/credentials (admin or authorized agent).".to_string(),
             "2. Ensure your agent has permission to the credential (creator gets full permissions automatically, or use the permissions endpoints).".to_string(),
             "3. Agent discovers credentials: GET /api/v1/credentials or `agentcordon credentials list`.".to_string(),
-            "4. Agent proxies via CLI: `agentcordon proxy <name> GET <target>` or POST /api/v1/proxy/execute with credential_id and target_url.".to_string(),
+            "4. Agent proxies via CLI: `agentcordon proxy <name> GET <target>` — the CLI handles credential injection through the broker.".to_string(),
             "5. The server resolves the credential, applies transforms, and calls the upstream API.".to_string(),
             "6. The upstream response is returned to the agent. The agent never sees raw credentials.".to_string(),
             "7. Receive the upstream response (status code, headers, body) wrapped in the standard API envelope.".to_string(),
@@ -469,14 +423,13 @@ fn integer_param(name: &str, description: &str) -> ParamDoc {
     }
 }
 
-fn build_all_endpoints(config: &AppConfig) -> Vec<EndpointDoc> {
+fn build_all_endpoints(_config: &AppConfig) -> Vec<EndpointDoc> {
     let mut endpoints = Vec::new();
 
     general::push_endpoints(&mut endpoints);
     agents::push_endpoints(&mut endpoints);
     credentials::push_endpoints(&mut endpoints);
     policies::push_endpoints(&mut endpoints);
-    enrollment::push_endpoints(&mut endpoints, config);
     mcp::push_endpoints(&mut endpoints);
     vaults::push_endpoints(&mut endpoints);
     oidc::push_endpoints(&mut endpoints);
@@ -558,16 +511,6 @@ mod tests {
             // Audit
             ("GET", "/api/v1/audit"),
             ("GET", "/api/v1/audit/{id}"),
-            // Demo
-            ("DELETE", "/api/v1/demo"),
-            // Enrollment (Workspace Registration)
-            ("POST", "/api/v1/enroll"),
-            ("GET", "/api/v1/enroll/session/{session_token}/status"),
-            ("POST", "/api/v1/enroll/approve"),
-            ("POST", "/api/v1/enroll/deny"),
-            ("GET", "/api/v1/enroll/sessions"),
-            // Proxy
-            ("POST", "/api/v1/proxy/execute"),
             // Docs (self-referential)
             ("GET", "/api/v1/docs"),
             ("GET", "/api/v1/docs/quickstart"),
@@ -797,45 +740,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // 7. Config sensitivity — enrollment_enabled changes docs content
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn enrollment_enabled_true_reflects_in_docs() {
-        let mut config = AppConfig::test_default();
-        config.enrollment_enabled = true;
-        let docs = build_api_docs(&config);
-
-        assert!(
-            docs.authentication.enrollment.enabled,
-            "Enrollment should be enabled in auth info"
-        );
-
-        // The enrollment endpoint should mention ENABLED
-        let enroll_ep = docs
-            .endpoints
-            .iter()
-            .find(|e| e.method == "POST" && e.path == "/api/v1/enroll")
-            .expect("POST /api/v1/enroll should exist");
-        assert!(
-            enroll_ep.description.contains("ENABLED"),
-            "Enrollment endpoint description should mention ENABLED when enrollment_enabled=true"
-        );
-    }
-
-    #[test]
-    fn enrollment_enabled_false_reflects_in_docs() {
-        let mut config = AppConfig::test_default();
-        config.enrollment_enabled = false;
-        let docs = build_api_docs(&config);
-
-        assert!(
-            !docs.authentication.enrollment.enabled,
-            "Enrollment should be disabled in auth info"
-        );
-    }
-
     #[test]
     fn jwt_ttl_reflects_config_value() {
         let mut config = AppConfig::test_default();
@@ -855,28 +759,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn enrollment_enabled_reflects_in_quickstart() {
-        let mut config_on = AppConfig::test_default();
-        config_on.enrollment_enabled = true;
-        let qs_on = build_quickstart_doc(&config_on);
-        let enrollment_enabled_on = qs_on.authentication["enrollment"]["enabled"]
-            .as_bool()
-            .unwrap();
-        assert!(
-            enrollment_enabled_on,
-            "Quickstart enrollment.enabled should be true when config is true"
-        );
-
-        let mut config_off = AppConfig::test_default();
-        config_off.enrollment_enabled = false;
-        let qs_off = build_quickstart_doc(&config_off);
-        let enrollment_enabled_off = qs_off.authentication["enrollment"]["enabled"]
-            .as_bool()
-            .unwrap();
-        assert!(
-            !enrollment_enabled_off,
-            "Quickstart enrollment.enabled should be false when config is false"
-        );
-    }
 }

@@ -24,7 +24,6 @@ pub trait Store:
     + SecretHistoryStore
     + PolicyStore
     + AuditStore
-    + EnrollmentStore
     + VaultStore
     + McpStore
     + OAuthStore

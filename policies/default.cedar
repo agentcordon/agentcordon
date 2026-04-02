@@ -27,7 +27,6 @@
 //   manage_policies     - CRUD Cedar policies
 //   manage_users        - CRUD user accounts (users only)
 //   manage_workspaces   - View/enable/disable/configure workspaces
-//   manage_enrollments  - Approve/deny enrollment requests
 //   view_audit          - View audit log entries
 //   rotate_key          - Rotate a workspace's API key (users only)
 //   manage_oidc_providers - CRUD OIDC identity providers (users only)
@@ -208,15 +207,6 @@ permit(
   principal is AgentCordon::User,
   action == AgentCordon::Action::"manage_workspaces",
   resource
-) when {
-  principal.role == "operator"
-};
-
-// 2e. Operators can manage enrollments (approve/deny requests).
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"manage_enrollments",
-  resource is AgentCordon::System
 ) when {
   principal.role == "operator"
 };

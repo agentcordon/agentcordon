@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 
 use crate::auth::AuthenticatedWorkspace;
 use crate::state::SharedState;
+use crate::token_store;
 
 /// Remove a workspace's registration from the broker.
 ///
@@ -20,11 +21,22 @@ pub async fn post_deregister(
         .cloned()
         .unwrap();
 
-    // Remove workspace from active registrations
+    // Remove workspace from active registrations and persist to disk
     {
         let mut workspaces = state.workspaces.write().await;
         workspaces.remove(&auth.pk_hash);
+
+        if let Err(e) = token_store::save(
+            &state.config.token_store_path(),
+            &workspaces,
+            &state.encryption_key,
+        ) {
+            tracing::warn!(error = %e, "failed to persist token store after deregister");
+        }
     }
+
+    // Update recovery store (remove deregistered workspace)
+    token_store::save_recovery_store(&state).await;
 
     // Remove any pending registrations for this pk_hash
     {

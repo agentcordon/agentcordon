@@ -29,6 +29,10 @@ pub struct BrokerConfig {
     /// Allow proxy requests to loopback/private addresses (for local development).
     #[arg(long, env = "AGTCRDN_PROXY_ALLOW_LOOPBACK", default_value = "false")]
     pub proxy_allow_loopback: bool,
+
+    /// Bind address (default: 127.0.0.1). Set to 0.0.0.0 for Docker/container use.
+    #[arg(long, env = "AGTCRDN_BROKER_BIND", default_value = "127.0.0.1")]
+    pub bind: String,
 }
 
 impl BrokerConfig {
@@ -51,5 +55,10 @@ impl BrokerConfig {
     /// Path to the encrypted token store.
     pub fn token_store_path(&self) -> PathBuf {
         self.data_dir().join("tokens.enc")
+    }
+
+    /// Path to the plaintext recovery store.
+    pub fn recovery_store_path(&self) -> PathBuf {
+        self.data_dir().join("workspaces.json")
     }
 }

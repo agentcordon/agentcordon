@@ -33,7 +33,7 @@ async fn setup() -> (
     Arc<dyn Store + Send + Sync>,
     agent_cordon_server::state::AppState,
 ) {
-    let ctx = TestAppBuilder::new().with_enrollment().build().await;
+    let ctx = TestAppBuilder::new().build().await;
     (ctx.app, ctx.store, ctx.state)
 }
 
@@ -130,7 +130,7 @@ async fn full_oauth_flow(
     state: &agent_cordon_server::state::AppState,
     scopes_str: &str,
 ) -> (String, String, String, String, String) {
-    let _admin = create_test_user(store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -223,7 +223,7 @@ async fn test_revoked_oauth_token_denied_immediately() {
     };
     store.create_workspace(&workspace).await.expect("create workspace");
 
-    let (_client_id, _client_secret, access_token, _refresh_token, _cookie) =
+    let (client_id, _client_secret, access_token, _refresh_token, _cookie) =
         full_oauth_flow(&app, &*store, &state, "credentials:discover").await;
 
     // Verify token works
@@ -239,10 +239,11 @@ async fn test_revoked_oauth_token_denied_immediately() {
     .await;
     assert_ne!(status, StatusCode::UNAUTHORIZED);
 
-    // Revoke via API
+    // Revoke via API (client_id required for ownership verification)
     let form = format!(
-        "token={}&token_type_hint=access_token",
+        "token={}&token_type_hint=access_token&client_id={}",
         urlencoding::encode(&access_token),
+        urlencoding::encode(&client_id),
     );
     let (status, _) = send_form(&app, "/api/v1/oauth/revoke", &form).await;
     assert_eq!(status, StatusCode::OK);
@@ -268,7 +269,7 @@ async fn test_revoked_oauth_token_denied_immediately() {
 #[tokio::test]
 async fn test_pkce_wrong_verifier_rejected() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (status, body) = register_client(
@@ -400,7 +401,7 @@ async fn test_refresh_token_bound_to_client_id() {
 #[tokio::test]
 async fn test_old_workspace_jwt_rejected_on_resource_endpoint() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
 
     // Create a workspace
     let (agent, _key) = create_agent_in_db(&*store, "old-jwt-ws", vec!["admin"], true, None).await;
@@ -613,7 +614,7 @@ async fn test_token_for_disabled_workspace_rejected() {
 #[tokio::test]
 async fn test_auth_code_bound_to_client() {
     let (app, store, state) = setup().await;
-    let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
     let (cookie, csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     // Register client A

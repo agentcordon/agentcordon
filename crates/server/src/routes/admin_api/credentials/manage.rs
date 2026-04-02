@@ -11,7 +11,7 @@ use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType
 use agent_cordon_core::domain::credential::{CredentialId, CredentialSummary, CredentialUpdate};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::policy::actions;
-use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{PolicyEngine, PolicyResource};
 use agent_cordon_core::transform::MAX_TRANSFORM_SCRIPT_SIZE;
 
 use crate::events::UiEvent;
@@ -63,11 +63,7 @@ pub(crate) async fn update_credential(
         &PolicyResource::Credential {
             credential: cred.clone(),
         },
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(Some(corr.0.clone())),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
@@ -241,11 +237,7 @@ pub(crate) async fn get_credential(
         &PolicyResource::Credential {
             credential: cred.clone(),
         },
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
@@ -278,11 +270,7 @@ pub(crate) async fn get_credential_by_name(
         &PolicyResource::Credential {
             credential: cred.clone(),
         },
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
@@ -316,11 +304,7 @@ pub(crate) async fn delete_credential(
         &PolicyResource::Credential {
             credential: cred.clone(),
         },
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(Some(corr.0.clone())),
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {

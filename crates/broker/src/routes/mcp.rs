@@ -6,7 +6,8 @@ use serde::Deserialize;
 use crate::auth::AuthenticatedWorkspace;
 use crate::server_client::ServerClient;
 use crate::state::SharedState;
-use crate::token_refresh;
+
+use super::helpers::{error_response, ok_response, require_scope, with_token_refresh};
 
 /// POST /mcp/list-servers
 pub async fn list_servers(
@@ -19,41 +20,20 @@ pub async fn list_servers(
         .cloned()
         .unwrap();
 
-    let access_token = match get_access_token(&state, &auth.pk_hash).await {
-        Some(t) => t,
-        None => {
-            return error_response(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "Workspace not registered",
-            )
-        }
-    };
+    if let Err(e) = require_scope(&state, &auth.pk_hash, "mcp:discover", "mcp.list_servers").await {
+        return e;
+    }
 
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
 
-    match server_client.list_mcp_servers(&access_token).await {
+    match with_token_refresh(&state, &auth.pk_hash, |token| {
+        let sc = server_client.clone();
+        async move { sc.list_mcp_servers(&token).await }
+    })
+    .await
+    {
         Ok(servers) => ok_response(serde_json::json!(servers)),
-        Err(crate::server_client::ServerClientError::ServerError {
-            status: 401,
-            ref body,
-        }) if body.contains("workspace not found") => {
-            tracing::warn!("server reports workspace not found — workspace may have been deleted");
-            error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Workspace not found on server (workspace may have been deleted). Try: agentcordon register --force")
-        }
-        Err(crate::server_client::ServerClientError::ServerError { status: 401, .. }) => {
-            if let Some(token) = try_refresh_and_get_token(&state, &auth.pk_hash).await {
-                match server_client.list_mcp_servers(&token).await {
-                    Ok(servers) => ok_response(serde_json::json!(servers)),
-                    Err(e) => {
-                        error_response(StatusCode::BAD_GATEWAY, "bad_gateway", { tracing::error!(error = %e, "MCP request failed"); "Server request failed" })
-                    }
-                }
-            } else {
-                error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Token expired")
-            }
-        }
-        Err(e) => error_response(StatusCode::BAD_GATEWAY, "bad_gateway", { tracing::error!(error = %e, "MCP request failed"); "Server request failed" }),
+        Err(e) => e,
     }
 }
 
@@ -68,47 +48,20 @@ pub async fn list_tools(
         .cloned()
         .unwrap();
 
-    let access_token = match get_access_token(&state, &auth.pk_hash).await {
-        Some(t) => t,
-        None => {
-            return error_response(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "Workspace not registered",
-            )
-        }
-    };
+    if let Err(e) = require_scope(&state, &auth.pk_hash, "mcp:discover", "mcp.list_tools").await {
+        return e;
+    }
 
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
 
-    match server_client.list_mcp_tools(&access_token).await {
+    match with_token_refresh(&state, &auth.pk_hash, |token| {
+        let sc = server_client.clone();
+        async move { sc.list_mcp_tools(&token).await }
+    })
+    .await
+    {
         Ok(tools) => ok_response(serde_json::json!(tools)),
-        Err(crate::server_client::ServerClientError::ServerError {
-            status: 401,
-            ref body,
-        }) if body.contains("workspace not found") => {
-            tracing::warn!("server reports workspace not found — workspace may have been deleted");
-            error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Workspace not found on server (workspace may have been deleted). Try: agentcordon register --force")
-        }
-        Err(crate::server_client::ServerClientError::ServerError { status: 401, .. }) => {
-            if let Some(token) = try_refresh_and_get_token(&state, &auth.pk_hash).await {
-                match server_client.list_mcp_tools(&token).await {
-                    Ok(tools) => ok_response(serde_json::json!(tools)),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "MCP list-tools failed after refresh — returning empty list");
-                        ok_response(serde_json::json!([]))
-                    }
-                }
-            } else {
-                error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Token expired")
-            }
-        }
-        Err(e) => {
-            // Return empty list instead of 502 when the server has no MCP tools
-            // endpoint or no MCP servers configured.
-            tracing::warn!(error = %e, "MCP list-tools failed — returning empty list");
-            ok_response(serde_json::json!([]))
-        }
+        Err(e) => e,
     }
 }
 
@@ -116,7 +69,6 @@ pub async fn list_tools(
 pub struct McpCallRequest {
     pub server: String,
     pub tool: String,
-    #[allow(dead_code)]
     pub arguments: Option<serde_json::Value>,
 }
 
@@ -154,66 +106,25 @@ pub async fn call_tool(
         }
     };
 
-    let access_token = match get_access_token(&state, &auth.pk_hash).await {
-        Some(t) => t,
-        None => {
-            return error_response(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "Workspace not registered",
-            )
-        }
-    };
+    if let Err(e) = require_scope(&state, &auth.pk_hash, "mcp:invoke", "mcp.call_tool").await {
+        return e;
+    }
 
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
+    let server_name = call_req.server.clone();
+    let tool_name = call_req.tool.clone();
 
-    // Authorize via Cedar policy on the server
-    let auth_resp = match server_client
-        .mcp_authorize(&call_req.server, &call_req.tool, &access_token)
-        .await
+    // Authorize via Cedar policy on the server (with 401 retry)
+    let auth_resp = match with_token_refresh(&state, &auth.pk_hash, |token| {
+        let sc = server_client.clone();
+        let srv = server_name.clone();
+        let tool = tool_name.clone();
+        async move { sc.mcp_authorize(&srv, &tool, &token).await }
+    })
+    .await
     {
         Ok(r) => r,
-        Err(crate::server_client::ServerClientError::ServerError {
-            status: 401,
-            ref body,
-        }) if body.contains("workspace not found") => {
-            tracing::warn!("server reports workspace not found — workspace may have been deleted");
-            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Workspace not found on server (workspace may have been deleted). Try: agentcordon register --force");
-        }
-        Err(crate::server_client::ServerClientError::ServerError { status: 401, .. }) => {
-            // Try reactive refresh
-            if let Some(token) = try_refresh_and_get_token(&state, &auth.pk_hash).await {
-                match server_client
-                    .mcp_authorize(&call_req.server, &call_req.tool, &token)
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return error_response(
-                            StatusCode::BAD_GATEWAY,
-                            "bad_gateway",
-                            { tracing::error!(error = %e, "MCP request failed"); "Server request failed" },
-                        );
-                    }
-                }
-            } else {
-                return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Token expired");
-            }
-        }
-        Err(e) => {
-            // Fail-closed: deny on error
-            tracing::warn!(
-                server = call_req.server,
-                tool = call_req.tool,
-                error = %e,
-                "MCP authorize failed — denying (fail-closed)"
-            );
-            return error_response(
-                StatusCode::FORBIDDEN,
-                "forbidden",
-                "Authorization check failed",
-            );
-        }
+        Err(e) => return e,
     };
 
     if auth_resp.decision != "permit" {
@@ -224,57 +135,147 @@ pub async fn call_tool(
         );
     }
 
-    // TODO: Spawn or reuse MCP subprocess, send JSON-RPC tools/call.
-    // For now, return a stub indicating authorization passed but subprocess
-    // management is not yet implemented in the broker.
+    // Fetch MCP server list to find the target server's transport and URL.
+    let servers = match with_token_refresh(&state, &auth.pk_hash, |token| {
+        let sc = server_client.clone();
+        async move { sc.list_mcp_servers(&token).await }
+    })
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+
+    let target = match servers.iter().find(|s| s.name == server_name) {
+        Some(s) => s.clone(),
+        None => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                &format!("MCP server '{}' not found", server_name),
+            );
+        }
+    };
+
+    let transport = target.transport.as_deref().unwrap_or("stdio");
+
+    // STDIO servers are local-only — cannot be proxied via the broker.
+    if transport == "stdio" {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_transport",
+            "STDIO MCP servers are local-only. Configure them in .mcp.json for native agent access.",
+        );
+    }
+
+    // HTTP/SSE transport — POST JSON-RPC to the server URL.
+    let mcp_url = match &target.url {
+        Some(u) if !u.is_empty() => u.clone(),
+        _ => {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                "bad_gateway",
+                &format!("MCP server '{}' has no URL configured", server_name),
+            );
+        }
+    };
+
+    let jsonrpc_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": call_req.arguments.unwrap_or(serde_json::json!({})),
+        }
+    });
+
+    let mcp_resp = match state
+        .http_client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .json(&jsonrpc_request)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, server = %server_name, url = %mcp_url, "HTTP MCP request failed");
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                "bad_gateway",
+                &format!("Failed to connect to MCP server '{}': {}", server_name, e),
+            );
+        }
+    };
+
+    let mcp_status = mcp_resp.status();
+    let mcp_body: serde_json::Value = match mcp_resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, server = %server_name, "failed to parse MCP response");
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                "bad_gateway",
+                &format!("Invalid response from MCP server '{}': {}", server_name, e),
+            );
+        }
+    };
+
+    if !mcp_status.is_success() {
+        tracing::warn!(server = %server_name, status = %mcp_status, "MCP server returned error");
+        return error_response(
+            StatusCode::BAD_GATEWAY,
+            "bad_gateway",
+            &format!("MCP server '{}' returned status {}", server_name, mcp_status),
+        );
+    }
+
+    // Extract the JSON-RPC result (or error).
+    if let Some(error) = mcp_body.get("error") {
+        tracing::info!(
+            server_name = %server_name,
+            tool_name = %tool_name,
+            status = "jsonrpc_error",
+            correlation_id = %auth_resp.correlation_id,
+            "MCP tool call completed with JSON-RPC error"
+        );
+        return (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "data": {
+                    "content": [{
+                        "type": "text",
+                        "text": format!("MCP error: {}", error),
+                    }],
+                    "isError": true,
+                    "correlation_id": auth_resp.correlation_id,
+                }
+            })),
+        );
+    }
+
+    let result = mcp_body.get("result").cloned().unwrap_or(serde_json::json!({}));
+
+    tracing::info!(
+        server_name = %server_name,
+        tool_name = %tool_name,
+        status = "success",
+        correlation_id = %auth_resp.correlation_id,
+        "MCP tool call completed successfully"
+    );
+
     (
         StatusCode::OK,
         axum::Json(serde_json::json!({
             "data": {
-                "content": [{
+                "content": result.get("content").cloned().unwrap_or(serde_json::json!([{
                     "type": "text",
-                    "text": "MCP tool call authorized. Subprocess management pending implementation."
-                }],
-                "isError": false,
+                    "text": result.to_string(),
+                }])),
+                "isError": result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false),
                 "correlation_id": auth_resp.correlation_id,
             }
-        })),
-    )
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async fn get_access_token(state: &SharedState, pk_hash: &str) -> Option<String> {
-    let workspaces = state.workspaces.read().await;
-    workspaces.get(pk_hash).map(|ws| ws.access_token.clone())
-}
-
-async fn try_refresh_and_get_token(state: &SharedState, pk_hash: &str) -> Option<String> {
-    if token_refresh::try_reactive_refresh(state, pk_hash).await {
-        get_access_token(state, pk_hash).await
-    } else {
-        None
-    }
-}
-
-fn ok_response(data: serde_json::Value) -> (StatusCode, axum::Json<serde_json::Value>) {
-    (
-        StatusCode::OK,
-        axum::Json(serde_json::json!({ "data": data })),
-    )
-}
-
-fn error_response(
-    status: StatusCode,
-    code: &str,
-    message: &str,
-) -> (StatusCode, axum::Json<serde_json::Value>) {
-    (
-        status,
-        axum::Json(serde_json::json!({
-            "error": { "code": code, "message": message }
         })),
     )
 }

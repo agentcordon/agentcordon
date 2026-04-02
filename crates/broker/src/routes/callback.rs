@@ -131,7 +131,7 @@ pub async fn get_callback(
         scopes,
         token_expires_at: Utc::now() + chrono::Duration::seconds(token_resp.expires_in as i64),
         workspace_name: pending.workspace_name.clone(),
-        token_status: "valid".to_string(),
+        token_status: crate::state::TokenStatus::Valid,
     };
 
     {
@@ -147,6 +147,9 @@ pub async fn get_callback(
             tracing::error!(error = %e, "failed to persist token store after callback");
         }
     }
+
+    // Write recovery store (plaintext fallback)
+    token_store::save_recovery_store(&state).await;
 
     tracing::info!(
         workspace = pending.workspace_name,

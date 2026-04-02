@@ -1,6 +1,6 @@
 //! Route module — organized into logical boundaries.
 //!
-//! - `control_plane` — Agent/device-facing API (auth, enrollment, sync, OAuth, JWKS)
+//! - `control_plane` — Agent/device-facing API (auth, sync, OAuth, JWKS)
 //! - `admin_api` — Admin REST API (CRUD operations)
 //! - `admin_ui` — Askama page routes (HTML rendering)
 //! - `shared` — Cross-boundary utilities (SSE, proxy, OpenAPI, docs)
@@ -20,7 +20,6 @@ pub fn api_routes() -> Router<AppState> {
         .merge(control_plane::routes())
         .merge(admin_api::routes())
         .merge(oauth::routes())
-        .merge(shared::proxy::routes())
         .merge(shared::docs::routes())
         .merge(shared::openapi::routes())
 }

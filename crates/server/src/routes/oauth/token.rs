@@ -10,6 +10,8 @@ use agent_cordon_core::oauth2::types::{OAuthAccessToken, OAuthRefreshToken, OAut
 use crate::middleware::request_id::CorrelationId;
 use crate::state::AppState;
 
+use subtle::ConstantTimeEq;
+
 use super::{generate_access_token, generate_refresh_token, hash_token, validate_pkce};
 
 /// Access token TTL: 15 minutes.
@@ -138,7 +140,7 @@ async fn handle_authorization_code(
     // Verify client_secret if confidential
     if let Some(ref secret_hash) = client.client_secret_hash {
         match &req.client_secret {
-            Some(secret) if hash_token(secret) == *secret_hash => {}
+            Some(secret) if bool::from(hash_token(secret).as_bytes().ct_eq(secret_hash.as_bytes())) => {}
             _ => {
                 let (s, b) = oauth_error(StatusCode::UNAUTHORIZED, "invalid_client", "invalid client credentials");
                 return (s, b).into_response();
@@ -311,7 +313,7 @@ async fn handle_refresh_token(
 
     if let Some(ref secret_hash) = client.client_secret_hash {
         match &req.client_secret {
-            Some(secret) if hash_token(secret) == *secret_hash => {}
+            Some(secret) if bool::from(hash_token(secret).as_bytes().ct_eq(secret_hash.as_bytes())) => {}
             _ => {
                 let (s, b) = oauth_error(StatusCode::UNAUTHORIZED, "invalid_client", "invalid client credentials");
                 return (s, b).into_response();
@@ -470,7 +472,7 @@ async fn handle_client_credentials(
     }
 
     match &client.client_secret_hash {
-        Some(secret_hash) if hash_token(client_secret) == *secret_hash => {}
+        Some(secret_hash) if bool::from(hash_token(client_secret).as_bytes().ct_eq(secret_hash.as_bytes())) => {}
         _ => {
             let (s, b) = oauth_error(StatusCode::UNAUTHORIZED, "invalid_client", "invalid client credentials");
             return (s, b).into_response();

@@ -123,7 +123,6 @@ async fn get_jwt_da(
 async fn test_golden_path_all_principals() {
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
         .with_policy(&default_policy_no_auto_enroll())
         .build()
         .await;

@@ -47,10 +47,11 @@ pub async fn post_register(
         }
     };
 
-    // Signed payload: workspace_name || public_key || scopes_joined
+    // Signed payload: workspace_name \n public_key \n scopes_joined
+    // Field separators prevent boundary manipulation attacks.
     let scopes_joined = body.scopes.join(" ");
     let signed_payload = format!(
-        "{}{}{}",
+        "{}\n{}\n{}",
         body.workspace_name, body.public_key, scopes_joined
     );
 
@@ -113,10 +114,8 @@ pub async fn post_register(
         hex::encode(buf)
     };
 
-    // 5. Determine redirect URI (broker's callback endpoint)
-    // We use the port the broker is bound to. Since we don't know it here,
-    // we read it from the config. For auto-port, the daemon sets it after bind.
-    let redirect_uri = format!("http://localhost:{}/callback", state.config.port);
+    // 5. Determine redirect URI using the actual bound port (handles port-0 auto-select)
+    let redirect_uri = format!("http://localhost:{}/callback", state.bound_port);
 
     // 6. Build authorization URL directly (client created during consent)
     let scope_param = body.scopes.join(" ");
@@ -143,6 +142,7 @@ pub async fn post_register(
                 redirect_uri,
                 state: oauth_state,
                 pk_hash,
+                created_at: std::time::Instant::now(),
             },
         );
     }

@@ -5,9 +5,11 @@ DAG node for workspace OAuth registration flow: workspace.oauth_register.
 import hashlib
 import json
 import os
+import re
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 
 from tests.e2e.dag_runner import DagNode
 from tests.e2e.helpers import (
@@ -16,6 +18,23 @@ from tests.e2e.helpers import (
     server_request,
     sign_request,
 )
+
+
+def _parse_hidden_fields(html: str) -> dict:
+    """Extract all hidden input field name/value pairs from HTML."""
+    return dict(re.findall(r'<input\s+type="hidden"\s+name="([^"]+)"\s+value="([^"]*)"', html))
+
+
+def _no_redirect_opener():
+    """Build a urllib opener that does NOT follow redirects."""
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise urllib.error.HTTPError(
+                newurl, code, msg, headers, fp
+            )
+
+    return urllib.request.build_opener(NoRedirect)
 
 
 # ---------------------------------------------------------------------------
@@ -27,10 +46,11 @@ def workspace_oauth_register(ctx: dict) -> dict:
     Full OAuth registration flow:
       1. Generate Ed25519 keypair for the workspace
       2. POST /register to broker with workspace name + public key + scopes
-      3. Broker registers OAuth client with server, returns authorization_url
-      4. Programmatically approve consent via server admin API
-      5. Broker receives callback, exchanges code for tokens
-      6. Verify registration is complete
+      3. Broker returns authorization_url (with workspace_name + public_key_hash, NO client_id)
+      4. GET consent page, parse hidden fields, POST approval
+      5. Extract client_id from redirect Location header
+      6. Follow redirect to broker callback
+      7. Verify registration is complete
 
     Consumes: broker_url, ws_workspace_id, base_url, admin_session_cookie
     Produces: oauth_client_id, ws_ed25519_key, ws_pk_hash, broker_pem_key_path
@@ -52,15 +72,15 @@ def workspace_oauth_register(ctx: dict) -> dict:
     ctx["broker_pem_key_path"] = pem_key_path
 
     # Step 2: POST /register to broker
-    # The register endpoint is special: it takes a self-signed body (not the
-    # standard header-based auth, since the workspace isn't registered yet).
-    scopes = ["credentials:discover", "credentials:vend"]
+    # The register endpoint takes a self-signed body (not the standard
+    # header-based auth, since the workspace isn't registered yet).
+    scopes = ["credentials:discover", "credentials:vend", "mcp:discover", "mcp:invoke"]
 
-    # Sign the registration payload: workspace_name || public_key || scopes_joined
+    # Sign the registration payload: workspace_name \n public_key \n scopes_joined
+    # Field separators prevent boundary manipulation attacks.
     scopes_joined = " ".join(scopes)
-    reg_payload_to_sign = f"{workspace_name}{public_key_hex}{scopes_joined}"
+    reg_payload_to_sign = f"{workspace_name}\n{public_key_hex}\n{scopes_joined}"
 
-    # Sign using openssl
     import subprocess
     import tempfile
 
@@ -115,80 +135,77 @@ def workspace_oauth_register(ctx: dict) -> dict:
         f"Expected status 'awaiting_consent', got {data.get('status')}"
     )
 
-    # Step 3: Extract OAuth parameters from the authorization URL
-    from urllib.parse import urlparse, parse_qs
-    parsed = urlparse(auth_url)
-    query = parse_qs(parsed.query)
-
-    client_id = query.get("client_id", [None])[0]
-    state = query.get("state", [None])[0]
-    scope = query.get("scope", [None])[0]
-    code_challenge = query.get("code_challenge", [None])[0]
-    redirect_uri = query.get("redirect_uri", [None])[0]
-
-    assert client_id, f"No client_id in auth URL: {auth_url}"
-    ctx["oauth_client_id"] = client_id
-
-    # Step 4: Programmatically approve consent via server admin API
-    # POST to the server's authorize endpoint to simulate user clicking "Approve"
-    consent_body = urllib.parse.urlencode({
-        "client_id": client_id,
-        "scope": scope or scopes_joined,
-        "state": state,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "action": "approve",
-    }).encode("utf-8")
-
-    consent_headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
+    # Step 3: GET the consent page with session cookie to retrieve hidden fields
+    consent_headers = {}
     if admin_cookie:
         consent_headers["Cookie"] = admin_cookie
 
-    # Use the admin storage state / session to approve
-    consent_req = urllib.request.Request(
+    consent_get_req = urllib.request.Request(auth_url, headers=consent_headers)
+    try:
+        with urllib.request.urlopen(consent_get_req, timeout=30) as resp:
+            consent_html = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        resp_text = e.read().decode("utf-8") if e.fp else ""
+        raise AssertionError(
+            f"GET consent page failed with {e.code}: {resp_text}"
+        )
+
+    # Parse all hidden form fields from the consent HTML
+    hidden_fields = _parse_hidden_fields(consent_html)
+    assert hidden_fields, f"No hidden fields found in consent HTML"
+
+    # Step 4: POST consent approval with all hidden fields + decision=approve
+    hidden_fields["decision"] = "approve"
+
+    consent_body = urllib.parse.urlencode(hidden_fields).encode("utf-8")
+
+    consent_post_headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    if admin_cookie:
+        consent_post_headers["Cookie"] = admin_cookie
+
+    consent_post_req = urllib.request.Request(
         f"{base_url}/api/v1/oauth/authorize",
         data=consent_body,
-        headers=consent_headers,
+        headers=consent_post_headers,
         method="POST",
     )
 
-    # The consent approval should redirect to the broker's callback
-    # We follow the redirect chain or handle the 302
-    import urllib.parse
-
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPRedirectHandler()
-    )
-
+    # Use no-redirect opener to capture the Location header
+    opener = _no_redirect_opener()
+    redirect_location = None
     try:
-        consent_resp = opener.open(consent_req, timeout=30)
-        consent_status = consent_resp.status
+        consent_resp = opener.open(consent_post_req, timeout=30)
+        # If server returned 200 instead of redirect, check for location
+        redirect_location = consent_resp.headers.get("Location")
     except urllib.error.HTTPError as e:
-        # A 302 redirect is expected — follow it
         if e.code in (301, 302, 303, 307):
-            location = e.headers.get("Location", "")
-            # The redirect should go to broker's callback with ?code=...&state=...
-            if "code=" in location:
-                # Make the callback request to the broker
-                callback_req = urllib.request.Request(location)
-                try:
-                    with urllib.request.urlopen(callback_req, timeout=30) as cb_resp:
-                        pass  # Callback processed
-                except urllib.error.HTTPError:
-                    pass  # Callback may return HTML, that's fine
-            consent_status = 200  # Consider redirect as success
+            redirect_location = e.headers.get("Location", "")
         else:
             resp_text = e.read().decode("utf-8") if e.fp else ""
             raise AssertionError(
                 f"Consent approval failed with {e.code}: {resp_text}"
             )
 
-    # Step 5: Wait for broker to complete token exchange
-    # Poll broker's /status endpoint for this workspace
+    assert redirect_location, "No redirect Location after consent approval"
+
+    # Step 5: Extract client_id from the redirect URL
+    parsed_redirect = urllib.parse.urlparse(redirect_location)
+    redirect_query = urllib.parse.parse_qs(parsed_redirect.query)
+    client_id = redirect_query.get("client_id", [None])[0]
+    assert client_id, f"No client_id in redirect URL: {redirect_location}"
+    ctx["oauth_client_id"] = client_id
+
+    # Step 6: Follow the redirect to the broker callback
+    try:
+        callback_req = urllib.request.Request(redirect_location)
+        with urllib.request.urlopen(callback_req, timeout=30) as cb_resp:
+            pass  # Callback processed
+    except urllib.error.HTTPError:
+        pass  # Callback may return HTML or error status, that's fine
+
+    # Step 7: Wait for broker to complete token exchange
     deadline = time.time() + 30
     registration_complete = False
 
@@ -251,7 +268,6 @@ def workspace_oauth_consent_deny(ctx: dict) -> dict:
     """
     import subprocess
     import tempfile
-    import urllib.parse
 
     broker_url = ctx["broker_url"]
     base_url = ctx["base_url"]
@@ -267,7 +283,7 @@ def workspace_oauth_consent_deny(ctx: dict) -> dict:
     workspace_name = "e2e-deny-workspace"
     scopes = ["credentials:discover"]
     scopes_joined = " ".join(scopes)
-    reg_payload_to_sign = f"{workspace_name}{public_key_hex}{scopes_joined}"
+    reg_payload_to_sign = f"{workspace_name}\n{public_key_hex}\n{scopes_joined}"
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write(reg_payload_to_sign)
@@ -315,29 +331,29 @@ def workspace_oauth_consent_deny(ctx: dict) -> dict:
     auth_url = data.get("authorization_url")
     assert auth_url, f"No authorization_url in register response: {resp_body}"
 
-    # Extract OAuth parameters from auth URL
-    parsed = urllib.parse.urlparse(auth_url)
-    query = urllib.parse.parse_qs(parsed.query)
+    # GET the consent page with session cookie to retrieve hidden fields
+    consent_headers = {}
+    if admin_cookie:
+        consent_headers["Cookie"] = admin_cookie
 
-    client_id = query.get("client_id", [None])[0]
-    state = query.get("state", [None])[0]
-    scope = query.get("scope", [None])[0]
-    code_challenge = query.get("code_challenge", [None])[0]
-    redirect_uri = query.get("redirect_uri", [None])[0]
+    consent_get_req = urllib.request.Request(auth_url, headers=consent_headers)
+    try:
+        with urllib.request.urlopen(consent_get_req, timeout=30) as resp:
+            consent_html = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        resp_text = e.read().decode("utf-8") if e.fp else ""
+        raise AssertionError(
+            f"GET consent page failed with {e.code}: {resp_text}"
+        )
 
-    assert client_id, f"No client_id in auth URL: {auth_url}"
+    # Parse all hidden form fields from the consent HTML
+    hidden_fields = _parse_hidden_fields(consent_html)
+    assert hidden_fields, "No hidden fields found in consent HTML"
 
     # Submit consent denial
-    deny_body = urllib.parse.urlencode({
-        "client_id": client_id,
-        "scope": scope or scopes_joined,
-        "state": state,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "action": "deny",
-    }).encode("utf-8")
+    hidden_fields["decision"] = "deny"
+
+    deny_body = urllib.parse.urlencode(hidden_fields).encode("utf-8")
 
     deny_headers = {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -354,8 +370,8 @@ def workspace_oauth_consent_deny(ctx: dict) -> dict:
 
     # The deny should redirect to broker callback with error parameter
     deny_error_received = False
+    opener = _no_redirect_opener()
     try:
-        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
         deny_resp = opener.open(deny_req, timeout=30)
         # If we get a 200 with error info, that's also valid
         deny_body_text = deny_resp.read().decode("utf-8")

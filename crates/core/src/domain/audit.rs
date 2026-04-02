@@ -64,9 +64,6 @@ pub enum AuditEventType {
     // Auth events
     AuthFailure,
 
-    // Enrollment lifecycle
-    EnrollmentApproved,
-
     // Token lifecycle
     TokenIssued,
 

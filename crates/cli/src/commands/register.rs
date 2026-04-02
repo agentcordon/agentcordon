@@ -58,6 +58,8 @@ pub async fn run(scopes: Vec<String>, force: bool) -> Result<(), CliError> {
         vec![
             "credentials:discover".to_string(),
             "credentials:vend".to_string(),
+            "mcp:discover".to_string(),
+            "mcp:invoke".to_string(),
         ]
     } else {
         scopes
@@ -71,9 +73,10 @@ pub async fn run(scopes: Vec<String>, force: bool) -> Result<(), CliError> {
 
     let public_key = client.keypair().public_key_hex();
 
-    // Sign: workspace_name || public_key || scopes_joined
+    // Sign: workspace_name \n public_key \n scopes_joined
+    // Field separators prevent boundary manipulation attacks.
     let scopes_joined = scopes.join(" ");
-    let sign_payload = format!("{workspace_name}{public_key}{scopes_joined}");
+    let sign_payload = format!("{workspace_name}\n{public_key}\n{scopes_joined}");
     let signature = client
         .keypair()
         .signing_key

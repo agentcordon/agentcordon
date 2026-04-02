@@ -92,6 +92,7 @@ pub(super) struct McpServerSyncEntry {
     pub id: String,
     pub name: String,
     pub transport: String,
+    pub url: Option<String>,
     pub tools: Vec<String>,
     pub enabled: bool,
     pub required_credentials: Option<Vec<String>>,
@@ -110,20 +111,25 @@ pub(super) struct McpServerSyncResponse {
 /// can populate its local cache and serve them to agents.
 pub(super) async fn sync_mcp_servers(
     State(state): State<AppState>,
-    workspace: AuthenticatedWorkspace,
+    _workspace: AuthenticatedWorkspace,
 ) -> Result<Json<ApiResponse<McpServerSyncResponse>>, ApiError> {
-    let servers = state
-        .store
-        .list_mcp_servers_by_workspace(&workspace.workspace.id)
-        .await?;
+    // MCP servers are a shared catalog — return ALL enabled servers, not just
+    // workspace-owned ones.  Cedar policy handles per-tool authorization at
+    // invocation time.
+    let servers = state.store.list_mcp_servers().await?;
 
     let entries: Vec<McpServerSyncEntry> = servers
         .into_iter()
         .filter(|s| s.enabled)
         .map(|s| McpServerSyncEntry {
             id: s.id.0.to_string(),
-            name: s.name,
+            name: s.name.clone(),
             transport: s.transport,
+            url: if s.upstream_url.is_empty() {
+                None
+            } else {
+                Some(s.upstream_url)
+            },
             tools: s.allowed_tools.unwrap_or_default(),
             enabled: s.enabled,
             required_credentials: s
@@ -135,6 +141,49 @@ pub(super) async fn sync_mcp_servers(
     Ok(Json(ApiResponse::ok(McpServerSyncResponse {
         servers: entries,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// MCP tool sync
+// ---------------------------------------------------------------------------
+
+/// A single MCP tool entry for device sync.
+#[derive(Serialize)]
+pub(super) struct McpToolSyncEntry {
+    pub server: String,
+    pub tool: String,
+    pub description: Option<String>,
+    pub input_schema: Option<serde_json::Value>,
+}
+
+/// GET /api/v1/workspaces/mcp-tools -- list MCP tools from all enabled servers.
+///
+/// Auth: workspace identity JWT (Authorization: Bearer).
+/// Reads stored `allowed_tools` from each enabled MCP server in the database.
+pub(super) async fn sync_mcp_tools(
+    State(state): State<AppState>,
+    _workspace: AuthenticatedWorkspace,
+) -> Result<Json<ApiResponse<Vec<McpToolSyncEntry>>>, ApiError> {
+    let servers = state.store.list_mcp_servers().await?;
+
+    let entries: Vec<McpToolSyncEntry> = servers
+        .into_iter()
+        .filter(|s| s.enabled)
+        .flat_map(|s| {
+            let server_name = s.name.clone();
+            s.allowed_tools
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |tool_name| McpToolSyncEntry {
+                    server: server_name.clone(),
+                    tool: tool_name,
+                    description: None,
+                    input_schema: None,
+                })
+        })
+        .collect();
+
+    Ok(Json(ApiResponse::ok(entries)))
 }
 
 // ---------------------------------------------------------------------------
@@ -167,10 +216,12 @@ pub(super) async fn report_tools(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
     let ws_id = &workspace.workspace.id;
 
-    let server = state
-        .store
-        .get_mcp_server_by_workspace_and_name(ws_id, &req.server_name)
-        .await?
+    // MCP servers are a shared catalog — look up by name across all servers,
+    // not scoped to the requesting workspace.
+    let all_servers = state.store.list_mcp_servers().await?;
+    let server = all_servers
+        .into_iter()
+        .find(|s| s.name == req.server_name && s.enabled)
         .ok_or_else(|| ApiError::NotFound(format!("MCP server '{}' not found", req.server_name)))?;
 
     let tool_names: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();

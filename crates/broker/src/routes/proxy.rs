@@ -8,14 +8,15 @@ use base64::Engine;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use serde::Deserialize;
 
-use agent_cordon_core::proxy::url_safety::validate_proxy_target;
+use agent_cordon_core::proxy::url_safety::validate_proxy_target_resolved;
 
 use crate::auth::AuthenticatedWorkspace;
 use crate::credential_transform::{self, CredentialMaterial};
 use crate::server_client::ServerClient;
 use crate::state::SharedState;
-use crate::token_refresh;
 use crate::vend;
+
+use super::helpers::{error_response, require_scope, with_token_refresh};
 
 #[derive(Debug, Deserialize)]
 pub struct ProxyRequest {
@@ -40,11 +41,10 @@ pub async fn post_proxy(
     let body_bytes = match axum::body::to_bytes(request.into_body(), 10 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({
-                    "error": { "code": "bad_request", "message": "Failed to read request body" }
-                })),
+                "bad_request",
+                "Failed to read request body",
             );
         }
     };
@@ -52,125 +52,59 @@ pub async fn post_proxy(
     let proxy_req: ProxyRequest = match serde_json::from_slice(&body_bytes) {
         Ok(r) => r,
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({
-                    "error": { "code": "bad_request", "message": format!("Invalid request: {}", e) }
-                })),
+                "bad_request",
+                &format!("Invalid request: {}", e),
             );
         }
     };
 
     // Validate HTTP method
     if reqwest::Method::from_bytes(proxy_req.method.to_uppercase().as_bytes()).is_err() {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({
-                "error": { "code": "bad_request", "message": format!("Invalid HTTP method: {}", proxy_req.method) }
-            })),
+            "bad_request",
+            &format!("Invalid HTTP method: {}", proxy_req.method),
         );
     }
 
-    // SSRF validation
+    // SSRF validation — async DNS resolution prevents DNS rebinding attacks
     if !state.config.proxy_allow_loopback {
-        if let Err(reason) = validate_proxy_target(&proxy_req.url) {
-            return (
+        if let Err(reason) = validate_proxy_target_resolved(&proxy_req.url).await {
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({
-                    "error": { "code": "bad_request", "message": format!("Blocked by SSRF protection: {}", reason) }
-                })),
+                "bad_request",
+                &format!("Blocked by SSRF protection: {}", reason),
             );
         }
     }
 
-    // Get workspace access token
-    let access_token = {
-        let workspaces = state.workspaces.read().await;
-        match workspaces.get(&auth.pk_hash) {
-            Some(ws) => ws.access_token.clone(),
-            None => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    axum::Json(serde_json::json!({
-                        "error": { "code": "unauthorized", "message": "Workspace not registered" }
-                    })),
-                );
-            }
-        }
-    };
+    // Scope pre-check: workspace must have credentials:vend
+    if let Err(e) = require_scope(&state, &auth.pk_hash, "credentials:vend", "proxy").await {
+        return e;
+    }
 
     // Compute broker's public key (base64url-encoded uncompressed P-256 point)
     let pub_key = state.encryption_key.public_key();
     let pub_key_point = pub_key.to_encoded_point(false);
     let broker_pub_key_b64 = URL_SAFE_NO_PAD.encode(pub_key_point.as_bytes());
 
-    // Vend credential from server
+    // Vend credential from server with automatic 401 retry
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
+    let credential_name = proxy_req.credential.clone();
+    let bpk = broker_pub_key_b64.clone();
 
-    let vend_response = match server_client
-        .vend_credential(&proxy_req.credential, &access_token, &broker_pub_key_b64)
-        .await
+    let vend_response = match with_token_refresh(&state, &auth.pk_hash, |token| {
+        let sc = server_client.clone();
+        let cred = credential_name.clone();
+        let key = bpk.clone();
+        async move { sc.vend_credential(&cred, &token, &key).await }
+    })
+    .await
     {
         Ok(r) => r,
-        Err(crate::server_client::ServerClientError::ServerError {
-            status: 401,
-            ref body,
-        }) if body.contains("workspace not found") => {
-            tracing::warn!("server reports workspace not found — workspace may have been deleted");
-            return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "Workspace not found on server (workspace may have been deleted). Try: agentcordon register --force");
-        }
-        Err(crate::server_client::ServerClientError::ServerError { status: 401, .. }) => {
-            // Try reactive refresh
-            if token_refresh::try_reactive_refresh(&state, &auth.pk_hash).await {
-                let new_token = {
-                    let workspaces = state.workspaces.read().await;
-                    workspaces
-                        .get(&auth.pk_hash)
-                        .map(|ws| ws.access_token.clone())
-                };
-                if let Some(token) = new_token {
-                    match server_client
-                        .vend_credential(&proxy_req.credential, &token, &broker_pub_key_b64)
-                        .await
-                    {
-                        Ok(r) => r,
-                        Err(e) => {
-                            return error_response(
-                                StatusCode::BAD_GATEWAY,
-                                "bad_gateway",
-                                &e.to_string(),
-                            );
-                        }
-                    }
-                } else {
-                    return error_response(
-                        StatusCode::UNAUTHORIZED,
-                        "unauthorized",
-                        "Token refresh failed",
-                    );
-                }
-            } else {
-                return error_response(
-                    StatusCode::UNAUTHORIZED,
-                    "unauthorized",
-                    "Token expired and refresh failed",
-                );
-            }
-        }
-        Err(crate::server_client::ServerClientError::ServerError { status: 403, .. }) => {
-            return error_response(
-                StatusCode::FORBIDDEN,
-                "forbidden",
-                "Access denied by server policy",
-            );
-        }
-        Err(crate::server_client::ServerClientError::ServerError { status: 404, .. }) => {
-            return error_response(StatusCode::NOT_FOUND, "not_found", "Credential not found");
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "credential vend failed");
-            return error_response(StatusCode::BAD_GATEWAY, "bad_gateway", "Credential vend failed");
-        }
+        Err(e) => return e,
     };
 
     // ECIES decrypt
@@ -298,19 +232,6 @@ pub async fn post_proxy(
                 "headers": resp_headers,
                 "body": body_json,
             }
-        })),
-    )
-}
-
-fn error_response(
-    status: StatusCode,
-    code: &str,
-    message: &str,
-) -> (StatusCode, axum::Json<serde_json::Value>) {
-    (
-        status,
-        axum::Json(serde_json::json!({
-            "error": { "code": code, "message": message }
         })),
     )
 }

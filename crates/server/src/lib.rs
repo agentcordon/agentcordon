@@ -3,6 +3,7 @@
 //! Exposes the router builder and AppState so that integration tests can
 //! construct a test application without starting a TCP listener.
 
+pub mod auditing_policy_engine;
 pub mod compose;
 pub mod config;
 pub mod credential_service;

@@ -416,28 +416,6 @@ async fn test_static_assets_served() {
     assert_eq!(status, StatusCode::OK, "favicon should be served");
 }
 
-#[tokio::test]
-async fn test_enroll_md_still_works() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .with_enrollment()
-        .build()
-        .await;
-
-    let (status, content_type, body, _) = get_raw(&ctx.app, "/enroll.md").await;
-
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        content_type.contains("text/markdown"),
-        "enroll.md should be markdown, got: {}",
-        content_type,
-    );
-    assert!(
-        body.contains("# Workspace Enrollment"),
-        "should contain markdown heading",
-    );
-}
-
 // ===========================================================================
 // 2E. Security
 // ===========================================================================

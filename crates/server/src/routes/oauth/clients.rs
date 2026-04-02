@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
-use agent_cordon_core::domain::user::UserId;
 use agent_cordon_core::oauth2::types::OAuthClient;
 use agent_cordon_core::oauth2::types::OAuthScope;
 
@@ -42,15 +41,20 @@ pub(crate) struct RegisterClientResponse {
     created_at: String,
 }
 
-/// POST /api/v1/oauth/clients — Public endpoint (RFC 7591 Dynamic Client Registration)
+/// POST /api/v1/oauth/clients — Admin-only confidential client registration.
 ///
-/// No authentication required. Client registration just declares intent to
-/// participate in OAuth — actual authorization happens in the consent flow.
+/// Creates a confidential OAuth client with a client_secret, intended for
+/// CI/CD and server-to-server use cases. Public clients for interactive agents
+/// are created automatically via the consent flow in `authorize.rs`.
 pub(crate) async fn register_client(
     State(state): State<AppState>,
+    auth: AuthenticatedUser,
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<RegisterClientRequest>,
 ) -> Result<(axum::http::StatusCode, Json<ApiResponse<RegisterClientResponse>>), ApiError> {
+    if !auth.is_root {
+        return Err(ApiError::Forbidden("admin access required".into()));
+    }
 
     // Validate workspace_name
     if req.workspace_name.is_empty() || req.workspace_name.len() > 255 {
@@ -104,7 +108,7 @@ pub(crate) async fn register_client(
     }
 
     // Generate client_id and client_secret
-    let client_id = format!("ac_cli_{}", &Uuid::new_v4().simple().to_string()[..12]);
+    let client_id = agent_cordon_core::oauth2::tokens::generate_client_id();
     let (client_secret, client_secret_hash) = generate_client_secret();
 
     let now = Utc::now();
@@ -116,7 +120,7 @@ pub(crate) async fn register_client(
         public_key_hash: req.public_key_hash.clone(),
         redirect_uris: req.redirect_uris.clone(),
         allowed_scopes: scopes.clone(),
-        created_by_user: UserId(Uuid::nil()),
+        created_by_user: auth.user.id.clone(),
         created_at: now,
         revoked_at: None,
     };
@@ -126,13 +130,10 @@ pub(crate) async fn register_client(
     // Audit event
     let event = AuditEvent::builder(AuditEventType::Oauth2TokenAcquired)
         .action("oauth_client_registered")
-        .user_actor_raw(
-            &UserId(Uuid::nil()),
-            "self-registered",
-        )
+        .user_actor(&auth.user)
         .resource("oauth_client", &client.id.to_string())
         .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some("client registered"))
+        .decision(AuditDecision::Permit, Some("admin-registered client"))
         .details(serde_json::json!({
             "client_id": client_id,
             "workspace_name": req.workspace_name,
@@ -145,7 +146,7 @@ pub(crate) async fn register_client(
     tracing::info!(
         client_id = %client_id,
         workspace_name = %req.workspace_name,
-        "OAuth client registered (self-registration)"
+        "OAuth client registered (admin)"
     );
 
     let response = RegisterClientResponse {

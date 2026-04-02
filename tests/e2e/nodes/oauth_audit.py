@@ -33,7 +33,7 @@ def audit_oauth_events(ctx: dict) -> dict:
     base_url = ctx["base_url"]
 
     status, _, body = server_request(
-        base_url, "GET", "/api/v1/admin/audit",
+        base_url, "GET", "/api/v1/audit",
         cookies=admin_cookie,
     )
 
@@ -53,8 +53,8 @@ def audit_oauth_events(ctx: dict) -> dict:
     # Collect event types
     event_types = [e.get("event_type", e.get("type", "")) for e in events]
 
-    # At minimum, registration and token issuance should have occurred
-    required_events = ["oauth_client_registered", "oauth_token_issued"]
+    # At minimum, OAuth token acquisition and credential vend should have occurred
+    required_events = ["oauth2_token_acquired", "credential_vended"]
     for req_event in required_events:
         assert req_event in event_types, (
             f"Required audit event '{req_event}' not found. "

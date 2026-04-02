@@ -166,16 +166,38 @@ def security_oauth_token_revocation(ctx: dict) -> dict:
     pem_key_path = ctx["broker_pem_key_path"]
     base_url = ctx["base_url"]
 
-    # Step 1: Revoke OAuth tokens via server admin API
-    revoke_body = json.dumps({"client_id": oauth_client_id})
+    csrf_token = ctx.get("csrf_token", "")
+
+    # Step 1: Look up the client's UUID from the client list
+    # (oauth_client_id in context is the client_id string like "ac_cli_xxx",
+    # but the DELETE endpoint needs the UUID)
     status, _, body = server_request(
-        base_url, "POST", "/api/v1/oauth/revoke",
-        body=revoke_body,
+        base_url, "GET", "/api/v1/oauth/clients",
+        cookies=admin_cookie,
+    )
+    assert status == 200, f"Failed to list OAuth clients: {status}: {body}"
+
+    clients = json.loads(body).get("data", [])
+    client_uuid = None
+    for c in clients:
+        if c.get("client_id") == oauth_client_id:
+            client_uuid = c.get("id")
+            break
+
+    assert client_uuid, (
+        f"OAuth client '{oauth_client_id}' not found in client list. "
+        f"Available: {[c.get('client_id') for c in clients]}"
+    )
+
+    # Step 2: Revoke OAuth client via admin DELETE endpoint
+    status, _, body = server_request(
+        base_url, "DELETE", f"/api/v1/oauth/clients/{client_uuid}",
+        headers={"X-CSRF-Token": csrf_token},
         cookies=admin_cookie,
     )
 
     assert status in (200, 204), (
-        f"Expected 200/204 from token revocation, got {status}: {body}"
+        f"Expected 200/204 from client revocation, got {status}: {body}"
     )
 
     # Step 2: Attempt a signed request through broker — should fail
@@ -195,7 +217,7 @@ def security_oauth_token_revocation(ctx: dict) -> dict:
 SECURITY_OAUTH_TOKEN_REVOCATION_NODE = DagNode(
     name="security.oauth_token_revocation",
     fn=security_oauth_token_revocation,
-    depends_on=["proxy.via_broker"],
+    depends_on=["journey.broker_full_lifecycle"],
     produces=[],
     consumes=[
         "oauth_client_id", "admin_session_cookie",

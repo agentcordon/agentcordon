@@ -10,9 +10,7 @@ use base64::Engine;
 
 use agent_cordon_core::crypto::ecies::{build_aad, CredentialEnvelopeEncryptor, EciesEncryptor};
 use agent_cordon_core::crypto::SecretEncryptor;
-use agent_cordon_core::domain::audit::{
-    enrich_metadata_with_policy_reasoning, AuditDecision, AuditEvent, AuditEventType,
-};
+use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::workspace::Workspace;
@@ -116,6 +114,7 @@ async fn vend_inner(
     cred: &StoredCredential,
     corr_id: String,
     broker_pub_bytes: Option<Vec<u8>>,
+    oauth_claims: Option<serde_json::Value>,
 ) -> Result<VendResponse, ApiError> {
     if cred.is_expired() {
         return Err(ApiError::Forbidden("credential has expired".to_string()));
@@ -129,8 +128,8 @@ async fn vend_inner(
             credential: cred.clone(),
         },
         &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
+            correlation_id: Some(corr_id.clone()),
+            oauth_claims,
             ..Default::default()
         },
     )?;
@@ -138,24 +137,7 @@ async fn vend_inner(
     let now = chrono::Utc::now();
 
     if decision.decision == PolicyDecisionResult::Forbid {
-        let mut metadata = serde_json::json!({
-            "workspace_id": workspace.id.0.to_string(),
-            "credential_name": cred.name,
-        });
-        enrich_metadata_with_policy_reasoning(&mut metadata, &decision, None, None);
-
-        let event = AuditEvent::builder(AuditEventType::CredentialVendDenied)
-            .action("vend_credential")
-            .workspace_actor(&workspace.id, &workspace.name)
-            .resource("credential", &cred.id.0.to_string())
-            .correlation_id(&corr_id)
-            .decision(AuditDecision::Forbid, Some(&decision.reasons.join(", ")))
-            .details(metadata)
-            .build();
-        if let Err(e) = state.store.append_audit_event(&event).await {
-            tracing::warn!(error = %e, "Failed to write audit event");
-        }
-
+        // Audit event emitted automatically by AuditingPolicyEngine.
         return Err(ApiError::Forbidden("access denied by policy".to_string()));
     }
 
@@ -209,21 +191,19 @@ async fn vend_inner(
         .await
         .map_err(|e| ApiError::Internal(format!("ECIES encryption failed: {}", e)))?;
 
-    // Audit event — NEVER include credential secret values
-    let mut metadata = serde_json::json!({
-        "workspace_id": workspace.id.0.to_string(),
-        "credential_name": cred.name,
-        "vend_id": vend_id,
-    });
-    enrich_metadata_with_policy_reasoning(&mut metadata, &decision, None, None);
-
+    // Domain audit: credential was vended — NEVER include credential secret values.
+    // Policy decision audit is handled by AuditingPolicyEngine.
     let event = AuditEvent::builder(AuditEventType::CredentialVended)
         .action("vend_credential")
         .workspace_actor(&workspace.id, &workspace.name)
         .resource("credential", &cred.id.0.to_string())
         .correlation_id(&corr_id)
-        .decision(AuditDecision::Permit, Some(&decision.reasons.join(", ")))
-        .details(metadata)
+        .decision(AuditDecision::Permit, None)
+        .details(serde_json::json!({
+            "workspace_id": workspace.id.0.to_string(),
+            "credential_name": cred.name,
+            "vend_id": vend_id,
+        }))
         .build();
     if let Err(e) = state.store.append_audit_event(&event).await {
         tracing::warn!(error = %e, "Failed to write audit event");
@@ -278,29 +258,14 @@ pub(crate) async fn reveal_credential(
         &PolicyContext {
             target_url: None,
             requested_scopes: vec![],
+            correlation_id: Some(corr.0.clone()),
             ..Default::default()
         },
     )?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
-        // Audit the denial — do NOT reveal which credential or why to the caller.
-        let mut metadata = serde_json::json!({
-            "credential_name": cred.name,
-        });
-        enrich_metadata_with_policy_reasoning(&mut metadata, &decision, None, None);
-        let event = AuditEvent::builder(AuditEventType::CredentialSecretViewed)
-            .action("unprotect")
-            .user_actor(&auth_user.user)
-            .resource("credential", &id.to_string())
-            .correlation_id(&corr.0)
-            .decision(AuditDecision::Forbid, Some(&decision.reasons.join(", ")))
-            .details(metadata)
-            .build();
-        if let Err(e) = state.store.append_audit_event(&event).await {
-            tracing::warn!(error = %e, "Failed to write audit event");
-        }
-
-        // Return 404 to avoid leaking credential existence to unauthorized users
+        // Policy deny audit is emitted by AuditingPolicyEngine.
+        // Return 404 to avoid leaking credential existence to unauthorized users.
         return Err(ApiError::NotFound("credential not found".to_string()));
     }
 
@@ -313,19 +278,18 @@ pub(crate) async fn reveal_credential(
     let secret_value = String::from_utf8(plaintext)
         .map_err(|_| ApiError::Internal("credential value is not valid UTF-8".to_string()))?;
 
-    // Audit the successful reveal — NEVER log the secret itself
-    let mut metadata = serde_json::json!({
-        "credential_name": cred.name,
-        "service": cred.service,
-    });
-    enrich_metadata_with_policy_reasoning(&mut metadata, &decision, None, None);
+    // Domain audit: secret was revealed — NEVER log the secret itself.
+    // Policy decision audit is handled by AuditingPolicyEngine.
     let event = AuditEvent::builder(AuditEventType::CredentialSecretViewed)
         .action("unprotect")
         .user_actor(&auth_user.user)
         .resource("credential", &id.to_string())
         .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some(&decision.reasons.join(", ")))
-        .details(metadata)
+        .decision(AuditDecision::Permit, None)
+        .details(serde_json::json!({
+            "credential_name": cred.name,
+            "service": cred.service,
+        }))
         .build();
     if let Err(e) = state.store.append_audit_event(&event).await {
         tracing::warn!(error = %e, "Failed to write audit event");
@@ -370,7 +334,8 @@ pub(crate) async fn vend_credential(
         .await?
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
-    let response = vend_inner(&state, &auth.workspace, &cred, corr.0, broker_pub).await?;
+    let response =
+        vend_inner(&state, &auth.workspace, &cred, corr.0, broker_pub, auth.oauth_claims).await?;
     Ok(Json(ApiResponse::ok(response)))
 }
 
@@ -415,6 +380,7 @@ pub(crate) async fn vend_credential_to_device(
             .ok_or_else(|| ApiError::NotFound(format!("credential '{}' not found", name)))?,
     };
 
-    let response = vend_inner(&state, &auth.workspace, &cred, corr.0, broker_pub).await?;
+    let response =
+        vend_inner(&state, &auth.workspace, &cred, corr.0, broker_pub, auth.oauth_claims).await?;
     Ok(Json(ApiResponse::ok(response)))
 }

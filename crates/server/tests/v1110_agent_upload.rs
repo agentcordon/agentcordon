@@ -894,28 +894,11 @@ async fn test_init_flow_with_mcp_upload() {
     // Simulate init: register agent → get JWT → call import.
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
         .build()
         .await;
 
-    let (device_id, device_key) = create_standalone_device(&ctx.state).await;
-
-    // Enroll agent through device
-    let (session_token, approval_ref) =
-        enroll_agent_through_device(&ctx.state, &device_key, &device_id, "init-agent").await;
-
-    let _admin = create_test_user(&*ctx.store, "admin1", TEST_PASSWORD, UserRole::Admin).await;
-    let admin_cookie = login_user_combined(&ctx.app, "admin1", TEST_PASSWORD).await;
-
-    // Approve enrollment — returns (agent_id_str, _)
-    let (agent_id_str, _) = approve_and_get_api_key(
-        &ctx.state,
-        &admin_cookie,
-        &extract_csrf_from_cookie(&admin_cookie).unwrap(),
-        &session_token,
-        &approval_ref,
-    )
-    .await;
+    // Create agent workspace directly (enrollment flow removed)
+    let (agent_id_str, device_key) = create_standalone_device(&ctx.state).await;
 
     // Issue a workspace JWT for the agent
     let agent_uuid: uuid::Uuid = agent_id_str.parse().expect("agent_id_str must be UUID");

@@ -95,7 +95,6 @@ async fn test_e2e_mcp_tool_call_audit_lifecycle() {
 
     let ctx = TestAppBuilder::new()
         .with_admin()
-        .with_enrollment()
         .build()
         .await;
     let (addr, _handle) = start_test_server(&ctx).await;

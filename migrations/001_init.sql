@@ -185,33 +185,6 @@ CREATE INDEX IF NOT EXISTS idx_audit_device_id ON audit_events(device_id);
 CREATE INDEX IF NOT EXISTS idx_audit_workspace_id ON audit_events(workspace_id);
 
 -- ============================================================
--- Enrollment Sessions
--- ============================================================
-CREATE TABLE IF NOT EXISTS enrollment_sessions (
-    id TEXT PRIMARY KEY,
-    session_token_hash TEXT NOT NULL,
-    approval_ref TEXT NOT NULL UNIQUE,
-    approval_code TEXT NOT NULL,
-    agent_name TEXT NOT NULL,
-    agent_description TEXT,
-    agent_tags TEXT NOT NULL DEFAULT '[]',
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    approved_by TEXT,
-    approved_at TEXT,
-    claimed_at TEXT,
-    client_ip TEXT,
-    claim_attempts INTEGER NOT NULL DEFAULT 0,
-    device_id TEXT,
-    workspace_id TEXT REFERENCES workspaces(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_enrollment_session_ref ON enrollment_sessions(approval_ref);
-CREATE INDEX IF NOT EXISTS idx_enrollment_session_status ON enrollment_sessions(status);
-CREATE INDEX IF NOT EXISTS idx_enrollment_session_token_hash ON enrollment_sessions(session_token_hash);
-
--- ============================================================
 -- Vault Shares
 -- ============================================================
 CREATE TABLE IF NOT EXISTS vault_shares (

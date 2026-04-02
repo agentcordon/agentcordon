@@ -11,7 +11,7 @@ use agent_cordon_core::domain::credential::CredentialId;
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::workspace::WorkspaceId;
 use agent_cordon_core::policy::{actions, templates};
-use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{PolicyEngine, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::extractors::AuthenticatedActor;
@@ -196,11 +196,7 @@ async fn load_and_authorize(
         &PolicyResource::Credential {
             credential: cred.clone(),
         },
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision != PolicyDecisionResult::Forbid {
@@ -214,7 +210,7 @@ async fn load_and_authorize(
                 return Ok(());
             }
         }
-        AuthenticatedActor::Workspace(workspace) => {
+        AuthenticatedActor::Workspace { workspace, .. } => {
             if cred
                 .created_by
                 .as_ref()
@@ -249,11 +245,7 @@ async fn authorize_read(
         &PolicyResource::Credential {
             credential: cred.clone(),
         },
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision != PolicyDecisionResult::Forbid {
@@ -267,7 +259,7 @@ async fn authorize_read(
                 return Ok(());
             }
         }
-        AuthenticatedActor::Workspace(workspace) => {
+        AuthenticatedActor::Workspace { workspace, .. } => {
             if cred
                 .created_by
                 .as_ref()
@@ -285,7 +277,7 @@ async fn authorize_read(
 async fn get_permissions(
     State(state): State<AppState>,
     actor: AuthenticatedActor,
-    axum::Extension(corr): axum::Extension<crate::middleware::request_id::CorrelationId>,
+    axum::Extension(_corr): axum::Extension<crate::middleware::request_id::CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<CredentialPermissionsResponse>>, ApiError> {
     let cred_id = CredentialId(id);
@@ -331,26 +323,8 @@ async fn get_permissions(
     }
     enrich_permission_names(state.store.as_ref(), &mut entries).await;
 
-    // Audit event for permission query (compliance requirement)
-    let (ws_id, ws_name, u_id, u_name) = actor.audit_actor_fields();
-    let audit_event = agent_cordon_core::domain::audit::AuditEvent::builder(
-        agent_cordon_core::domain::audit::AuditEventType::PolicyEvaluated,
-    )
-    .action("query_permissions")
-    .actor_fields(ws_id, ws_name, u_id, u_name)
-    .resource("credential", &id.to_string())
-    .correlation_id(&corr.0)
-    .decision(
-        agent_cordon_core::domain::audit::AuditDecision::Permit,
-        Some("bypass:manage_permissions"),
-    )
-    .details(serde_json::json!({
-        "permission_count": entries.len(),
-    }))
-    .build();
-    if let Err(e) = state.store.append_audit_event(&audit_event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+    // Policy decision audit is emitted automatically by AuditingPolicyEngine
+    // (via the evaluate() calls in authorize_read above).
 
     let response = CredentialPermissionsResponse {
         credential_id: id,

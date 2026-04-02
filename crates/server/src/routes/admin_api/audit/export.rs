@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyContext, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
 use agent_cordon_core::storage::AuditFilter;
 
 use crate::extractors::AuthenticatedActor;
@@ -91,11 +91,7 @@ pub(super) async fn export_audit_csv(
         &actor.policy_principal(),
         actions::VIEW_AUDIT,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision != PolicyDecisionResult::Permit {
@@ -253,11 +249,7 @@ pub(super) async fn export_audit_syslog(
         &actor.policy_principal(),
         actions::VIEW_AUDIT,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision != PolicyDecisionResult::Permit {
@@ -318,11 +310,7 @@ pub(super) async fn export_audit_jsonl(
         &actor.policy_principal(),
         actions::VIEW_AUDIT,
         &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
+        &actor.policy_context(None),
     )?;
 
     if decision.decision != PolicyDecisionResult::Permit {

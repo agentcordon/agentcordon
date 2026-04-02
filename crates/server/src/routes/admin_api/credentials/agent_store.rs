@@ -78,8 +78,8 @@ pub(crate) async fn agent_store_credential(
         actions::CREATE,
         &PolicyResource::System,
         &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
+            correlation_id: Some(corr.0.clone()),
+            oauth_claims: auth.oauth_claims.clone(),
             ..Default::default()
         },
     )?;

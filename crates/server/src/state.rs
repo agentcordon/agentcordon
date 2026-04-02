@@ -3,10 +3,10 @@ use std::sync::Arc;
 use agent_cordon_core::auth::jwt::JwtIssuer;
 use agent_cordon_core::crypto::aes_gcm::AesGcmEncryptor;
 use agent_cordon_core::oauth2::OAuth2TokenManager;
-use agent_cordon_core::policy::cedar::CedarPolicyEngine;
 use agent_cordon_core::storage::Store;
 use metrics_exporter_prometheus::PrometheusHandle;
 
+use crate::auditing_policy_engine::AuditingPolicyEngine;
 use crate::config::AppConfig;
 use crate::events::{EventBus, SseConnectionTracker, UiEventBus};
 use crate::rate_limit::LoginRateLimiter;
@@ -19,7 +19,7 @@ pub type SharedStore = Arc<dyn Store + Send + Sync>;
 pub struct AppState {
     pub store: SharedStore,
     pub jwt_issuer: Arc<JwtIssuer>,
-    pub policy_engine: Arc<CedarPolicyEngine>,
+    pub policy_engine: Arc<AuditingPolicyEngine>,
     pub encryptor: Arc<AesGcmEncryptor>,
     pub config: AppConfig,
     pub login_rate_limiter: Arc<LoginRateLimiter>,
