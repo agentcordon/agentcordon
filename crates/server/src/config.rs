@@ -46,6 +46,8 @@ pub struct AppConfig {
     pub seed_demo: bool,
     /// Directory containing runtime credential template overrides (`.json` files).
     pub credential_templates_dir: Option<String>,
+    /// Directory containing runtime MCP server template overrides (`.json` files).
+    pub mcp_templates_dir: Option<String>,
     /// Directory containing runtime policy template overrides (`.json` files).
     pub policy_templates_dir: Option<String>,
 }
@@ -98,6 +100,7 @@ impl AppConfig {
             bootstrap_token_ttl_seconds: 900,
             seed_demo: false, // Don't seed in tests by default
             credential_templates_dir: None,
+            mcp_templates_dir: None,
             policy_templates_dir: None,
         }
     }
@@ -301,6 +304,7 @@ impl AppConfig {
                 .map(|v| v != "false" && v != "0")
                 .unwrap_or(true),
             credential_templates_dir: env::var("AGTCRDN_CREDENTIAL_TEMPLATES_DIR").ok(),
+            mcp_templates_dir: env::var("AGTCRDN_MCP_TEMPLATES_DIR").ok(),
             policy_templates_dir: env::var("AGTCRDN_POLICY_TEMPLATES_DIR").ok(),
         })
     }

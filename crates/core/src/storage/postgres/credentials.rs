@@ -259,6 +259,22 @@ impl CredentialStore for PostgresStore {
             "list_all_stored_credentials not yet implemented for postgres".into(),
         ))
     }
+
+    async fn list_stored_credentials_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Vec<StoredCredential>, StoreError> {
+        let sql = format!(
+            "SELECT {} FROM credentials WHERE name = $1 ORDER BY created_at",
+            CREDENTIAL_COLUMNS
+        );
+        let rows = sqlx::query_as::<_, CredentialRow>(&sql)
+            .bind(name)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
 }
 
 #[async_trait]

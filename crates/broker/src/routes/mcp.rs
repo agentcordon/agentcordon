@@ -1,24 +1,111 @@
+use std::collections::HashMap;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
+use agent_cordon_core::proxy::url_safety::validate_proxy_target_resolved;
+
 use crate::auth::AuthenticatedWorkspace;
+use crate::credential_transform::{self, CredentialMaterial};
 use crate::server_client::ServerClient;
 use crate::state::SharedState;
 
 use super::helpers::{error_response, ok_response, require_scope, with_token_refresh};
+
+/// Parse a JSON-RPC response from an MCP server, handling both
+/// `application/json` and `text/event-stream` (SSE) Content-Types.
+async fn parse_mcp_response(resp: reqwest::Response) -> Result<serde_json::Value, String> {
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+
+    tracing::debug!(
+        status = %status,
+        content_type = %content_type,
+        "parsing MCP response"
+    );
+
+    if content_type.contains("text/event-stream") {
+        let body_text = resp
+            .text()
+            .await
+            .map_err(|e| format!("failed to read SSE body: {e}"))?;
+
+        for line in body_text.lines() {
+            let line = line.trim();
+            if let Some(data) = line.strip_prefix("data:") {
+                let data = data.trim();
+                if data.is_empty() {
+                    continue;
+                }
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                    if json.get("result").is_some() || json.get("error").is_some() {
+                        return Ok(json);
+                    }
+                }
+            }
+        }
+
+        Err("no JSON-RPC response found in SSE stream".to_string())
+    } else {
+        // Try reading as text first — if json() fails on streaming responses,
+        // we can still attempt SSE parsing as a fallback.
+        let body_text = resp
+            .text()
+            .await
+            .map_err(|e| format!("failed to read response body: {e}"))?;
+
+        tracing::debug!(
+            body_len = body_text.len(),
+            body_prefix = %body_text.chars().take(200).collect::<String>(),
+            "MCP response body"
+        );
+
+        // Try JSON first
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_text) {
+            return Ok(json);
+        }
+
+        // Fallback: try SSE parsing even without the header
+        // (some servers don't set Content-Type correctly)
+        for line in body_text.lines() {
+            let line = line.trim();
+            if let Some(data) = line.strip_prefix("data:") {
+                let data = data.trim();
+                if data.is_empty() {
+                    continue;
+                }
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                    if json.get("result").is_some() || json.get("error").is_some() {
+                        return Ok(json);
+                    }
+                }
+            }
+        }
+
+        Err(format!(
+            "failed to parse MCP response (len={}, prefix={})",
+            body_text.len(),
+            body_text.chars().take(100).collect::<String>()
+        ))
+    }
+}
 
 /// POST /mcp/list-servers
 pub async fn list_servers(
     State(state): State<SharedState>,
     request: axum::extract::Request,
 ) -> impl IntoResponse {
-    let auth = request
-        .extensions()
-        .get::<AuthenticatedWorkspace>()
-        .cloned()
-        .unwrap();
+    let auth = match request.extensions().get::<AuthenticatedWorkspace>().cloned() {
+        Some(a) => a,
+        None => return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "missing workspace authentication"),
+    };
 
     if let Err(e) = require_scope(&state, &auth.pk_hash, "mcp:discover", "mcp.list_servers").await {
         return e;
@@ -42,11 +129,10 @@ pub async fn list_tools(
     State(state): State<SharedState>,
     request: axum::extract::Request,
 ) -> impl IntoResponse {
-    let auth = request
-        .extensions()
-        .get::<AuthenticatedWorkspace>()
-        .cloned()
-        .unwrap();
+    let auth = match request.extensions().get::<AuthenticatedWorkspace>().cloned() {
+        Some(a) => a,
+        None => return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "missing workspace authentication"),
+    };
 
     if let Err(e) = require_scope(&state, &auth.pk_hash, "mcp:discover", "mcp.list_tools").await {
         return e;
@@ -54,15 +140,109 @@ pub async fn list_tools(
 
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
 
-    match with_token_refresh(&state, &auth.pk_hash, |token| {
+    let mut all_tools: Vec<crate::server_client::McpToolSummary> = match with_token_refresh(&state, &auth.pk_hash, |token| {
         let sc = server_client.clone();
         async move { sc.list_mcp_tools(&token).await }
     })
     .await
     {
-        Ok(tools) => ok_response(serde_json::json!(tools)),
-        Err(e) => e,
+        Ok(tools) => tools,
+        Err(e) => return e,
+    };
+
+    // Live discovery: for servers with empty tools but cached credentials,
+    // call tools/list on the upstream with auth injection. This handles servers
+    // that require authentication for tool discovery.
+    crate::mcp_sync::sync_workspace_now(&state, &auth.pk_hash).await;
+
+    // Collect servers needing live discovery (servers not already represented in all_tools)
+    let servers_to_probe: Vec<(String, String, crate::state::CachedCredential)> = {
+        let configs = state.mcp_configs.read().await;
+        if let Some(servers) = configs.get(&auth.pk_hash) {
+            servers
+                .iter()
+                .filter(|cached| {
+                    // Skip servers that already have tools in the server response
+                    !all_tools.iter().any(|t| t.server == cached.name)
+                })
+                .filter_map(|cached| {
+                    // Only probe servers with credentials and non-empty URLs
+                    let cred = cached.credential.as_ref()?;
+                    if cached.url.is_empty() {
+                        return None;
+                    }
+                    Some((cached.name.clone(), cached.url.clone(), cred.clone()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+
+    for (server_name, url, cred) in servers_to_probe {
+        let jsonrpc = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        });
+
+        let mut req = state
+            .http_client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(5));
+
+        // Inject credential via transform
+        let material = CredentialMaterial {
+            credential_type: Some(cred.credential_type.clone()),
+            value: cred.value.clone(),
+            username: None,
+            metadata: cred.metadata.clone(),
+        };
+        if let Ok(transformed) = credential_transform::apply(
+            &material,
+            cred.transform_name.as_deref(),
+            "POST",
+            &url,
+            &HashMap::new(),
+            None,
+        ) {
+            for (k, v) in &transformed.headers {
+                req = req.header(k, v);
+            }
+        }
+
+        let resp = match req.json(&jsonrpc).send().await {
+            Ok(r) if r.status().is_success() => r,
+            _ => continue,
+        };
+
+        let body: serde_json::Value = match parse_mcp_response(resp).await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if let Some(tools) = body
+            .get("result")
+            .and_then(|r| r.get("tools"))
+            .and_then(|t| t.as_array())
+        {
+            for tool in tools {
+                let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or_default();
+                let description = tool.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+                let input_schema = tool.get("inputSchema").cloned();
+                all_tools.push(crate::server_client::McpToolSummary {
+                    server: server_name.clone(),
+                    tool: name.to_string(),
+                    description,
+                    input_schema,
+                });
+            }
+        }
     }
+
+    ok_response(serde_json::json!(all_tools))
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,11 +257,10 @@ pub async fn call_tool(
     State(state): State<SharedState>,
     request: axum::extract::Request,
 ) -> impl IntoResponse {
-    let auth = request
-        .extensions()
-        .get::<AuthenticatedWorkspace>()
-        .cloned()
-        .unwrap();
+    let auth = match request.extensions().get::<AuthenticatedWorkspace>().cloned() {
+        Some(a) => a,
+        None => return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "missing workspace authentication"),
+    };
 
     // Read body
     let body_bytes = match axum::body::to_bytes(request.into_body(), 10 * 1024 * 1024).await {
@@ -135,50 +314,99 @@ pub async fn call_tool(
         );
     }
 
-    // Fetch MCP server list to find the target server's transport and URL.
-    let servers = match with_token_refresh(&state, &auth.pk_hash, |token| {
-        let sc = server_client.clone();
-        async move { sc.list_mcp_servers(&token).await }
-    })
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => return e,
+    // Look up target server: try cached config first, fall back to server fetch.
+    let (mcp_url, cached_credential) = {
+        let configs = state.mcp_configs.read().await;
+        if let Some(servers) = configs.get(&auth.pk_hash) {
+            if let Some(cached) = servers.iter().find(|s| s.name == server_name) {
+                let url = if cached.url.is_empty() {
+                    None
+                } else {
+                    Some(cached.url.clone())
+                };
+                (url, cached.credential.clone())
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        }
     };
 
-    let target = match servers.iter().find(|s| s.name == server_name) {
-        Some(s) => s.clone(),
+    // If cache miss OR server found without credentials (stale sync), trigger
+    // an on-demand sync and retry. This handles both "just provisioned" and
+    // "background sync ran without include_credentials" scenarios.
+    // For servers with auth_method "none", a missing credential is expected.
+    let cached_auth_method = {
+        let configs = state.mcp_configs.read().await;
+        configs
+            .get(&auth.pk_hash)
+            .and_then(|servers| servers.iter().find(|s| s.name == server_name))
+            .map(|s| s.auth_method.clone())
+    };
+    let needs_sync = mcp_url.is_none()
+        || (cached_credential.is_none()
+            && cached_auth_method.as_deref() != Some("none"));
+    let (mcp_url, cached_credential) = if needs_sync {
+        tracing::info!(
+            server = %server_name,
+            has_url = mcp_url.is_some(),
+            has_cred = cached_credential.is_some(),
+            pk_hash = %auth.pk_hash,
+            "MCP cache miss/stale, triggering on-demand sync"
+        );
+        crate::mcp_sync::sync_workspace_now(&state, &auth.pk_hash).await;
+
+        // Retry cache lookup after sync
+        let configs = state.mcp_configs.read().await;
+        if let Some(servers) = configs.get(&auth.pk_hash) {
+            if let Some(cached) = servers.iter().find(|s| s.name == server_name) {
+                let url = if cached.url.is_empty() { None } else { Some(cached.url.clone()) };
+                tracing::info!(
+                    server = %server_name,
+                    has_url_after = url.is_some(),
+                    has_cred_after = cached.credential.is_some(),
+                    "on-demand sync result"
+                );
+                (url, cached.credential.clone())
+            } else {
+                tracing::warn!(server = %server_name, "server not found in cache after sync");
+                (None, None)
+            }
+        } else {
+            tracing::warn!(pk_hash = %auth.pk_hash, "no cache entry for workspace after sync");
+            (None, None)
+        }
+    } else {
+        tracing::debug!(
+            server = %server_name,
+            has_cred = cached_credential.is_some(),
+            "using cached MCP config"
+        );
+        (mcp_url, cached_credential)
+    };
+
+    let mcp_url = match mcp_url {
+        Some(url) => url,
         None => {
             return error_response(
                 StatusCode::NOT_FOUND,
                 "not_found",
-                &format!("MCP server '{}' not found", server_name),
+                &format!("MCP server '{}' not found or has no URL configured", server_name),
             );
         }
     };
 
-    let transport = target.transport.as_deref().unwrap_or("stdio");
-
-    // STDIO servers are local-only — cannot be proxied via the broker.
-    if transport == "stdio" {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "unsupported_transport",
-            "STDIO MCP servers are local-only. Configure them in .mcp.json for native agent access.",
-        );
-    }
-
-    // HTTP/SSE transport — POST JSON-RPC to the server URL.
-    let mcp_url = match &target.url {
-        Some(u) if !u.is_empty() => u.clone(),
-        _ => {
+    // SSRF validation — prevent MCP servers from targeting internal/cloud metadata endpoints
+    if !state.config.proxy_allow_loopback {
+        if let Err(reason) = validate_proxy_target_resolved(&mcp_url).await {
             return error_response(
-                StatusCode::BAD_GATEWAY,
-                "bad_gateway",
-                &format!("MCP server '{}' has no URL configured", server_name),
+                StatusCode::BAD_REQUEST,
+                "ssrf_blocked",
+                &format!("Blocked by SSRF protection: {reason}"),
             );
         }
-    };
+    }
 
     let jsonrpc_request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -190,14 +418,64 @@ pub async fn call_tool(
         }
     });
 
-    let mcp_resp = match state
+    // Build the request, injecting credentials if available
+    let mut req_builder = state
         .http_client
         .post(&mcp_url)
-        .header("Content-Type", "application/json")
-        .json(&jsonrpc_request)
-        .send()
-        .await
-    {
+        .header("Content-Type", "application/json");
+
+    if let Some(ref cred) = cached_credential {
+        let material = CredentialMaterial {
+            credential_type: Some(cred.credential_type.clone()),
+            value: cred.value.clone(),
+            username: None,
+            metadata: cred.metadata.clone(),
+        };
+        match credential_transform::apply(
+            &material,
+            cred.transform_name.as_deref(),
+            "POST",
+            &mcp_url,
+            &HashMap::new(),
+            None,
+        ) {
+            Ok(transformed) => {
+                for (k, v) in &transformed.headers {
+                    req_builder = req_builder.header(k, v);
+                }
+                // Query params are not directly injectable on reqwest builder
+                // after URL construction, but MCP servers typically use header auth.
+                if !transformed.query_params.is_empty() {
+                    let mut url_with_params = match reqwest::Url::parse(&mcp_url) {
+                        Ok(u) => u,
+                        Err(e) => {
+                            return error_response(
+                                StatusCode::BAD_GATEWAY,
+                                "bad_gateway",
+                                &format!("invalid MCP server URL '{}': {}", server_name, e),
+                            );
+                        }
+                    };
+                    for (k, v) in &transformed.query_params {
+                        url_with_params.query_pairs_mut().append_pair(k, v);
+                    }
+                    req_builder = state
+                        .http_client
+                        .post(url_with_params)
+                        .header("Content-Type", "application/json");
+                    // Re-add credential headers
+                    for (k, v) in &transformed.headers {
+                        req_builder = req_builder.header(k, v);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, server = %server_name, "credential transform failed, proceeding without injection");
+            }
+        }
+    }
+
+    let mcp_resp = match req_builder.json(&jsonrpc_request).send().await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, server = %server_name, url = %mcp_url, "HTTP MCP request failed");
@@ -210,14 +488,14 @@ pub async fn call_tool(
     };
 
     let mcp_status = mcp_resp.status();
-    let mcp_body: serde_json::Value = match mcp_resp.json().await {
+    let mcp_body: serde_json::Value = match parse_mcp_response(mcp_resp).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, server = %server_name, "failed to parse MCP response");
             return error_response(
                 StatusCode::BAD_GATEWAY,
                 "bad_gateway",
-                &format!("Invalid response from MCP server '{}': {}", server_name, e),
+                &format!("Failed to parse MCP response from '{}': {}", server_name, e),
             );
         }
     };
@@ -285,3 +563,4 @@ pub async fn call_tool(
         })),
     )
 }
+

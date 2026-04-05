@@ -30,12 +30,8 @@ impl<S: CredentialStore + AuditStore> CredentialService<S> {
                 message: "credential name must not be empty".into(),
             });
         }
-        // Check for name uniqueness
-        if let Some(_existing) = self.store.get_credential_by_name(&credential.name).await? {
-            return Err(ServiceError::Conflict {
-                message: format!("credential with name '{}' already exists", credential.name),
-            });
-        }
+        // Names are not unique — multiple credentials can share the same name.
+        // Cedar policies control access; names are human-friendly labels.
         self.store.store_credential(credential).await?;
         Ok(())
     }

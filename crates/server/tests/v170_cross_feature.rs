@@ -8,7 +8,7 @@ use axum::http::{Method, StatusCode};
 use serde_json::json;
 use uuid::Uuid;
 
-use agent_cordon_core::domain::mcp::{McpServer, McpServerId};
+use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::storage::Store;
 
@@ -50,7 +50,7 @@ async fn create_mcp_server_in_store(
         workspace_id: device.id,
         name: name.to_string(),
         upstream_url: upstream_url.to_string(),
-        transport: "http".to_string(),
+        transport: McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -58,6 +58,9 @@ async fn create_mcp_server_in_store(
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
     };
     store
         .create_mcp_server(&server)

@@ -2,6 +2,7 @@ mod crud;
 mod discover;
 mod import;
 mod permissions;
+pub(crate) mod provision;
 
 use axum::{
     routing::{get, post},
@@ -25,6 +26,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/mcp-servers", get(list_mcp_servers))
         .route("/mcp-servers/import", post(import_mcp_servers))
+        .route(
+            "/mcp-servers/provision",
+            post(provision::provision_from_catalog),
+        )
         .route(
             "/mcp-servers/{id}",
             get(get_mcp_server)
@@ -69,6 +74,8 @@ pub(crate) struct McpServerResponse {
     pub updated_at: String,
     pub tags: Vec<String>,
     pub required_credentials: Option<Vec<String>>,
+    pub auth_method: String,
+    pub template_key: Option<String>,
 }
 
 impl McpServerResponse {
@@ -79,7 +86,7 @@ impl McpServerResponse {
             workspace_name: None,
             name: s.name.clone(),
             upstream_url: s.upstream_url.clone(),
-            transport: s.transport.clone(),
+            transport: s.transport.to_string(),
             allowed_tools: s.allowed_tools.clone(),
             enabled: s.enabled,
             created_by: s.created_by.as_ref().map(|w| w.0.to_string()),
@@ -91,6 +98,8 @@ impl McpServerResponse {
                 .required_credentials
                 .as_ref()
                 .map(|creds| creds.iter().map(|c| c.0.to_string()).collect()),
+            auth_method: s.auth_method.to_string(),
+            template_key: s.template_key.clone(),
         }
     }
 }

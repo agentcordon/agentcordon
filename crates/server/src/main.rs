@@ -66,6 +66,11 @@ async fn main() {
             config.credential_templates_dir.as_deref(),
         );
 
+    let mcp_templates =
+        agent_cordon_server::routes::admin_api::mcp_templates::load_mcp_templates(
+            config.mcp_templates_dir.as_deref(),
+        );
+
     let policy_templates = agent_cordon_server::routes::admin_api::policy_templates::load_templates(
         config.policy_templates_dir.as_deref(),
     );
@@ -85,6 +90,7 @@ async fn main() {
         ui_event_bus: agent_cordon_server::events::UiEventBus::new(256),
         sse_tracker: agent_cordon_server::events::SseConnectionTracker::new(5),
         credential_templates,
+        mcp_templates,
         policy_templates,
     };
 

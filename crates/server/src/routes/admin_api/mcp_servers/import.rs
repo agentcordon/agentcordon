@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
-use agent_cordon_core::domain::mcp::{McpServer, McpServerId};
+use agent_cordon_core::domain::mcp::{McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
 
@@ -20,7 +20,7 @@ use crate::state::AppState;
 pub(super) struct ImportMcpServersRequest {
     #[serde(alias = "device_id")]
     workspace_id: Uuid,
-    /// Optional workspace ID that uploaded the servers (for auto-granting policies).
+    /// Optional workspace ID that uploaded the servers (for provenance tracking).
     #[serde(alias = "agent_id")]
     uploading_workspace_id: Option<Uuid>,
     servers: Vec<ImportMcpServerEntry>,
@@ -139,15 +139,17 @@ pub(super) async fn import_mcp_servers(
             continue;
         }
 
-        let transport = entry
-            .transport
-            .clone()
-            .unwrap_or_else(|| "stdio".to_string());
-        let upstream_url = if transport == "stdio" {
-            format!("stdio://{}", name)
-        } else {
-            entry.url.clone().unwrap_or_default()
+        let transport = match entry.transport.as_deref() {
+            Some("sse") => McpTransport::Sse,
+            Some("http") | None => McpTransport::Http,
+            Some(other) => {
+                return Err(ApiError::BadRequest(format!(
+                    "unsupported transport '{}' for MCP server '{}'",
+                    other, name
+                )));
+            }
         };
+        let upstream_url = entry.url.clone().unwrap_or_default();
 
         let allowed_tools = entry
             .tools
@@ -178,6 +180,9 @@ pub(super) async fn import_mcp_servers(
                     })
                     .collect()
             }),
+            auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::None,
+            template_key: None,
+            discovered_tools: None,
         };
 
         state.store.create_mcp_server(&server).await?;

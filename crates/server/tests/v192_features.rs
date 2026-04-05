@@ -211,7 +211,7 @@ mod mcp_tools_display {
             workspace_id: agent_cordon_core::domain::workspace::WorkspaceId(d_uuid),
             name: name.to_string(),
             upstream_url: "http://localhost:9999".to_string(),
-            transport: "http".to_string(),
+            transport: agent_cordon_core::domain::mcp::McpTransport::Http,
             allowed_tools: None,
             enabled: true,
             created_by: None,
@@ -219,6 +219,9 @@ mod mcp_tools_display {
             updated_at: now,
             tags: vec![],
             required_credentials: None,
+            auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
+            template_key: None,
+        discovered_tools: None,
         };
         store
             .create_mcp_server(&server)

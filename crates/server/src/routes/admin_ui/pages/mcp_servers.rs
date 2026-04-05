@@ -98,7 +98,7 @@ pub async fn mcp_server_list_page(State(state): State<AppState>, request: Reques
                 } else {
                     s.upstream_url.clone()
                 },
-                transport: s.transport.clone(),
+                transport: s.transport.to_string(),
                 enabled: s.enabled,
                 tools_count: s.allowed_tools.as_ref().map(|t| t.len()).unwrap_or(0),
                 workspace_id: s.workspace_id.0.to_string(),
@@ -148,6 +148,65 @@ pub async fn mcp_server_list_page(State(state): State<AppState>, request: Reques
         csrf_token: csrf.0,
         servers: server_views,
         servers_json,
+        workspaces_json,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// MCP Marketplace
+// ---------------------------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "pages/mcp_servers/marketplace.html")]
+pub struct McpMarketplacePage {
+    pub show_nav: bool,
+    pub current_page: String,
+    pub user: UserContext,
+    pub csrf_token: String,
+    pub workspaces_json: String,
+}
+
+/// GET /mcp-marketplace — render the MCP marketplace page.
+pub async fn mcp_marketplace_page(State(state): State<AppState>, request: Request) -> Response {
+    let user = match super::extract_page_user(&request) {
+        Ok(u) => u,
+        Err(redirect) => return redirect,
+    };
+    let csrf = request
+        .extensions()
+        .get::<CsrfToken>()
+        .cloned()
+        .unwrap_or(CsrfToken(String::new()));
+
+    let workspaces = if is_admin_user(&user) {
+        state.store.list_workspaces().await.unwrap_or_default()
+    } else {
+        state
+            .store
+            .get_workspaces_by_owner(&user.id)
+            .await
+            .unwrap_or_default()
+    };
+
+    let workspaces_json = serde_json::to_string(
+        &workspaces
+            .iter()
+            .map(|w| {
+                serde_json::json!({
+                    "id": w.id.0.to_string(),
+                    "name": w.name,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_string())
+    .replace("</", "<\\/");
+
+    render_template(&McpMarketplacePage {
+        show_nav: true,
+        current_page: "mcp-servers".to_string(),
+        user: UserContext::from(&user),
+        csrf_token: csrf.0,
         workspaces_json,
     })
 }

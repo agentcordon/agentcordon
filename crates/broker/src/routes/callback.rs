@@ -1,6 +1,5 @@
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::Utc;
 use serde::Deserialize;
 
@@ -20,17 +19,15 @@ pub struct CallbackParams {
 pub async fn get_callback(
     State(state): State<SharedState>,
     Query(params): Query<CallbackParams>,
-) -> impl IntoResponse {
+) -> Response {
     // Check for error from the server
     if let Some(error) = &params.error {
         let desc = params
             .error_description
             .as_deref()
             .unwrap_or("Unknown error");
-        return (
-            StatusCode::OK,
-            Html(format!(
-                r#"<!DOCTYPE html>
+        return Html(format!(
+            r#"<!DOCTYPE html>
 <html><head><title>AgentCordon — Authorization Denied</title></head>
 <body style="font-family: sans-serif; max-width: 600px; margin: 80px auto; text-align: center;">
 <h1>Authorization Denied</h1>
@@ -38,29 +35,23 @@ pub async fn get_callback(
 <p>{}</p>
 <p>You may close this tab.</p>
 </body></html>"#,
-                html_escape(error),
-                html_escape(desc),
-            )),
-        );
+            html_escape(error),
+            html_escape(desc),
+        ))
+        .into_response();
     }
 
     let code = match &params.code {
         Some(c) => c.clone(),
         None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Html(error_page("Missing authorization code")),
-            );
+            return Html(error_page("Missing authorization code")).into_response();
         }
     };
 
     let oauth_state = match &params.state {
         Some(s) => s.clone(),
         None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Html(error_page("Missing state parameter")),
-            );
+            return Html(error_page("Missing state parameter")).into_response();
         }
     };
 
@@ -70,10 +61,7 @@ pub async fn get_callback(
         match pending_map.remove(&oauth_state) {
             Some(p) => p,
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Html(error_page("Unknown or expired state parameter")),
-                );
+                return Html(error_page("Unknown or expired state parameter")).into_response();
             }
         }
     };
@@ -85,10 +73,7 @@ pub async fn get_callback(
                 pending.client_id = cid.clone();
             }
             _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Html(error_page("Missing client_id in callback")),
-                );
+                return Html(error_page("Missing client_id in callback")).into_response();
             }
         }
     }
@@ -108,10 +93,7 @@ pub async fn get_callback(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "token exchange failed");
-            return (
-                StatusCode::OK,
-                Html(error_page("Token exchange failed. Please try again.")),
-            );
+            return Html(error_page("Token exchange failed. Please try again.")).into_response();
         }
     };
 
@@ -156,19 +138,10 @@ pub async fn get_callback(
         "workspace registered successfully"
     );
 
-    (
-        StatusCode::OK,
-        Html(format!(
-            r#"<!DOCTYPE html>
-<html><head><title>AgentCordon — Authorization Complete</title></head>
-<body style="font-family: sans-serif; max-width: 600px; margin: 80px auto; text-align: center;">
-<h1>Authorization Complete</h1>
-<p>Workspace <strong>{}</strong> has been registered with the broker.</p>
-<p>You may close this tab.</p>
-</body></html>"#,
-            html_escape(&pending.workspace_name),
-        )),
-    )
+    // Redirect the browser to the server's workspaces page so the user
+    // lands on their newly registered workspace.
+    let redirect_url = format!("{}/workspaces", state.server_url.trim_end_matches('/'));
+    Redirect::to(&redirect_url).into_response()
 }
 
 fn error_page(message: &str) -> String {

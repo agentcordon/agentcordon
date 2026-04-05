@@ -1,12 +1,9 @@
 use crate::error::StoreError;
 
 pub const MIGRATION_001: &str = include_str!("../../../../migrations/001_init.sql");
-pub const MIGRATION_002: &str =
-    include_str!("../../../../migrations/002_credential_description.sql");
-pub const MIGRATION_003: &str = include_str!("../../../../migrations/003_oauth.sql");
 
 /// All migrations in order. Each entry is (version, SQL content).
-const MIGRATIONS: [(i64, &str); 3] = [(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003)];
+const MIGRATIONS: [(i64, &str); 1] = [(1, MIGRATION_001)];
 
 /// Run all pending migrations, tracking applied versions in a `schema_migrations` table.
 ///
@@ -199,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn test_credential_scoped_uniqueness() {
+    fn test_credential_names_not_unique() {
         let conn = open_memory_db();
         run_migrations(&conn).expect("run migrations");
 
@@ -213,7 +210,7 @@ mod tests {
             [],
         ).expect("insert ws2");
 
-        // Same credential name under different workspaces — should succeed
+        // Same name under different workspaces — should succeed
         conn.execute(
             "INSERT INTO credentials (id, name, service, encrypted_value, nonce, created_by, created_at, updated_at)
              VALUES ('c1', 'api-key', 'github', X'00', X'00', 'ws1', '2026-01-01', '2026-01-01')",
@@ -225,16 +222,12 @@ mod tests {
             [],
         ).expect("insert same name for ws2 should succeed");
 
-        // Duplicate name under same workspace — should fail
-        let result = conn.execute(
+        // Same name under same workspace — also allowed (names are labels, UUID is the key)
+        conn.execute(
             "INSERT INTO credentials (id, name, service, encrypted_value, nonce, created_by, created_at, updated_at)
              VALUES ('c3', 'api-key', 'github', X'00', X'00', 'ws1', '2026-01-01', '2026-01-01')",
             [],
-        );
-        assert!(
-            result.is_err(),
-            "duplicate name under same workspace should fail"
-        );
+        ).expect("duplicate name under same workspace should succeed after migration 006");
     }
 
     #[test]

@@ -594,14 +594,13 @@ fn no_grants_denies_all_credential_actions_for_unowned_agents() {
 
 #[test]
 fn owner_agent_allowed_list_and_vend_own_credentials() {
-    // With owner-scoped policies, an agent with an owner can list and vend
-    // their owner's credentials, but NOT access or delete without explicit grants.
+    // Enabled owner workspaces can list and vend their owner's credentials (1b).
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
     let user = make_user("owner-user", UserRole::Operator, false);
     let agent = make_agent_with_owner("worker-bot", vec![], true, &user);
     let cred = make_credential_owned_by("my-token", "github", vec![], &agent);
 
-    // list and vend_credential should be ALLOWED via ownership policies (1b, 1d)
+    // list and vend_credential should be ALLOWED via ownership policy (1b)
     for action in &["list", "vend_credential"] {
         let result = engine
             .evaluate(
@@ -750,9 +749,8 @@ fn delegated_use_grant_allows_vend_credential() {
 
 #[test]
 fn enabled_agent_allowed_vend_own_credential_via_default_policy() {
-    // Default policy 1d grants enabled workspaces `vend_credential` for their
-    // owner's credentials. Agents use credentials through the proxy — they
-    // never see raw secrets.
+    // Policy 1b grants enabled workspaces `vend_credential` for their
+    // owner's credentials. Agents use credentials through the proxy.
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
     let user = make_user("owner-user", UserRole::Operator, false);
     let agent = make_agent_with_owner("worker-bot", vec![], true, &user);
@@ -776,8 +774,8 @@ fn enabled_agent_allowed_vend_own_credential_via_default_policy() {
 
 #[test]
 fn enabled_agent_denied_vend_other_users_credential() {
-    // With owner-scoped policy 1d, an enabled workspace cannot vend credentials
-    // belonging to a different user.
+    // Policy 1b scopes vend_credential to the workspace's owner, so an
+    // enabled workspace cannot vend credentials belonging to a different user.
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
     let user = make_user("owner-user", UserRole::Operator, false);
     let agent = make_agent_with_owner("worker-bot", vec![], true, &user);
@@ -803,7 +801,7 @@ fn enabled_agent_denied_vend_other_users_credential() {
 
 #[test]
 fn ownerless_agent_denied_vend_via_default_policy() {
-    // Workspaces without an owner cannot vend credentials via policy 1d
+    // Workspaces without an owner cannot vend credentials via policy 1b
     // (which requires `principal has owner`). They need explicit per-credential
     // grants instead.
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
@@ -829,8 +827,7 @@ fn ownerless_agent_denied_vend_via_default_policy() {
 #[test]
 fn list_grant_does_not_allow_access() {
     // A "list" grant only permits listing. `access` (raw secret visibility)
-    // requires an explicit access grant. `vend_credential` is allowed via
-    // default policy 1d regardless.
+    // requires an explicit access grant.
     let agent = make_agent("reader-bot", vec![], true);
     let cred = make_credential("github-pat", "github", vec!["repo"]);
     let engine =
@@ -1807,7 +1804,7 @@ fn agent_resource_without_owner_evaluates_correctly() {
 }
 
 // -----------------------------------------------------------------------
-// R-006: Disabled principal forbid rule tests
+// R-006: Disabled principal tests (implicit deny via enabled checks)
 // -----------------------------------------------------------------------
 
 #[test]
@@ -1833,7 +1830,7 @@ fn disabled_admin_agent_is_denied() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled admin agent should be denied by forbid rule"
+        "disabled admin agent should be denied — no permit matches when !enabled"
     );
 }
 
@@ -1876,7 +1873,7 @@ fn disabled_admin_user_is_denied() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled admin user should be denied by forbid rule"
+        "disabled admin user should be denied — no permit matches when !enabled"
     );
 }
 
@@ -1898,14 +1895,14 @@ fn disabled_operator_user_is_denied() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled operator user should be denied by forbid rule"
+        "disabled operator user should be denied — no permit matches when !enabled"
     );
 }
 
 #[test]
 fn disabled_owner_agent_cannot_access_own_credential() {
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    // Owner agent, but disabled -- forbid rule overrides ownership permit
+    // Owner agent, but disabled — no permit matches when !enabled
     let user = make_user("owner-user", UserRole::Operator, false);
     let disabled_owner = make_agent_with_owner("disabled-owner", vec![], false, &user);
     let cred = make_credential_owned_by("my-token", "slack", vec![], &disabled_owner);
@@ -1948,7 +1945,7 @@ fn disabled_viewer_user_is_denied() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled viewer user should be denied by forbid rule"
+        "disabled viewer user should be denied — no permit matches when !enabled"
     );
 }
 
@@ -1975,7 +1972,7 @@ fn disabled_non_admin_agent_is_denied() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled non-admin agent should be denied by forbid rule"
+        "disabled non-admin agent should be denied — no permit matches when !enabled"
     );
 }
 
@@ -2099,9 +2096,8 @@ fn make_device(id: &str, name: &str, enabled: bool) -> Workspace {
 
 #[test]
 fn enabled_device_allowed_vend_own_credential_via_default_policy() {
-    // Default policy 1d grants enabled workspaces (including devices)
-    // `vend_credential` for their owner's credentials. Devices use
-    // credentials through the proxy.
+    // Policy 1b grants enabled workspaces (including devices)
+    // `vend_credential` for their owner's credentials.
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
     let user = make_user("device-owner", UserRole::Operator, false);
     let device = make_agent_with_owner("test-device", vec![], true, &user);
@@ -2123,7 +2119,7 @@ fn enabled_device_allowed_vend_own_credential_via_default_policy() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Permit,
-        "enabled device should be allowed vend_credential for own credentials via default policy 1d"
+        "enabled device should be allowed vend_credential for own credentials via policy 1b"
     );
 }
 
@@ -2250,17 +2246,18 @@ fn implicit_deny_has_empty_reasons() {
 
 #[test]
 fn explicit_forbid_has_non_empty_reasons() {
-    // A disabled workspace (enabled=false) tries to list system resources.
-    // Forbid rule 3a fires (!principal.enabled), so reasons should contain
-    // the forbid policy ID.
+    // An enabled admin workspace tries to unprotect a credential.
+    // The security boundary forbid fires (workspaces must never see raw secrets),
+    // so reasons should contain the forbid policy ID.
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    let disabled_ws = make_agent("disabled-bot", vec!["admin"], false);
+    let admin_ws = make_agent("admin-bot", vec!["admin"], true);
+    let cred = make_credential("some-token", "slack", vec![]);
 
     let result = engine
         .evaluate(
-            &PolicyPrincipal::Workspace(&disabled_ws),
-            "list",
-            &PolicyResource::System,
+            &PolicyPrincipal::Workspace(&admin_ws),
+            "unprotect",
+            &PolicyResource::Credential { credential: cred },
             &empty_ctx(),
         )
         .expect("evaluate");
@@ -2268,7 +2265,7 @@ fn explicit_forbid_has_non_empty_reasons() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled workspace should be denied by forbid rule 3a"
+        "workspace should be denied unprotect by security boundary forbid"
     );
     assert!(
         !result.reasons.is_empty(),

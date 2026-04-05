@@ -104,7 +104,9 @@ pub enum AuditEventType {
     McpToolCallDenied,
     McpPoliciesGenerated,
     McpToolCall,
+    McpToolCalled,
     McpToolDenied,
+    McpServerProvisioned,
 
     // Subprocess
     SubprocessSpawned,

@@ -24,22 +24,13 @@ use super::is_safe_identifier;
 // Tool Discovery (internal helper, used by import on re-registration)
 // ---------------------------------------------------------------------------
 
-/// Best-effort tool discovery: connect to the MCP server and return tool names.
+/// Best-effort tool discovery: connect to the MCP server and return tool metadata.
 /// Returns an empty vec on any failure (network, parse, etc.).
-#[allow(dead_code)]
 pub(super) async fn attempt_tool_discovery(
     state: &AppState,
     server: &McpServer,
-) -> Result<Vec<String>, String> {
-    // STDIO transport servers cannot be discovered via HTTP from the control plane
-    if server.transport == "stdio" || server.upstream_url.starts_with("stdio://") {
-        return Err(
-            "STDIO transport servers cannot be discovered from the control plane. \
-                    Use the device's MCP proxy endpoint to interact with STDIO servers."
-                .to_string(),
-        );
-    }
-
+    credential_secret: Option<&str>,
+) -> Result<Vec<McpTool>, String> {
     // SSRF protection
     if !state.config.proxy_allow_loopback {
         validate_proxy_target(&server.upstream_url).map_err(|e| e.to_string())?;
@@ -57,9 +48,15 @@ pub(super) async fn attempt_tool_discovery(
         .build()
         .map_err(|e| e.to_string())?;
 
-    let response = client
+    let mut request = client
         .post(&server.upstream_url)
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+
+    if let Some(secret) = credential_secret {
+        request = request.header("Authorization", format!("Bearer {}", secret));
+    }
+
+    let response = request
         .json(&jsonrpc_body)
         .send()
         .await
@@ -69,12 +66,33 @@ pub(super) async fn attempt_tool_discovery(
         return Err(format!("HTTP {}", response.status().as_u16()));
     }
 
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
     if bytes.len() > 1_048_576 {
         return Err("response too large".to_string());
     }
 
-    let body: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let body: serde_json::Value = if content_type.contains("text/event-stream") {
+        let body_text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+        body_text
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("data:").map(|d| d.trim().to_string()))
+            .filter(|d| !d.is_empty())
+            .find_map(|d| {
+                serde_json::from_str::<serde_json::Value>(&d)
+                    .ok()
+                    .filter(|j| j.get("result").is_some() || j.get("error").is_some())
+            })
+            .ok_or_else(|| "no JSON-RPC response in SSE stream".to_string())?
+    } else {
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?
+    };
 
     // Only treat JSON-RPC error objects (not REST error strings) as errors
     if let Some(err) = body.get("error") {
@@ -95,7 +113,7 @@ pub(super) async fn attempt_tool_discovery(
         .and_then(|t| serde_json::from_value(t.clone()).ok())
         .unwrap_or_default();
 
-    Ok(tools.into_iter().map(|t| t.name).collect())
+    Ok(tools)
 }
 
 // ---------------------------------------------------------------------------
@@ -122,8 +140,34 @@ pub(super) struct GeneratedPolicyInfo {
 
 /// Generate a Cedar policy allowing agents with a given tag to call a
 /// specific tool on a specific MCP server.
-fn generate_cedar_policy(tag: &str, tool_name: &str, server_id: &str) -> String {
-    format!(
+///
+/// Defense-in-depth: validates all inputs internally to prevent Cedar policy
+/// injection, even if callers have already validated.
+fn generate_cedar_policy(tag: &str, tool_name: &str, server_id: &str) -> Result<String, ApiError> {
+    if !is_safe_identifier(tag) {
+        return Err(ApiError::BadRequest(format!(
+            "unsafe tag value for Cedar policy generation: '{}'",
+            tag
+        )));
+    }
+    if !is_safe_identifier(tool_name) {
+        return Err(ApiError::BadRequest(format!(
+            "unsafe tool_name value for Cedar policy generation: '{}'",
+            tool_name
+        )));
+    }
+    // server_id is a UUID string — validate it contains only hex digits and hyphens
+    if server_id.is_empty()
+        || !server_id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        return Err(ApiError::BadRequest(format!(
+            "unsafe server_id value for Cedar policy generation: '{}'",
+            server_id
+        )));
+    }
+    Ok(format!(
         r#"// Auto-generated: Allow agents tagged "{tag}" to use tool "{tool_name}" on MCP server "{server_id}"
 permit(
   principal is AgentCordon::Workspace,
@@ -136,7 +180,7 @@ permit(
         tag = tag,
         tool_name = tool_name,
         server_id = server_id
-    )
+    ))
 }
 
 /// `POST /api/v1/mcp-servers/{id}/generate-policies`
@@ -223,7 +267,7 @@ pub(super) async fn generate_policies(
                 continue;
             }
 
-            let cedar_text = generate_cedar_policy(tag, tool_name, &server_id_str);
+            let cedar_text = generate_cedar_policy(tag, tool_name, &server_id_str)?;
 
             // Validate the generated Cedar policy before storing
             state

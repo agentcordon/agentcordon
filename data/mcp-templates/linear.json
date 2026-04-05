@@ -1,0 +1,13 @@
+{
+  "key": "linear",
+  "name": "Linear",
+  "description": "Issues, projects, teams, and roadmaps",
+  "upstream_url": "https://api.linear.app/mcp",
+  "transport": "sse",
+  "auth_method": "api_key",
+  "credential_template_key": "linear",
+  "category": "project-management",
+  "tags": ["linear", "issues"],
+  "icon": "linear",
+  "sort_order": 30
+}

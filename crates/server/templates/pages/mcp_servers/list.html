@@ -11,6 +11,7 @@
                     <input x-model="searchQuery" type="text" placeholder="Search MCP servers..." aria-label="Search MCP servers">
                 </div>
             </template>
+            <a href="/mcp-marketplace" class="btn btn-primary">Browse Marketplace</a>
         </div>
     </div>
 
@@ -56,7 +57,14 @@
                                     @click="openServerPanel(server)"
                                     @keydown.enter="openServerPanel(server)"
                                     @keydown.space.prevent="openServerPanel(server)">
-                                    <td><a :href="'/mcp-servers/' + server.id" class="cred-name" x-text="server.name" @click.stop></a></td>
+                                    <td>
+                                        <div style="display:flex;align-items:center;gap:0.5rem;">
+                                            <span x-show="mcpLogoUrl(server)" style="flex-shrink:0;">
+                                                <img :src="mcpLogoUrl(server)" :class="mcpLogoDarkClass(server)" :alt="server.name + ' logo'" style="width:18px;height:18px;object-fit:contain;" loading="lazy">
+                                            </span>
+                                            <a :href="'/mcp-servers/' + server.id" class="cred-name" x-text="server.name" @click.stop></a>
+                                        </div>
+                                    </td>
                                     <td><span class="pill pill-type" x-text="server.transport"></span></td>
                                     <td>
                                         <span class="pill" :class="server.enabled ? 'pill-ok' : 'pill-warn'" x-text="server.enabled ? 'Active' : 'Disabled'"></span>
@@ -80,6 +88,8 @@
 .mcp-row-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 </style>
 <script>
+// SERVICE_LOGOS, logoDarkClass() provided by /js/service-icons.js
+
 function mcpServersPage() {
     return {
         servers: {{ servers_json|safe }},
@@ -136,6 +146,20 @@ function mcpServersPage() {
                 });
             }
             self.workspaceGroups = groups;
+        },
+        mcpLogoUrl(server) {
+            var name = (server.name || '').toLowerCase();
+            for (var key in SERVICE_LOGOS) {
+                if (name.indexOf(key) >= 0) return SERVICE_LOGOS[key];
+            }
+            return null;
+        },
+        mcpLogoDarkClass(server) {
+            var name = (server.name || '').toLowerCase();
+            for (var key in SERVICE_LOGOS) {
+                if (name.indexOf(key) >= 0) return logoDarkClass(key);
+            }
+            return '';
         },
         openServerPanel(server) {
             window.dispatchEvent(new CustomEvent('slide-panel-open', {

@@ -3,8 +3,16 @@
 //! These endpoints allow authenticated devices (workspace identity JWT) to
 //! sync Cedar policies and receive server-push events.
 
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use serde::{Deserialize, Serialize};
+
+use agent_cordon_core::policy::PolicyEngine;
+
+use agent_cordon_core::domain::policy::PolicyDecisionResult;
+use agent_cordon_core::policy::{actions, PolicyContext, PolicyPrincipal, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::extractors::AuthenticatedWorkspace;
@@ -86,6 +94,17 @@ fn is_policy_relevant_to_workspace(
 // MCP server sync
 // ---------------------------------------------------------------------------
 
+/// Optional query parameters for `GET /api/v1/workspaces/mcp-servers`.
+#[derive(Deserialize, Default)]
+pub(super) struct McpSyncQuery {
+    /// When true, include ECIES-encrypted credential envelopes in the response.
+    #[serde(default)]
+    pub include_credentials: bool,
+    /// Base64url-encoded uncompressed P-256 public key (65 bytes).
+    /// Required when `include_credentials` is true.
+    pub broker_public_key: Option<String>,
+}
+
 /// A single MCP server entry for device sync.
 #[derive(Serialize)]
 pub(super) struct McpServerSyncEntry {
@@ -96,6 +115,28 @@ pub(super) struct McpServerSyncEntry {
     pub tools: Vec<String>,
     pub enabled: bool,
     pub required_credentials: Option<Vec<String>>,
+    pub auth_method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_envelopes: Option<Vec<McpCredentialEnvelope>>,
+}
+
+/// An ECIES-encrypted credential envelope for a single credential.
+#[derive(Serialize)]
+pub(super) struct McpCredentialEnvelope {
+    pub credential_name: String,
+    pub credential_type: String,
+    pub transform_name: Option<String>,
+    pub encrypted_envelope: EncryptedEnvelopeResponse,
+}
+
+/// Wire format for an ECIES encrypted envelope.
+#[derive(Serialize)]
+pub(super) struct EncryptedEnvelopeResponse {
+    pub version: u8,
+    pub ephemeral_public_key: String,
+    pub ciphertext: String,
+    pub nonce: String,
+    pub aad: String,
 }
 
 /// Response for `GET /api/v1/workspaces/mcp-servers`.
@@ -104,27 +145,63 @@ pub(super) struct McpServerSyncResponse {
     pub servers: Vec<McpServerSyncEntry>,
 }
 
+use crate::crypto_helpers::parse_broker_public_key;
+
 /// GET /api/v1/workspaces/mcp-servers -- list MCP servers for the authenticated workspace.
 ///
 /// Auth: workspace identity JWT (Authorization: Bearer).
 /// Returns all enabled MCP servers belonging to this workspace so the device
 /// can populate its local cache and serve them to agents.
+///
+/// Optional query params:
+/// - `include_credentials=true` — include ECIES-encrypted credential envelopes
+/// - `broker_public_key=<base64url>` — P-256 public key for envelope encryption
 pub(super) async fn sync_mcp_servers(
     State(state): State<AppState>,
-    _workspace: AuthenticatedWorkspace,
+    workspace: AuthenticatedWorkspace,
+    Query(query): Query<McpSyncQuery>,
 ) -> Result<Json<ApiResponse<McpServerSyncResponse>>, ApiError> {
+    // Validate: include_credentials requires broker_public_key
+    let broker_pub_bytes = if query.include_credentials {
+        let key_str = query.broker_public_key.as_deref().ok_or_else(|| {
+            ApiError::BadRequest(
+                "broker_public_key is required when include_credentials=true".to_string(),
+            )
+        })?;
+        Some(parse_broker_public_key(key_str)?)
+    } else {
+        None
+    };
+
     // MCP servers are a shared catalog — return ALL enabled servers, not just
     // workspace-owned ones.  Cedar policy handles per-tool authorization at
     // invocation time.
     let servers = state.store.list_mcp_servers().await?;
 
-    let entries: Vec<McpServerSyncEntry> = servers
-        .into_iter()
-        .filter(|s| s.enabled)
-        .map(|s| McpServerSyncEntry {
+    let mut entries = Vec::new();
+    for s in servers.into_iter().filter(|s| s.enabled) {
+        let credential_envelopes = if let Some(ref pub_bytes) = broker_pub_bytes {
+            // Encrypt each required credential for the broker
+            let envelopes = encrypt_server_credentials(
+                &state,
+                &workspace,
+                &s,
+                pub_bytes,
+            )
+            .await?;
+            if envelopes.is_empty() {
+                None
+            } else {
+                Some(envelopes)
+            }
+        } else {
+            None
+        };
+
+        entries.push(McpServerSyncEntry {
             id: s.id.0.to_string(),
             name: s.name.clone(),
-            transport: s.transport,
+            transport: s.transport.to_string(),
             url: if s.upstream_url.is_empty() {
                 None
             } else {
@@ -135,12 +212,88 @@ pub(super) async fn sync_mcp_servers(
             required_credentials: s
                 .required_credentials
                 .map(|creds| creds.iter().map(|c| c.0.to_string()).collect()),
-        })
-        .collect();
+            auth_method: s.auth_method.to_string(),
+            credential_envelopes,
+        });
+    }
 
     Ok(Json(ApiResponse::ok(McpServerSyncResponse {
         servers: entries,
     })))
+}
+
+/// For a given MCP server, look up each required credential, check Cedar
+/// authorization, decrypt (AES-GCM), re-encrypt (ECIES) to the broker's
+/// public key, and return the envelopes. Unauthorized or missing credentials
+/// are silently excluded.
+async fn encrypt_server_credentials(
+    state: &AppState,
+    workspace: &AuthenticatedWorkspace,
+    server: &agent_cordon_core::domain::mcp::McpServer,
+    broker_pub_bytes: &[u8],
+) -> Result<Vec<McpCredentialEnvelope>, ApiError> {
+    let cred_ids = match &server.required_credentials {
+        Some(ids) if !ids.is_empty() => ids,
+        _ => return Ok(Vec::new()),
+    };
+
+    let mut envelopes = Vec::new();
+    let ws_id_str = workspace.workspace.id.0.to_string();
+
+    for cred_id in cred_ids {
+        // Look up credential
+        let cred = match state.store.get_credential(cred_id).await? {
+            Some(c) => c,
+            None => {
+                tracing::warn!(credential_id = %cred_id.0, server = %server.name, "required credential not found, skipping");
+                continue;
+            }
+        };
+
+        // Skip expired credentials
+        if cred.is_expired() {
+            tracing::warn!(credential_id = %cred_id.0, server = %server.name, "required credential expired, skipping");
+            continue;
+        }
+
+        // Cedar policy check: can this workspace vend this credential?
+        let decision = state.policy_engine.evaluate(
+            &PolicyPrincipal::Workspace(&workspace.workspace),
+            actions::VEND_CREDENTIAL,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+            &PolicyContext::default(),
+        )?;
+
+        if decision.decision == PolicyDecisionResult::Forbid {
+            tracing::debug!(credential_id = %cred_id.0, server = %server.name, "credential not authorized for workspace, skipping");
+            continue;
+        }
+
+        let (envelope, _vend_id) = crate::crypto_helpers::reencrypt_credential_for_device(
+            state.encryptor.as_ref(),
+            &cred,
+            &ws_id_str,
+            broker_pub_bytes,
+        )
+        .await?;
+
+        envelopes.push(McpCredentialEnvelope {
+            credential_name: cred.name.clone(),
+            credential_type: cred.credential_type.clone(),
+            transform_name: cred.transform_name.clone(),
+            encrypted_envelope: EncryptedEnvelopeResponse {
+                version: envelope.version,
+                ephemeral_public_key: envelope.ephemeral_public_key,
+                ciphertext: envelope.ciphertext,
+                nonce: envelope.nonce,
+                aad: envelope.aad,
+            },
+        });
+    }
+
+    Ok(envelopes)
 }
 
 // ---------------------------------------------------------------------------
@@ -171,15 +324,29 @@ pub(super) async fn sync_mcp_tools(
         .filter(|s| s.enabled)
         .flat_map(|s| {
             let server_name = s.name.clone();
-            s.allowed_tools
-                .unwrap_or_default()
-                .into_iter()
-                .map(move |tool_name| McpToolSyncEntry {
-                    server: server_name.clone(),
-                    tool: tool_name,
-                    description: None,
-                    input_schema: None,
-                })
+            // Prefer discovered_tools (has descriptions) over allowed_tools (names only)
+            if let Some(discovered) = s.discovered_tools {
+                discovered
+                    .into_iter()
+                    .map(move |tool| McpToolSyncEntry {
+                        server: server_name.clone(),
+                        tool: tool.name,
+                        description: tool.description,
+                        input_schema: tool.input_schema,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                s.allowed_tools
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|tool_name| McpToolSyncEntry {
+                        server: server_name.clone(),
+                        tool: tool_name,
+                        description: None,
+                        input_schema: None,
+                    })
+                    .collect::<Vec<_>>()
+            }
         })
         .collect();
 
@@ -216,12 +383,11 @@ pub(super) async fn report_tools(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
     let ws_id = &workspace.workspace.id;
 
-    // MCP servers are a shared catalog — look up by name across all servers,
-    // not scoped to the requesting workspace.
+    // Look up by name, scoped to the requesting workspace's own servers.
     let all_servers = state.store.list_mcp_servers().await?;
     let server = all_servers
         .into_iter()
-        .find(|s| s.name == req.server_name && s.enabled)
+        .find(|s| s.name == req.server_name && s.enabled && s.workspace_id == workspace.workspace.id)
         .ok_or_else(|| ApiError::NotFound(format!("MCP server '{}' not found", req.server_name)))?;
 
     let tool_names: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();

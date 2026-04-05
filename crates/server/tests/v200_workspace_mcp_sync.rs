@@ -6,7 +6,7 @@
 use axum::http::{Method, StatusCode};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::mcp::{McpServer, McpServerId};
+use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::workspace::WorkspaceId;
 use agent_cordon_core::storage::Store;
 
@@ -29,7 +29,7 @@ async fn create_mcp_server_for_workspace(
         workspace_id: workspace_id.clone(),
         name: name.to_string(),
         upstream_url: format!("http://localhost:9999/{}", name),
-        transport: "stdio".to_string(),
+        transport: McpTransport::Http,
         allowed_tools: Some(vec!["tool_a".to_string(), "tool_b".to_string()]),
         enabled,
         created_by: None,
@@ -37,6 +37,9 @@ async fn create_mcp_server_for_workspace(
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
     };
     store
         .create_mcp_server(&server)

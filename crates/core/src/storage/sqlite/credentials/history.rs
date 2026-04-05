@@ -153,6 +153,35 @@ impl SqliteStore {
 
     // ---- Batch credential loading ----
 
+    pub(crate) async fn list_stored_credentials_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Vec<StoredCredential>, StoreError> {
+        let name = name.to_string();
+        self.conn()
+            .call(move |conn| {
+                let sql = format!(
+                    "SELECT {} FROM credentials WHERE name = ?1 ORDER BY created_at",
+                    CREDENTIAL_COLUMNS
+                );
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+
+                let rows = stmt
+                    .query_map([&name], row_to_stored_credential)
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+
+                let mut creds = Vec::new();
+                for row in rows {
+                    creds.push(row.map_err(tokio_rusqlite::Error::Rusqlite)?);
+                }
+                Ok(creds)
+            })
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))
+    }
+
     pub(crate) async fn list_all_stored_credentials(
         &self,
     ) -> Result<Vec<StoredCredential>, StoreError> {

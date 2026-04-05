@@ -297,6 +297,7 @@ impl TestAppBuilder {
             credential_templates: crate::routes::admin_api::credential_templates::load_templates(
                 None,
             ),
+            mcp_templates: crate::routes::admin_api::mcp_templates::load_mcp_templates(None),
             policy_templates: crate::routes::admin_api::policy_templates::load_templates(None),
         };
 

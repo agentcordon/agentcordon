@@ -10,7 +10,7 @@ use axum::http::{Method, StatusCode};
 use serde_json::json;
 use uuid::Uuid;
 
-use agent_cordon_core::domain::mcp::{McpServer, McpServerId};
+use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::domain::workspace::WorkspaceId;
 use agent_cordon_core::policy::PolicyEngine;
@@ -34,7 +34,7 @@ async fn create_mcp_in_store(
         workspace_id,
         name: name.to_string(),
         upstream_url: format!("http://localhost:9000/{}", name),
-        transport: "stdio".to_string(),
+        transport: McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -42,6 +42,9 @@ async fn create_mcp_in_store(
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
     };
     store
         .create_mcp_server(&server)
@@ -80,7 +83,7 @@ async fn test_device_scoped_mcp_with_agent_upload_and_cedar_policy() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "github", "transport": "stdio", "command": "/usr/bin/github" }]
+            "servers": [{ "name": "github", "transport": "http", "command": "/usr/bin/github" }]
         })),
     )
     .await;
@@ -355,7 +358,7 @@ async fn test_migration_then_upload_then_sync() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "agent-new", "transport": "stdio", "command": "/usr/bin/new" }]
+            "servers": [{ "name": "agent-new", "transport": "http", "command": "/usr/bin/new" }]
         })),
     )
     .await;

@@ -251,6 +251,7 @@ pub fn page_routes(app_state: AppState) -> Router<AppState> {
         .route("/devices", get(redirect_devices_to_workspaces))
         // Legacy redirect: /mcp → /mcp-servers
         .route("/mcp", get(redirect_mcp_to_mcp_servers))
+        .route("/mcp-marketplace", get(mcp_servers::mcp_marketplace_page))
         .route("/mcp-servers", get(mcp_servers::mcp_server_list_page))
         .route(
             "/mcp-servers/{id}",

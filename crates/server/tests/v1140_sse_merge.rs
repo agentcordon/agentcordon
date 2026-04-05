@@ -201,7 +201,7 @@ async fn test_mcp_grant_emits_policy_changed() {
         workspace_id: device_id,
         name: "sse-test-mcp".to_string(),
         upstream_url: "http://localhost:9999".to_string(),
-        transport: "http".to_string(),
+        transport: agent_cordon_core::domain::mcp::McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -209,6 +209,9 @@ async fn test_mcp_grant_emits_policy_changed() {
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
     };
     ctx.store.create_mcp_server(&mcp).await.unwrap();
     let server_id = mcp.id.0.to_string();
@@ -367,7 +370,7 @@ async fn test_rapid_grants_emit_individual_events() {
             workspace_id: device_id.clone(),
             name: format!("rapid-server-{}", i),
             upstream_url: "http://localhost:9999".to_string(),
-            transport: "http".to_string(),
+            transport: agent_cordon_core::domain::mcp::McpTransport::Http,
             allowed_tools: None,
             enabled: true,
             created_by: None,
@@ -375,6 +378,9 @@ async fn test_rapid_grants_emit_individual_events() {
             updated_at: now,
             tags: vec![],
             required_credentials: None,
+            auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
+            template_key: None,
+        discovered_tools: None,
         };
         ctx.store.create_mcp_server(&mcp).await.unwrap();
         let server_id = mcp.id.0.to_string();

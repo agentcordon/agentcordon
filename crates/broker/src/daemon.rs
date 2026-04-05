@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::config::BrokerConfig;
+use crate::mcp_sync;
 use crate::routes;
 use crate::server_client::ServerClient;
 use crate::state::{BrokerState, SharedState, TokenStatus, WorkspaceState};
@@ -58,6 +59,7 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
     let state: SharedState = Arc::new(BrokerState {
         workspaces: RwLock::new(workspaces),
         pending: RwLock::new(HashMap::new()),
+        mcp_configs: RwLock::new(HashMap::new()),
         server_url: config.server_url.clone(),
         http_client,
         encryption_key,
@@ -75,6 +77,9 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
 
     // 7. Start background token refresh
     let refresh_handle = token_refresh::spawn_refresh_task(state.clone());
+
+    // 7b. Start background MCP config sync
+    let mcp_sync_handle = mcp_sync::spawn_mcp_sync_task(state.clone());
 
     // 8. Build router and serve
     let router = routes::build_router(state.clone());
@@ -106,6 +111,7 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
     // 9. Graceful shutdown: flush tokens, clean up files
     info!("shutting down...");
     refresh_handle.abort();
+    mcp_sync_handle.abort();
 
     // Flush token store
     {

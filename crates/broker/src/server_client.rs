@@ -91,6 +91,39 @@ pub struct McpToolSummary {
     pub input_schema: Option<serde_json::Value>,
 }
 
+/// MCP server sync entry (from credential-enhanced sync endpoint).
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServerSyncEntry {
+    pub id: String,
+    pub name: String,
+    pub transport: String,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    pub enabled: bool,
+    pub auth_method: String,
+    pub credential_envelopes: Option<Vec<McpCredentialEnvelope>>,
+}
+
+/// ECIES-encrypted credential envelope for an MCP server's credential.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpCredentialEnvelope {
+    pub credential_name: String,
+    pub credential_type: String,
+    pub transform_name: Option<String>,
+    pub encrypted_envelope: EncryptedEnvelopeResponse,
+}
+
+/// Wire format for an ECIES encrypted envelope (deserialization side).
+#[derive(Debug, Clone, Deserialize)]
+pub struct EncryptedEnvelopeResponse {
+    pub version: u8,
+    pub ephemeral_public_key: String,
+    pub ciphertext: String,
+    pub nonce: String,
+    pub aad: String,
+}
+
 /// MCP authorization response.
 #[derive(Debug, Deserialize)]
 pub struct McpAuthorizeResponse {
@@ -382,6 +415,48 @@ impl ServerClient {
             .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
 
         Ok(envelope.data)
+    }
+
+    /// List MCP servers with ECIES-encrypted credential envelopes.
+    pub async fn list_mcp_servers_with_credentials(
+        &self,
+        token: &str,
+        broker_public_key: &str,
+    ) -> Result<Vec<McpServerSyncEntry>, ServerClientError> {
+        let url = format!(
+            "{}/api/v1/workspaces/mcp-servers?include_credentials=true&broker_public_key={}",
+            self.base_url,
+            urlencoding::encode(broker_public_key),
+        );
+
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ServerClientError::ServerError {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+
+        #[derive(Deserialize)]
+        struct ServersWrapper {
+            servers: Vec<McpServerSyncEntry>,
+        }
+
+        let envelope: ApiEnvelope<ServersWrapper> = resp
+            .json()
+            .await
+            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
+
+        Ok(envelope.data.servers)
     }
 
     /// Check if the server is reachable.

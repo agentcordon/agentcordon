@@ -223,7 +223,7 @@ pub async fn mcp_server_partial(State(state): State<AppState>, Path(id): Path<St
     render_partial(&McpServerPanel {
         server_id: uuid.to_string(),
         server_name: server.name,
-        transport: server.transport,
+        transport: server.transport.to_string(),
         upstream_url: if server.upstream_url.is_empty() {
             "\u{2014}".to_string()
         } else {

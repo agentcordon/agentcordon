@@ -1,0 +1,13 @@
+{
+  "key": "notion",
+  "name": "Notion",
+  "description": "Pages, databases, blocks, and workspace search",
+  "upstream_url": "https://api.notion.com/mcp",
+  "transport": "sse",
+  "auth_method": "api_key",
+  "credential_template_key": "notion",
+  "category": "productivity",
+  "tags": ["notion", "wiki"],
+  "icon": "notion",
+  "sort_order": 40
+}

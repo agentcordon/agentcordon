@@ -43,6 +43,11 @@ pub enum ApiError {
     PolicyValidation {
         errors: Vec<agent_cordon_core::domain::policy::PolicyValidationError>,
     },
+    /// Multiple credentials match the requested name. Returns candidates for disambiguation.
+    MultipleChoices {
+        message: String,
+        candidates: Vec<serde_json::Value>,
+    },
 }
 
 impl IntoResponse for ApiError {
@@ -85,6 +90,16 @@ impl IntoResponse for ApiError {
                     }
                 });
                 return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+            }
+            ApiError::MultipleChoices { message, candidates } => {
+                let body = serde_json::json!({
+                    "error": {
+                        "code": "multiple_choices",
+                        "message": message,
+                        "candidates": candidates
+                    }
+                });
+                return (StatusCode::MULTIPLE_CHOICES, Json(body)).into_response();
             }
         };
 

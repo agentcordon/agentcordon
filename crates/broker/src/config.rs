@@ -33,6 +33,10 @@ pub struct BrokerConfig {
     /// Bind address (default: 127.0.0.1). Set to 0.0.0.0 for Docker/container use.
     #[arg(long, env = "AGTCRDN_BROKER_BIND", default_value = "127.0.0.1")]
     pub bind: String,
+
+    /// MCP config sync interval in seconds (default: 60).
+    #[arg(long, env = "AGTCRDN_MCP_SYNC_INTERVAL", default_value = "60")]
+    pub mcp_sync_interval: u64,
 }
 
 impl BrokerConfig {

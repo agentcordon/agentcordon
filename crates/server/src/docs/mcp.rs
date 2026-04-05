@@ -26,9 +26,8 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                         "required": ["name"],
                         "properties": {
                             "name": { "type": "string", "description": "MCP server name" },
-                            "transport": { "type": "string", "description": "Transport: stdio or http (default: stdio)" },
-                            "command": { "type": "string", "description": "Command for stdio transport servers (device-local, not stored on server)" },
-                            "args": { "type": "array", "items": { "type": "string" }, "description": "Arguments for stdio command (device-local, not stored on server)" }
+                            "transport": { "type": "string", "enum": ["http", "sse"], "description": "Transport: http or sse (default: http)" },
+                            "url": { "type": "string", "description": "Upstream URL for HTTP/SSE transport servers" }
                         }
                     }
                 }
@@ -199,6 +198,77 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
         query_params: None,
         path_params: Some(vec![uuid_param("id", "MCP server UUID")]),
         error_codes: vec!["unauthorized".to_string(), "forbidden".to_string(), "not_found".to_string(), "bad_request".to_string()],
+    });
+
+    endpoints.push(EndpointDoc {
+        method: "GET".to_string(),
+        path: "/api/v1/mcp-templates".to_string(),
+        description: "List available MCP server templates from the built-in catalog and any runtime overrides. Templates describe popular remote MCP servers that can be provisioned per-workspace.".to_string(),
+        auth_required: true,
+        request_body: None,
+        response_body: Some(json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string" },
+                    "name": { "type": "string" },
+                    "description": { "type": "string" },
+                    "upstream_url": { "type": "string" },
+                    "transport": { "type": "string", "enum": ["http", "sse"] },
+                    "auth_method": { "type": "string", "enum": ["api_key", "oauth2", "none"] },
+                    "credential_template_key": { "type": "string" },
+                    "category": { "type": "string" },
+                    "tags": { "type": "array", "items": { "type": "string" } },
+                    "icon": { "type": "string" },
+                    "sort_order": { "type": "integer" }
+                }
+            }
+        })),
+        query_params: None,
+        path_params: None,
+        error_codes: vec!["unauthorized".to_string()],
+    });
+
+    endpoints.push(EndpointDoc {
+        method: "POST".to_string(),
+        path: "/api/v1/mcp-servers/provision".to_string(),
+        description: "Provision an MCP server from a catalog template for a workspace. Creates the server record, optionally creates or links a credential, generates Cedar policies, and emits an audit event. Requires admin role.".to_string(),
+        auth_required: true,
+        request_body: Some(json!({
+            "type": "object",
+            "required": ["template_key", "workspace_id"],
+            "properties": {
+                "template_key": { "type": "string", "description": "Key of the MCP template to provision (e.g. 'github')" },
+                "workspace_id": { "type": "string", "format": "uuid", "description": "Workspace to provision the server for" },
+                "credential_id": { "type": "string", "format": "uuid", "description": "Existing credential UUID to link (optional)" },
+                "secret_value": { "type": "string", "description": "Secret value to create a new credential (optional, mutually exclusive with credential_id)" }
+            }
+        })),
+        response_body: Some(json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "format": "uuid" },
+                "workspace_id": { "type": "string", "format": "uuid" },
+                "name": { "type": "string" },
+                "upstream_url": { "type": "string" },
+                "transport": { "type": "string" },
+                "auth_method": { "type": "string", "enum": ["none", "api_key", "oauth2"] },
+                "template_key": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "tags": { "type": "array", "items": { "type": "string" } },
+                "required_credentials": { "type": "array", "items": { "type": "string", "format": "uuid" } }
+            }
+        })),
+        query_params: None,
+        path_params: None,
+        error_codes: vec![
+            "unauthorized".to_string(),
+            "forbidden".to_string(),
+            "not_found".to_string(),
+            "bad_request".to_string(),
+            "conflict".to_string(),
+        ],
     });
 
     // -----------------------------------------------------------------------

@@ -22,9 +22,14 @@ impl McpStore for PostgresStore {
         });
         let created_by_str = server.created_by.as_ref().map(|w| w.0.to_string());
 
+        let discovered = server
+            .discovered_tools
+            .as_ref()
+            .map(|dt| serde_json::to_value(dt).unwrap_or_default());
+
         let result = sqlx::query(
             &format!(
-                "INSERT INTO mcp_servers ({}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                "INSERT INTO mcp_servers ({}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
                 MCP_SERVER_COLUMNS
             ),
         )
@@ -32,7 +37,7 @@ impl McpStore for PostgresStore {
         .bind(server.workspace_id.0)
         .bind(&server.name)
         .bind(&server.upstream_url)
-        .bind(&server.transport)
+        .bind(server.transport.to_string())
         .bind(&bindings)
         .bind(&tools)
         .bind(server.enabled)
@@ -41,6 +46,9 @@ impl McpStore for PostgresStore {
         .bind(server.updated_at)
         .bind(&tags)
         .bind(&req_creds)
+        .bind(server.auth_method.to_string())
+        .bind(&server.template_key)
+        .bind(&discovered)
         .execute(&self.pool)
         .await;
 
@@ -124,20 +132,28 @@ impl McpStore for PostgresStore {
             serde_json::to_value(&ids).unwrap_or_default()
         });
 
+        let discovered = server
+            .discovered_tools
+            .as_ref()
+            .map(|dt| serde_json::to_value(dt).unwrap_or_default());
+
         sqlx::query(
             "UPDATE mcp_servers SET workspace_id = $1, name = $2, upstream_url = $3, transport = $4, credential_bindings = $5, \
-             allowed_tools = $6, enabled = $7, updated_at = $8, tags = $9, required_credentials = $10 WHERE id = $11",
+             allowed_tools = $6, enabled = $7, updated_at = $8, tags = $9, required_credentials = $10, auth_method = $11, template_key = $12, discovered_tools = $13 WHERE id = $14",
         )
         .bind(server.workspace_id.0)
         .bind(&server.name)
         .bind(&server.upstream_url)
-        .bind(&server.transport)
+        .bind(server.transport.to_string())
         .bind(&bindings)
         .bind(&tools)
         .bind(server.enabled)
         .bind(server.updated_at)
         .bind(&tags)
         .bind(&req_creds)
+        .bind(server.auth_method.to_string())
+        .bind(&server.template_key)
+        .bind(&discovered)
         .bind(server.id.0)
         .execute(&self.pool)
         .await

@@ -166,6 +166,31 @@ pub(super) async fn authorize(
     }
 
     // Policy decision audit is emitted automatically by AuditingPolicyEngine.
+    // Emit domain-specific McpToolCalled event on permit for observability.
+    if is_permit {
+        let reason_str = decision.reasons.join(", ");
+        let event = AuditEvent::builder(AuditEventType::McpToolCalled)
+            .action("mcp_tool_call")
+            .workspace_actor(&workspace.workspace.id, &workspace.workspace.name)
+            .resource("mcp_server", &mcp_server.id.0.to_string())
+            .correlation_id(&correlation_id)
+            .decision(
+                AuditDecision::Permit,
+                if reason_str.is_empty() {
+                    None
+                } else {
+                    Some(&reason_str)
+                },
+            )
+            .details(serde_json::json!({
+                "server_name": server_name,
+                "tool_name": tool_name,
+            }))
+            .build();
+        if let Err(e) = state.store.append_audit_event(&event).await {
+            tracing::warn!(error = %e, "failed to write McpToolCalled audit event");
+        }
+    }
 
     Ok(Json(ApiResponse::ok(McpAuthorizeResponse {
         decision: decision_str.to_string(),

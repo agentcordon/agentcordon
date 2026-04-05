@@ -100,5 +100,8 @@ mod v201_credential_fields;
 mod v201_mcp_authorize;
 mod v300_oauth_as;
 mod v300_security;
+mod v310_mcp_marketplace;
+mod v311_credential_name_scoping;
+mod v312_mcp_config_sync;
 mod vaults;
 mod workspace_delete;

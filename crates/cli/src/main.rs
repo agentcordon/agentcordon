@@ -25,7 +25,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Generate Ed25519 keypair and prepare workspace
-    Init,
+    Init {
+        /// Target agent: claude-code (default), codex, openclaw, or all
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
+    },
 
     /// Register this workspace with the broker
     Register {
@@ -112,7 +116,7 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Command::Init => commands::init::run(),
+        Command::Init { agent } => commands::init::run(&agent),
         _ => {
             // All other commands are async
             let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -131,7 +135,7 @@ fn main() -> std::process::ExitCode {
 
 async fn run_async(command: Command) -> Result<(), CliError> {
     match command {
-        Command::Init => unreachable!(),
+        Command::Init { .. } => unreachable!(),
         Command::Setup { server_url } => commands::setup::run(server_url).await,
         Command::Register { scopes, force } => commands::register::run(scopes, force).await,
         Command::Status => commands::status::run().await,

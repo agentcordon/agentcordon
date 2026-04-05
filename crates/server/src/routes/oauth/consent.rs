@@ -51,13 +51,60 @@ pub(crate) struct AuthorizeForm {
 }
 
 /// POST /api/v1/oauth/authorize
+///
+/// If the session has expired between viewing the consent page and submitting,
+/// redirect back through the authorization flow (which will land on login).
 pub(crate) async fn authorize_post(
     State(state): State<AppState>,
-    auth: AuthenticatedUser,
+    auth: Result<AuthenticatedUser, ApiError>,
     headers: axum::http::HeaderMap,
     axum::Extension(corr): axum::Extension<CorrelationId>,
     axum::Form(form): axum::Form<AuthorizeForm>,
 ) -> Result<Response, ApiError> {
+    // If session expired, redirect back through the authorize flow
+    let auth = match auth {
+        Ok(a) => a,
+        Err(_) => {
+            // Reconstruct the authorize URL so the user re-authenticates and sees
+            // the consent page again.
+            let mut qs = format!(
+                "response_type=code&redirect_uri={}&scope={}&state={}",
+                urlencoding::encode(&form.redirect_uri),
+                urlencoding::encode(&form.scope),
+                urlencoding::encode(&form.state),
+            );
+            if !form.client_id.is_empty() {
+                qs.push_str(&format!("&client_id={}", urlencoding::encode(&form.client_id)));
+            }
+            if !form.public_key_hash.is_empty() {
+                qs.push_str(&format!(
+                    "&public_key_hash={}",
+                    urlencoding::encode(&form.public_key_hash)
+                ));
+            }
+            if !form.workspace_name.is_empty() {
+                qs.push_str(&format!(
+                    "&workspace_name={}",
+                    urlencoding::encode(&form.workspace_name)
+                ));
+            }
+            if !form.code_challenge.is_empty() {
+                qs.push_str(&format!(
+                    "&code_challenge={}",
+                    urlencoding::encode(&form.code_challenge)
+                ));
+            }
+            if !form.code_challenge_method.is_empty() {
+                qs.push_str(&format!(
+                    "&code_challenge_method={}",
+                    urlencoding::encode(&form.code_challenge_method)
+                ));
+            }
+            let next = format!("/api/v1/oauth/authorize?{qs}");
+            let login_url = format!("/login?next={}", urlencoding::encode(&next));
+            return Ok(Redirect::to(&login_url).into_response());
+        }
+    };
     // Validate CSRF token: recompute from session and compare
     let session_token = extract_session_token(&headers)
         .ok_or_else(|| ApiError::Unauthorized("session required".into()))?;

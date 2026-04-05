@@ -12,7 +12,7 @@ use axum::http::{Method, StatusCode};
 use serde_json::json;
 use uuid::Uuid;
 
-use agent_cordon_core::domain::mcp::{McpServer, McpServerId};
+use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
 use agent_cordon_core::policy::PolicyEngine;
@@ -37,7 +37,7 @@ async fn create_mcp_in_db(
         workspace_id,
         name: name.to_string(),
         upstream_url: format!("http://localhost:9000/{}", name),
-        transport: "stdio".to_string(),
+        transport: McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -45,6 +45,9 @@ async fn create_mcp_in_db(
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
     };
     store
         .create_mcp_server(&server)
@@ -226,7 +229,7 @@ async fn test_create_duplicate_mcp_same_device_fails() {
         workspace_id: d1_uuid,
         name: "github".to_string(),
         upstream_url: "http://localhost:9000/github2".to_string(),
-        transport: "stdio".to_string(),
+        transport: McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -234,6 +237,9 @@ async fn test_create_duplicate_mcp_same_device_fails() {
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
     };
     let result = ctx.store.create_mcp_server(&server2).await;
     assert!(result.is_err(), "duplicate MCP on same device should fail");

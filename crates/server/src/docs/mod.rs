@@ -545,6 +545,10 @@ mod tests {
             ("POST", "/api/v1/admin/rotate-key"),
             // Credential Templates
             ("GET", "/api/v1/credential-templates"),
+            // MCP Templates
+            ("GET", "/api/v1/mcp-templates"),
+            // MCP Provisioning
+            ("POST", "/api/v1/mcp-servers/provision"),
         ];
 
         for (method, path) in expected {

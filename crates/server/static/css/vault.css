@@ -2830,6 +2830,14 @@ a.dash-card-link:hover {
     --color-bad: #f87171;
 }
 
+/* Service logos — dark mode: invert dark-colored logos for visibility.
+   The .logo-dark-invert class is applied by service-icons.js based on
+   the dark_mode_invert list in data/service-logos.json. */
+[data-theme="dark"] .logo-dark-invert { filter: invert(1); }
+@media (prefers-color-scheme: dark) {
+    html:not([data-theme]) .logo-dark-invert { filter: invert(1); }
+}
+
 /* System preference fallback — inherits the same dark values */
 @media (prefers-color-scheme: dark) {
     html:not([data-theme]) {

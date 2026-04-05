@@ -7,6 +7,7 @@ pub mod auditing_policy_engine;
 pub mod compose;
 pub mod config;
 pub mod credential_service;
+pub mod crypto_helpers;
 pub mod docs;
 pub mod events;
 pub mod extractors;

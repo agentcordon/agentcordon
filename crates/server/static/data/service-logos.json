@@ -1,0 +1,53 @@
+{
+  "logos": {
+    "github": "/img/logos/github.svg",
+    "slack": "/img/logos/slack.svg",
+    "linear": "/img/logos/linear.svg",
+    "notion": "/img/logos/notion.svg",
+    "sentry": "/img/logos/sentry.svg",
+    "stripe": "/img/logos/stripe.svg",
+    "aws": "/img/logos/aws.svg",
+    "anthropic": "/img/logos/anthropic.svg",
+    "openai": "/img/logos/openai.svg",
+    "datadog": "/img/logos/datadog.svg",
+    "cloudflare": "/img/logos/cloudflare.svg",
+    "vercel": "/img/logos/vercel.svg",
+    "gitlab": "/img/logos/gitlab.svg",
+    "jira": "/img/logos/jira.svg",
+    "google": "/img/logos/google.svg",
+    "microsoft": "/img/logos/microsoft.svg",
+    "netlify": "/img/logos/netlify.svg",
+    "supabase": "/img/logos/supabase.svg"
+  },
+  "aliases": {
+    "google-gemini": "google",
+    "entra-id": "microsoft",
+    "azure-openai": "microsoft"
+  },
+  "host_map": {
+    "api.github.com": "github",
+    "api.slack.com": "slack",
+    "slack.com": "slack",
+    "api.linear.app": "linear",
+    "api.notion.com": "notion",
+    "sentry.io": "sentry",
+    "api.stripe.com": "stripe",
+    "api.anthropic.com": "anthropic",
+    "api.openai.com": "openai",
+    "api.datadoghq.com": "datadog",
+    "api.cloudflare.com": "cloudflare",
+    "api.vercel.com": "vercel",
+    "gitlab.com": "gitlab",
+    "atlassian.net": "jira",
+    "generativelanguage.googleapis.com": "google",
+    "login.microsoftonline.com": "microsoft",
+    "openai.azure.com": "microsoft",
+    "api.netlify.com": "netlify",
+    "supabase.co": "supabase"
+  },
+  "dark_mode_invert": [
+    "github",
+    "notion",
+    "vercel"
+  ]
+}

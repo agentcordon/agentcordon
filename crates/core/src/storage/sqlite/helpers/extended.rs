@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::domain::audit::AuditEvent;
 use crate::domain::credential::CredentialId;
-use crate::domain::mcp::{McpServer, McpServerId};
+use crate::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use crate::domain::oidc::{OidcAuthState, OidcProvider, OidcProviderId, OidcProviderSummary};
 use crate::domain::user::UserId;
 use crate::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
@@ -147,13 +147,15 @@ pub(crate) fn row_to_workspace(row: &rusqlite::Row<'_>) -> Result<Workspace, rus
 }
 
 /// Column order: id, workspace_id, name, upstream_url, transport, credential_bindings,
-/// allowed_tools, enabled, created_by, created_at, updated_at, tags, required_credentials
+/// allowed_tools, enabled, created_by, created_at, updated_at, tags, required_credentials,
+/// auth_method, template_key, discovered_tools
 pub(crate) fn row_to_mcp_server(row: &rusqlite::Row<'_>) -> Result<McpServer, rusqlite::Error> {
     let id_str: String = row.get(0)?;
     let workspace_id_str: Option<String> = row.get(1)?;
     let name: String = row.get(2)?;
     let upstream_url: String = row.get(3)?;
-    let transport: String = row.get(4)?;
+    let transport_str: String = row.get(4)?;
+    let transport = McpTransport::from_str_opt(&transport_str).unwrap_or_default();
     // Column 5 is the legacy credential_bindings column -- read but ignore for backwards compat
     let _legacy_bindings: String = row.get(5)?;
     let allowed_tools_json: Option<String> = row.get(6)?;
@@ -163,6 +165,9 @@ pub(crate) fn row_to_mcp_server(row: &rusqlite::Row<'_>) -> Result<McpServer, ru
     let updated_at_str: String = row.get(10)?;
     let tags_json: String = row.get(11)?;
     let required_credentials_json: Option<String> = row.get(12)?;
+    let auth_method_str: String = row.get(13)?;
+    let template_key: Option<String> = row.get(14)?;
+    let discovered_tools_json: Option<String> = row.get(15)?;
 
     let id = Uuid::parse_str(&id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -226,6 +231,9 @@ pub(crate) fn row_to_mcp_server(row: &rusqlite::Row<'_>) -> Result<McpServer, ru
         })
     });
 
+    let auth_method = McpAuthMethod::from_str_opt(&auth_method_str).unwrap_or_default();
+    let discovered_tools = discovered_tools_json.and_then(|j| serde_json::from_str(&j).ok());
+
     Ok(McpServer {
         id: McpServerId(id),
         workspace_id,
@@ -239,6 +247,9 @@ pub(crate) fn row_to_mcp_server(row: &rusqlite::Row<'_>) -> Result<McpServer, ru
         updated_at,
         tags,
         required_credentials,
+        auth_method,
+        template_key,
+        discovered_tools,
     })
 }
 

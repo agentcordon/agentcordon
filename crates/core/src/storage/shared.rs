@@ -137,7 +137,7 @@ pub const SESSION_COLUMNS: &str = "id, user_id, created_at, expires_at, last_see
 pub const SERVER_COLUMNS: &str = "id, name, client_id, client_secret_hash, expected_audience, enabled, tags, created_by, created_at, updated_at";
 
 /// Columns for the `mcp_servers` table (SELECT).
-pub const MCP_SERVER_COLUMNS: &str = "id, workspace_id, name, upstream_url, transport, credential_bindings, allowed_tools, enabled, created_by, created_at, updated_at, tags, required_credentials";
+pub const MCP_SERVER_COLUMNS: &str = "id, workspace_id, name, upstream_url, transport, credential_bindings, allowed_tools, enabled, created_by, created_at, updated_at, tags, required_credentials, auth_method, template_key, discovered_tools";
 
 /// Columns for the `oidc_providers` table (SELECT, full).
 pub const OIDC_PROVIDER_COLUMNS: &str = "id, name, issuer_url, client_id, encrypted_client_secret, nonce, scopes, role_mapping, auto_provision, enabled, username_claim, created_at, updated_at";

@@ -1,42 +1,39 @@
 // =============================================================================
-// AgentCordon Default Cedar Policies (v2.0 — Unified Workspace Model)
+// AgentCordon Default Cedar Policies
 // =============================================================================
 //
-// Cedar denies by default when no permit policy matches.
-// No explicit forbid is needed -- the absence of a matching permit is sufficient.
+// Cedar denies by default when no permit policy matches. Every permit below
+// checks `principal.enabled`, so disabled principals are implicitly denied
+// without needing explicit forbid rules.
 //
 // Root users bypass Cedar entirely (handled in code before evaluation).
-// This file contains policies for TWO principal types:
-//   1. Workspaces -- autonomous entities (agents, devices, CLI tools)
-//   2. Users      -- human operators authenticating via username/password + session
 //
-// TAG / ROLE REFERENCE:
-//   Workspace tags: "admin" (full access), custom tags (policy-driven)
-//   User roles:     "admin" (full access), "operator" (manage day-to-day),
-//                   "viewer" (read-only)
+// PRINCIPAL TYPES:
+//   Workspace — autonomous entities (agents, devices, CLI tools)
+//   User      — human operators (admin, operator, viewer roles)
 //
 // ACTION REFERENCE:
 //   access              - Direct credential access via API (workspaces only)
 //   vend_credential     - Credential vending through proxy (workspaces only)
-//   list                - List/view resources (workspaces + users)
-//   create              - Create a new resource (workspaces + users)
-//   update              - Update a credential (workspaces + users)
-//   delete              - Delete a resource (workspaces + users)
-//   unprotect           - Reveal raw credential secret (users only; workspaces forbidden)
+//   list                - List/view resources
+//   create              - Create a new resource
+//   update              - Update a credential
+//   delete              - Delete a resource
+//   unprotect           - Reveal raw credential secret (users only)
 //   manage_permissions  - Manage per-credential permission grants
 //   manage_policies     - CRUD Cedar policies
-//   manage_users        - CRUD user accounts (users only)
+//   manage_users        - CRUD user accounts
 //   manage_workspaces   - View/enable/disable/configure workspaces
 //   view_audit          - View audit log entries
-//   rotate_key          - Rotate a workspace's API key (users only)
-//   manage_oidc_providers - CRUD OIDC identity providers (users only)
-//   manage_vaults       - Share/unshare credential vaults (users only)
-//   rotate_encryption_key - Rotate the server encryption key (users only)
-//   manage_mcp_servers  - CRUD MCP server registrations (users only)
-//   mcp_tool_call       - Call a tool on an MCP server (workspaces)
-//   mcp_list_tools      - List available tools on an MCP server (workspaces)
-//   register_workspace  - Register a new workspace (workspaces)
-//   manage_tags         - Add/remove tags on workspaces, system (users only)
+//   rotate_key          - Rotate a workspace's API key
+//   manage_oidc_providers - CRUD OIDC identity providers
+//   manage_vaults       - Share/unshare credential vaults
+//   rotate_encryption_key - Rotate the server encryption key
+//   manage_mcp_servers  - CRUD MCP server registrations
+//   mcp_tool_call       - Call a tool on an MCP server
+//   mcp_list_tools      - List available tools on an MCP server
+//   register_workspace  - Register a new workspace
+//   manage_tags         - Add/remove tags on workspaces, system
 //
 // =============================================================================
 
@@ -45,21 +42,19 @@
 // SECTION 1: WORKSPACE POLICIES
 // ---------------------------------------------------------------------------
 
-// 1a. Admin workspaces can do everything.
+// 1a. Enabled admin workspaces can do everything.
 permit(
   principal is AgentCordon::Workspace,
   action,
   resource
 ) when {
-  principal.tags.contains("admin")
+  principal.enabled && principal.tags.contains("admin")
 };
 
-// 1b. Credential owners can list/vend/update/delete their own credentials.
-// Note: `access` is intentionally excluded — workspaces must NEVER see raw
-// credential secrets. They use `vend_credential` to proxy requests (credentials
-// injected automatically) and `list` to discover what's available.
-// Note: `manage_permissions` is intentionally excluded — credential sharing
-// (granting other workspaces access) is a human-only operation via the admin UI.
+// 1b. Enabled workspaces can list, vend, update, and delete their owner's
+// credentials. `access` is intentionally excluded — workspaces must never see
+// raw credential secrets. They use `vend_credential` to proxy requests.
+// `manage_permissions` is excluded — credential sharing is a human-only operation.
 permit(
   principal is AgentCordon::Workspace,
   action in [
@@ -70,19 +65,19 @@ permit(
   ],
   resource is AgentCordon::Credential
 ) when {
-  principal has owner && resource.owner == principal.owner
+  principal.enabled && principal has owner && resource.owner == principal.owner
 };
 
-// 1c. Workspaces can create credentials.
+// 1c. Enabled workspaces can create resources.
 permit(
   principal is AgentCordon::Workspace,
   action == AgentCordon::Action::"create",
   resource is AgentCordon::System
-);
+) when {
+  principal.enabled
+};
 
-// 1e. Enabled workspaces can list system-level resources (MCP servers, etc.).
-// This grants access to discovery endpoints like /api/v1/mcp-servers.
-// Listing only exposes metadata — never raw secrets.
+// 1d. Enabled workspaces can list system-level resources (MCP servers, etc.).
 permit(
   principal is AgentCordon::Workspace,
   action == AgentCordon::Action::"list",
@@ -91,262 +86,126 @@ permit(
   principal.enabled
 };
 
-// 1d. Enabled workspaces can vend their owner's credentials through the proxy.
-// Agents never see raw secrets — vend_credential injects credentials into
-// upstream requests automatically. Scoped by ownership: a workspace can only
-// vend credentials belonging to its owner. Operators can tighten this further
-// by removing this policy and using per-credential grants or tag-based access.
-permit(
-  principal is AgentCordon::Workspace,
-  action == AgentCordon::Action::"vend_credential",
-  resource is AgentCordon::Credential
-) when {
-  principal.enabled && principal has owner && resource.owner == principal.owner
-};
-
 
 // ---------------------------------------------------------------------------
 // SECTION 2: USER POLICIES
 // ---------------------------------------------------------------------------
 
-// 2a. Admin users can perform any action on System resources.
+// --- Admin ---
+
+// 2a. Enabled admin users have full access to system, workspace, MCP, and
+// policy resources. Credential access is scoped to own credentials (2b).
 permit(
   principal is AgentCordon::User,
   action,
   resource is AgentCordon::System
 ) when {
-  principal.role == "admin"
+  principal.enabled && principal.role == "admin"
 };
 
-// 2a-ws. Admin users can perform any action on workspace resources.
 permit(
   principal is AgentCordon::User,
   action,
   resource is AgentCordon::WorkspaceResource
 ) when {
-  principal.role == "admin"
+  principal.enabled && principal.role == "admin"
 };
 
-// 2a-mcp. Admin users can perform any action on MCP server resources.
 permit(
   principal is AgentCordon::User,
   action,
   resource is AgentCordon::McpServer
 ) when {
-  principal.role == "admin"
+  principal.enabled && principal.role == "admin"
 };
 
-// 2a-policy. Admin users can manage policies.
 permit(
   principal is AgentCordon::User,
   action,
   resource is AgentCordon::PolicyResource
 ) when {
-  principal.role == "admin"
+  principal.enabled && principal.role == "admin"
 };
 
-// 2a-cred. Admin users can manage their OWN credentials.
-// Credentials are scoped by ownership — admins only see/modify their own.
-// Root users bypass Cedar entirely (handled in code), so root can see all.
+// 2b. Enabled admin users can manage their own credentials.
+// Scoped by ownership — admins only see/modify their own.
+// Root users bypass Cedar entirely, so root can see all.
 permit(
   principal is AgentCordon::User,
   action,
   resource is AgentCordon::Credential
 ) when {
-  principal.role == "admin" && resource.owner == principal
+  principal.enabled && principal.role == "admin" && resource.owner == principal
 };
 
-// 2b. Operators can list their OWN credentials.
+// --- Operator ---
+
+// 2c. Enabled operators can manage their own credentials.
 permit(
   principal is AgentCordon::User,
-  action == AgentCordon::Action::"list",
+  action in [
+    AgentCordon::Action::"list",
+    AgentCordon::Action::"update",
+    AgentCordon::Action::"delete",
+    AgentCordon::Action::"unprotect"
+  ],
   resource is AgentCordon::Credential
 ) when {
-  principal.role == "operator" && resource.owner == principal
+  principal.enabled && principal.role == "operator" && resource.owner == principal
 };
 
+// 2d. Enabled operators can create, list, view audit, and manage MCP servers.
 permit(
   principal is AgentCordon::User,
-  action == AgentCordon::Action::"create",
+  action in [
+    AgentCordon::Action::"create",
+    AgentCordon::Action::"list",
+    AgentCordon::Action::"view_audit",
+    AgentCordon::Action::"manage_mcp_servers"
+  ],
   resource is AgentCordon::System
 ) when {
-  principal.role == "operator"
+  principal.enabled && principal.role == "operator"
 };
 
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"delete",
-  resource is AgentCordon::Credential
-) when {
-  principal.role == "operator" && resource.owner == principal
-};
-
-// manage_permissions is admin-only (granted via 2a-cred).
-// Credential sharing controls who else can access secrets — too sensitive for operators.
-
-// 2b-update. Operators can update their OWN credentials.
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"update",
-  resource is AgentCordon::Credential
-) when {
-  principal.role == "operator" && resource.owner == principal
-};
-
-// 2c. Operators can list credentials at the system level.
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"list",
-  resource is AgentCordon::System
-) when {
-  principal.role == "operator"
-};
-
-// 2d. Operators can manage workspaces (view, enable/disable, configure).
+// 2e. Enabled operators can manage workspaces.
 permit(
   principal is AgentCordon::User,
   action == AgentCordon::Action::"manage_workspaces",
   resource
 ) when {
-  principal.role == "operator"
+  principal.enabled && principal.role == "operator"
 };
 
-// 2e-vaults. Admins can manage vaults (share/unshare).
+// --- Viewer ---
+
+// 2f. Enabled viewers can list system resources and view audit.
 permit(
   principal is AgentCordon::User,
-  action == AgentCordon::Action::"manage_vaults",
+  action in [
+    AgentCordon::Action::"list",
+    AgentCordon::Action::"view_audit"
+  ],
   resource is AgentCordon::System
 ) when {
-  principal.role == "admin"
+  principal.enabled && principal.role == "viewer"
 };
 
-// 2f. Operators can view the audit log.
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"view_audit",
-  resource is AgentCordon::System
-) when {
-  principal.role == "operator"
-};
-
-// 2g. Viewers can list system resources (read-only).
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"list",
-  resource is AgentCordon::System
-) when {
-  principal.role == "viewer"
-};
-
-// 2g-cred. Viewers can list their OWN credentials (read-only).
+// 2g. Enabled viewers can list their own credentials.
 permit(
   principal is AgentCordon::User,
   action == AgentCordon::Action::"list",
   resource is AgentCordon::Credential
 ) when {
-  principal.role == "viewer" && resource.owner == principal
-};
-
-// 2h. Viewers can view the audit log (read-only access).
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"view_audit",
-  resource is AgentCordon::System
-) when {
-  principal.role == "viewer"
-};
-
-// 2i. Admin users can rotate workspace API keys.
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"rotate_key",
-  resource is AgentCordon::WorkspaceResource
-) when {
-  principal.role == "admin"
-};
-
-// 2k. Operators can reveal secrets for their OWN credentials (unprotect action).
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"unprotect",
-  resource is AgentCordon::Credential
-) when {
-  principal.role == "operator" && resource.owner == principal
-};
-
-// 2l. Admin users can manage tags on workspaces and system resources.
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"manage_tags",
-  resource
-) when {
-  principal.role == "admin"
+  principal.enabled && principal.role == "viewer" && resource.owner == principal
 };
 
 
 // ---------------------------------------------------------------------------
-// SECTION 3: DEFENSE-IN-DEPTH FORBID RULES
+// SECTION 3: MCP POLICIES
 // ---------------------------------------------------------------------------
 
-// 3a. Disabled workspaces cannot perform any action.
-// WHY: Permit 1a grants admin workspaces ALL actions without checking enabled.
-// Without this forbid, a disabled admin workspace would still have full access.
-forbid(
-  principal is AgentCordon::Workspace,
-  action,
-  resource
-) when {
-  !principal.enabled
-};
-
-// 3b. Disabled users cannot perform any action.
-// WHY: Permits 2a-* grant admin/operator users broad access without checking enabled.
-// Without this forbid, a disabled admin user would still have full access.
-forbid(
-  principal is AgentCordon::User,
-  action,
-  resource
-) when {
-  !principal.enabled
-};
-
-// 3c. REMOVED — non-admin workspaces have no permit for manage_policies,
-// so Cedar's implicit deny handles this. No explicit forbid needed.
-
-// 3d. Workspaces cannot reveal credential secrets (unprotect action).
-// WHY: CRITICAL secrets boundary — agents must NEVER see raw secret values.
-// Without this forbid, an admin workspace (permit 1a) could read raw secrets.
-// Agents use vend_credential to proxy requests; credentials are injected automatically.
-forbid(
-  principal is AgentCordon::Workspace,
-  action == AgentCordon::Action::"unprotect",
-  resource
-);
-
-// 3e. Users cannot list credentials owned by other users.
-// WHY: Tenant isolation — without this, admin users (permit 2a-cred) could see
-// all credentials. This enforces per-user scoping. Root bypasses Cedar in code.
-forbid(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"list",
-  resource is AgentCordon::Credential
-) when {
-  resource.owner != principal
-};
-
-// 3f. REMOVED — was a blanket forbid preventing cross-owner credential vending.
-// This blocked explicit Cedar grant policies (e.g., `grant:{cred}:{workspace}:vend_credential`)
-// from enabling cross-workspace credential sharing, because Cedar forbid always overrides permit.
-// Security is preserved by deny-by-default: without an explicit grant policy, cross-owner
-// vending is denied (no matching permit). Policy 1d only permits same-owner vending.
-// Cross-owner access requires an explicit per-credential Cedar grant policy.
-
-
-// ---------------------------------------------------------------------------
-// SECTION 4: MCP POLICIES
-// ---------------------------------------------------------------------------
-
-// 4a. Enabled workspaces can discover tools on enabled MCP servers.
+// 3a. Enabled workspaces can discover tools on enabled MCP servers.
 permit(
   principal is AgentCordon::Workspace,
   action == AgentCordon::Action::"mcp_list_tools",
@@ -355,18 +214,31 @@ permit(
   principal.enabled && resource.enabled
 };
 
-// 4b. All workspaces can call tools on enabled MCP servers.
+// 3b. Enabled workspaces can call tools on enabled MCP servers.
 permit(
   principal is AgentCordon::Workspace,
   action == AgentCordon::Action::"mcp_tool_call",
   resource is AgentCordon::McpServer
 ) when {
-  resource.enabled
+  principal.enabled && resource.enabled
 };
 
-// 4c. Defense-in-depth — forbid tool calls on disabled MCP servers.
-// WHY: Permits 4b checks resource.enabled, but this forbid is belt-and-suspenders
-// to ensure disabled MCP servers are never callable even if new permits are added.
+
+// ---------------------------------------------------------------------------
+// SECTION 4: SECURITY BOUNDARIES
+// ---------------------------------------------------------------------------
+
+// 4a. Workspaces must NEVER see raw credential secrets. Agents use
+// vend_credential to proxy requests; credentials are injected server-side.
+// Without this, an admin workspace (1a) could reveal raw secrets.
+forbid(
+  principal is AgentCordon::Workspace,
+  action == AgentCordon::Action::"unprotect",
+  resource
+);
+
+// 4b. Disabled MCP servers must not be callable or discoverable.
+// Without these, admin workspaces (1a) could bypass the enabled check.
 forbid(
   principal,
   action == AgentCordon::Action::"mcp_tool_call",
@@ -375,9 +247,6 @@ forbid(
   !resource.enabled
 };
 
-// 4d. Defense-in-depth — forbid tool listing on disabled MCP servers.
-// WHY: Permits 4a checks resource.enabled, but this forbid is belt-and-suspenders
-// to ensure disabled MCP servers can't even be discovered via tool listing.
 forbid(
   principal,
   action == AgentCordon::Action::"mcp_list_tools",
@@ -385,21 +254,3 @@ forbid(
 ) when {
   !resource.enabled
 };
-
-
-// ---------------------------------------------------------------------------
-// SECTION 5: CREDENTIAL ACCESS POLICIES
-// ---------------------------------------------------------------------------
-
-// 5b. REMOVED — was a blanket permit allowing any enabled workspace to list
-// ALL credentials regardless of ownership. Credential listing is now scoped
-// by ownership (policy 1b) and per-credential Cedar grants. This prevents
-// User A's workspaces from seeing User B's credentials.
-
-// 5c. REMOVED — was a blanket permit allowing any enabled workspace to directly
-// access any credential. Same security concern as 5b. Credential access is now
-// controlled by fine-grained Cedar grant policies and tag-based access.
-
-// 5d. REMOVED — was a forbid preventing disabled workspaces from vending credentials.
-// This is a strict subset of rule 3a which already forbids ALL actions for disabled
-// workspaces. Removed to reduce policy surface area without changing behavior.
