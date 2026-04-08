@@ -65,6 +65,7 @@ async fn create_mcp_server_with_creds(
         auth_method,
         template_key: Some(name.to_string()),
         discovered_tools: None,
+        created_by_user: None,
     };
     store
         .create_mcp_server(&server)

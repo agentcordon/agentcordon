@@ -10,9 +10,62 @@ use agent_cordon_core::proxy::url_safety::validate_proxy_target_resolved;
 use crate::auth::AuthenticatedWorkspace;
 use crate::credential_transform::{self, CredentialMaterial};
 use crate::server_client::ServerClient;
-use crate::state::SharedState;
+use crate::state::{CachedCredential, SharedState};
 
 use super::helpers::{error_response, ok_response, require_scope, with_token_refresh};
+
+/// Resolve the effective credential value for a cached credential.
+///
+/// For `oauth2_user_authorization` credentials, exchanges the stored refresh
+/// token for an access token via the token endpoint. For all other types,
+/// returns the raw value as-is.
+async fn resolve_credential_value(
+    state: &SharedState,
+    credential_name: &str,
+    cred: &CachedCredential,
+) -> Option<String> {
+    if cred.credential_type != "oauth2_user_authorization" {
+        return Some(cred.value.clone());
+    }
+
+    let token_url = cred.metadata.get("oauth2_token_url");
+    let client_id = cred.metadata.get("oauth2_client_id");
+    let client_secret = cred.metadata.get("oauth2_client_secret");
+
+    match (token_url, client_id, client_secret) {
+        (Some(token_url), Some(client_id), Some(client_secret)) => {
+            match state
+                .oauth2_refresh
+                .get_access_token(
+                    credential_name,
+                    &cred.value,
+                    token_url,
+                    client_id,
+                    client_secret,
+                )
+                .await
+            {
+                Ok(token) => Some(token),
+                Err(e) => {
+                    tracing::warn!(
+                        credential = %credential_name,
+                        "OAuth2 token exchange failed, credential will not be injected"
+                    );
+                    tracing::debug!(error = %e, "token exchange error details");
+                    None
+                }
+            }
+        }
+        _ => {
+            tracing::warn!(
+                credential = %credential_name,
+                "OAuth2 authorization code credential missing required metadata, \
+                 credential will not be injected"
+            );
+            None
+        }
+    }
+}
 
 /// Parse a JSON-RPC response from an MCP server, handling both
 /// `application/json` and `text/event-stream` (SSE) Content-Types.
@@ -193,23 +246,25 @@ pub async fn list_tools(
             .header("Content-Type", "application/json")
             .timeout(std::time::Duration::from_secs(5));
 
-        // Inject credential via transform
-        let material = CredentialMaterial {
-            credential_type: Some(cred.credential_type.clone()),
-            value: cred.value.clone(),
-            username: None,
-            metadata: cred.metadata.clone(),
-        };
-        if let Ok(transformed) = credential_transform::apply(
-            &material,
-            cred.transform_name.as_deref(),
-            "POST",
-            &url,
-            &HashMap::new(),
-            None,
-        ) {
-            for (k, v) in &transformed.headers {
-                req = req.header(k, v);
+        // Resolve credential value (exchanges refresh token for access token if OAuth2 authz code)
+        if let Some(effective_value) = resolve_credential_value(&state, &server_name, &cred).await {
+            let material = CredentialMaterial {
+                credential_type: Some(cred.credential_type.clone()),
+                value: effective_value,
+                username: None,
+                metadata: cred.metadata.clone(),
+            };
+            if let Ok(transformed) = credential_transform::apply(
+                &material,
+                cred.transform_name.as_deref(),
+                "POST",
+                &url,
+                &HashMap::new(),
+                None,
+            ) {
+                for (k, v) in &transformed.headers {
+                    req = req.header(k, v);
+                }
             }
         }
 
@@ -425,9 +480,11 @@ pub async fn call_tool(
         .header("Content-Type", "application/json");
 
     if let Some(ref cred) = cached_credential {
+        // Resolve credential value (exchanges refresh token for access token if OAuth2 authz code)
+        if let Some(effective_value) = resolve_credential_value(&state, &server_name, cred).await {
         let material = CredentialMaterial {
             credential_type: Some(cred.credential_type.clone()),
-            value: cred.value.clone(),
+            value: effective_value,
             username: None,
             metadata: cred.metadata.clone(),
         };
@@ -473,6 +530,7 @@ pub async fn call_tool(
                 tracing::warn!(error = %e, server = %server_name, "credential transform failed, proceeding without injection");
             }
         }
+        } // if let Some(effective_value)
     }
 
     let mcp_resp = match req_builder.json(&jsonrpc_request).send().await {

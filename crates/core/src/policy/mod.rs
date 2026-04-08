@@ -6,7 +6,7 @@ pub mod templates;
 
 use crate::domain::credential::StoredCredential;
 use crate::domain::policy::{PolicyDecision, PolicyValidationError};
-use crate::domain::user::User;
+use crate::domain::user::{User, UserId};
 use crate::domain::workspace::Workspace;
 use crate::error::PolicyError;
 
@@ -54,6 +54,9 @@ pub enum PolicyResource {
         enabled: bool,
         /// Tags for fine-grained policy control.
         tags: Vec<String>,
+        /// Owning user (the user who provisioned the MCP server). Workspaces
+        /// inherit access to MCP servers their owner provisioned.
+        owner: Option<UserId>,
     },
 }
 

@@ -441,7 +441,7 @@ async fn test_provision_with_existing_credential() {
         None,
         Some(&cookie),
         Some(serde_json::json!({
-            "template_key": "github",
+            "template_key": "mock-mcp",
             "workspace_id": ws_id,
             "credential_id": credential_id
         })),
@@ -451,7 +451,7 @@ async fn test_provision_with_existing_credential() {
 
     let data = &body["data"];
     assert!(data["id"].is_string(), "response should have server id");
-    assert_eq!(data["name"].as_str(), Some("github"));
+    assert_eq!(data["name"].as_str(), Some("mock-mcp"));
 }
 
 /// Provision with an inline secret creates both credential and MCP server.
@@ -467,7 +467,7 @@ async fn test_provision_with_inline_secret() {
         None,
         Some(&cookie),
         Some(serde_json::json!({
-            "template_key": "github",
+            "template_key": "mock-mcp",
             "workspace_id": ws_id,
             "secret_value": "ghp_inline_test_secret"
         })),
@@ -498,7 +498,7 @@ async fn test_provision_does_not_create_cedar_policy() {
         None,
         Some(&cookie),
         Some(serde_json::json!({
-            "template_key": "github",
+            "template_key": "mock-mcp",
             "workspace_id": ws_id,
             "secret_value": "ghp_policy_test"
         })),
@@ -545,7 +545,7 @@ async fn test_provision_audit_event() {
         None,
         Some(&cookie),
         Some(serde_json::json!({
-            "template_key": "github",
+            "template_key": "mock-mcp",
             "workspace_id": ws_id,
             "secret_value": "ghp_audit_test"
         })),
@@ -622,7 +622,7 @@ async fn test_provision_duplicate_template_workspace() {
         None,
         Some(&cookie),
         Some(serde_json::json!({
-            "template_key": "github",
+            "template_key": "mock-mcp",
             "workspace_id": ws_id,
             "secret_value": "ghp_first"
         })),
@@ -638,7 +638,7 @@ async fn test_provision_duplicate_template_workspace() {
         None,
         Some(&cookie),
         Some(serde_json::json!({
-            "template_key": "github",
+            "template_key": "mock-mcp",
             "workspace_id": ws_id,
             "secret_value": "ghp_second"
         })),
@@ -671,7 +671,7 @@ async fn test_provision_requires_auth() {
         None,
         None, // no cookie
         Some(serde_json::json!({
-            "template_key": "github",
+            "template_key": "mock-mcp",
             "workspace_id": ws_id,
             "secret_value": "ghp_unauth"
         })),
@@ -700,7 +700,7 @@ async fn test_provision_no_secret_in_response() {
         None,
         Some(&cookie),
         Some(serde_json::json!({
-            "template_key": "github",
+            "template_key": "mock-mcp",
             "workspace_id": ws_id,
             "secret_value": secret
         })),
@@ -729,7 +729,7 @@ async fn test_provision_no_secret_in_audit() {
         None,
         Some(&cookie),
         Some(serde_json::json!({
-            "template_key": "github",
+            "template_key": "mock-mcp",
             "workspace_id": ws_id,
             "secret_value": secret
         })),

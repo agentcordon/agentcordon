@@ -96,6 +96,14 @@ pub(super) async fn import_mcp_servers(
 
     let ws_id = agent_cordon_core::domain::workspace::WorkspaceId(req.workspace_id);
     let now = chrono::Utc::now();
+
+    // Resolve the workspace owner to set created_by_user on imported servers.
+    let created_by_user = state
+        .store
+        .get_workspace(&ws_id)
+        .await?
+        .and_then(|ws| ws.owner_id);
+
     let mut results = Vec::new();
 
     for entry in &req.servers {
@@ -183,6 +191,7 @@ pub(super) async fn import_mcp_servers(
             auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::None,
             template_key: None,
             discovered_tools: None,
+            created_by_user: created_by_user.clone(),
         };
 
         state.store.create_mcp_server(&server).await?;

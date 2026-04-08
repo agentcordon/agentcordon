@@ -1,5 +1,5 @@
 """
-DAG nodes for settings testing: settings.advanced_mode, settings.stats.
+DAG nodes for settings testing: settings.stats.
 """
 
 import json
@@ -46,57 +46,6 @@ SETTINGS_STATS_NODE = DagNode(
     critical=False,
     timeout=10.0,
 )
-
-
-# ---------------------------------------------------------------------------
-# settings.advanced_mode
-# ---------------------------------------------------------------------------
-
-def settings_advanced_mode(ctx: dict) -> dict:
-    """
-    Toggle advanced mode on and off.
-
-    Consumes: base_url, admin_session_cookie, csrf_token
-    """
-    base_url = ctx["base_url"]
-    admin_cookie = ctx["admin_session_cookie"]
-    csrf_token = ctx["csrf_token"]
-
-    # Enable advanced mode
-    enable_body = json.dumps({"enabled": True})
-    status, _, body = server_request(
-        base_url, "PUT", "/api/v1/settings/advanced-mode",
-        body=enable_body,
-        headers={"X-CSRF-Token": csrf_token},
-        cookies=admin_cookie,
-    )
-
-    assert status == 200, f"Enable advanced mode failed with {status}: {body}"
-
-    # Disable advanced mode
-    disable_body = json.dumps({"enabled": False})
-    status, _, body = server_request(
-        base_url, "PUT", "/api/v1/settings/advanced-mode",
-        body=disable_body,
-        headers={"X-CSRF-Token": csrf_token},
-        cookies=admin_cookie,
-    )
-
-    assert status == 200, f"Disable advanced mode failed with {status}: {body}"
-
-    return ctx
-
-
-SETTINGS_ADVANCED_MODE_NODE = DagNode(
-    name="settings.advanced_mode",
-    fn=settings_advanced_mode,
-    depends_on=["setup.login"],
-    produces=[],
-    consumes=["base_url", "admin_session_cookie", "csrf_token"],
-    critical=False,
-    timeout=10.0,
-)
-
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +274,6 @@ def get_nodes():
     """Return all settings DAG nodes."""
     return [
         SETTINGS_STATS_NODE,
-        SETTINGS_ADVANCED_MODE_NODE,
         SETTINGS_DASHBOARD_NODE,
         ADMIN_ROTATE_KEY_NODE,
         ADMIN_OIDC_PROVIDERS_NODE,

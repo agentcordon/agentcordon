@@ -68,12 +68,33 @@ pub(super) async fn authorize(
         ));
     }
 
-    // MCP servers are a shared catalog — look up by name across all servers,
-    // not scoped to the requesting workspace.  Cedar policy handles authorization.
+    // MCP servers are scoped by owner. Multiple workspaces (and multiple users)
+    // can have an MCP server with the same name (e.g., "mock-mcp"). When a
+    // workspace asks for "mock-mcp", we must resolve to a server it actually
+    // owns, not the first global match. Look up servers belonging to the
+    // workspace's owner first; fall back to any same-name enabled server only
+    // if the workspace has no owner (legacy data).
     let all_servers = state.store.list_mcp_servers().await?;
+    let workspace_owner = workspace.workspace.owner_id.as_ref();
     let mcp_server = all_servers
-        .into_iter()
-        .find(|s| s.name == server_name && s.enabled);
+        .iter()
+        .find(|s| {
+            s.name == server_name
+                && s.enabled
+                && match (workspace_owner, s.created_by_user.as_ref()) {
+                    (Some(ws_owner), Some(srv_owner)) => ws_owner == srv_owner,
+                    _ => false,
+                }
+        })
+        .cloned()
+        .or_else(|| {
+            // Fallback for legacy data with no owner: take any same-name enabled server.
+            // Cedar will still deny via implicit deny since the principal/resource won't
+            // share an owner.
+            all_servers
+                .into_iter()
+                .find(|s| s.name == server_name && s.enabled)
+        });
 
     let mcp_server = match mcp_server {
         Some(s) => s,
@@ -122,6 +143,7 @@ pub(super) async fn authorize(
         name: mcp_server.name.clone(),
         enabled: mcp_server.enabled,
         tags: mcp_server.tags.clone(),
+        owner: mcp_server.created_by_user.clone(),
     };
 
     let decision = state.policy_engine.evaluate(

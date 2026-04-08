@@ -148,7 +148,7 @@ pub(crate) fn row_to_workspace(row: &rusqlite::Row<'_>) -> Result<Workspace, rus
 
 /// Column order: id, workspace_id, name, upstream_url, transport, credential_bindings,
 /// allowed_tools, enabled, created_by, created_at, updated_at, tags, required_credentials,
-/// auth_method, template_key, discovered_tools
+/// auth_method, template_key, discovered_tools, created_by_user
 pub(crate) fn row_to_mcp_server(row: &rusqlite::Row<'_>) -> Result<McpServer, rusqlite::Error> {
     let id_str: String = row.get(0)?;
     let workspace_id_str: Option<String> = row.get(1)?;
@@ -168,6 +168,7 @@ pub(crate) fn row_to_mcp_server(row: &rusqlite::Row<'_>) -> Result<McpServer, ru
     let auth_method_str: String = row.get(13)?;
     let template_key: Option<String> = row.get(14)?;
     let discovered_tools_json: Option<String> = row.get(15)?;
+    let created_by_user_str: Option<String> = row.get(16)?;
 
     let id = Uuid::parse_str(&id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -233,6 +234,17 @@ pub(crate) fn row_to_mcp_server(row: &rusqlite::Row<'_>) -> Result<McpServer, ru
 
     let auth_method = McpAuthMethod::from_str_opt(&auth_method_str).unwrap_or_default();
     let discovered_tools = discovered_tools_json.and_then(|j| serde_json::from_str(&j).ok());
+    let created_by_user = created_by_user_str
+        .map(|s| {
+            Uuid::parse_str(&s).map(UserId).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    16,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })
+        })
+        .transpose()?;
 
     Ok(McpServer {
         id: McpServerId(id),
@@ -250,6 +262,7 @@ pub(crate) fn row_to_mcp_server(row: &rusqlite::Row<'_>) -> Result<McpServer, ru
         auth_method,
         template_key,
         discovered_tools,
+        created_by_user,
     })
 }
 

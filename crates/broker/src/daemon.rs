@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 
 use crate::config::BrokerConfig;
 use crate::mcp_sync;
+use crate::oauth2_refresh::OAuth2RefreshManager;
 use crate::routes;
 use crate::server_client::ServerClient;
 use crate::state::{BrokerState, SharedState, TokenStatus, WorkspaceState};
@@ -59,11 +60,13 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
     let state: SharedState = Arc::new(BrokerState {
         workspaces: RwLock::new(workspaces),
         pending: RwLock::new(HashMap::new()),
+        registration_errors: RwLock::new(HashMap::new()),
         mcp_configs: RwLock::new(HashMap::new()),
         server_url: config.server_url.clone(),
         http_client,
         encryption_key,
         config: config.clone(),
+        oauth2_refresh: OAuth2RefreshManager::new(),
         bound_port,
     });
 

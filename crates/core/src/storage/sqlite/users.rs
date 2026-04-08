@@ -20,8 +20,8 @@ impl SqliteStore {
                 let updated_at = user.updated_at.to_rfc3339();
 
                 conn.execute(
-                    "INSERT INTO users (id, username, display_name, password_hash, role, is_root, enabled, show_advanced, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    "INSERT INTO users (id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     rusqlite::params![
                         id_str,
                         user.username,
@@ -30,7 +30,6 @@ impl SqliteStore {
                         role_str,
                         user.is_root,
                         user.enabled,
-                        user.show_advanced,
                         created_at,
                         updated_at,
                     ],
@@ -130,7 +129,7 @@ impl SqliteStore {
                 let changed = conn
                     .execute(
                         "UPDATE users SET username = ?1, display_name = ?2, password_hash = ?3, role = ?4, \
-                         is_root = ?5, enabled = ?6, updated_at = ?7, show_advanced = ?8 WHERE id = ?9",
+                         is_root = ?5, enabled = ?6, updated_at = ?7 WHERE id = ?8",
                         rusqlite::params![
                             user.username,
                             user.display_name,
@@ -139,7 +138,6 @@ impl SqliteStore {
                             user.is_root,
                             user.enabled,
                             updated_at,
-                            user.show_advanced,
                             id_str,
                         ],
                     )

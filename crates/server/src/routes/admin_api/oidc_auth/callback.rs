@@ -325,7 +325,6 @@ pub(super) async fn callback(
                 role,
                 is_root: false,
                 enabled: true,
-                show_advanced: true,
                 created_at: now,
                 updated_at: now,
             };

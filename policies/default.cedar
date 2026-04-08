@@ -205,22 +205,20 @@ permit(
 // SECTION 3: MCP POLICIES
 // ---------------------------------------------------------------------------
 
-// 3a. Enabled workspaces can discover tools on enabled MCP servers.
+// 3a. Enabled workspaces can use MCP servers owned by the same user.
+// This mirrors the credential ownership pattern (1b) — workspaces inherit
+// access to MCP servers their owner provisioned.
 permit(
   principal is AgentCordon::Workspace,
-  action == AgentCordon::Action::"mcp_list_tools",
+  action in [
+    AgentCordon::Action::"mcp_list_tools",
+    AgentCordon::Action::"mcp_tool_call"
+  ],
   resource is AgentCordon::McpServer
 ) when {
   principal.enabled && resource.enabled
-};
-
-// 3b. Enabled workspaces can call tools on enabled MCP servers.
-permit(
-  principal is AgentCordon::Workspace,
-  action == AgentCordon::Action::"mcp_tool_call",
-  resource is AgentCordon::McpServer
-) when {
-  principal.enabled && resource.enabled
+  && principal has owner && resource has owner
+  && resource.owner == principal.owner
 };
 
 

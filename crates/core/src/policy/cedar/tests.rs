@@ -54,7 +54,6 @@ fn make_user(username: &str, role: UserRole, is_root: bool) -> User {
         role,
         is_root,
         enabled: true,
-        show_advanced: true,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
@@ -2152,7 +2151,8 @@ fn disabled_device_denied_vend_credential() {
 #[test]
 fn enabled_device_allowed_mcp_tool_call() {
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    let device = make_device("sc-3", "mcp-device", true);
+    let owner = make_user("mcp-owner", UserRole::Operator, false);
+    let device = make_agent_with_owner("mcp-device", vec![], true, &owner);
 
     let result = engine
         .evaluate(
@@ -2163,6 +2163,7 @@ fn enabled_device_allowed_mcp_tool_call() {
                 name: "test-mcp".to_string(),
                 enabled: true,
                 tags: vec![],
+                owner: Some(owner.id.clone()),
             },
             &PolicyContext {
                 tool_name: Some("my_tool".to_string()),
@@ -2174,14 +2175,15 @@ fn enabled_device_allowed_mcp_tool_call() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Permit,
-        "enabled device should be allowed mcp_tool_call on enabled McpServer"
+        "enabled device should be allowed mcp_tool_call on same-owner McpServer via policy 3a"
     );
 }
 
 #[test]
 fn disabled_device_denied_mcp_tool_call() {
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    let device = make_device("sc-4", "disabled-mcp-device", false);
+    let owner = make_user("mcp-owner", UserRole::Operator, false);
+    let device = make_agent_with_owner("disabled-mcp-device", vec![], false, &owner);
 
     let result = engine
         .evaluate(
@@ -2192,6 +2194,7 @@ fn disabled_device_denied_mcp_tool_call() {
                 name: "test-mcp".to_string(),
                 enabled: true,
                 tags: vec![],
+                owner: Some(owner.id.clone()),
             },
             &PolicyContext {
                 tool_name: Some("my_tool".to_string()),
@@ -2204,6 +2207,137 @@ fn disabled_device_denied_mcp_tool_call() {
         result.decision,
         PolicyDecisionResult::Forbid,
         "disabled device should be denied mcp_tool_call"
+    );
+}
+
+#[test]
+fn workspace_denied_mcp_tool_call_different_owner() {
+    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
+    let user_a = make_user("user-a", UserRole::Operator, false);
+    let user_b = make_user("user-b", UserRole::Operator, false);
+    let device = make_agent_with_owner("device-a", vec![], true, &user_a);
+
+    let result = engine
+        .evaluate(
+            &PolicyPrincipal::Workspace(&device),
+            "mcp_tool_call",
+            &PolicyResource::McpServer {
+                id: "mcp-x".to_string(),
+                name: "other-owner-mcp".to_string(),
+                enabled: true,
+                tags: vec![],
+                owner: Some(user_b.id.clone()),
+            },
+            &PolicyContext {
+                tool_name: Some("my_tool".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("evaluate");
+
+    assert_eq!(
+        result.decision,
+        PolicyDecisionResult::Forbid,
+        "workspace must not call MCP servers owned by a different user"
+    );
+}
+
+#[test]
+fn workspace_denied_mcp_tool_call_no_owner() {
+    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
+    let mcp_owner = make_user("mcp-owner", UserRole::Operator, false);
+    // Workspace has no owner_id.
+    let device = make_device("sc-5", "ownerless-device", true);
+
+    let result = engine
+        .evaluate(
+            &PolicyPrincipal::Workspace(&device),
+            "mcp_tool_call",
+            &PolicyResource::McpServer {
+                id: "mcp-y".to_string(),
+                name: "owned-mcp".to_string(),
+                enabled: true,
+                tags: vec![],
+                owner: Some(mcp_owner.id.clone()),
+            },
+            &PolicyContext {
+                tool_name: Some("my_tool".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("evaluate");
+
+    assert_eq!(
+        result.decision,
+        PolicyDecisionResult::Forbid,
+        "ownerless workspace must be denied mcp_tool_call"
+    );
+}
+
+#[test]
+fn owned_workspace_denied_ownerless_mcp_server() {
+    // Backward-compat case: legacy MCP servers with created_by_user = NULL.
+    // An owned workspace must NOT inherit access just because the server has
+    // no owner — implicit deny via the `resource has owner` guard.
+    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
+    let user = make_user("ws-owner", UserRole::Operator, false);
+    let workspace = make_agent_with_owner("owned-ws", vec![], true, &user);
+
+    let result = engine
+        .evaluate(
+            &PolicyPrincipal::Workspace(&workspace),
+            "mcp_tool_call",
+            &PolicyResource::McpServer {
+                id: "legacy-mcp".to_string(),
+                name: "legacy-server".to_string(),
+                enabled: true,
+                tags: vec![],
+                owner: None, // legacy NULL row
+            },
+            &PolicyContext {
+                tool_name: Some("my_tool".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("evaluate");
+
+    assert_eq!(
+        result.decision,
+        PolicyDecisionResult::Forbid,
+        "legacy ownerless MCP server must not be reachable from any workspace via the default policy"
+    );
+}
+
+#[test]
+fn admin_workspace_forbidden_disabled_mcp_server() {
+    // Security boundary: even admin-tagged workspaces (which get the blanket
+    // permit 1a) cannot call tools on a disabled MCP server. This is enforced
+    // by the disabled-server forbid in section 4 of default.cedar.
+    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
+    let admin_ws = make_agent("admin-bot", vec!["admin"], true);
+
+    let result = engine
+        .evaluate(
+            &PolicyPrincipal::Workspace(&admin_ws),
+            "mcp_tool_call",
+            &PolicyResource::McpServer {
+                id: "disabled-mcp".to_string(),
+                name: "disabled-server".to_string(),
+                enabled: false, // disabled
+                tags: vec![],
+                owner: None,
+            },
+            &PolicyContext {
+                tool_name: Some("my_tool".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("evaluate");
+
+    assert_eq!(
+        result.decision,
+        PolicyDecisionResult::Forbid,
+        "admin workspace must not bypass the disabled-server forbid"
     );
 }
 

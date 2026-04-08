@@ -48,6 +48,7 @@ async fn create_mcp_in_db(
         auth_method: McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     store
         .create_mcp_server(&server)
@@ -240,6 +241,7 @@ async fn test_create_duplicate_mcp_same_device_fails() {
         auth_method: McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     let result = ctx.store.create_mcp_server(&server2).await;
     assert!(result.is_err(), "duplicate MCP on same device should fail");

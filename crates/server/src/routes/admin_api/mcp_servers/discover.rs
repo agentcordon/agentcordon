@@ -25,7 +25,16 @@ use super::is_safe_identifier;
 // ---------------------------------------------------------------------------
 
 /// Best-effort tool discovery: connect to the MCP server and return tool metadata.
-/// Returns an empty vec on any failure (network, parse, etc.).
+///
+/// Streamable HTTP MCP servers (e.g. Notion) require the MCP `initialize`
+/// handshake per the MCP spec before `tools/list` will respond. We perform:
+///   1. POST `initialize`            (capture `Mcp-Session-Id` response header)
+///   2. POST `notifications/initialized`
+///   3. POST `tools/list`
+///
+/// If the initialize request itself returns a protocol-level error indicating
+/// the server does not support the handshake, we fall back to a single
+/// `tools/list` call to keep compatibility with simpler servers.
 pub(super) async fn attempt_tool_discovery(
     state: &AppState,
     server: &McpServer,
@@ -36,34 +45,153 @@ pub(super) async fn attempt_tool_discovery(
         validate_proxy_target(&server.upstream_url).map_err(|e| e.to_string())?;
     }
 
-    let jsonrpc_body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/list",
-        "params": {}
-    });
-
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let mut request = client
-        .post(&server.upstream_url)
-        .header("Content-Type", "application/json");
+    // Step 1: initialize handshake
+    let init_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "agentcordon", "version": "0.2" }
+        }
+    });
 
+    match send_mcp_request(
+        &client,
+        &server.upstream_url,
+        credential_secret,
+        None,
+        &init_body,
+    )
+    .await
+    {
+        Ok((init_json, session_id)) => {
+            if let Some(err) = init_json.get("error").and_then(|e| e.as_object()) {
+                // Initialize was understood but refused — fall back to a single
+                // tools/list attempt for servers that don't implement the handshake.
+                let msg = err
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown");
+                tracing::debug!(
+                    server = %server.name,
+                    error = %msg,
+                    "MCP initialize returned error — falling back to plain tools/list"
+                );
+                return tools_list_only(&client, &server.upstream_url, credential_secret).await;
+            }
+
+            // Step 2: notifications/initialized (no response id expected)
+            let notify_body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            });
+            let _ = send_mcp_request(
+                &client,
+                &server.upstream_url,
+                credential_secret,
+                session_id.as_deref(),
+                &notify_body,
+            )
+            .await;
+
+            // Step 3: tools/list
+            let list_body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {}
+            });
+            let (list_json, _) = send_mcp_request(
+                &client,
+                &server.upstream_url,
+                credential_secret,
+                session_id.as_deref(),
+                &list_body,
+            )
+            .await?;
+            extract_tools(&list_json)
+        }
+        Err(e) if e.starts_with("HTTP 401") || e.starts_with("HTTP 403") => {
+            Err(format!("authorization rejected during initialize: {e}"))
+        }
+        Err(_) => {
+            // Network/parse errors from initialize — try the plain path.
+            tools_list_only(&client, &server.upstream_url, credential_secret).await
+        }
+    }
+}
+
+/// Fallback: single `tools/list` call (legacy/simple MCP servers).
+async fn tools_list_only(
+    client: &reqwest::Client,
+    url: &str,
+    credential_secret: Option<&str>,
+) -> Result<Vec<McpTool>, String> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {}
+    });
+    let (json, _) = send_mcp_request(client, url, credential_secret, None, &body).await?;
+    if let Some(err) = json.get("error") {
+        if err.is_object() {
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            return Err(format!("JSON-RPC error: {}", msg));
+        } else {
+            return Err("upstream is not an MCP server (non-JSON-RPC error response)".to_string());
+        }
+    }
+    extract_tools(&json)
+}
+
+/// Send a single JSON-RPC request to an MCP streamable-HTTP endpoint and parse
+/// the response (handling both `application/json` and `text/event-stream`).
+/// Returns the parsed JSON body (or `Value::Null` for empty notification
+/// responses) and any `Mcp-Session-Id` header from the response.
+async fn send_mcp_request(
+    client: &reqwest::Client,
+    url: &str,
+    credential_secret: Option<&str>,
+    session_id: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<(serde_json::Value, Option<String>), String> {
+    let mut req = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream");
     if let Some(secret) = credential_secret {
-        request = request.header("Authorization", format!("Bearer {}", secret));
+        req = req.header("Authorization", format!("Bearer {}", secret));
+    }
+    if let Some(sid) = session_id {
+        req = req.header("Mcp-Session-Id", sid);
     }
 
-    let response = request
-        .json(&jsonrpc_body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let response = req.json(body).send().await.map_err(|e| e.to_string())?;
+    let status = response.status();
+    let session_id_out = response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
 
-    if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status().as_u16()));
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
+    }
+
+    // 202 Accepted (typical for notifications) has no body to parse.
+    if status.as_u16() == 202 {
+        return Ok((serde_json::Value::Null, session_id_out));
     }
 
     let content_type = response
@@ -77,8 +205,11 @@ pub(super) async fn attempt_tool_discovery(
     if bytes.len() > 1_048_576 {
         return Err("response too large".to_string());
     }
+    if bytes.is_empty() {
+        return Ok((serde_json::Value::Null, session_id_out));
+    }
 
-    let body: serde_json::Value = if content_type.contains("text/event-stream") {
+    let json: serde_json::Value = if content_type.contains("text/event-stream") {
         let body_text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
         body_text
             .lines()
@@ -94,25 +225,15 @@ pub(super) async fn attempt_tool_discovery(
         serde_json::from_slice(&bytes).map_err(|e| e.to_string())?
     };
 
-    // Only treat JSON-RPC error objects (not REST error strings) as errors
-    if let Some(err) = body.get("error") {
-        if err.is_object() {
-            let msg = err
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown");
-            return Err(format!("JSON-RPC error: {}", msg));
-        } else {
-            return Err("upstream is not an MCP server (non-JSON-RPC error response)".to_string());
-        }
-    }
+    Ok((json, session_id_out))
+}
 
+fn extract_tools(body: &serde_json::Value) -> Result<Vec<McpTool>, String> {
     let tools: Vec<McpTool> = body
         .get("result")
         .and_then(|r| r.get("tools"))
         .and_then(|t| serde_json::from_value(t.clone()).ok())
         .unwrap_or_default();
-
     Ok(tools)
 }
 

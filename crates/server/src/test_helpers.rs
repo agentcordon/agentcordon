@@ -134,6 +134,7 @@ pub struct TestAppBuilder {
     custom_policy: Option<String>,
     #[allow(clippy::type_complexity)]
     config_modifiers: Vec<Box<dyn FnOnce(&mut AppConfig)>>,
+    extra_mcp_templates: Vec<crate::routes::admin_api::mcp_templates::McpServerTemplate>,
 }
 
 impl TestAppBuilder {
@@ -144,7 +145,20 @@ impl TestAppBuilder {
             pending_agents: Vec::new(),
             custom_policy: None,
             config_modifiers: Vec::new(),
+            extra_mcp_templates: Vec::new(),
         }
+    }
+
+    /// Inject an additional MCP template into the in-memory catalog.
+    ///
+    /// Used by OAuth/DCR tests that need a template pointing at a mock
+    /// authorization server.
+    pub fn with_mcp_template(
+        mut self,
+        template: crate::routes::admin_api::mcp_templates::McpServerTemplate,
+    ) -> Self {
+        self.extra_mcp_templates.push(template);
+        self
     }
 
     /// Pre-create an admin agent (tags = `["admin"]`).
@@ -297,7 +311,11 @@ impl TestAppBuilder {
             credential_templates: crate::routes::admin_api::credential_templates::load_templates(
                 None,
             ),
-            mcp_templates: crate::routes::admin_api::mcp_templates::load_mcp_templates(None),
+            mcp_templates: {
+                let mut t = crate::routes::admin_api::mcp_templates::load_mcp_templates(None);
+                t.extend(self.extra_mcp_templates.iter().cloned());
+                t
+            },
             policy_templates: crate::routes::admin_api::policy_templates::load_templates(None),
         };
 

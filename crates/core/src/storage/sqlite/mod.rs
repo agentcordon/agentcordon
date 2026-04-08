@@ -2,6 +2,8 @@ mod audit;
 mod credentials;
 pub(crate) mod helpers;
 mod mcp;
+mod mcp_oauth;
+mod oauth_provider_client;
 mod oauth;
 mod oidc;
 mod policies;

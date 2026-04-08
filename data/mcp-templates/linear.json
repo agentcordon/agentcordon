@@ -1,13 +1,15 @@
 {
   "key": "linear",
   "name": "Linear",
-  "description": "Issues, projects, teams, and roadmaps",
-  "upstream_url": "https://api.linear.app/mcp",
+  "description": "Issues, projects, cycles, and team workflows via Linear's hosted MCP server.",
+  "upstream_url": "https://mcp.linear.app/mcp",
   "transport": "sse",
-  "auth_method": "api_key",
-  "credential_template_key": "linear",
-  "category": "project-management",
-  "tags": ["linear", "issues"],
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.linear.app",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": ["linear", "issues", "oauth"],
   "icon": "linear",
-  "sort_order": 30
+  "sort_order": 20
 }

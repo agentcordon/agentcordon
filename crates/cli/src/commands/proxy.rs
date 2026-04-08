@@ -69,7 +69,52 @@ pub async fn run(
         body,
     };
 
-    let resp: ProxyResponse = client.post("/proxy", &req).await?;
+    let (status, body_text) = client.post_raw("/proxy", &req).await?;
+    if !(200..300).contains(&status) {
+        // Try to render the broker's error envelope with any helpful fields
+        // (e.g. server-side `candidates` array on a 300 Multiple Choices for
+        // ambiguous credential names). Fall back to a generic message.
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_text) {
+            if let Some(err) = parsed.get("error") {
+                let code = err
+                    .get("code")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("error");
+                let message = err
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("request failed");
+                eprintln!("Error: {} ({})", message, code);
+                if let Some(candidates) = err.get("candidates").and_then(|c| c.as_array()) {
+                    if !candidates.is_empty() {
+                        eprintln!(
+                            "\nHint: multiple credentials match. Use one of these IDs:"
+                        );
+                        for cand in candidates {
+                            let name = cand
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("(unknown)");
+                            let id = cand
+                                .get("id")
+                                .and_then(|i| i.as_str())
+                                .unwrap_or("(unknown)");
+                            eprintln!("  {id}  {name}");
+                        }
+                    }
+                }
+                return Err(CliError::upstream_error(format!(
+                    "broker returned HTTP {status}"
+                )));
+            }
+        }
+        return Err(CliError::general(format!(
+            "broker returned HTTP {status}: {body_text}"
+        )));
+    }
+
+    let resp: ProxyResponse = serde_json::from_str(&body_text)
+        .map_err(|e| CliError::general(format!("invalid proxy response: {e}")))?;
     let data = resp.data;
     let body_str = match &data.body {
         serde_json::Value::String(s) => s.clone(),

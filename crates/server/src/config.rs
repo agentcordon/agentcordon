@@ -50,6 +50,11 @@ pub struct AppConfig {
     pub mcp_templates_dir: Option<String>,
     /// Directory containing runtime policy template overrides (`.json` files).
     pub policy_templates_dir: Option<String>,
+    /// Label used in OAuth Dynamic Client Registration requests as `client_name`.
+    /// If `None`, callers should fall back to a sensible default (e.g. hostname
+    /// or "AgentCordon"). Helps distinguish multiple AgentCordon instances in a
+    /// provider's admin UI.
+    pub instance_label: Option<String>,
 }
 
 impl std::fmt::Debug for AppConfig {
@@ -93,7 +98,7 @@ impl AppConfig {
             root_password: None,
             session_cleanup_interval_seconds: 300,
             login_max_attempts: 5,
-            login_lockout_seconds: 900,
+            login_lockout_seconds: 30,
             oidc_state_ttl_seconds: 600,
             base_url: None,
             proxy_max_response_bytes: 10_485_760,
@@ -102,6 +107,7 @@ impl AppConfig {
             credential_templates_dir: None,
             mcp_templates_dir: None,
             policy_templates_dir: None,
+            instance_label: None,
         }
     }
 
@@ -283,7 +289,7 @@ impl AppConfig {
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .map(|v| v.max(1))
-                .unwrap_or(900),
+                .unwrap_or(30),
             oidc_state_ttl_seconds: env::var("AGTCRDN_OIDC_STATE_TTL")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
@@ -306,6 +312,7 @@ impl AppConfig {
             credential_templates_dir: env::var("AGTCRDN_CREDENTIAL_TEMPLATES_DIR").ok(),
             mcp_templates_dir: env::var("AGTCRDN_MCP_TEMPLATES_DIR").ok(),
             policy_templates_dir: env::var("AGTCRDN_POLICY_TEMPLATES_DIR").ok(),
+            instance_label: env::var("AGTCRDN_INSTANCE_LABEL").ok(),
         })
     }
 }

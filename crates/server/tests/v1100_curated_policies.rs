@@ -555,7 +555,9 @@ async fn test_mcp_restriction_matching_tags_permitted() {
     .await;
     assert!(status == StatusCode::OK || status == StatusCode::NO_CONTENT);
 
-    // Agent with matching tag calling a restricted MCP server
+    // Agent with matching tag calling a restricted MCP server.
+    // Both must share an owner for the default owner-based MCP permit to apply.
+    let shared_owner = "00000000-0000-0000-0000-000000000001";
     let (status, body) = common::send_json_auto_csrf(
         &ctx.app,
         Method::POST,
@@ -563,9 +565,9 @@ async fn test_mcp_restriction_matching_tags_permitted() {
         None,
         Some(&cookie),
         Some(serde_json::json!({
-            "principal": { "type": "Agent", "id": "internal-agent", "attributes": { "tags": ["internal"], "enabled": true } },
+            "principal": { "type": "Agent", "id": "internal-agent", "attributes": { "tags": ["internal"], "enabled": true, "owner": shared_owner } },
             "action": "mcp_tool_call",
-            "resource": { "type": "McpServer", "attributes": { "name": "secret-server", "tags": ["restricted", "internal"], "enabled": true } }
+            "resource": { "type": "McpServer", "attributes": { "name": "secret-server", "tags": ["restricted", "internal"], "enabled": true, "owner": shared_owner } }
         })),
     )
     .await;
@@ -573,7 +575,7 @@ async fn test_mcp_restriction_matching_tags_permitted() {
     assert_eq!(
         body["data"]["decision"].as_str(),
         Some("permit"),
-        "agent with matching tags should be permitted on restricted MCP server"
+        "agent with matching tags and shared owner should be permitted on restricted MCP server"
     );
 }
 

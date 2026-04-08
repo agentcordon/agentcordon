@@ -26,6 +26,21 @@ pub async fn get_callback(
             .error_description
             .as_deref()
             .unwrap_or("Unknown error");
+
+        // Record the failure against the pending registration so the polling
+        // CLI (`/status`) can surface it immediately instead of hanging until
+        // the 5-minute registration timeout.
+        if let Some(state_param) = &params.state {
+            let pending_entry = {
+                let mut pending_map = state.pending.write().await;
+                pending_map.remove(state_param)
+            };
+            if let Some(pending) = pending_entry {
+                let mut errs = state.registration_errors.write().await;
+                errs.insert(pending.pk_hash, format!("{error}: {desc}"));
+            }
+        }
+
         return Html(format!(
             r#"<!DOCTYPE html>
 <html><head><title>AgentCordon — Authorization Denied</title></head>

@@ -7,11 +7,12 @@
 //! to a directory containing additional `.json` files (same schema). Runtime
 //! templates override embedded ones by matching `key`.
 
+use std::collections::{HashMap, HashSet};
+
 use axum::extract::State;
 use axum::{routing::get, Json, Router};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 use crate::extractors::AuthenticatedUser;
 use crate::response::{ApiError, ApiResponse};
@@ -42,6 +43,20 @@ pub struct McpServerTemplate {
     pub oauth2_token_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth2_scopes: Option<String>,
+    /// Deprecated: previously linked to an oauth2_app credential template.
+    /// Now ignored — OAuth app config is managed via Settings > MCP OAuth Apps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth2_app_credential_template_key: Option<String>,
+    /// OAuth2 protected resource URL — used by discovery (RFC 9728) to find
+    /// the authorization server. Required for OAuth2 templates that use
+    /// dynamic discovery + DCR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth2_resource_url: Option<String>,
+    /// Whether to prefer Dynamic Client Registration (RFC 7591) for this
+    /// template when the discovered authorization server supports it.
+    /// Defaults to true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth2_prefer_dcr: Option<bool>,
 }
 
 #[derive(Embed)]
@@ -155,10 +170,50 @@ pub fn load_mcp_templates(override_dir: Option<&str>) -> Vec<McpServerTemplate> 
     templates
 }
 
+/// Response wrapper that enriches an `McpServerTemplate` with vault status.
+#[derive(Serialize)]
+pub struct McpServerTemplateResponse {
+    #[serde(flatten)]
+    pub template: McpServerTemplate,
+    /// For OAuth2 templates: whether an MCP OAuth App has been configured in Settings.
+    /// `None` for non-OAuth templates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth2_app_configured: Option<bool>,
+}
+
 /// GET /api/v1/mcp-templates — list available MCP server templates.
+///
+/// For OAuth2 templates, includes `oauth2_app_configured` indicating whether
+/// an MCP OAuth App has been configured in Settings for that template.
 async fn list_templates(
     _auth: AuthenticatedUser,
     State(state): State<AppState>,
-) -> Result<Json<ApiResponse<Vec<McpServerTemplate>>>, ApiError> {
-    Ok(Json(ApiResponse::ok(state.mcp_templates.clone())))
+) -> Result<Json<ApiResponse<Vec<McpServerTemplateResponse>>>, ApiError> {
+    let configured_keys: HashSet<String> = state
+        .store
+        .list_oauth_provider_clients()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|a| a.enabled)
+        .map(|a| a.label.clone())
+        .collect();
+
+    let responses: Vec<McpServerTemplateResponse> = state
+        .mcp_templates
+        .iter()
+        .map(|t| {
+            let oauth2_app_configured = if t.auth_method == "oauth2" {
+                Some(configured_keys.contains(&t.key))
+            } else {
+                None
+            };
+            McpServerTemplateResponse {
+                template: t.clone(),
+                oauth2_app_configured,
+            }
+        })
+        .collect();
+
+    Ok(Json(ApiResponse::ok(responses)))
 }

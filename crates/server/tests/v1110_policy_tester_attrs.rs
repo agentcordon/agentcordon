@@ -265,8 +265,8 @@ async fn test_policy_tester_with_enabled_false_triggers_forbid() {
 
     let decision = body["data"]["decision"].as_str().unwrap_or("");
     assert_eq!(
-        decision, "forbid",
-        "disabled agent should be forbidden (forbid rule), got: {}",
+        decision, "deny",
+        "disabled agent should be denied (no permit matches when !enabled), got: {}",
         decision
     );
 }

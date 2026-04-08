@@ -70,18 +70,18 @@ pub(crate) async fn provision_from_catalog(
         .await?
         .ok_or_else(|| ApiError::NotFound("workspace not found".to_string()))?;
 
-    // 4. Check for duplicate: workspace already has server with this template_key
-    let existing_servers = state
+    // 4. Check for duplicate: user already has server with this template_key
+    let user_servers = state
         .store
-        .list_mcp_servers_by_workspace(&workspace_id)
+        .list_mcp_servers_by_user(&auth.user.id)
         .await?;
-    if existing_servers
+    if user_servers
         .iter()
         .any(|s| s.template_key.as_deref() == Some(&req.template_key))
     {
         return Err(ApiError::Conflict(format!(
-            "workspace '{}' already has an MCP server provisioned from template '{}'",
-            workspace.name, req.template_key
+            "you already have an MCP server from template '{}'",
+            req.template_key
         )));
     }
 
@@ -182,6 +182,7 @@ pub(crate) async fn provision_from_catalog(
         auth_method,
         template_key: Some(template.key.clone()),
         discovered_tools: None,
+        created_by_user: Some(auth.user.id.clone()),
     };
     state.store.create_mcp_server(&server).await?;
 
@@ -216,6 +217,13 @@ pub(crate) async fn provision_from_catalog(
         _ => None,
     };
 
+    // Validate the credential by probing the upstream MCP server. If discovery
+    // fails specifically with an authentication error (HTTP 401/403), we reject
+    // the install BEFORE persisting the server — this catches the "wrong key
+    // pasted into install form" failure mode. Other failures (network errors,
+    // upstream not reachable) are non-fatal: the user may be installing for a
+    // server they'll bring online later.
+    let provided_credential = discovery_secret.is_some();
     match super::discover::attempt_tool_discovery(&state, &server, discovery_secret.as_deref()).await {
         Ok(tools) if !tools.is_empty() => {
             let mut updated = server.clone();
@@ -229,6 +237,21 @@ pub(crate) async fn provision_from_catalog(
             tracing::debug!(server = %server.name, "tool discovery returned empty list");
         }
         Err(e) => {
+            // Check if the error is an auth error (HTTP 401/403). The discovery
+            // helper formats these as "HTTP 401" or "HTTP 403".
+            let is_auth_error = e.contains("HTTP 401") || e.contains("HTTP 403");
+            if is_auth_error && provided_credential {
+                tracing::warn!(server = %server.name, error = %e, "credential rejected by upstream during provision");
+                // Roll back: delete the server we just created so the user can retry.
+                let _ = state.store.delete_mcp_server(&server.id).await;
+                if let Some(cid) = &credential_id {
+                    let _ = state.store.delete_credential(cid).await;
+                }
+                return Err(ApiError::BadRequest(format!(
+                    "The credential you provided was rejected by the MCP server ({e}). \
+                     Please check the secret and try again."
+                )));
+            }
             tracing::debug!(server = %server.name, error = %e, "tool discovery failed (non-fatal)");
         }
     }

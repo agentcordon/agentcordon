@@ -1,6 +1,8 @@
 mod crud;
 mod discover;
 mod import;
+pub(crate) mod oauth;
+mod oauth_token;
 mod permissions;
 pub(crate) mod provision;
 
@@ -29,6 +31,14 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/mcp-servers/provision",
             post(provision::provision_from_catalog),
+        )
+        .route(
+            "/mcp-servers/oauth/initiate",
+            post(oauth::initiate_oauth),
+        )
+        .route(
+            "/mcp-servers/oauth/callback",
+            get(oauth::oauth_callback_wrapper),
         )
         .route(
             "/mcp-servers/{id}",
@@ -76,6 +86,7 @@ pub(crate) struct McpServerResponse {
     pub required_credentials: Option<Vec<String>>,
     pub auth_method: String,
     pub template_key: Option<String>,
+    pub created_by_user: Option<String>,
 }
 
 impl McpServerResponse {
@@ -100,6 +111,7 @@ impl McpServerResponse {
                 .map(|creds| creds.iter().map(|c| c.0.to_string()).collect()),
             auth_method: s.auth_method.to_string(),
             template_key: s.template_key.clone(),
+            created_by_user: s.created_by_user.as_ref().map(|u| u.0.to_string()),
         }
     }
 }

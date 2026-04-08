@@ -111,6 +111,37 @@ impl BrokerClient {
         handle_response(resp).await
     }
 
+    /// Send a signed POST request with a JSON body and return raw (status, body).
+    /// Used by handlers (e.g. proxy) that need to inspect rich error envelopes
+    /// like the `candidates` field on a 300 Multiple Choices response.
+    pub async fn post_raw<B: Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<(u16, String), CliError> {
+        let body_str = serde_json::to_string(body)
+            .map_err(|e| CliError::general(format!("failed to serialize request: {e}")))?;
+        let headers = signing::sign_request(&self.keypair, "POST", path, &body_str)?;
+        let url = format!("{}{}", self.base_url, path);
+
+        let resp = self
+            .http
+            .post(&url)
+            .headers(build_header_map(&headers)?)
+            .header("Content-Type", "application/json")
+            .body(body_str)
+            .send()
+            .await
+            .map_err(|e| CliError::general(format!("request failed: {e}")))?;
+
+        let status = resp.status().as_u16();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| CliError::general(format!("failed to read response: {e}")))?;
+        Ok((status, text))
+    }
+
     /// Send a signed POST request with an empty body. Returns raw (status, body).
     /// Used for simple control endpoints like `/deregister`.
     pub async fn post_signed_empty(&self, path: &str) -> Result<(u16, String), CliError> {

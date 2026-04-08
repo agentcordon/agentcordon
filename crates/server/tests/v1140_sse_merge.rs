@@ -212,6 +212,7 @@ async fn test_mcp_grant_emits_policy_changed() {
         auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store.create_mcp_server(&mcp).await.unwrap();
     let server_id = mcp.id.0.to_string();
@@ -381,6 +382,7 @@ async fn test_rapid_grants_emit_individual_events() {
             auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
             template_key: None,
         discovered_tools: None,
+        created_by_user: None,
         };
         ctx.store.create_mcp_server(&mcp).await.unwrap();
         let server_id = mcp.id.0.to_string();

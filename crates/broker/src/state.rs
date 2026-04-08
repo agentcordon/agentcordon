@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::config::BrokerConfig;
+use crate::oauth2_refresh::OAuth2RefreshManager;
 
 /// Minimal workspace state for the plaintext recovery store (`workspaces.json`).
 ///
@@ -106,7 +107,7 @@ impl std::fmt::Debug for CachedCredential {
             .field("credential_type", &self.credential_type)
             .field("value", &"[REDACTED]")
             .field("transform_name", &self.transform_name)
-            .field("metadata", &self.metadata)
+            .field("metadata", &format!("[{} keys]", self.metadata.len()))
             .finish()
     }
 }
@@ -117,6 +118,10 @@ pub struct BrokerState {
     pub workspaces: RwLock<HashMap<String, WorkspaceState>>,
     /// Pending OAuth registrations keyed by the `state` parameter.
     pub pending: RwLock<HashMap<String, PendingRegistration>>,
+    /// Recent OAuth errors keyed by `pk_hash`. Set by the `/callback` route
+    /// when the IdP returns `error=...` so the polling `/status` endpoint can
+    /// surface the failure to the CLI instead of hanging until timeout.
+    pub registration_errors: RwLock<HashMap<String, String>>,
     /// Cached MCP server configs per workspace (keyed by pk_hash).
     pub mcp_configs: RwLock<HashMap<String, Vec<CachedMcpServer>>>,
     /// AgentCordon server URL.
@@ -127,6 +132,8 @@ pub struct BrokerState {
     pub encryption_key: p256::SecretKey,
     /// Broker configuration.
     pub config: BrokerConfig,
+    /// OAuth2 refresh token manager for authorization code credentials.
+    pub oauth2_refresh: OAuth2RefreshManager,
     /// Actual port the broker is bound to (resolves port-0 auto-select).
     pub bound_port: u16,
 }

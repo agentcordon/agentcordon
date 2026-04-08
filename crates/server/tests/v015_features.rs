@@ -66,7 +66,6 @@ async fn create_user_in_db(
         role,
         is_root,
         enabled,
-        show_advanced: true,
         created_at: now,
         updated_at: now,
     };
@@ -648,7 +647,6 @@ async fn disabled_forbid_disabled_user_denied_by_cedar() {
         role: UserRole::Admin,
         is_root: false,
         enabled: false,
-        show_advanced: true,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
@@ -691,7 +689,6 @@ async fn disabled_forbid_disabled_admin_user_denied() {
         role: UserRole::Admin,
         is_root: false,
         enabled: false,
-        show_advanced: true,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
@@ -851,7 +848,6 @@ async fn disabled_forbid_reenable_user_restores_access() {
         role: UserRole::Admin,
         is_root: false,
         enabled: false,
-        show_advanced: true,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
@@ -884,7 +880,6 @@ async fn disabled_forbid_reenable_user_restores_access() {
         role: UserRole::Admin,
         is_root: false,
         enabled: true,
-        show_advanced: true,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
@@ -972,7 +967,6 @@ async fn disabled_forbid_disabled_viewer_user_denied() {
         role: UserRole::Viewer,
         is_root: false,
         enabled: false,
-        show_advanced: true,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

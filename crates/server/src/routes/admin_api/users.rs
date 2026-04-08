@@ -70,6 +70,11 @@ struct UpdateUserRequest {
     display_name: Option<String>,
     role: Option<UserRole>,
     enabled: Option<bool>,
+    /// Rejected if present — password changes must go through the dedicated
+    /// `/users/{id}/change-password` endpoint so the proper flow (current
+    /// password verification, session invalidation, audit) is enforced.
+    #[serde(default)]
+    password: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -183,7 +188,6 @@ async fn create_user(
         role: req.role.unwrap_or(UserRole::Viewer),
         is_root: false,
         enabled: true,
-        show_advanced: true,
         created_at: now,
         updated_at: now,
     };
@@ -223,6 +227,15 @@ async fn update_user(
 ) -> Result<Json<ApiResponse<UserResponse>>, ApiError> {
     // Policy check: manage_users on System
     let policy_decision = check_manage_users(&state, &auth)?;
+
+    // Reject password updates on this endpoint — they have a dedicated route
+    // that enforces current-password verification and session invalidation.
+    if req.password.is_some() {
+        return Err(ApiError::BadRequest(
+            "password cannot be updated via PUT /users/{id}; use POST /users/{id}/change-password"
+                .to_string(),
+        ));
+    }
 
     let target_id = UserId(id);
 

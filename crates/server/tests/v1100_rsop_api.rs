@@ -299,6 +299,7 @@ async fn test_rsop_mcpserver_returns_matrix() {
         auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store
         .create_mcp_server(&mcp)
@@ -350,6 +351,7 @@ async fn test_rsop_mcpserver_includes_mcp_actions() {
         auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store
         .create_mcp_server(&mcp)
@@ -1227,6 +1229,7 @@ async fn test_rsop_detects_tool_specific_conditional_policy() {
         auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store
         .create_mcp_server(&mcp)

@@ -240,8 +240,8 @@ async fn test_policy_test_returns_deny_for_disabled_agent() {
     .await;
     assert_eq!(status, StatusCode::OK, "response: {}", body);
     assert_eq!(
-        body["data"]["decision"], "forbid",
-        "disabled agent should be forbidden by forbid rule"
+        body["data"]["decision"], "deny",
+        "disabled agent should be denied — no permit matches when !enabled"
     );
 }
 

@@ -399,6 +399,52 @@ pub(crate) async fn vend_credential_to_device(
 
     let cred = match authorized_matches.len() {
         0 => {
+            // No exact-name match. Surface authorized prefix matches as
+            // candidates so the caller (CLI) can show the user a list of
+            // credentials they likely meant (e.g. `mock` -> `mock-1`,
+            // `mock-2`). Only includes credentials the workspace is
+            // actually authorized to vend, to avoid leaking names.
+            let all = state
+                .store
+                .list_all_stored_credentials()
+                .await
+                .unwrap_or_default();
+            let prefix = name.as_str();
+            let mut prefix_candidates: Vec<serde_json::Value> = Vec::new();
+            for cred in &all {
+                if !cred.name.starts_with(prefix) || cred.name == *prefix {
+                    continue;
+                }
+                let decision = state.policy_engine.evaluate(
+                    &PolicyPrincipal::Workspace(&auth.workspace),
+                    actions::VEND_CREDENTIAL,
+                    &PolicyResource::Credential {
+                        credential: cred.clone(),
+                    },
+                    &PolicyContext {
+                        correlation_id: Some(corr.0.clone()),
+                        oauth_claims: auth.oauth_claims.clone(),
+                        ..Default::default()
+                    },
+                )?;
+                if decision.decision != PolicyDecisionResult::Forbid {
+                    prefix_candidates.push(serde_json::json!({
+                        "id": cred.id.0.to_string(),
+                        "name": cred.name,
+                        "service": cred.service,
+                        "description": cred.description,
+                    }));
+                }
+            }
+            if !prefix_candidates.is_empty() {
+                return Err(ApiError::NotFoundWithCandidates {
+                    message: format!(
+                        "no credential exactly named '{}'. Did you mean one of these?",
+                        name
+                    ),
+                    candidates: prefix_candidates,
+                });
+            }
             return Err(ApiError::NotFound(format!(
                 "credential '{}' not found or not authorized",
                 name

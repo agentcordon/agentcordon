@@ -82,7 +82,8 @@ pub fn apply(
         }
         _ => {
             let effective_transform_name = transform_name.or(match credential_type {
-                "bearer" | "generic" | "oauth2_client_credentials" => Some("bearer"),
+                "bearer" | "generic" | "oauth2_client_credentials"
+                | "oauth2_user_authorization" => Some("bearer"),
                 "basic" => Some("basic-auth"),
                 "aws" => Some("aws-sigv4"),
                 _ => None,

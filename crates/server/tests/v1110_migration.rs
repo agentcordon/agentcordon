@@ -74,6 +74,7 @@ async fn create_workspace_mcp(
         auth_method: McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     store
         .create_mcp_server(&server)
@@ -417,6 +418,7 @@ async fn test_migration_unique_constraint_post_migration() {
         auth_method: McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     let result = ctx.store.create_mcp_server(&dup).await;
     assert!(
@@ -560,6 +562,7 @@ async fn test_migration_fk_restrict_post_migration() {
         auth_method: McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store.create_mcp_server(&mcp1).await.unwrap();
 
@@ -579,6 +582,7 @@ async fn test_migration_fk_restrict_post_migration() {
         auth_method: McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store.create_mcp_server(&mcp2).await.unwrap();
 

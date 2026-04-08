@@ -27,7 +27,6 @@ async fn create_root_user(store: &dyn Store, username: &str) -> User {
         role: UserRole::Admin,
         is_root: true,
         enabled: true,
-        show_advanced: true,
         created_at: now,
         updated_at: now,
     };

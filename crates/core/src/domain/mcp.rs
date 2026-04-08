@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::credential::CredentialId;
+use super::user::UserId;
 use super::workspace::WorkspaceId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -98,6 +99,8 @@ pub struct McpServer {
     pub template_key: Option<String>,
     /// Full tool metadata from MCP discovery (name, description, input_schema).
     pub discovered_tools: Option<Vec<McpTool>>,
+    /// The user who created/owns this MCP server.
+    pub created_by_user: Option<UserId>,
 }
 
 /// A tool discovered from an MCP server via JSON-RPC `tools/list`.

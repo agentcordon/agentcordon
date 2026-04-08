@@ -459,6 +459,44 @@ impl ServerClient {
         Ok(envelope.data.servers)
     }
 
+    /// Create a credential via the workspace-initiated `agent-store` endpoint.
+    ///
+    /// `body` is the raw JSON object the server's `agent-store` route accepts
+    /// (`name`, `service`, `secret_value`, optional `metadata`, `tags`, etc.).
+    /// Returns the deserialized `CredentialSummary` from the server's envelope.
+    pub async fn agent_store_credential(
+        &self,
+        access_token: &str,
+        body: &serde_json::Value,
+    ) -> Result<CredentialSummary, ServerClientError> {
+        let url = format!("{}/api/v1/credentials/agent-store", self.base_url);
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(access_token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ServerClientError::ServerError {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+
+        let envelope: ApiEnvelope<CredentialSummary> = resp
+            .json()
+            .await
+            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
+
+        Ok(envelope.data)
+    }
+
     /// Check if the server is reachable.
     pub async fn health_check(&self) -> bool {
         let url = format!("{}/health", self.base_url);

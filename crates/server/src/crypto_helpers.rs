@@ -56,6 +56,66 @@ pub async fn reencrypt_credential_for_device(
     .await
 }
 
+/// Like [`reencrypt_credential_for_device`] but includes additional metadata in
+/// the ECIES-encrypted JSON payload. Used for `oauth2_user_authorization`
+/// credentials where the broker needs token_url, client_id, and client_secret
+/// to perform token exchange.
+///
+/// The encrypted payload becomes:
+/// `{"value": "<secret>", "metadata": {"key": "val", ...}}`
+pub async fn reencrypt_credential_with_metadata(
+    encryptor: &dyn SecretEncryptor,
+    cred: &StoredCredential,
+    workspace_id_str: &str,
+    recipient_pub_bytes: &[u8],
+    metadata: std::collections::HashMap<String, String>,
+) -> Result<(ReencryptedEnvelope, String), ApiError> {
+    // Decrypt credential material (AES-GCM with credential ID as AAD)
+    let plaintext = encryptor.decrypt(
+        &cred.encrypted_value,
+        &cred.nonce,
+        cred.id.0.to_string().as_bytes(),
+    )?;
+
+    // Wrap in JSON envelope with metadata
+    let plaintext_str = String::from_utf8(plaintext)
+        .map_err(|_| ApiError::Internal("credential secret is not valid UTF-8".to_string()))?;
+    let credential_material = serde_json::json!({
+        "value": plaintext_str,
+        "metadata": metadata,
+    });
+    let material_bytes = serde_json::to_vec(&credential_material)
+        .map_err(|e| ApiError::Internal(format!("failed to serialize credential material: {e}")))?;
+
+    // Build AAD: workspace_id||credential_id||vend_id||timestamp
+    let vend_id = format!("sync_{}", Uuid::new_v4());
+    let timestamp = chrono::Utc::now().timestamp().to_string();
+    let aad = build_aad(
+        workspace_id_str,
+        &cred.id.0.to_string(),
+        &vend_id,
+        &timestamp,
+    );
+
+    // ECIES encrypt to recipient public key
+    let ecies = EciesEncryptor::new();
+    let envelope = ecies
+        .encrypt_for_device(recipient_pub_bytes, &material_bytes, &aad)
+        .await
+        .map_err(|e| ApiError::Internal(format!("ECIES encryption failed: {e}")))?;
+
+    Ok((
+        ReencryptedEnvelope {
+            version: envelope.version,
+            ephemeral_public_key: B64_STANDARD.encode(&envelope.ephemeral_public_key),
+            ciphertext: B64_STANDARD.encode(&envelope.ciphertext),
+            nonce: B64_STANDARD.encode(&envelope.nonce),
+            aad: B64_STANDARD.encode(&envelope.aad),
+        },
+        vend_id,
+    ))
+}
+
 /// Like [`reencrypt_credential_for_device`] but with a custom vend-ID prefix.
 pub async fn reencrypt_credential_for_device_with_prefix(
     encryptor: &dyn SecretEncryptor,

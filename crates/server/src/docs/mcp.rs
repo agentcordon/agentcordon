@@ -233,7 +233,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "POST".to_string(),
         path: "/api/v1/mcp-servers/provision".to_string(),
-        description: "Provision an MCP server from a catalog template for a workspace. Creates the server record, optionally creates or links a credential, generates Cedar policies, and emits an audit event. Requires admin role.".to_string(),
+        description: "Provision an MCP server from a catalog template for a workspace. Creates the server record, optionally creates or links a credential, generates Cedar policies, and emits an audit event. Requires the `manage_mcp_servers` Cedar permission (admin and operator roles by default).".to_string(),
         auth_required: true,
         request_body: Some(json!({
             "type": "object",

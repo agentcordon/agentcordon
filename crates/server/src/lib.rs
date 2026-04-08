@@ -15,6 +15,7 @@ pub mod grants;
 pub mod metrics;
 pub mod middleware;
 pub mod migrations;
+pub mod oauth_discovery;
 pub mod rate_limit;
 pub mod response;
 pub mod routes;

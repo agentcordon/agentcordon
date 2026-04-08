@@ -22,6 +22,10 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/status", get(status::get_status))
         .route("/deregister", post(deregister::post_deregister))
         .route("/credentials", get(credentials::get_credentials))
+        .route(
+            "/credentials/create",
+            post(credentials::post_create_credential),
+        )
         .route("/proxy", post(proxy::post_proxy))
         .route("/mcp/list-servers", post(mcp::list_servers))
         .route("/mcp/list-tools", post(mcp::list_tools))

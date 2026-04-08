@@ -1,0 +1,15 @@
+{
+  "key": "asana",
+  "name": "Asana",
+  "description": "Tasks, projects, and teams via Asana's hosted MCP server.",
+  "upstream_url": "https://mcp.asana.com/sse",
+  "transport": "sse",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.asana.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": ["asana", "tasks", "oauth"],
+  "icon": "asana",
+  "sort_order": 60
+}

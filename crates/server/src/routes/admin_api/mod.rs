@@ -5,7 +5,8 @@ mod audit;
 pub mod credential_templates;
 pub(crate) mod credentials;
 mod mcp_proxy;
-mod mcp_servers;
+mod oauth_provider_clients;
+pub(crate) mod mcp_servers;
 pub mod mcp_templates;
 pub(crate) mod oidc_auth;
 mod oidc_providers;
@@ -65,6 +66,7 @@ pub fn routes() -> Router<AppState> {
         .merge(oidc_auth::routes())
         .merge(oidc_providers::routes())
         .merge(mcp_servers::routes())
+        .merge(oauth_provider_clients::routes())
         .merge(mcp_proxy::routes())
         .merge(stats::routes())
         .merge(admin::routes())

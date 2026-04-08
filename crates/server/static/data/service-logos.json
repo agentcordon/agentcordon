@@ -17,7 +17,14 @@
     "google": "/img/logos/google.svg",
     "microsoft": "/img/logos/microsoft.svg",
     "netlify": "/img/logos/netlify.svg",
-    "supabase": "/img/logos/supabase.svg"
+    "supabase": "/img/logos/supabase.svg",
+    "atlassian": "/img/logos/atlassian.svg",
+    "asana": "/img/logos/asana.svg",
+    "intercom": "/img/logos/intercom.svg",
+    "paypal": "/img/logos/paypal.svg",
+    "square": "/img/logos/square.svg",
+    "wix": "/img/logos/wix.svg",
+    "granola": "/img/logos/granola.png"
   },
   "aliases": {
     "google-gemini": "google",

@@ -41,6 +41,7 @@ async fn create_mcp_server_for_workspace(
         auth_method: McpAuthMethod::default(),
         template_key: None,
         discovered_tools: None,
+        created_by_user: None,
     };
     store
         .create_mcp_server(&server)
@@ -257,13 +258,13 @@ async fn test_mcp_authorize_cross_workspace_isolation() {
 
     assert_eq!(status, StatusCode::OK, "cross-ws mcp-authorize: {}", body);
     let data = &body["data"];
-    // MCP servers are a global catalog — any enabled workspace can call tools
-    // on any enabled MCP server. Cedar policy 4b permits this by default.
-    // Admins can restrict with explicit forbid policies per workspace/server.
+    // Owner-based access: WS-B is owned by a different user than WS-A's server,
+    // so the default MCP permit (workspace.owner == server.owner) does not apply.
+    // Cross-user access requires an explicit Cedar grant policy.
     assert_eq!(
         data["decision"].as_str().unwrap(),
-        "permit",
-        "WS-B should be permitted on WS-A's server (global MCP catalog): {}",
+        "forbid",
+        "WS-B should be denied on WS-A's server (different owner): {}",
         body
     );
 }

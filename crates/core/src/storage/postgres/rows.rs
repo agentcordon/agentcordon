@@ -67,7 +67,6 @@ pub(crate) struct UserRow {
     pub role: String,
     pub is_root: bool,
     pub enabled: bool,
-    pub show_advanced: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -82,7 +81,6 @@ impl UserRow {
             role: deserialize_user_role(&self.role)?,
             is_root: self.is_root,
             enabled: self.enabled,
-            show_advanced: self.show_advanced,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -318,6 +316,7 @@ pub(crate) struct McpServerRow {
     pub auth_method: String,
     pub template_key: Option<String>,
     pub discovered_tools: Option<serde_json::Value>,
+    pub created_by_user: Option<String>,
 }
 
 impl From<McpServerRow> for McpServer {
@@ -357,6 +356,9 @@ impl From<McpServerRow> for McpServer {
             auth_method: McpAuthMethod::from_str_opt(&r.auth_method).unwrap_or_default(),
             template_key: r.template_key,
             discovered_tools,
+            created_by_user: r
+                .created_by_user
+                .and_then(|s| Uuid::parse_str(&s).ok().map(UserId)),
         }
     }
 }

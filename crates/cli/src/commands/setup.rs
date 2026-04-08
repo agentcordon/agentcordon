@@ -20,7 +20,7 @@ pub async fn run(server_url: String) -> Result<(), CliError> {
         "mcp:discover".to_string(),
         "mcp:invoke".to_string(),
     ];
-    super::register::run(scopes, false).await?;
+    super::register::run(scopes, false, false).await?;
 
     println!("\n  Setup complete! Try:");
     println!("    agentcordon credentials");

@@ -365,7 +365,7 @@ async fn test_disabled_workspace_sees_nothing() {
     .await;
     assert_eq!(status, StatusCode::OK, "policy test: {:?}", body);
     assert_eq!(
-        body["data"]["decision"], "forbid",
+        body["data"]["decision"], "deny",
         "disabled workspace should be denied — no permit matches when !enabled"
     );
 }
@@ -460,7 +460,7 @@ async fn test_owner_match_does_not_grant_access_via_policy_1b() {
     // Disabled workspace: no permit matches (all check enabled).
     // Even if enabled, policy 1b doesn't include `access`.
     assert_eq!(
-        body["data"]["decision"], "forbid",
+        body["data"]["decision"], "deny",
         "disabled workspace denied — no permit matches when !enabled"
     );
 }

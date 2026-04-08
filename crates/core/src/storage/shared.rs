@@ -124,7 +124,7 @@ pub const CREDENTIAL_COLUMNS: &str = "id, name, service, encrypted_value, nonce,
 pub const CREDENTIAL_SUMMARY_COLUMNS: &str = "id, name, service, scopes, metadata, created_by, created_at, allowed_url_pattern, created_by_user, expires_at, transform_script, transform_name, vault, credential_type, tags, description, target_identity";
 
 /// Columns for the `users` table (SELECT).
-pub const USER_COLUMNS: &str = "id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at, show_advanced";
+pub const USER_COLUMNS: &str = "id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at";
 
 /// Columns for the `policies` table (SELECT).
 pub const POLICY_COLUMNS: &str =
@@ -137,7 +137,7 @@ pub const SESSION_COLUMNS: &str = "id, user_id, created_at, expires_at, last_see
 pub const SERVER_COLUMNS: &str = "id, name, client_id, client_secret_hash, expected_audience, enabled, tags, created_by, created_at, updated_at";
 
 /// Columns for the `mcp_servers` table (SELECT).
-pub const MCP_SERVER_COLUMNS: &str = "id, workspace_id, name, upstream_url, transport, credential_bindings, allowed_tools, enabled, created_by, created_at, updated_at, tags, required_credentials, auth_method, template_key, discovered_tools";
+pub const MCP_SERVER_COLUMNS: &str = "id, workspace_id, name, upstream_url, transport, credential_bindings, allowed_tools, enabled, created_by, created_at, updated_at, tags, required_credentials, auth_method, template_key, discovered_tools, created_by_user";
 
 /// Columns for the `oidc_providers` table (SELECT, full).
 pub const OIDC_PROVIDER_COLUMNS: &str = "id, name, issuer_url, client_id, encrypted_client_secret, nonce, scopes, role_mapping, auto_provision, enabled, username_claim, created_at, updated_at";

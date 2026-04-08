@@ -48,6 +48,12 @@ pub enum ApiError {
         message: String,
         candidates: Vec<serde_json::Value>,
     },
+    /// No exact match for the requested credential name, but related candidates
+    /// (e.g., name-prefix matches) are surfaced to help the caller pick one.
+    NotFoundWithCandidates {
+        message: String,
+        candidates: Vec<serde_json::Value>,
+    },
 }
 
 impl IntoResponse for ApiError {
@@ -100,6 +106,16 @@ impl IntoResponse for ApiError {
                     }
                 });
                 return (StatusCode::MULTIPLE_CHOICES, Json(body)).into_response();
+            }
+            ApiError::NotFoundWithCandidates { message, candidates } => {
+                let body = serde_json::json!({
+                    "error": {
+                        "code": "not_found",
+                        "message": message,
+                        "candidates": candidates
+                    }
+                });
+                return (StatusCode::NOT_FOUND, Json(body)).into_response();
             }
         };
 

@@ -288,7 +288,7 @@ fi
 echo ""
 echo -e "  ${BOLD}Next steps:${NC}"
 echo -e "    1. Log in and add your API credentials"
-echo -e "    2. Open ${BOLD}http://localhost:${PORT}/enroll.md${NC} for agent setup"
+echo -e "    2. Run ${BOLD}agentcordon setup http://localhost:${PORT}${NC} in your agent's project"
 echo -e "    3. Point your agents at AgentCordon — they never see your secrets"
 echo ""
 echo -e "  ${BOLD}Commands:${NC}"

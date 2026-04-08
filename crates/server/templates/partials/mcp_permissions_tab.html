@@ -1,0 +1,160 @@
+<!-- Permissions Tab — MCP Server Detail -->
+<div class="tab-content" x-show="activeTab === 'permissions'">
+    <!-- Section 1: Effective Access -->
+    <div class="mcp-perm-section">
+        <h3 class="mcp-section-header">Effective Access</h3>
+        <p class="text-sm opacity-muted mcp-section-desc">Default policies allow all enabled workspaces to access enabled MCP servers. Add forbid rules to restrict access.</p>
+        <div x-show="rsop.loading" class="page-loader page-loader-sm">
+            <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+        </div>
+        <div x-show="!rsop.loading && rsop.matrix.length === 0" class="empty-state empty-state-compact">
+            <p>No workspaces found for effective access evaluation.</p>
+        </div>
+        <div x-show="!rsop.loading && rsop.matrix.length > 0">
+            <template x-for="action in rsopActions" :key="action.key">
+                <div x-show="principalsForAction(action.key).length > 0" class="mcp-rsop-action">
+                    <div class="mcp-rsop-action-label" x-text="action.label"></div>
+                    <div class="mcp-rsop-pills">
+                        <template x-for="(p, idx) in principalsForAction(action.key).slice(0, 5)" :key="p.principal_id">
+                            <span class="pill pill-scope" x-text="p.principal_name"></span>
+                        </template>
+                        <template x-if="principalsForAction(action.key).length > 5">
+                            <button class="btn btn-ghost btn-sm" @click="openEaModal(action.key, action.label)"
+                                    x-text="'... and ' + (principalsForAction(action.key).length - 5) + ' others \u2014 View all'"></button>
+                        </template>
+                        <template x-if="principalsForAction(action.key).length <= 5 && principalsForAction(action.key).length > 0">
+                            <button class="btn btn-ghost btn-sm" @click="openEaModal(action.key, action.label)" title="View details">Details</button>
+                        </template>
+                    </div>
+                </div>
+            </template>
+        </div>
+        <template x-if="!rsop.loading && rsop.conditional_policies && rsop.conditional_policies.length > 0">
+            <div class="text-sm opacity-muted mt-2">
+                <template x-for="cp in rsop.conditional_policies" :key="cp.policy_id || cp.policy_name">
+                    <div>&#9889; <span x-text="cp.policy_name"></span>: <span x-text="cp.description"></span></div>
+                </template>
+            </div>
+        </template>
+    </div>
+
+    <!-- Section 2: Cedar Actions (collapsible) -->
+    <details class="mcp-perm-section mcp-advanced-section">
+        <summary class="mcp-section-header mcp-section-toggle">Available Cedar Actions</summary>
+        <div x-show="cedarActions.length > 0" class="mcp-cedar-actions">
+            <template x-for="action in cedarActions" :key="action.name">
+                <div class="mcp-cedar-action-row">
+                    <code class="mono-id mcp-cedar-action-name" x-text="action.name"></code>
+                    <span class="text-sm opacity-muted" x-text="action.description"></span>
+                </div>
+            </template>
+        </div>
+        <div x-show="cedarActions.length === 0 && !rsop.loading" class="text-sm opacity-muted">No actions found.</div>
+    </details>
+
+    <!-- Section 3: Granted Permissions -->
+    <div class="mcp-perm-section">
+        <h3 class="mcp-section-header">Granted Permissions</h3>
+        <div x-show="permissionsLoading" class="page-loader page-loader-sm">
+            <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+        </div>
+        <div x-show="!permissionsLoading && permissions.length === 0" class="empty-state empty-state-compact">
+            <p>Only automatic owner-based access applies. No explicit grants have been created.</p>
+        </div>
+        <table x-show="!permissionsLoading && permissions.length > 0" class="tbl tbl-flush">
+            <thead>
+                <tr>
+                    <th>Workspace</th>
+                    <th>Permission</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="perm in permissions" :key="perm.workspace_id + '-' + perm.permission">
+                    <tr>
+                        <td :title="perm.workspace_id" x-text="perm.workspace_name || perm.workspace_id"></td>
+                        <td><span class="pill pill-scope" x-text="permLabel(perm.permission)"></span></td>
+                        <td>
+                            <button class="btn btn-ghost btn-sm" @click="revokePermission(perm.workspace_id, perm.permission)" title="Revoke">&#10005;</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Section 4: Grant Access -->
+    <div class="mcp-perm-section">
+        <h3 class="mcp-section-header">Grant Access</h3>
+        <div class="perm-form-batch">
+            <div class="perm-form-row">
+                <select x-model="grantWorkspace" class="form-input perm-agent-select" aria-label="Select workspace" @focus="loadWorkspaces()">
+                    <option value="" disabled>Select workspace...</option>
+                    <template x-for="a in workspaces" :key="a.id">
+                        <option :value="a.id" x-text="a.name"></option>
+                    </template>
+                </select>
+            </div>
+            <div class="mcp-grant-mode-toggle">
+                <button type="button" class="btn btn-sm" :class="grantMode === 'grant' ? 'btn-primary' : 'btn-ghost'" @click="grantMode = 'grant'">Grant</button>
+                <button type="button" class="btn btn-sm" :class="grantMode === 'deny' ? 'btn-danger' : 'btn-ghost'" @click="grantMode = 'deny'">Deny</button>
+            </div>
+            <div class="mcp-grant-checkboxes">
+                <div class="mcp-grant-primary-checks">
+                    <label class="checkbox-label"><input type="checkbox" :checked="grantListTools" @change="grantListTools = $el.checked" class="checkbox-input" data-testid="grant-list-tools"><span>List Tools</span></label>
+                    <label class="checkbox-label"><input type="checkbox" :checked="grantAllTools" @change="grantAllTools = $el.checked" class="checkbox-input" data-testid="grant-all-tools"><span>All Tools</span></label>
+                </div>
+                <template x-if="server && server.tools && server.tools.length > 0">
+                    <div>
+                        <div class="text-sm opacity-muted mcp-individual-tools-label">Individual tools:</div>
+                        <div class="mcp-tool-checkboxes">
+                            <template x-for="tool in server.tools" :key="tool.name">
+                                <label class="checkbox-label" :title="tool.description || ''">
+                                    <input type="checkbox" class="checkbox-input" :checked="grantTools[tool.name]" @change="grantTools[tool.name] = $event.target.checked">
+                                    <span class="mono-sm" x-text="tool.name"></span>
+                                </label>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+            </div>
+            <button class="btn btn-sm" :class="grantMode === 'deny' ? 'btn-danger' : 'btn-primary'" @click="grantPermissions()" :disabled="grantSubmitting">
+                <span x-text="grantSubmitting ? (grantMode === 'deny' ? 'Denying...' : 'Granting...') : (grantMode === 'deny' ? 'Deny Permissions' : 'Grant Permissions')"></span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Effective Access Modal -->
+    <div x-show="eaModal.open" x-cloak class="modal-overlay" @click.self="eaModal.open = false" @keydown.escape.window="eaModal.open && (eaModal.open = false)">
+        <div class="modal mcp-ea-modal">
+            <div class="mcp-ea-modal-header">
+                <h3 x-text="eaModal.title"></h3>
+                <button class="btn btn-ghost btn-sm" @click="eaModal.open = false" aria-label="Close">&times;</button>
+            </div>
+            <table class="tbl tbl-flush">
+                <thead>
+                    <tr><th>Principal</th><th>Decision</th><th>Policy Basis</th></tr>
+                </thead>
+                <tbody>
+                    <template x-for="entry in eaModal.entries" :key="entry.principal_id">
+                        <tr>
+                            <td x-text="entry.principal_name"></td>
+                            <td><span class="pill pill-sm" :class="rsopPill(entry.decision)" x-text="rsopIcon(entry.decision)"></span></td>
+                            <td class="text-sm opacity-muted">
+                                <template x-for="reason in entry.reasons" :key="reason.reason">
+                                    <template x-if="reason.policy_id">
+                                        <a :href="'/security/' + reason.policy_id" x-text="reason.policy_name || reason.reason" class="mcp-policy-link"></a>
+                                    </template>
+                                    <template x-if="!reason.policy_id">
+                                        <span x-text="reason.reason" class="mcp-policy-link"></span>
+                                    </template>
+                                </template>
+                                <span x-show="entry.reasons.length === 0">default policy</span>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>

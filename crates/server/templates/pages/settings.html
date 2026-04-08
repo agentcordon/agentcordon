@@ -9,20 +9,6 @@
     <!-- Section: Account Settings -->
     <h3 class="settings-section-header">Account Settings</h3>
 
-    <!-- Advanced Mode Toggle -->
-    <div class="card mb-6">
-        <div class="d-flex justify-between items-center">
-            <div>
-                <h3>Advanced Mode</h3>
-                <p class="text-sm mt-2 settings-desc">Shows additional technical details like Cedar policy source, raw JSON payloads, and debug information throughout the UI. Off by default to keep the interface focused.</p>
-            </div>
-            <label class="toggle-switch settings-toggle">
-                <input type="checkbox" x-model="advancedMode" @change="toggleAdvancedMode()" aria-label="Toggle Advanced Mode">
-                <span class="toggle-slider"></span>
-            </label>
-        </div>
-    </div>
-
     <!-- Change Password -->
     <div class="card mb-6">
         <h3>Change Password</h3>
@@ -136,6 +122,107 @@
         {% endif %}
     </div>
 
+    <!-- OAuth Provider Clients -->
+    <div class="card mb-6">
+        <div class="d-flex justify-between items-center mb-4">
+            <div>
+                <h3>OAuth Provider Clients</h3>
+                <p class="text-sm mt-2 settings-desc">AgentCordon's registered identity at each OAuth authorization server. Most providers are registered automatically via Dynamic Client Registration; add a row manually only if your provider requires pre-registration.</p>
+            </div>
+            <button class="btn btn-primary btn-sm" @click="showOAuthProviderForm = !showOAuthProviderForm">Add Client</button>
+        </div>
+
+        <p class="text-sm mb-4 settings-desc">DCR-registered clients are created automatically when users click "Connect" in the marketplace. You normally don't need to add rows here manually.</p>
+
+        <!-- New OAuth Provider Client Form -->
+        <div x-show="showOAuthProviderForm" x-cloak class="mb-4 p-4 settings-new-provider-form">
+            <form @submit.prevent="createOAuthProviderClient()">
+                <div class="form-group">
+                    <label for="opc-label">Label</label>
+                    <input type="text" id="opc-label" name="label" class="form-input" x-model="oauthProviderForm.label" required placeholder="e.g., My OAuth Provider">
+                </div>
+                <div class="form-group">
+                    <label for="opc-as-url">Authorization Server URL</label>
+                    <input type="url" id="opc-as-url" name="authorization_server_url" class="form-input" x-model="oauthProviderForm.authorization_server_url" required placeholder="https://mcp.example.com">
+                </div>
+                <div class="form-group">
+                    <label for="opc-authorize">Authorize Endpoint</label>
+                    <input type="url" id="opc-authorize" name="authorize_endpoint" class="form-input" x-model="oauthProviderForm.authorize_endpoint" required placeholder="https://example.com/oauth/authorize">
+                </div>
+                <div class="form-group">
+                    <label for="opc-token">Token Endpoint</label>
+                    <input type="url" id="opc-token" name="token_endpoint" class="form-input" x-model="oauthProviderForm.token_endpoint" required placeholder="https://example.com/oauth/token">
+                </div>
+                <div class="form-group">
+                    <label for="opc-client-id">Client ID</label>
+                    <input type="text" id="opc-client-id" name="client_id" class="form-input" x-model="oauthProviderForm.client_id" required>
+                </div>
+                <div class="form-group">
+                    <label for="opc-client-secret">Client Secret</label>
+                    <div class="d-flex items-center" style="gap: 8px;">
+                        <input :type="showOAuthProviderSecret ? 'text' : 'password'" id="opc-client-secret" name="client_secret" class="form-input" x-model="oauthProviderForm.client_secret" style="flex: 1;">
+                        <button type="button" class="btn btn-secondary btn-sm" @click="showOAuthProviderSecret = !showOAuthProviderSecret" x-text="showOAuthProviderSecret ? 'Hide' : 'Show'" aria-label="Toggle client secret visibility"></button>
+                    </div>
+                    <span class="text-sm settings-desc">Optional — public clients don't have one</span>
+                </div>
+                <div class="form-group">
+                    <label for="opc-scopes">Scopes</label>
+                    <input type="text" id="opc-scopes" name="scopes" class="form-input" x-model="oauthProviderForm.scopes" placeholder="read write (space-separated)">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary btn-sm" @click="showOAuthProviderForm = false">Cancel</button>
+                    <button type="submit" class="btn btn-primary btn-sm" :disabled="oauthProviderSaving">
+                        <span x-show="oauthProviderSaving" class="spinner" aria-hidden="true"></span>
+                        <span x-text="oauthProviderSaving ? 'Saving...' : 'Save'"></span>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- OAuth Provider Clients List -->
+        <table x-show="oauthProviderClients.length > 0" class="tbl">
+            <thead>
+                <tr>
+                    <th>Label</th>
+                    <th>Authorization Server</th>
+                    <th>Source</th>
+                    <th>Client ID</th>
+                    <th>Enabled</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="client in oauthProviderClients" :key="client.id">
+                    <tr>
+                        <td><strong x-text="client.label"></strong></td>
+                        <td class="mono-id" x-text="client.authorization_server_url"></td>
+                        <td>
+                            <span class="pill" :class="client.registration_source === 'dcr' ? 'pill-info' : 'pill-ok'"
+                                  x-text="client.registration_source === 'dcr' ? 'Auto-registered' : 'Manual'"></span>
+                        </td>
+                        <td class="mono-id" x-text="client.client_id"></td>
+                        <td>
+                            <label class="toggle-switch">
+                                <input type="checkbox" :checked="client.enabled" @change="toggleOAuthProviderClient(client)" :aria-label="'Toggle ' + client.label">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </td>
+                        <td>
+                            <template x-if="client.registration_source === 'dcr'">
+                                <button class="btn btn-secondary btn-sm" @click="reregisterOAuthProviderClient(client)">Re-register</button>
+                            </template>
+                            <button class="btn btn-danger btn-sm" @click="openDeleteOAuthProviderClient(client)">Delete</button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+
+        <div x-show="oauthProviderClients.length === 0" x-cloak class="empty-state empty-state-sm">
+            <p>No OAuth provider clients configured.</p>
+        </div>
+    </div>
+
     <!-- User Management -->
     <div class="card mb-6">
         <div class="d-flex justify-between items-center mb-4">
@@ -199,6 +286,18 @@
             </div>
         </div>
     </div>
+
+    <!-- Delete OAuth Provider Client Modal -->
+    <div x-show="deleteOAuthProviderModal" x-cloak x-transition.opacity.duration.150ms class="modal-overlay" @click.self="deleteOAuthProviderModal = false" @keydown.escape.window="deleteOAuthProviderModal && (deleteOAuthProviderModal = false)">
+        <div class="modal">
+            <h3>Delete OAuth Provider Client</h3>
+            <p>Are you sure you want to delete <strong x-text="deleteOAuthProviderName"></strong>? Connections using this client will lose access to the associated service.</p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" @click="deleteOAuthProviderModal = false">Cancel</button>
+                <button class="btn btn-danger" @click="confirmDeleteOAuthProviderClient()">Delete</button>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -233,7 +332,6 @@ function settingsPage() {
         newProvider: { name: '', issuer_url: '', client_id: '', client_secret: '' },
         users: [],
         usersLoading: !{{ user.is_admin }},
-        advancedMode: {{ user.show_advanced }},
         pwCurrent: '',
         pwNew: '',
         pwConfirm: '',
@@ -242,33 +340,20 @@ function settingsPage() {
         deleteProviderModal: false,
         deleteProviderName: '',
         deleteProviderId: null,
+        oauthProviderClients: [],
+        showOAuthProviderForm: false,
+        showOAuthProviderSecret: false,
+        oauthProviderSaving: false,
+        oauthProviderForm: { label: '', authorization_server_url: '', authorize_endpoint: '', token_endpoint: '', client_id: '', client_secret: '', scopes: '' },
+        deleteOAuthProviderModal: false,
+        deleteOAuthProviderName: '',
+        deleteOAuthProviderId: null,
         init() {
             this.loadCurrentUser();
             if (this.isAdmin) {
                 this.loadUsers();
+                this.refreshOAuthProviderClients();
                 window.addEventListener('ac:user_created', () => this.loadUsers());
-            }
-        },
-        // Advanced mode state lives ONLY in the database (user.show_advanced).
-        // Do NOT add localStorage, sessionStorage, or client-side persistence.
-        // The page reload after API success is the sync mechanism.
-        // See: recurring toggle bug fixed 5+ times due to state fragmentation.
-        async toggleAdvancedMode() {
-            try {
-                const resp = await fetch('/api/v1/settings/advanced-mode', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
-                    body: JSON.stringify({ enabled: this.advancedMode }),
-                });
-                if (resp.ok) {
-                    window.location.reload();
-                } else {
-                    showToast('Failed to update setting', 'error');
-                    this.advancedMode = !this.advancedMode;
-                }
-            } catch(e) {
-                showToast('Failed to update setting', 'error');
-                this.advancedMode = !this.advancedMode;
             }
         },
         async loadCurrentUser() {
@@ -388,6 +473,85 @@ function settingsPage() {
             } catch(e) { showToast('Failed to delete provider', 'error'); }
             this.deleteProviderModal = false;
             this.deleteProviderId = null;
+        },
+        async refreshOAuthProviderClients() {
+            try {
+                const resp = await fetch('/api/v1/oauth-provider-clients', {
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                if (resp.ok) {
+                    const json = await resp.json();
+                    this.oauthProviderClients = json.data || [];
+                } else {
+                    this.oauthProviderClients = [];
+                }
+            } catch(e) { showToast('Failed to load OAuth provider clients', 'error'); }
+        },
+        async createOAuthProviderClient() {
+            this.oauthProviderSaving = true;
+            try {
+                const resp = await fetch('/api/v1/oauth-provider-clients', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify(this.oauthProviderForm),
+                });
+                if (resp.ok) {
+                    this.showOAuthProviderForm = false;
+                    this.showOAuthProviderSecret = false;
+                    this.oauthProviderForm = { label: '', authorization_server_url: '', authorize_endpoint: '', token_endpoint: '', client_id: '', client_secret: '', scopes: '' };
+                    await this.refreshOAuthProviderClients();
+                    showToast('OAuth provider client created', 'success');
+                } else {
+                    const err = await resp.json().catch(() => ({}));
+                    showToast(err.error?.message || 'Failed to create OAuth provider client', 'error');
+                }
+            } catch(e) {
+                showToast('Network error', 'error');
+            }
+            this.oauthProviderSaving = false;
+        },
+        async toggleOAuthProviderClient(client) {
+            try {
+                await fetch('/api/v1/oauth-provider-clients/' + client.id, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ enabled: !client.enabled }),
+                });
+                await this.refreshOAuthProviderClients();
+            } catch(e) { showToast('Failed to update OAuth provider client', 'error'); }
+        },
+        async reregisterOAuthProviderClient(client) {
+            try {
+                const resp = await fetch('/api/v1/oauth-provider-clients/' + client.id + '/reregister', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': getCsrfToken() },
+                });
+                if (resp.ok) {
+                    showToast('Client re-registered', 'success');
+                    await this.refreshOAuthProviderClients();
+                } else {
+                    const err = await resp.json().catch(() => ({}));
+                    showToast(err.error?.message || 'Failed to re-register client', 'error');
+                }
+            } catch(e) { showToast('Network error', 'error'); }
+        },
+        openDeleteOAuthProviderClient(client) {
+            this.deleteOAuthProviderName = client.label;
+            this.deleteOAuthProviderId = client.id;
+            this.deleteOAuthProviderModal = true;
+        },
+        async confirmDeleteOAuthProviderClient() {
+            if (!this.deleteOAuthProviderId) return;
+            try {
+                await fetch('/api/v1/oauth-provider-clients/' + this.deleteOAuthProviderId, {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': getCsrfToken() },
+                });
+                await this.refreshOAuthProviderClients();
+                showToast('OAuth provider client deleted', 'success');
+            } catch(e) { showToast('Failed to delete OAuth provider client', 'error'); }
+            this.deleteOAuthProviderModal = false;
+            this.deleteOAuthProviderId = null;
         }
     };
 }

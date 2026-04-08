@@ -9,6 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use agent_cordon_core::crypto::SecretEncryptor;
 use agent_cordon_core::policy::PolicyEngine;
 
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
@@ -147,6 +148,34 @@ pub(super) struct McpServerSyncResponse {
 
 use crate::crypto_helpers::parse_broker_public_key;
 
+/// Cedar policy check: can this workspace see this MCP server?
+///
+/// Evaluates `mcp_list_tools` against the McpServer entity (with owner) for the
+/// authenticated workspace. Used to filter MCP server and tool listings before
+/// returning them to the broker.
+fn workspace_can_view_mcp_server(
+    state: &AppState,
+    workspace: &AuthenticatedWorkspace,
+    server: &agent_cordon_core::domain::mcp::McpServer,
+) -> bool {
+    let decision = state.policy_engine.evaluate(
+        &PolicyPrincipal::Workspace(&workspace.workspace),
+        actions::MCP_LIST_TOOLS,
+        &PolicyResource::McpServer {
+            id: server.id.0.to_string(),
+            name: server.name.clone(),
+            enabled: server.enabled,
+            tags: server.tags.clone(),
+            owner: server.created_by_user.clone(),
+        },
+        &PolicyContext::default(),
+    );
+    matches!(
+        decision,
+        Ok(d) if d.decision == PolicyDecisionResult::Permit
+    )
+}
+
 /// GET /api/v1/workspaces/mcp-servers -- list MCP servers for the authenticated workspace.
 ///
 /// Auth: workspace identity JWT (Authorization: Bearer).
@@ -173,13 +202,18 @@ pub(super) async fn sync_mcp_servers(
         None
     };
 
-    // MCP servers are a shared catalog — return ALL enabled servers, not just
-    // workspace-owned ones.  Cedar policy handles per-tool authorization at
-    // invocation time.
-    let servers = state.store.list_mcp_servers().await?;
+    // Cedar-filter MCP servers by `mcp_list_tools` for this workspace.
+    // Under the owner-based default policy, workspaces only see servers owned
+    // by the same user (plus any with explicit grants).
+    let all_servers = state.store.list_mcp_servers().await?;
+    let servers: Vec<_> = all_servers
+        .into_iter()
+        .filter(|s| s.enabled)
+        .filter(|s| workspace_can_view_mcp_server(&state, &workspace, s))
+        .collect();
 
     let mut entries = Vec::new();
-    for s in servers.into_iter().filter(|s| s.enabled) {
+    for s in servers {
         let credential_envelopes = if let Some(ref pub_bytes) = broker_pub_bytes {
             // Encrypt each required credential for the broker
             let envelopes = encrypt_server_credentials(
@@ -271,13 +305,90 @@ async fn encrypt_server_credentials(
             continue;
         }
 
-        let (envelope, _vend_id) = crate::crypto_helpers::reencrypt_credential_for_device(
-            state.encryptor.as_ref(),
-            &cred,
-            &ws_id_str,
-            broker_pub_bytes,
-        )
-        .await?;
+        // For oauth2_user_authorization credentials, include token exchange
+        // metadata inside the ECIES envelope so the broker can refresh tokens.
+        let (envelope, _vend_id) = if cred.credential_type == "oauth2_user_authorization" {
+            let mut meta = std::collections::HashMap::new();
+            if let Some(token_url) = cred.metadata.get("oauth2_token_url").and_then(|v| v.as_str()) {
+                meta.insert("oauth2_token_url".to_string(), token_url.to_string());
+            }
+            if let Some(cid) = cred.metadata.get("oauth2_client_id").and_then(|v| v.as_str()) {
+                meta.insert("oauth2_client_id".to_string(), cid.to_string());
+            }
+            // Include client_secret from the OAuth provider client row that
+            // owns this credential. Look up by authorization_server_url stored
+            // in credential metadata at provisioning time.
+            if let Some(as_url) = cred
+                .metadata
+                .get("authorization_server_url")
+                .and_then(|v| v.as_str())
+            {
+                let lookup = state
+                    .store
+                    .get_oauth_provider_client_by_authorization_server_url(as_url)
+                    .await;
+                match lookup {
+                    Ok(Some(app))
+                        if app.enabled
+                            && app.encrypted_client_secret.is_some()
+                            && app.nonce.is_some() =>
+                    {
+                        let enc = app.encrypted_client_secret.as_ref().unwrap();
+                        let n = app.nonce.as_ref().unwrap();
+                        match state.encryptor.decrypt(
+                            enc,
+                            n,
+                            app.id.0.to_string().as_bytes(),
+                        ) {
+                            Ok(secret_bytes) => {
+                                if let Ok(secret) = String::from_utf8(secret_bytes) {
+                                    meta.insert(
+                                        "oauth2_client_secret".to_string(),
+                                        secret,
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    authorization_server_url = %as_url,
+                                    "failed to decrypt OAuth provider client secret for sync"
+                                );
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        tracing::debug!(
+                            authorization_server_url = %as_url,
+                            "no enabled OAuth provider client for credential sync"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            authorization_server_url = %as_url,
+                            "failed to look up OAuth provider client for credential sync"
+                        );
+                    }
+                }
+            }
+            crate::crypto_helpers::reencrypt_credential_with_metadata(
+                state.encryptor.as_ref(),
+                &cred,
+                &ws_id_str,
+                broker_pub_bytes,
+                meta,
+            )
+            .await?
+        } else {
+            crate::crypto_helpers::reencrypt_credential_for_device(
+                state.encryptor.as_ref(),
+                &cred,
+                &ws_id_str,
+                broker_pub_bytes,
+            )
+            .await?
+        };
 
         envelopes.push(McpCredentialEnvelope {
             credential_name: cred.name.clone(),
@@ -312,16 +423,17 @@ pub(super) struct McpToolSyncEntry {
 /// GET /api/v1/workspaces/mcp-tools -- list MCP tools from all enabled servers.
 ///
 /// Auth: workspace identity JWT (Authorization: Bearer).
-/// Reads stored `allowed_tools` from each enabled MCP server in the database.
+/// Cedar-filtered: only returns tools from servers the workspace can list.
 pub(super) async fn sync_mcp_tools(
     State(state): State<AppState>,
-    _workspace: AuthenticatedWorkspace,
+    workspace: AuthenticatedWorkspace,
 ) -> Result<Json<ApiResponse<Vec<McpToolSyncEntry>>>, ApiError> {
     let servers = state.store.list_mcp_servers().await?;
 
     let entries: Vec<McpToolSyncEntry> = servers
         .into_iter()
         .filter(|s| s.enabled)
+        .filter(|s| workspace_can_view_mcp_server(&state, &workspace, s))
         .flat_map(|s| {
             let server_name = s.name.clone();
             // Prefer discovered_tools (has descriptions) over allowed_tools (names only)

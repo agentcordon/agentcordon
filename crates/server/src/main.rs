@@ -285,7 +285,6 @@ async fn bootstrap_root_user(store: &(dyn Store + Send + Sync), config: &AppConf
                 role: UserRole::Admin,
                 is_root: true,
                 enabled: true,
-                show_advanced: false,
                 created_at: now,
                 updated_at: now,
             };
@@ -347,6 +346,19 @@ fn spawn_cleanup_task(app_state: &AppState, config: &AppConfig) {
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "OIDC state cleanup failed");
+                }
+            }
+            match store.cleanup_expired_mcp_oauth_states().await {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!(
+                            expired_mcp_oauth_states_cleaned = count,
+                            "MCP OAuth state cleanup completed"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "MCP OAuth state cleanup failed");
                 }
             }
             rate_limiter.cleanup_stale_entries();

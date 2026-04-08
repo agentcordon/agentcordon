@@ -37,6 +37,7 @@ pub fn run(agent: &str) -> Result<(), CliError> {
 
         // Still generate agent-specific files even if key exists
         generate_for_agent(agent, &hash)?;
+        ensure_agentcordon_mcp_entry()?;
         return Ok(());
     }
 
@@ -75,8 +76,9 @@ pub fn run(agent: &str) -> Result<(), CliError> {
     // Generate agent-specific instruction files
     generate_for_agent(agent, &hash)?;
 
-    // Create stub .mcp.json if it doesn't already exist
-    generate_mcp_json_stub()?;
+    // Ensure .mcp.json contains the `agentcordon` MCP server entry so that
+    // Claude Code (and other MCP-aware agents) can auto-discover it.
+    ensure_agentcordon_mcp_entry()?;
 
     Ok(())
 }
@@ -142,6 +144,14 @@ fn generate_agents_md(pk_hash: &str) -> Result<(), CliError> {
          \n\
          When you need to call an external API, use `agentcordon proxy` instead of direct \
          HTTP with raw tokens. Every access is policy-checked and audit-logged.\n\
+         \n\
+         ### Environment\n\
+         \n\
+         | Variable | Default | Description |\n\
+         |----------|---------|-------------|\n\
+         | `AGTCRDN_BROKER_URL` | `http://localhost:3141` | Broker URL the CLI connects to |\n\
+         \n\
+         Set `AGTCRDN_BROKER_URL` if the broker is running on a non-default host or port.\n\
          \n\
          **Local development**: If proxying to localhost URLs, ensure the broker was \
          started with `AGTCRDN_PROXY_ALLOW_LOOPBACK=true` (this is a broker-side flag, \
@@ -312,24 +322,52 @@ fn generate_openclaw_config() -> Result<(), CliError> {
     Ok(())
 }
 
-/// Create a stub `.mcp.json` if one doesn't already exist.
+/// Ensure `.mcp.json` exists and contains an `agentcordon` MCP server entry.
 ///
-/// Claude Code uses this file to discover MCP servers. The stub is empty
-/// (no servers configured) but its presence signals that MCP is available.
-/// AgentCordon's HTTP MCP servers are accessed via the broker, not `.mcp.json`.
-fn generate_mcp_json_stub() -> Result<(), CliError> {
+/// Claude Code reads this file to auto-discover MCP servers. We inject an
+/// entry that points at `agentcordon mcp-serve` so the agent can reach the
+/// AgentCordon broker as a native MCP server. Any other entries already in
+/// the file are preserved untouched — we never read, back up, or persist
+/// the user's existing MCP secrets.
+fn ensure_agentcordon_mcp_entry() -> Result<(), CliError> {
     let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
     let mcp_json_path = Path::new(&base).join(".mcp.json");
 
-    if mcp_json_path.exists() {
-        return Ok(());
-    }
+    let mut json: serde_json::Value = if mcp_json_path.exists() {
+        let content = fs::read_to_string(&mcp_json_path)
+            .map_err(|e| CliError::general(format!("failed to read .mcp.json: {e}")))?;
+        serde_json::from_str(&content)
+            .map_err(|e| CliError::general(format!("invalid .mcp.json: {e}")))?
+    } else {
+        serde_json::json!({ "mcpServers": {} })
+    };
 
-    let content = "{\n  \"mcpServers\": {}\n}\n";
-    fs::write(&mcp_json_path, content)
+    if !json.is_object() {
+        json = serde_json::json!({ "mcpServers": {} });
+    }
+    let obj = json.as_object_mut().unwrap();
+    let servers = obj
+        .entry("mcpServers".to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !servers.is_object() {
+        *servers = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let servers_map = servers.as_object_mut().unwrap();
+    servers_map.insert(
+        "agentcordon".to_string(),
+        serde_json::json!({
+            "command": "agentcordon",
+            "args": ["mcp-serve"],
+        }),
+    );
+
+    let mut new_content = serde_json::to_string_pretty(&json)
+        .map_err(|e| CliError::general(format!("failed to serialize .mcp.json: {e}")))?;
+    new_content.push('\n');
+    fs::write(&mcp_json_path, new_content)
         .map_err(|e| CliError::general(format!("failed to write .mcp.json: {e}")))?;
 
-    println!("Created .mcp.json stub");
+    println!("Ensured .mcp.json contains agentcordon MCP server entry");
     Ok(())
 }
 
@@ -356,4 +394,94 @@ fn add_to_gitignore() -> Result<(), CliError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Set the workspace dir env var for the duration of the test. Tests that
+    /// touch `AGTCRDN_WORKSPACE_DIR` must run serially because env is process-global.
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn new(dir: &Path) -> Self {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: tests are serialized via the mutex above.
+            unsafe {
+                std::env::set_var("AGTCRDN_WORKSPACE_DIR", dir);
+            }
+            Self { _lock: lock }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: tests are serialized via the mutex.
+            unsafe {
+                std::env::remove_var("AGTCRDN_WORKSPACE_DIR");
+            }
+        }
+    }
+
+    fn read_mcp(dir: &Path) -> serde_json::Value {
+        let body = fs::read_to_string(dir.join(".mcp.json")).unwrap();
+        serde_json::from_str(&body).unwrap()
+    }
+
+    #[test]
+    fn ensure_entry_creates_file_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        ensure_agentcordon_mcp_entry().unwrap();
+
+        let json = read_mcp(dir.path());
+        let servers = json["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 1);
+        let entry = &servers["agentcordon"];
+        assert_eq!(entry["command"], "agentcordon");
+        assert_eq!(entry["args"][0], "mcp-serve");
+    }
+
+    #[test]
+    fn ensure_entry_preserves_existing_servers() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+        fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"],"env":{"FOO":"bar"}}}}"#,
+        )
+        .unwrap();
+
+        ensure_agentcordon_mcp_entry().unwrap();
+
+        let json = read_mcp(dir.path());
+        let servers = json["mcpServers"].as_object().unwrap();
+        assert!(servers.contains_key("agentcordon"));
+        let fs_entry = &servers["filesystem"];
+        assert_eq!(fs_entry["command"], "npx");
+        assert_eq!(fs_entry["env"]["FOO"], "bar");
+    }
+
+    #[test]
+    fn ensure_entry_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        ensure_agentcordon_mcp_entry().unwrap();
+        let first = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+        ensure_agentcordon_mcp_entry().unwrap();
+        let second = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+        assert_eq!(first, second);
+
+        let json = read_mcp(dir.path());
+        let servers = json["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 1);
+        assert!(servers.contains_key("agentcordon"));
+    }
 }

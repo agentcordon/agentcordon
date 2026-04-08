@@ -1,0 +1,15 @@
+{
+  "key": "square",
+  "name": "Square",
+  "description": "Catalog, orders, and payments via Square's hosted MCP server.",
+  "upstream_url": "https://mcp.squareup.com/sse",
+  "transport": "sse",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.squareup.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "payments",
+  "tags": ["square", "payments", "oauth"],
+  "icon": "square",
+  "sort_order": 100
+}

@@ -25,6 +25,8 @@ pub struct McpServerView {
     pub tools_count: usize,
     pub workspace_id: String,
     pub workspace_name: String,
+    pub auth_method: String,
+    pub template_key: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -55,10 +57,7 @@ pub async fn mcp_server_list_page(State(state): State<AppState>, request: Reques
         .cloned()
         .unwrap_or(CsrfToken(String::new()));
 
-    let all_servers = state.store.list_mcp_servers().await.unwrap_or_default();
-
-    // Tenant scoping: admins see all, non-admins see only MCP servers
-    // belonging to their owned workspaces
+    // Tenant scoping: admins see all servers, non-admins see servers they created
     let workspaces = if is_admin_user(&user) {
         state.store.list_workspaces().await.unwrap_or_default()
     } else {
@@ -68,15 +67,14 @@ pub async fn mcp_server_list_page(State(state): State<AppState>, request: Reques
             .await
             .unwrap_or_default()
     };
-    let owned_workspace_ids: std::collections::HashSet<String> =
-        workspaces.iter().map(|w| w.id.0.to_string()).collect();
     let servers: Vec<_> = if is_admin_user(&user) {
-        all_servers
+        state.store.list_mcp_servers().await.unwrap_or_default()
     } else {
-        all_servers
-            .into_iter()
-            .filter(|s| owned_workspace_ids.contains(&s.workspace_id.0.to_string()))
-            .collect()
+        state
+            .store
+            .list_mcp_servers_by_user(&user.id)
+            .await
+            .unwrap_or_default()
     };
 
     let workspace_map: std::collections::HashMap<String, String> = workspaces
@@ -103,6 +101,8 @@ pub async fn mcp_server_list_page(State(state): State<AppState>, request: Reques
                 tools_count: s.allowed_tools.as_ref().map(|t| t.len()).unwrap_or(0),
                 workspace_id: s.workspace_id.0.to_string(),
                 workspace_name,
+                auth_method: s.auth_method.to_string(),
+                template_key: s.template_key.clone().unwrap_or_default(),
             }
         })
         .collect();
@@ -120,6 +120,8 @@ pub async fn mcp_server_list_page(State(state): State<AppState>, request: Reques
                     "tools_count": s.tools_count,
                     "workspace_id": s.workspace_id,
                     "workspace_name": s.workspace_name,
+                    "auth_method": s.auth_method,
+                    "template_key": s.template_key,
                 })
             })
             .collect::<Vec<_>>(),
@@ -148,65 +150,6 @@ pub async fn mcp_server_list_page(State(state): State<AppState>, request: Reques
         csrf_token: csrf.0,
         servers: server_views,
         servers_json,
-        workspaces_json,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// MCP Marketplace
-// ---------------------------------------------------------------------------
-
-#[derive(Template)]
-#[template(path = "pages/mcp_servers/marketplace.html")]
-pub struct McpMarketplacePage {
-    pub show_nav: bool,
-    pub current_page: String,
-    pub user: UserContext,
-    pub csrf_token: String,
-    pub workspaces_json: String,
-}
-
-/// GET /mcp-marketplace — render the MCP marketplace page.
-pub async fn mcp_marketplace_page(State(state): State<AppState>, request: Request) -> Response {
-    let user = match super::extract_page_user(&request) {
-        Ok(u) => u,
-        Err(redirect) => return redirect,
-    };
-    let csrf = request
-        .extensions()
-        .get::<CsrfToken>()
-        .cloned()
-        .unwrap_or(CsrfToken(String::new()));
-
-    let workspaces = if is_admin_user(&user) {
-        state.store.list_workspaces().await.unwrap_or_default()
-    } else {
-        state
-            .store
-            .get_workspaces_by_owner(&user.id)
-            .await
-            .unwrap_or_default()
-    };
-
-    let workspaces_json = serde_json::to_string(
-        &workspaces
-            .iter()
-            .map(|w| {
-                serde_json::json!({
-                    "id": w.id.0.to_string(),
-                    "name": w.name,
-                })
-            })
-            .collect::<Vec<_>>(),
-    )
-    .unwrap_or_else(|_| "[]".to_string())
-    .replace("</", "<\\/");
-
-    render_template(&McpMarketplacePage {
-        show_nav: true,
-        current_page: "mcp-servers".to_string(),
-        user: UserContext::from(&user),
-        csrf_token: csrf.0,
         workspaces_json,
     })
 }
