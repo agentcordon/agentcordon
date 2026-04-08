@@ -90,6 +90,67 @@ jobs:
           name: agentcordon-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/agentcordon.exe
 
+  build-broker:
+    name: Broker (${{ matrix.target }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: broker-${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
+        run: cargo build --release --bin agentcordon-broker --target ${{ matrix.target }}
+
+      - name: Upload artifact (Unix)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v6
+        with:
+          name: agentcordon-broker-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/agentcordon-broker
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v6
+        with:
+          name: agentcordon-broker-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/agentcordon-broker.exe
+
   build-server:
     name: Server (${{ matrix.target }})
     needs: validate
@@ -195,7 +256,7 @@ jobs:
 
   release:
     name: Release
-    needs: [build-gateway, build-server, docker]
+    needs: [build-gateway, build-broker, build-server, docker]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -210,6 +271,12 @@ jobs:
           path: artifacts
           pattern: agentcordon-*
 
+      - name: Download broker artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: agentcordon-broker-*
+
       - name: Download server artifacts
         uses: actions/download-artifact@v7
         with:
@@ -219,7 +286,22 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
+          # Broker first — its directory prefix overlaps with the CLI glob
+          # below, so handle it explicitly to avoid double-copying.
+          for dir in artifacts/agentcordon-broker-*/; do
+            target=$(basename "$dir" | sed 's/agentcordon-broker-//')
+            if [[ "$target" == *"windows"* ]]; then
+              cp "$dir"agentcordon-broker.exe "release/agentcordon-broker-${target}.exe"
+            else
+              cp "$dir"agentcordon-broker "release/agentcordon-broker-${target}"
+              chmod +x "release/agentcordon-broker-${target}"
+            fi
+          done
           for dir in artifacts/agentcordon-*/; do
+            # Skip broker dirs (already handled above)
+            case "$(basename "$dir")" in
+              agentcordon-broker-*) continue ;;
+            esac
             target=$(basename "$dir" | sed 's/agentcordon-//')
             if [[ "$target" == *"windows"* ]]; then
               cp "$dir"agentcordon.exe "release/agentcordon-${target}.exe"
