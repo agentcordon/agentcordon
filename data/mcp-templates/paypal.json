@@ -1,0 +1,15 @@
+{
+  "key": "paypal",
+  "name": "PayPal",
+  "description": "Payments, invoices, and subscriptions via PayPal's hosted MCP server.",
+  "upstream_url": "https://mcp.paypal.com/sse",
+  "transport": "sse",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.paypal.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "payments",
+  "tags": ["paypal", "payments", "oauth"],
+  "icon": "paypal",
+  "sort_order": 90
+}

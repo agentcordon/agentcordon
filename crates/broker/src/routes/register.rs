@@ -140,7 +140,6 @@ pub async fn post_register(
                 client_id: String::new(),
                 code_verifier,
                 redirect_uri,
-                state: oauth_state,
                 pk_hash,
                 created_at: std::time::Instant::now(),
             },

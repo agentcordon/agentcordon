@@ -1,7 +1,9 @@
 mod audit;
 mod credentials;
 mod mcp;
+mod mcp_oauth;
 mod oauth;
+mod oauth_provider_client;
 mod oidc;
 mod policies;
 mod rows;

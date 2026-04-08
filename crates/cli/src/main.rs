@@ -25,7 +25,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Generate Ed25519 keypair and prepare workspace
-    Init,
+    Init {
+        /// Target agent: claude-code (default), codex, openclaw, or all
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
+    },
 
     /// Register this workspace with the broker
     Register {
@@ -38,13 +42,21 @@ enum Command {
         /// still holds stale state (409 Conflict on register).
         #[arg(long)]
         force: bool,
+
+        /// Do not auto-open the authorization URL in the browser.
+        /// Useful for headless / SSH / CI environments.
+        #[arg(long = "no-browser")]
+        no_browser: bool,
     },
 
     /// Check workspace and broker status
     Status,
 
-    /// List available credentials
-    Credentials,
+    /// List available credentials (or manage them with subcommands)
+    Credentials {
+        #[command(subcommand)]
+        action: Option<CredentialsAction>,
+    },
 
     /// Proxy an HTTP request through the broker with credential injection
     Proxy {
@@ -100,6 +112,24 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum CredentialsAction {
+    /// Create a new credential in the vault via the broker
+    Create {
+        /// Credential name (unique within workspace)
+        #[arg(long)]
+        name: String,
+
+        /// Service identifier (e.g. "github", "openai")
+        #[arg(long)]
+        service: String,
+
+        /// Secret value (the credential to store)
+        #[arg(long)]
+        value: String,
+    },
+}
+
 fn main() -> std::process::ExitCode {
     // Initialize logging from AGTCRDN_LOG_LEVEL or default to warn
     let filter =
@@ -112,7 +142,7 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Command::Init => commands::init::run(),
+        Command::Init { agent } => commands::init::run(&agent),
         _ => {
             // All other commands are async
             let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -131,11 +161,22 @@ fn main() -> std::process::ExitCode {
 
 async fn run_async(command: Command) -> Result<(), CliError> {
     match command {
-        Command::Init => unreachable!(),
+        Command::Init { .. } => unreachable!(),
         Command::Setup { server_url } => commands::setup::run(server_url).await,
-        Command::Register { scopes, force } => commands::register::run(scopes, force).await,
+        Command::Register {
+            scopes,
+            force,
+            no_browser,
+        } => commands::register::run(scopes, force, no_browser).await,
         Command::Status => commands::status::run().await,
-        Command::Credentials => commands::credentials::run().await,
+        Command::Credentials { action } => match action {
+            None => commands::credentials::run().await,
+            Some(CredentialsAction::Create {
+                name,
+                service,
+                value,
+            }) => commands::credentials::create(name, service, value).await,
+        },
         Command::Proxy {
             credential,
             method,

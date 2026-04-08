@@ -1,0 +1,15 @@
+{
+  "key": "atlassian",
+  "name": "Atlassian",
+  "description": "Jira issues and Confluence pages via Atlassian's hosted MCP server.",
+  "upstream_url": "https://mcp.atlassian.com/v1/mcp",
+  "transport": "sse",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.atlassian.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": ["atlassian", "jira", "confluence", "oauth"],
+  "icon": "atlassian",
+  "sort_order": 30
+}

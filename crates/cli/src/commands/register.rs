@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::time::Duration;
 
 use ed25519_dalek::Signer;
@@ -39,7 +40,7 @@ struct StatusData {
 }
 
 /// Register this workspace with the broker, initiating OAuth consent.
-pub async fn run(scopes: Vec<String>, force: bool) -> Result<(), CliError> {
+pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(), CliError> {
     let client = BrokerClient::connect_for_registration().await?;
 
     // If --force, clear any stale broker registration first
@@ -89,17 +90,27 @@ pub async fn run(scopes: Vec<String>, force: bool) -> Result<(), CliError> {
 
     let resp: RegisterResponse = client.post_unsigned("/register", &req).await?;
 
-    // Try to open browser
+    // Try to open browser (unless --no-browser was passed for headless envs)
     let url = &resp.data.authorization_url;
-    if open_browser(url).is_err() {
+    if no_browser {
         println!("Open this URL in your browser to authorize:");
         println!("  {url}");
+    } else if open_browser(url).is_err() {
+        println!("Open this URL in your browser to authorize:");
+        println!("  {url}");
+        println!("(tip: paste the URL into your browser if it didn't open automatically)");
     } else {
         println!("Opened authorization URL in browser.");
+        println!("If the browser did not open, visit: {url}");
     }
+    // Flush so the URL is visible immediately even when stdout is piped
+    // or redirected (block-buffered). Without this, users running
+    // `agentcordon register | tee log.txt` see nothing until exit.
+    let _ = std::io::stdout().flush();
 
     // Poll for registration completion (timeout: 5 minutes)
     println!("Waiting for authorization...");
+    let _ = std::io::stdout().flush();
     let timeout = Duration::from_secs(300);
     let poll_interval = Duration::from_secs(2);
     let start = std::time::Instant::now();
@@ -127,6 +138,28 @@ pub async fn run(scopes: Vec<String>, force: bool) -> Result<(), CliError> {
                     return Err(CliError::authorization_denied(
                         "authorization denied by user",
                     ));
+                } else if status == 401 {
+                    // Broker surfaces OAuth callback errors via the
+                    // `registration_failed` error code so we don't hang
+                    // until the 5-minute polling timeout. Any other 401
+                    // (e.g. `reregistration_required`) just means the
+                    // callback hasn't fired yet — keep polling.
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
+                        let code = parsed
+                            .get("error")
+                            .and_then(|e| e.get("code"))
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("");
+                        if code == "registration_failed" {
+                            let msg = parsed
+                                .get("error")
+                                .and_then(|e| e.get("message"))
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("OAuth authorization failed")
+                                .to_string();
+                            return Err(CliError::authorization_denied(msg));
+                        }
+                    }
                 }
             }
             Err(_) => {

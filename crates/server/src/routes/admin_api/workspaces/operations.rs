@@ -258,6 +258,7 @@ pub(super) async fn get_workspace_permissions(
                 name: server.name.clone(),
                 enabled: server.enabled,
                 tags: server.tags.clone(),
+                owner: server.created_by_user.clone(),
             },
             &PolicyContext {
                 correlation_id: Some(corr.0.clone()),

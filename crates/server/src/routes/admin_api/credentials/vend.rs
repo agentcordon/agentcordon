@@ -5,10 +5,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use base64::engine::general_purpose::{STANDARD as B64_STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 
-use agent_cordon_core::crypto::ecies::{build_aad, CredentialEnvelopeEncryptor, EciesEncryptor};
 use agent_cordon_core::crypto::SecretEncryptor;
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
@@ -53,19 +52,7 @@ pub(crate) struct VendRequest {
     broker_public_key: Option<String>,
 }
 
-/// Decode a base64url-encoded uncompressed P-256 point and validate its length.
-fn parse_broker_public_key(encoded: &str) -> Result<Vec<u8>, ApiError> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(encoded)
-        .map_err(|_| ApiError::BadRequest("invalid base64url in broker_public_key".to_string()))?;
-    if bytes.len() != 65 || bytes[0] != 0x04 {
-        return Err(ApiError::BadRequest(
-            "broker_public_key must be a 65-byte uncompressed P-256 point (0x04 || x || y)"
-                .to_string(),
-        ));
-    }
-    Ok(bytes)
-}
+use crate::crypto_helpers::parse_broker_public_key;
 
 /// Extract the encryption JWK from a workspace's `encryption_public_key` value (JWK JSON string).
 fn parse_encryption_jwk(encryption_public_key: &str) -> Result<serde_json::Value, ApiError> {
@@ -134,22 +121,27 @@ async fn vend_inner(
         },
     )?;
 
-    let now = chrono::Utc::now();
-
     if decision.decision == PolicyDecisionResult::Forbid {
         // Audit event emitted automatically by AuditingPolicyEngine.
         return Err(ApiError::Forbidden("access denied by policy".to_string()));
     }
 
-    // Generate vend_id
-    let vend_id = format!("vnd_{}", Uuid::new_v4());
-
-    // Decrypt credential material (AES-GCM with credential ID as AAD)
-    let plaintext = state.encryptor.decrypt(
-        &cred.encrypted_value,
-        &cred.nonce,
-        cred.id.0.to_string().as_bytes(),
-    )?;
+    // Capture policy reasoning for the vend audit event
+    let policy_reason = if decision.reasons.is_empty() {
+        None
+    } else {
+        Some(decision.reasons.join(", "))
+    };
+    let mut policy_metadata = serde_json::json!({});
+    agent_cordon_core::domain::audit::enrich_metadata_with_policy_reasoning(
+        &mut policy_metadata,
+        &decision,
+        Some(&PolicyContext {
+            correlation_id: Some(corr_id.clone()),
+            ..Default::default()
+        }),
+        None,
+    );
 
     // Resolve encryption public key: prefer broker-provided key, fall back to workspace key
     let ws_pub_bytes = if let Some(broker_bytes) = broker_pub_bytes {
@@ -165,45 +157,34 @@ async fn vend_inner(
         jwk_to_uncompressed_point(&encryption_jwk)?
     };
 
-    // Build AAD: workspace_id||credential_id||vend_id||timestamp
-    let timestamp = now.timestamp().to_string();
-    let aad = build_aad(
+    // Decrypt (AES-GCM) → re-encrypt (ECIES) for the recipient device
+    let (envelope, vend_id) = crate::crypto_helpers::reencrypt_credential_for_device_with_prefix(
+        state.encryptor.as_ref(),
+        cred,
         &workspace.id.0.to_string(),
-        &cred.id.0.to_string(),
-        &vend_id,
-        &timestamp,
-    );
-
-    // Wrap the raw secret in a JSON envelope matching the device's CredentialMaterial format.
-    let plaintext_str = String::from_utf8(plaintext)
-        .map_err(|_| ApiError::Internal("credential secret is not valid UTF-8".to_string()))?;
-    let credential_material = serde_json::json!({
-        "value": plaintext_str,
-    });
-    let material_bytes = serde_json::to_vec(&credential_material).map_err(|e| {
-        ApiError::Internal(format!("failed to serialize credential material: {}", e))
-    })?;
-
-    // ECIES encrypt
-    let ecies = EciesEncryptor::new();
-    let envelope = ecies
-        .encrypt_for_device(&ws_pub_bytes, &material_bytes, &aad)
-        .await
-        .map_err(|e| ApiError::Internal(format!("ECIES encryption failed: {}", e)))?;
+        &ws_pub_bytes,
+        "vnd",
+    )
+    .await?;
 
     // Domain audit: credential was vended — NEVER include credential secret values.
-    // Policy decision audit is handled by AuditingPolicyEngine.
+    // Include the policy reasoning so the audit UI can link to contributing policies.
+    let mut vend_metadata = serde_json::json!({
+        "workspace_id": workspace.id.0.to_string(),
+        "credential_name": cred.name,
+        "vend_id": vend_id,
+    });
+    // Merge contributing_policies from policy evaluation into vend metadata
+    if let Some(policies) = policy_metadata.get("contributing_policies") {
+        vend_metadata["contributing_policies"] = policies.clone();
+    }
     let event = AuditEvent::builder(AuditEventType::CredentialVended)
         .action("vend_credential")
         .workspace_actor(&workspace.id, &workspace.name)
         .resource("credential", &cred.id.0.to_string())
         .correlation_id(&corr_id)
-        .decision(AuditDecision::Permit, None)
-        .details(serde_json::json!({
-            "workspace_id": workspace.id.0.to_string(),
-            "credential_name": cred.name,
-            "vend_id": vend_id,
-        }))
+        .decision(AuditDecision::Permit, policy_reason.as_deref())
+        .details(vend_metadata)
         .build();
     if let Err(e) = state.store.append_audit_event(&event).await {
         tracing::warn!(error = %e, "Failed to write audit event");
@@ -215,10 +196,10 @@ async fn vend_inner(
         transform_name: cred.transform_name.clone(),
         encrypted_envelope: VendEnvelopeResponse {
             version: envelope.version,
-            ephemeral_public_key: B64_STANDARD.encode(&envelope.ephemeral_public_key),
-            ciphertext: B64_STANDARD.encode(&envelope.ciphertext),
-            nonce: B64_STANDARD.encode(&envelope.nonce),
-            aad: B64_STANDARD.encode(&envelope.aad),
+            ephemeral_public_key: envelope.ephemeral_public_key,
+            ciphertext: envelope.ciphertext,
+            nonce: envelope.nonce,
+            aad: envelope.aad,
         },
         vend_id,
     })
@@ -269,6 +250,20 @@ pub(crate) async fn reveal_credential(
         return Err(ApiError::NotFound("credential not found".to_string()));
     }
 
+    // Capture policy reasoning for the reveal audit event
+    let reveal_reason = if decision.reasons.is_empty() {
+        None
+    } else {
+        Some(decision.reasons.join(", "))
+    };
+    let mut reveal_policy_meta = serde_json::json!({});
+    agent_cordon_core::domain::audit::enrich_metadata_with_policy_reasoning(
+        &mut reveal_policy_meta,
+        &decision,
+        None,
+        None,
+    );
+
     // Decrypt the credential secret value with credential ID as AAD
     let plaintext = state.encryptor.decrypt(
         &cred.encrypted_value,
@@ -279,17 +274,21 @@ pub(crate) async fn reveal_credential(
         .map_err(|_| ApiError::Internal("credential value is not valid UTF-8".to_string()))?;
 
     // Domain audit: secret was revealed — NEVER log the secret itself.
-    // Policy decision audit is handled by AuditingPolicyEngine.
+    // Include policy reasoning so audit UI can link to contributing policies.
+    let mut reveal_metadata = serde_json::json!({
+        "credential_name": cred.name,
+        "service": cred.service,
+    });
+    if let Some(policies) = reveal_policy_meta.get("contributing_policies") {
+        reveal_metadata["contributing_policies"] = policies.clone();
+    }
     let event = AuditEvent::builder(AuditEventType::CredentialSecretViewed)
         .action("unprotect")
         .user_actor(&auth_user.user)
         .resource("credential", &id.to_string())
         .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, None)
-        .details(serde_json::json!({
-            "credential_name": cred.name,
-            "service": cred.service,
-        }))
+        .decision(AuditDecision::Permit, reveal_reason.as_deref())
+        .details(reveal_metadata)
         .build();
     if let Err(e) = state.store.append_audit_event(&event).await {
         tracing::warn!(error = %e, "Failed to write audit event");
@@ -373,18 +372,105 @@ pub(crate) async fn vend_credential_to_device(
         None => None,
     };
 
-    // Look up credential scoped to workspace first, fall back to global
-    let cred = match state
-        .store
-        .get_credential_by_workspace_and_name(&auth.workspace.id, &name)
-        .await?
-    {
-        Some(c) => c,
-        None => state
-            .store
-            .get_credential_by_name(&name)
-            .await?
-            .ok_or_else(|| ApiError::NotFound(format!("credential '{}' not found", name)))?,
+    // Resolve credential by name: load only credentials matching this name,
+    // then evaluate Cedar authorization on each match.
+    let name_matches = state.store.list_stored_credentials_by_name(&name).await?;
+    let mut authorized_matches: Vec<StoredCredential> = Vec::new();
+
+    for cred in &name_matches {
+        // Cedar check: can this workspace vend this credential?
+        let decision = state.policy_engine.evaluate(
+            &PolicyPrincipal::Workspace(&auth.workspace),
+            actions::VEND_CREDENTIAL,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+            &PolicyContext {
+                correlation_id: Some(corr.0.clone()),
+                oauth_claims: auth.oauth_claims.clone(),
+                ..Default::default()
+            },
+        )?;
+        if decision.decision != PolicyDecisionResult::Forbid {
+            authorized_matches.push(cred.clone());
+        }
+    }
+
+    let cred = match authorized_matches.len() {
+        0 => {
+            // No exact-name match. Surface authorized prefix matches as
+            // candidates so the caller (CLI) can show the user a list of
+            // credentials they likely meant (e.g. `mock` -> `mock-1`,
+            // `mock-2`). Only includes credentials the workspace is
+            // actually authorized to vend, to avoid leaking names.
+            let all = state
+                .store
+                .list_all_stored_credentials()
+                .await
+                .unwrap_or_default();
+            let prefix = name.as_str();
+            let mut prefix_candidates: Vec<serde_json::Value> = Vec::new();
+            for cred in &all {
+                if !cred.name.starts_with(prefix) || cred.name == *prefix {
+                    continue;
+                }
+                let decision = state.policy_engine.evaluate(
+                    &PolicyPrincipal::Workspace(&auth.workspace),
+                    actions::VEND_CREDENTIAL,
+                    &PolicyResource::Credential {
+                        credential: cred.clone(),
+                    },
+                    &PolicyContext {
+                        correlation_id: Some(corr.0.clone()),
+                        oauth_claims: auth.oauth_claims.clone(),
+                        ..Default::default()
+                    },
+                )?;
+                if decision.decision != PolicyDecisionResult::Forbid {
+                    prefix_candidates.push(serde_json::json!({
+                        "id": cred.id.0.to_string(),
+                        "name": cred.name,
+                        "service": cred.service,
+                        "description": cred.description,
+                    }));
+                }
+            }
+            if !prefix_candidates.is_empty() {
+                return Err(ApiError::NotFoundWithCandidates {
+                    message: format!(
+                        "no credential exactly named '{}'. Did you mean one of these?",
+                        name
+                    ),
+                    candidates: prefix_candidates,
+                });
+            }
+            return Err(ApiError::NotFound(format!(
+                "credential '{}' not found or not authorized",
+                name
+            )));
+        }
+        1 => authorized_matches.into_iter().next().unwrap(),
+        _ => {
+            // Multiple authorized credentials match — return candidates
+            let candidates: Vec<serde_json::Value> = authorized_matches
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "id": c.id.0.to_string(),
+                        "name": c.name,
+                        "service": c.service,
+                        "description": c.description,
+                    })
+                })
+                .collect();
+            return Err(ApiError::MultipleChoices {
+                message: format!(
+                    "Multiple credentials match name '{}'. Specify by ID or use a unique name.",
+                    name
+                ),
+                candidates,
+            });
+        }
     };
 
     let response = vend_inner(

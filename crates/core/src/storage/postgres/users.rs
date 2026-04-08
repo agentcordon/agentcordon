@@ -10,8 +10,8 @@ impl UserStore for PostgresStore {
     async fn create_user(&self, user: &User) -> Result<(), StoreError> {
         let role_str = serialize_user_role(&user.role);
         sqlx::query(
-            "INSERT INTO users (id, username, display_name, password_hash, role, is_root, enabled, show_advanced, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            "INSERT INTO users (id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(user.id.0)
         .bind(&user.username)
@@ -20,7 +20,6 @@ impl UserStore for PostgresStore {
         .bind(role_str)
         .bind(user.is_root)
         .bind(user.enabled)
-        .bind(user.show_advanced)
         .bind(user.created_at)
         .bind(user.updated_at)
         .execute(&self.pool)
@@ -31,7 +30,7 @@ impl UserStore for PostgresStore {
 
     async fn get_user(&self, id: &UserId) -> Result<Option<User>, StoreError> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, username, display_name, password_hash, role, is_root, enabled, show_advanced, created_at, updated_at \
+            "SELECT id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at \
              FROM users WHERE id = $1",
         )
         .bind(id.0)
@@ -43,7 +42,7 @@ impl UserStore for PostgresStore {
 
     async fn get_user_by_username(&self, username: &str) -> Result<Option<User>, StoreError> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, username, display_name, password_hash, role, is_root, enabled, show_advanced, created_at, updated_at \
+            "SELECT id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at \
              FROM users WHERE username = $1",
         )
         .bind(username)
@@ -55,7 +54,7 @@ impl UserStore for PostgresStore {
 
     async fn list_users(&self) -> Result<Vec<User>, StoreError> {
         let rows = sqlx::query_as::<_, UserRow>(
-            "SELECT id, username, display_name, password_hash, role, is_root, enabled, show_advanced, created_at, updated_at \
+            "SELECT id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at \
              FROM users ORDER BY username",
         )
         .fetch_all(&self.pool)
@@ -68,7 +67,7 @@ impl UserStore for PostgresStore {
         let role_str = serialize_user_role(&user.role);
         let result = sqlx::query(
             "UPDATE users SET username = $1, display_name = $2, password_hash = $3, role = $4, \
-             is_root = $5, enabled = $6, show_advanced = $7, updated_at = $8 WHERE id = $9",
+             is_root = $5, enabled = $6, updated_at = $7 WHERE id = $8",
         )
         .bind(&user.username)
         .bind(&user.display_name)
@@ -76,7 +75,6 @@ impl UserStore for PostgresStore {
         .bind(role_str)
         .bind(user.is_root)
         .bind(user.enabled)
-        .bind(user.show_advanced)
         .bind(user.updated_at)
         .bind(user.id.0)
         .execute(&self.pool)

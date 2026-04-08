@@ -66,7 +66,6 @@ async fn create_user_in_db(
         role,
         is_root,
         enabled: true,
-        show_advanced: true,
         created_at: now,
         updated_at: now,
     };

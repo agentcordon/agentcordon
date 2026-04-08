@@ -22,6 +22,7 @@ mod agents;
 mod credentials;
 mod general;
 mod mcp;
+mod oauth_provider_clients;
 mod oidc;
 mod policies;
 mod vaults;
@@ -431,6 +432,7 @@ fn build_all_endpoints(_config: &AppConfig) -> Vec<EndpointDoc> {
     credentials::push_endpoints(&mut endpoints);
     policies::push_endpoints(&mut endpoints);
     mcp::push_endpoints(&mut endpoints);
+    oauth_provider_clients::push_endpoints(&mut endpoints);
     vaults::push_endpoints(&mut endpoints);
     oidc::push_endpoints(&mut endpoints);
 
@@ -545,6 +547,16 @@ mod tests {
             ("POST", "/api/v1/admin/rotate-key"),
             // Credential Templates
             ("GET", "/api/v1/credential-templates"),
+            // MCP Templates
+            ("GET", "/api/v1/mcp-templates"),
+            // MCP Provisioning
+            ("POST", "/api/v1/mcp-servers/provision"),
+            // OAuth Provider Clients
+            ("POST", "/api/v1/oauth-provider-clients"),
+            ("GET", "/api/v1/oauth-provider-clients"),
+            ("GET", "/api/v1/oauth-provider-clients/{id}"),
+            ("PUT", "/api/v1/oauth-provider-clients/{id}"),
+            ("DELETE", "/api/v1/oauth-provider-clients/{id}"),
         ];
 
         for (method, path) in expected {

@@ -312,8 +312,8 @@ async fn test_agent_without_owner_sees_no_many_credentials() {
 
 #[tokio::test]
 async fn test_disabled_workspace_sees_nothing() {
-    // Cedar forbid rule 3a denies all actions for disabled workspaces.
-    // Even with default policy 5b, a disabled workspace should see nothing.
+    // All permits check principal.enabled, so disabled workspaces are
+    // implicitly denied. A disabled workspace should see nothing.
     let ctx = TestAppBuilder::new()
         .with_admin()
         .with_agent("disabled-agent", &["user"])
@@ -365,8 +365,8 @@ async fn test_disabled_workspace_sees_nothing() {
     .await;
     assert_eq!(status, StatusCode::OK, "policy test: {:?}", body);
     assert_eq!(
-        body["data"]["decision"], "forbid",
-        "disabled workspace should be forbidden by forbid rule 3a"
+        body["data"]["decision"], "deny",
+        "disabled workspace should be denied — no permit matches when !enabled"
     );
 }
 
@@ -457,10 +457,10 @@ async fn test_owner_match_does_not_grant_access_via_policy_1b() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "policy test: {:?}", body);
-    // Even with owner-match, `access` is denied — forbid 3a (disabled) overrides,
-    // AND policy 1b doesn't include `access` anyway.
+    // Disabled workspace: no permit matches (all check enabled).
+    // Even if enabled, policy 1b doesn't include `access`.
     assert_eq!(
-        body["data"]["decision"], "forbid",
-        "owner-match (policy 1b) should NOT grant access — forbid 3a (disabled) overrides"
+        body["data"]["decision"], "deny",
+        "disabled workspace denied — no permit matches when !enabled"
     );
 }

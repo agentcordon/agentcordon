@@ -1,5 +1,5 @@
--- AgentCordon v0.1.2 baseline schema
--- Squashed from all prior migrations into a single canonical schema.
+-- AgentCordon baseline schema (squashed)
+-- All migrations consolidated into a single canonical schema.
 
 -- ============================================================
 -- Users
@@ -12,7 +12,6 @@ CREATE TABLE IF NOT EXISTS users (
     role TEXT NOT NULL DEFAULT 'viewer',
     is_root INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
-    show_advanced BOOLEAN NOT NULL DEFAULT false,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -106,21 +105,18 @@ CREATE TABLE IF NOT EXISTS credentials (
     vault TEXT NOT NULL DEFAULT 'default',
     credential_type TEXT NOT NULL DEFAULT 'generic',
     tags TEXT NOT NULL DEFAULT '[]',
-    key_version INTEGER NOT NULL DEFAULT 1
+    key_version INTEGER NOT NULL DEFAULT 1,
+    description TEXT,
+    target_identity TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_credentials_service ON credentials(service);
 CREATE INDEX IF NOT EXISTS idx_credentials_vault ON credentials(vault);
 CREATE INDEX IF NOT EXISTS idx_credentials_created_by ON credentials(created_by_user);
 
--- Name uniqueness scoped per workspace (created_by).
--- Different workspaces can have credentials with the same name.
-CREATE UNIQUE INDEX idx_credentials_name_created_by_unique
-    ON credentials(name, created_by);
-
--- Admin-created credentials (created_by IS NULL) get global name uniqueness.
-CREATE UNIQUE INDEX idx_credentials_name_admin_unique
-    ON credentials(name) WHERE created_by IS NULL;
+-- Credential names are NOT unique. Names are human-friendly labels; the UUID
+-- primary key is the real identifier. Cedar policies control access.
+-- Name-based resolution uses Cedar-filtered matching.
 
 -- ============================================================
 -- Credential Secret History
@@ -214,6 +210,9 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     updated_at TEXT NOT NULL,
     tags TEXT NOT NULL DEFAULT '[]',
     required_credentials TEXT,
+    auth_method TEXT NOT NULL DEFAULT 'none',
+    template_key TEXT,
+    discovered_tools TEXT,
     UNIQUE(workspace_id, name)
 );
 
@@ -248,6 +247,66 @@ CREATE TABLE IF NOT EXISTS oidc_auth_states (
 );
 
 CREATE INDEX IF NOT EXISTS idx_oidc_auth_states_expires_at ON oidc_auth_states(expires_at);
+
+-- ============================================================
+-- OAuth 2.0 Authorization Server
+-- ============================================================
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    id TEXT PRIMARY KEY,
+    client_id TEXT UNIQUE NOT NULL,
+    client_secret_hash TEXT,
+    workspace_name TEXT NOT NULL,
+    public_key_hash TEXT UNIQUE NOT NULL,
+    redirect_uris TEXT NOT NULL,       -- JSON array
+    allowed_scopes TEXT NOT NULL,       -- comma-separated
+    created_by_user TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS oauth_auth_codes (
+    code_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+    user_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    code_challenge TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+    token_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+    user_id TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+    token_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+    user_id TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    access_token_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS oauth_consents (
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+    user_id TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_access_tokens_client ON oauth_access_tokens(client_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_client ON oauth_refresh_tokens(client_id);
 
 -- ============================================================
 -- Provisioning Tokens (CI/CD workspace registration)

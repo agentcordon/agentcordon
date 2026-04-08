@@ -579,8 +579,8 @@ async fn test_forbid_disabled_agent_overrides_ownership() {
     .await;
     assert_eq!(status, StatusCode::OK, "policy test: {}", body);
     assert_eq!(
-        body["data"]["decision"], "forbid",
-        "disabled agent should be forbidden even with owner match"
+        body["data"]["decision"], "deny",
+        "disabled agent should be denied — no permit matches when !enabled"
     );
 }
 

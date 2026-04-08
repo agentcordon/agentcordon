@@ -528,4 +528,10 @@ impl CredentialStore for SqliteStore {
     async fn list_all_stored_credentials(&self) -> Result<Vec<StoredCredential>, StoreError> {
         self.list_all_stored_credentials().await
     }
+    async fn list_stored_credentials_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Vec<StoredCredential>, StoreError> {
+        self.list_stored_credentials_by_name(name).await
+    }
 }

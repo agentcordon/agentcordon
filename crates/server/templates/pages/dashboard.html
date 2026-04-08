@@ -43,7 +43,6 @@
 
     <!-- Stats Cards (server-rendered, updated via SSE) -->
     <div class="dash-cards">
-        {% if user.show_advanced %}
         <a href="/workspaces" class="dash-card dash-card-link">
             <div class="dash-card-icon">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -54,7 +53,6 @@
                 <div class="dash-card-sub" x-text="stats.workspaces_active + ' active'">{{ workspaces_active }} active</div>
             </div>
         </a>
-        {% endif %}
         <a href="/credentials" class="dash-card dash-card-link">
             <div class="dash-card-icon">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="5.5"/><path d="M11.5 12.5 15 9l4 0"/><path d="M15 9l0 3"/></svg>

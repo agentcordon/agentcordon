@@ -71,9 +71,6 @@ pub struct UserContext {
     pub is_admin: bool,
     /// The user's UUID string — used for tenant-scoped queries.
     pub user_id: String,
-    /// Controls progressive disclosure UI mode.
-    /// `true` = advanced (all features visible), `false` = beginner (simplified).
-    pub show_advanced: bool,
 }
 
 impl From<&User> for UserContext {
@@ -84,7 +81,6 @@ impl From<&User> for UserContext {
             role: format!("{:?}", user.role).to_lowercase(),
             is_admin: user.role == UserRole::Admin || user.is_root,
             user_id: user.id.0.to_string(),
-            show_advanced: user.show_advanced,
         }
     }
 }
@@ -251,6 +247,8 @@ pub fn page_routes(app_state: AppState) -> Router<AppState> {
         .route("/devices", get(redirect_devices_to_workspaces))
         // Legacy redirect: /mcp → /mcp-servers
         .route("/mcp", get(redirect_mcp_to_mcp_servers))
+        .route("/mcp-marketplace", get(redirect_marketplace_to_mcp_servers))
+        .route("/marketplace", get(redirect_marketplace_to_mcp_servers))
         .route("/mcp-servers", get(mcp_servers::mcp_server_list_page))
         .route(
             "/mcp-servers/{id}",
@@ -323,4 +321,9 @@ async fn redirect_devices_to_workspaces() -> Redirect {
 /// GET /mcp → 302 redirect to /mcp-servers
 async fn redirect_mcp_to_mcp_servers() -> Redirect {
     Redirect::to("/mcp-servers")
+}
+
+/// GET /marketplace and /mcp-marketplace → 302 redirect to /mcp-servers
+async fn redirect_marketplace_to_mcp_servers() -> Redirect {
+    Redirect::to("/mcp-servers#marketplace")
 }

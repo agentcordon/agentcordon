@@ -144,11 +144,25 @@ where
             "forbidden",
             "Access denied by server policy",
         )),
-        Err(ServerClientError::ServerError { status: 404, .. }) => Err(error_response(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "Resource not found",
-        )),
+        Err(ServerClientError::ServerError { status, body }) => {
+            tracing::warn!(status = status, "server request failed");
+            // Propagate the server's error envelope verbatim when present so the
+            // CLI can render the actual `error.message` and any `candidates` array
+            // (e.g., 300 Multiple Choices for ambiguous credential names) instead
+            // of a generic "Server request failed" message.
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
+                if parsed.get("error").is_some() {
+                    let mapped = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+                    return Err((mapped, axum::Json(parsed)));
+                }
+            }
+            let snippet: String = body.chars().take(200).collect();
+            Err(error_response(
+                StatusCode::BAD_GATEWAY,
+                "bad_gateway",
+                &format!("Server request failed ({}): {}", status, snippet),
+            ))
+        }
         Err(e) => {
             tracing::error!(error = %e, "server request failed");
             Err(error_response(

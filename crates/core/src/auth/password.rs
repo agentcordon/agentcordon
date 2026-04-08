@@ -104,7 +104,6 @@ mod tests {
             role: UserRole::Admin,
             is_root: false,
             enabled: true,
-            show_advanced: true,
             created_at: now,
             updated_at: now,
         };
@@ -175,7 +174,6 @@ mod tests {
             role: UserRole::Viewer,
             is_root: false,
             enabled: false,
-            show_advanced: true,
             created_at: now,
             updated_at: now,
         };

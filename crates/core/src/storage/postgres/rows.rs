@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::domain::audit::AuditEvent;
 use crate::domain::credential::{CredentialId, CredentialSummary, StoredCredential};
-use crate::domain::mcp::{McpServer, McpServerId};
+use crate::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use crate::domain::oidc::{OidcAuthState, OidcProvider, OidcProviderId, OidcProviderSummary};
 use crate::domain::policy::{PolicyId, StoredPolicy};
 use crate::domain::session::Session;
@@ -67,7 +67,6 @@ pub(crate) struct UserRow {
     pub role: String,
     pub is_root: bool,
     pub enabled: bool,
-    pub show_advanced: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -82,7 +81,6 @@ impl UserRow {
             role: deserialize_user_role(&self.role)?,
             is_root: self.is_root,
             enabled: self.enabled,
-            show_advanced: self.show_advanced,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -315,6 +313,10 @@ pub(crate) struct McpServerRow {
     pub updated_at: DateTime<Utc>,
     pub tags: serde_json::Value,
     pub required_credentials: Option<serde_json::Value>,
+    pub auth_method: String,
+    pub template_key: Option<String>,
+    pub discovered_tools: Option<serde_json::Value>,
+    pub created_by_user: Option<String>,
 }
 
 impl From<McpServerRow> for McpServer {
@@ -335,12 +337,15 @@ impl From<McpServerRow> for McpServer {
         let created_by = r
             .created_by
             .and_then(|s| Uuid::parse_str(&s).ok().map(WorkspaceId));
+        let discovered_tools = r
+            .discovered_tools
+            .and_then(|v| serde_json::from_value(v).ok());
         McpServer {
             id: McpServerId(r.id),
             workspace_id: WorkspaceId(r.workspace_id),
             name: r.name,
             upstream_url: r.upstream_url,
-            transport: r.transport,
+            transport: McpTransport::from_str_opt(&r.transport).unwrap_or_default(),
             allowed_tools,
             enabled: r.enabled,
             created_by,
@@ -348,6 +353,12 @@ impl From<McpServerRow> for McpServer {
             updated_at: r.updated_at,
             tags,
             required_credentials,
+            auth_method: McpAuthMethod::from_str_opt(&r.auth_method).unwrap_or_default(),
+            template_key: r.template_key,
+            discovered_tools,
+            created_by_user: r
+                .created_by_user
+                .and_then(|s| Uuid::parse_str(&s).ok().map(UserId)),
         }
     }
 }

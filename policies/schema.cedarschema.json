@@ -116,6 +116,11 @@
               "type": "Entity",
               "name": "AgentCordon::Workspace",
               "required": false
+            },
+            "owner": {
+              "type": "Entity",
+              "name": "AgentCordon::User",
+              "required": false
             }
           }
         }

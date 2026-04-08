@@ -1,0 +1,13 @@
+{
+  "key": "github",
+  "name": "GitHub",
+  "description": "Repositories, issues, PRs, and code search",
+  "upstream_url": "https://api.githubcopilot.com/mcp",
+  "transport": "sse",
+  "auth_method": "api_key",
+  "credential_template_key": "github",
+  "category": "developer-tools",
+  "tags": ["github", "scm"],
+  "icon": "github",
+  "sort_order": 10
+}

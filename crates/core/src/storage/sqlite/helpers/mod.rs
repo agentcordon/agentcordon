@@ -279,7 +279,6 @@ pub(crate) fn row_to_user(row: &rusqlite::Row<'_>) -> Result<User, rusqlite::Err
     let enabled: bool = row.get(6)?;
     let created_at_str: String = row.get(7)?;
     let updated_at_str: String = row.get(8)?;
-    let show_advanced: bool = row.get(9).unwrap_or(false);
 
     let id = Uuid::parse_str(&id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -306,7 +305,6 @@ pub(crate) fn row_to_user(row: &rusqlite::Row<'_>) -> Result<User, rusqlite::Err
         role,
         is_root,
         enabled,
-        show_advanced,
         created_at,
         updated_at,
     })

@@ -1,0 +1,15 @@
+{
+  "key": "sentry",
+  "name": "Sentry",
+  "description": "Errors, issues, and performance monitoring via Sentry's hosted MCP server.",
+  "upstream_url": "https://mcp.sentry.dev/mcp",
+  "transport": "sse",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.sentry.dev",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": ["sentry", "monitoring", "oauth"],
+  "icon": "sentry",
+  "sort_order": 50
+}

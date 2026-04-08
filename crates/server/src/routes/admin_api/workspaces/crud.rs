@@ -97,6 +97,16 @@ pub(super) async fn update_workspace(
         workspace.enabled = enabled;
     }
     if let Some(owner_id) = req.owner_id {
+        // SECURITY: workspace.owner_id is an authorization input under the
+        // owner-based MCP/credential default policies. Allowing arbitrary
+        // re-parenting would let any caller with `manage_workspaces` (operators
+        // and admins) escalate privileges by reassigning their workspace to
+        // another user. Only root may change ownership.
+        if !auth.is_root {
+            return Err(ApiError::Forbidden(
+                "only root may change workspace owner_id".to_string(),
+            ));
+        }
         workspace.owner_id = Some(UserId(owner_id));
     }
     workspace.updated_at = chrono::Utc::now();

@@ -68,12 +68,33 @@ pub(super) async fn authorize(
         ));
     }
 
-    // MCP servers are a shared catalog — look up by name across all servers,
-    // not scoped to the requesting workspace.  Cedar policy handles authorization.
+    // MCP servers are scoped by owner. Multiple workspaces (and multiple users)
+    // can have an MCP server with the same name (e.g., "mock-mcp"). When a
+    // workspace asks for "mock-mcp", we must resolve to a server it actually
+    // owns, not the first global match. Look up servers belonging to the
+    // workspace's owner first; fall back to any same-name enabled server only
+    // if the workspace has no owner (legacy data).
     let all_servers = state.store.list_mcp_servers().await?;
+    let workspace_owner = workspace.workspace.owner_id.as_ref();
     let mcp_server = all_servers
-        .into_iter()
-        .find(|s| s.name == server_name && s.enabled);
+        .iter()
+        .find(|s| {
+            s.name == server_name
+                && s.enabled
+                && match (workspace_owner, s.created_by_user.as_ref()) {
+                    (Some(ws_owner), Some(srv_owner)) => ws_owner == srv_owner,
+                    _ => false,
+                }
+        })
+        .cloned()
+        .or_else(|| {
+            // Fallback for legacy data with no owner: take any same-name enabled server.
+            // Cedar will still deny via implicit deny since the principal/resource won't
+            // share an owner.
+            all_servers
+                .into_iter()
+                .find(|s| s.name == server_name && s.enabled)
+        });
 
     let mcp_server = match mcp_server {
         Some(s) => s,
@@ -122,6 +143,7 @@ pub(super) async fn authorize(
         name: mcp_server.name.clone(),
         enabled: mcp_server.enabled,
         tags: mcp_server.tags.clone(),
+        owner: mcp_server.created_by_user.clone(),
     };
 
     let decision = state.policy_engine.evaluate(
@@ -166,6 +188,31 @@ pub(super) async fn authorize(
     }
 
     // Policy decision audit is emitted automatically by AuditingPolicyEngine.
+    // Emit domain-specific McpToolCalled event on permit for observability.
+    if is_permit {
+        let reason_str = decision.reasons.join(", ");
+        let event = AuditEvent::builder(AuditEventType::McpToolCalled)
+            .action("mcp_tool_call")
+            .workspace_actor(&workspace.workspace.id, &workspace.workspace.name)
+            .resource("mcp_server", &mcp_server.id.0.to_string())
+            .correlation_id(&correlation_id)
+            .decision(
+                AuditDecision::Permit,
+                if reason_str.is_empty() {
+                    None
+                } else {
+                    Some(&reason_str)
+                },
+            )
+            .details(serde_json::json!({
+                "server_name": server_name,
+                "tool_name": tool_name,
+            }))
+            .build();
+        if let Err(e) = state.store.append_audit_event(&event).await {
+            tracing::warn!(error = %e, "failed to write McpToolCalled audit event");
+        }
+    }
 
     Ok(Json(ApiResponse::ok(McpAuthorizeResponse {
         decision: decision_str.to_string(),

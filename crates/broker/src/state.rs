@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::config::BrokerConfig;
+use crate::oauth2_refresh::OAuth2RefreshManager;
 
 /// Minimal workspace state for the plaintext recovery store (`workspaces.json`).
 ///
@@ -64,11 +65,51 @@ pub struct PendingRegistration {
     pub client_id: String,
     pub code_verifier: String,
     pub redirect_uri: String,
-    #[allow(dead_code)]
-    pub state: String,
     pub pk_hash: String,
     /// When this registration was created; used for TTL cleanup.
     pub created_at: Instant,
+}
+
+/// Cached MCP server with optional decrypted credential.
+#[derive(Debug, Clone)]
+pub struct CachedMcpServer {
+    #[allow(dead_code)] // Used during sync/diagnostics
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    #[allow(dead_code)] // Retained for cache diagnostics
+    pub transport: String,
+    pub auth_method: String,
+    #[allow(dead_code)] // Populated from sync, used in future tool-level auth
+    pub tools: Vec<String>,
+    #[allow(dead_code)] // Populated from sync, checked in future filtering
+    pub enabled: bool,
+    pub credential: Option<CachedCredential>,
+    #[allow(dead_code)] // Retained for cache-expiry logic
+    pub last_synced: chrono::DateTime<chrono::Utc>,
+}
+
+/// Decrypted credential material cached alongside an MCP server.
+///
+/// SECURITY: Manual Debug impl redacts the `value` field to prevent
+/// plaintext secrets from leaking to logs via `{:?}` formatting.
+#[derive(Clone)]
+pub struct CachedCredential {
+    pub credential_type: String,
+    pub value: String,
+    pub transform_name: Option<String>,
+    pub metadata: HashMap<String, String>,
+}
+
+impl std::fmt::Debug for CachedCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedCredential")
+            .field("credential_type", &self.credential_type)
+            .field("value", &"[REDACTED]")
+            .field("transform_name", &self.transform_name)
+            .field("metadata", &format!("[{} keys]", self.metadata.len()))
+            .finish()
+    }
 }
 
 /// Shared broker state accessible from all route handlers.
@@ -77,6 +118,12 @@ pub struct BrokerState {
     pub workspaces: RwLock<HashMap<String, WorkspaceState>>,
     /// Pending OAuth registrations keyed by the `state` parameter.
     pub pending: RwLock<HashMap<String, PendingRegistration>>,
+    /// Recent OAuth errors keyed by `pk_hash`. Set by the `/callback` route
+    /// when the IdP returns `error=...` so the polling `/status` endpoint can
+    /// surface the failure to the CLI instead of hanging until timeout.
+    pub registration_errors: RwLock<HashMap<String, String>>,
+    /// Cached MCP server configs per workspace (keyed by pk_hash).
+    pub mcp_configs: RwLock<HashMap<String, Vec<CachedMcpServer>>>,
     /// AgentCordon server URL.
     pub server_url: String,
     /// Shared HTTP client.
@@ -85,6 +132,8 @@ pub struct BrokerState {
     pub encryption_key: p256::SecretKey,
     /// Broker configuration.
     pub config: BrokerConfig,
+    /// OAuth2 refresh token manager for authorization code credentials.
+    pub oauth2_refresh: OAuth2RefreshManager,
     /// Actual port the broker is bound to (resolves port-0 auto-select).
     pub bound_port: u16,
 }

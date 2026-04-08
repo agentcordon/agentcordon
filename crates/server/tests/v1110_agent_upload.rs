@@ -44,12 +44,12 @@ async fn test_import_new_mcp_servers() {
             "servers": [
                 {
                     "name": "github",
-                    "transport": "stdio",
+                    "transport": "http",
                     "command": "/usr/bin/github-mcp"
                 },
                 {
                     "name": "slack",
-                    "transport": "stdio",
+                    "transport": "http",
                     "command": "/usr/bin/slack-mcp"
                 }
             ]
@@ -82,7 +82,7 @@ async fn test_import_existing_mcp_no_change() {
     let import_body = json!({
         "device_id": dev1.device_id,
         "agent_id": agent1.id.0.to_string(),
-        "servers": [{ "name": "github", "transport": "stdio", "command": "/usr/bin/github-mcp" }]
+        "servers": [{ "name": "github", "transport": "http", "command": "/usr/bin/github-mcp" }]
     });
 
     // First import
@@ -139,7 +139,7 @@ async fn test_import_existing_mcp_config_changed() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "github", "transport": "stdio", "command": "/usr/bin/github" }]
+            "servers": [{ "name": "github", "transport": "http", "command": "/usr/bin/github" }]
         })),
     )
     .await;
@@ -155,7 +155,7 @@ async fn test_import_existing_mcp_config_changed() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "github", "transport": "stdio", "command": "/opt/github" }]
+            "servers": [{ "name": "github", "transport": "http", "command": "/opt/github" }]
         })),
     )
     .await;
@@ -192,7 +192,7 @@ async fn test_import_does_not_auto_create_cedar_policies() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "github", "transport": "stdio", "command": "/usr/bin/github" }]
+            "servers": [{ "name": "github", "transport": "http", "command": "/usr/bin/github" }]
         })),
     )
     .await;
@@ -252,8 +252,8 @@ async fn test_import_response_includes_mcp_ids() {
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
             "servers": [
-                { "name": "github", "transport": "stdio", "command": "/usr/bin/github" },
-                { "name": "slack", "transport": "stdio", "command": "/usr/bin/slack" }
+                { "name": "github", "transport": "http", "command": "/usr/bin/github" },
+                { "name": "slack", "transport": "http", "command": "/usr/bin/slack" }
             ]
         })),
     )
@@ -314,8 +314,8 @@ async fn test_import_same_batch_twice_idempotent() {
         "device_id": dev1.device_id,
         "agent_id": agent1.id.0.to_string(),
         "servers": [
-            { "name": "github", "transport": "stdio", "command": "/usr/bin/github" },
-            { "name": "slack", "transport": "stdio", "command": "/usr/bin/slack" }
+            { "name": "github", "transport": "http", "command": "/usr/bin/github" },
+            { "name": "slack", "transport": "http", "command": "/usr/bin/slack" }
         ]
     });
 
@@ -378,7 +378,7 @@ async fn test_import_after_server_restart() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "github", "transport": "stdio", "command": "/usr/bin/github" }]
+            "servers": [{ "name": "github", "transport": "http", "command": "/usr/bin/github" }]
         })),
     )
     .await;
@@ -416,8 +416,8 @@ async fn test_import_partial_overlap() {
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
             "servers": [
-                { "name": "github", "transport": "stdio", "command": "/usr/bin/github" },
-                { "name": "slack", "transport": "stdio", "command": "/usr/bin/slack" }
+                { "name": "github", "transport": "http", "command": "/usr/bin/github" },
+                { "name": "slack", "transport": "http", "command": "/usr/bin/slack" }
             ]
         })),
     )
@@ -435,8 +435,8 @@ async fn test_import_partial_overlap() {
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
             "servers": [
-                { "name": "slack", "transport": "stdio", "command": "/usr/bin/slack" },
-                { "name": "jira", "transport": "stdio", "command": "/usr/bin/jira" }
+                { "name": "slack", "transport": "http", "command": "/usr/bin/slack" },
+                { "name": "jira", "transport": "http", "command": "/usr/bin/jira" }
             ]
         })),
     )
@@ -528,7 +528,7 @@ async fn test_import_server_missing_name_field() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "transport": "stdio", "command": "/bin/x" }]
+            "servers": [{ "transport": "http", "command": "/bin/x" }]
         })),
     )
     .await;
@@ -564,7 +564,7 @@ async fn test_import_very_long_mcp_name() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": long_name, "transport": "stdio", "command": "/bin/x" }]
+            "servers": [{ "name": long_name, "transport": "http", "command": "/bin/x" }]
         })),
     )
     .await;
@@ -600,7 +600,7 @@ async fn test_imported_mcp_visible_in_admin_ui() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "github", "transport": "stdio", "command": "/usr/bin/github" }]
+            "servers": [{ "name": "github", "transport": "http", "command": "/usr/bin/github" }]
         })),
     )
     .await;
@@ -648,7 +648,7 @@ async fn test_imported_mcp_syncs_to_device() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "github", "transport": "stdio", "command": "/usr/bin/github" }]
+            "servers": [{ "name": "github", "transport": "http", "command": "/usr/bin/github" }]
         })),
     )
     .await;
@@ -695,7 +695,7 @@ async fn test_import_agent_cannot_modify_existing_mcp() {
         workspace_id: d1_uuid,
         name: "github".to_string(),
         upstream_url: "http://localhost:9000/github".to_string(),
-        transport: "stdio".to_string(),
+        transport: agent_cordon_core::domain::mcp::McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -703,6 +703,10 @@ async fn test_import_agent_cannot_modify_existing_mcp() {
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store
         .create_mcp_server(&mcp_server)
@@ -721,7 +725,7 @@ async fn test_import_agent_cannot_modify_existing_mcp() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "github", "transport": "stdio", "command": "/hacked/command" }]
+            "servers": [{ "name": "github", "transport": "http", "command": "/hacked/command" }]
         })),
     )
     .await;
@@ -770,7 +774,7 @@ async fn test_import_persists_required_credentials() {
             "agent_id": agent1.id.0.to_string(),
             "servers": [{
                 "name": "github",
-                "transport": "stdio",
+                "transport": "http",
                 "command": "/usr/bin/github",
                 "required_credentials": ["secret-cred-id"]
             }]
@@ -817,7 +821,7 @@ async fn test_imported_mcp_default_policy_scoped_to_agent() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "github", "transport": "stdio", "command": "/usr/bin/github" }]
+            "servers": [{ "name": "github", "transport": "http", "command": "/usr/bin/github" }]
         })),
     )
     .await;
@@ -871,7 +875,7 @@ async fn test_import_audit_event_emitted() {
         Some(json!({
             "device_id": dev1.device_id,
             "agent_id": agent1.id.0.to_string(),
-            "servers": [{ "name": "audit-test", "transport": "stdio", "command": "/usr/bin/audit" }]
+            "servers": [{ "name": "audit-test", "transport": "http", "command": "/usr/bin/audit" }]
         })),
     )
     .await;
@@ -921,7 +925,7 @@ async fn test_init_flow_with_mcp_upload() {
         Some(json!({
             "device_id": agent_id_str,
             "agent_id": agent_id_str,
-            "servers": [{ "name": "claude-mcp", "transport": "stdio", "command": "/usr/bin/claude" }]
+            "servers": [{ "name": "claude-mcp", "transport": "http", "command": "/usr/bin/claude" }]
         })),
     )
     .await;
@@ -945,7 +949,7 @@ async fn test_init_called_twice_mcps_not_duplicated() {
     let import_body = json!({
         "device_id": dev1.device_id,
         "agent_id": agent1.id.0.to_string(),
-        "servers": [{ "name": "claude-mcp", "transport": "stdio", "command": "/usr/bin/claude" }]
+        "servers": [{ "name": "claude-mcp", "transport": "http", "command": "/usr/bin/claude" }]
     });
 
     // First "init"

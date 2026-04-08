@@ -1,6 +1,8 @@
 mod audit_store;
 mod credential_store;
+mod mcp_oauth_store;
 mod mcp_store;
+mod oauth_provider_client_store;
 mod oauth_store;
 mod oidc_store;
 mod policy_store;
@@ -12,7 +14,9 @@ mod workspace_store;
 
 pub use audit_store::{AuditFilter, AuditStore};
 pub use credential_store::CredentialStore;
+pub use mcp_oauth_store::McpOAuthStore;
 pub use mcp_store::McpStore;
+pub use oauth_provider_client_store::OAuthProviderClientStore;
 pub use oauth_store::OAuthStore;
 pub use oidc_store::OidcStore;
 pub use policy_store::PolicyStore;

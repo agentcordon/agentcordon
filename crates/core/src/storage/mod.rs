@@ -26,6 +26,8 @@ pub trait Store:
     + AuditStore
     + VaultStore
     + McpStore
+    + McpOAuthStore
+    + OAuthProviderClientStore
     + OAuthStore
     + OidcStore
     + WorkspaceStore

@@ -7,7 +7,7 @@
 use axum::http::{Method, StatusCode};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::mcp::{McpServer, McpServerId};
+use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
 use agent_cordon_core::policy::PolicyEngine;
@@ -61,7 +61,7 @@ async fn create_workspace_mcp(
         workspace_id,
         name: name.to_string(),
         upstream_url: format!("http://localhost:9000/{}", name),
-        transport: "stdio".to_string(),
+        transport: McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -71,6 +71,10 @@ async fn create_workspace_mcp(
         required_credentials: Some(vec![agent_cordon_core::domain::credential::CredentialId(
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
         )]),
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
+        created_by_user: None,
     };
     store
         .create_mcp_server(&server)
@@ -373,7 +377,7 @@ async fn test_migration_preserves_mcp_fields() {
     // Retrieve and verify all fields preserved
     let retrieved = ctx.store.get_mcp_server(&m1.id).await.unwrap().unwrap();
     assert_eq!(retrieved.name, "full-featured");
-    assert_eq!(retrieved.transport, "stdio");
+    assert_eq!(retrieved.transport, McpTransport::Http);
     assert_eq!(retrieved.tags, vec!["test"]);
     assert!(retrieved.required_credentials.is_some());
     assert_eq!(
@@ -403,7 +407,7 @@ async fn test_migration_unique_constraint_post_migration() {
         workspace_id: w1_uuid,
         name: "github".to_string(),
         upstream_url: "http://localhost:9000/github".to_string(),
-        transport: "stdio".to_string(),
+        transport: McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -411,6 +415,10 @@ async fn test_migration_unique_constraint_post_migration() {
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
+        created_by_user: None,
     };
     let result = ctx.store.create_mcp_server(&dup).await;
     assert!(
@@ -543,7 +551,7 @@ async fn test_migration_fk_restrict_post_migration() {
         workspace_id: w1_uuid.clone(),
         name: "github".to_string(),
         upstream_url: "http://localhost:9000/github".to_string(),
-        transport: "stdio".to_string(),
+        transport: McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -551,6 +559,10 @@ async fn test_migration_fk_restrict_post_migration() {
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store.create_mcp_server(&mcp1).await.unwrap();
 
@@ -559,7 +571,7 @@ async fn test_migration_fk_restrict_post_migration() {
         workspace_id: w1_uuid,
         name: "slack".to_string(),
         upstream_url: "http://localhost:9000/slack".to_string(),
-        transport: "stdio".to_string(),
+        transport: McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -567,6 +579,10 @@ async fn test_migration_fk_restrict_post_migration() {
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store.create_mcp_server(&mcp2).await.unwrap();
 

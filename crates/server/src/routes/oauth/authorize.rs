@@ -82,12 +82,51 @@ struct ConsentTemplate {
 }
 
 /// GET /api/v1/oauth/authorize
+///
+/// If the user is not logged in, redirect to the login page with a `next` param
+/// so the browser flow continues after authentication (instead of returning a
+/// JSON 401 that confuses browser visitors).
 pub(crate) async fn authorize_get(
     State(state): State<AppState>,
-    auth: AuthenticatedUser,
+    auth: Result<AuthenticatedUser, ApiError>,
     headers: axum::http::HeaderMap,
     Query(params): Query<AuthorizeQuery>,
 ) -> Result<Response, ApiError> {
+    // If not authenticated, redirect to login with return URL
+    let auth = match auth {
+        Ok(a) => a,
+        Err(_) => {
+            // Reconstruct the full query string so the user returns here after login
+            let mut qs = format!(
+                "response_type={}&redirect_uri={}&scope={}&state={}",
+                urlencoding::encode(&params.response_type),
+                urlencoding::encode(&params.redirect_uri),
+                urlencoding::encode(&params.scope),
+                urlencoding::encode(&params.state),
+            );
+            if let Some(ref cid) = params.client_id {
+                qs.push_str(&format!("&client_id={}", urlencoding::encode(cid)));
+            }
+            if let Some(ref pk) = params.public_key_hash {
+                qs.push_str(&format!("&public_key_hash={}", urlencoding::encode(pk)));
+            }
+            if let Some(ref ws) = params.workspace_name {
+                qs.push_str(&format!("&workspace_name={}", urlencoding::encode(ws)));
+            }
+            if let Some(ref cc) = params.code_challenge {
+                qs.push_str(&format!("&code_challenge={}", urlencoding::encode(cc)));
+            }
+            if let Some(ref ccm) = params.code_challenge_method {
+                qs.push_str(&format!(
+                    "&code_challenge_method={}",
+                    urlencoding::encode(ccm)
+                ));
+            }
+            let next = format!("/api/v1/oauth/authorize?{qs}");
+            let login_url = format!("/login?next={}", urlencoding::encode(&next));
+            return Ok(Redirect::to(&login_url).into_response());
+        }
+    };
     // Validate response_type
     if params.response_type != "code" {
         return Err(ApiError::BadRequest("response_type must be 'code'".into()));

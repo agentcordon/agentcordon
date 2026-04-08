@@ -4,6 +4,31 @@ use crate::broker::BrokerClient;
 use crate::error::CliError;
 
 #[derive(Deserialize)]
+struct CreateEnvelope {
+    #[allow(dead_code)]
+    data: serde_json::Value,
+}
+
+/// Create a credential via the broker passthrough.
+pub async fn create(name: String, service: String, value: String) -> Result<(), CliError> {
+    if name.is_empty() || service.is_empty() || value.is_empty() {
+        return Err(CliError::general(
+            "--name, --service, and --value must all be non-empty",
+        ));
+    }
+    let client = BrokerClient::connect().await?;
+    let req_body = serde_json::json!({
+        "name": name,
+        "service": service,
+        "secret_value": value,
+        "credential_type": "generic",
+    });
+    let _: CreateEnvelope = client.post("/credentials/create", &req_body).await?;
+    println!("Created credential '{name}' (service: {service})");
+    Ok(())
+}
+
+#[derive(Deserialize)]
 struct CredentialsResponse {
     data: Vec<Credential>,
 }

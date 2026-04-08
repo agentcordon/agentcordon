@@ -54,7 +54,6 @@ fn make_user(username: &str, role: UserRole, is_root: bool) -> User {
         role,
         is_root,
         enabled: true,
-        show_advanced: true,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
@@ -594,14 +593,13 @@ fn no_grants_denies_all_credential_actions_for_unowned_agents() {
 
 #[test]
 fn owner_agent_allowed_list_and_vend_own_credentials() {
-    // With owner-scoped policies, an agent with an owner can list and vend
-    // their owner's credentials, but NOT access or delete without explicit grants.
+    // Enabled owner workspaces can list and vend their owner's credentials (1b).
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
     let user = make_user("owner-user", UserRole::Operator, false);
     let agent = make_agent_with_owner("worker-bot", vec![], true, &user);
     let cred = make_credential_owned_by("my-token", "github", vec![], &agent);
 
-    // list and vend_credential should be ALLOWED via ownership policies (1b, 1d)
+    // list and vend_credential should be ALLOWED via ownership policy (1b)
     for action in &["list", "vend_credential"] {
         let result = engine
             .evaluate(
@@ -750,9 +748,8 @@ fn delegated_use_grant_allows_vend_credential() {
 
 #[test]
 fn enabled_agent_allowed_vend_own_credential_via_default_policy() {
-    // Default policy 1d grants enabled workspaces `vend_credential` for their
-    // owner's credentials. Agents use credentials through the proxy — they
-    // never see raw secrets.
+    // Policy 1b grants enabled workspaces `vend_credential` for their
+    // owner's credentials. Agents use credentials through the proxy.
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
     let user = make_user("owner-user", UserRole::Operator, false);
     let agent = make_agent_with_owner("worker-bot", vec![], true, &user);
@@ -776,8 +773,8 @@ fn enabled_agent_allowed_vend_own_credential_via_default_policy() {
 
 #[test]
 fn enabled_agent_denied_vend_other_users_credential() {
-    // With owner-scoped policy 1d, an enabled workspace cannot vend credentials
-    // belonging to a different user.
+    // Policy 1b scopes vend_credential to the workspace's owner, so an
+    // enabled workspace cannot vend credentials belonging to a different user.
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
     let user = make_user("owner-user", UserRole::Operator, false);
     let agent = make_agent_with_owner("worker-bot", vec![], true, &user);
@@ -803,7 +800,7 @@ fn enabled_agent_denied_vend_other_users_credential() {
 
 #[test]
 fn ownerless_agent_denied_vend_via_default_policy() {
-    // Workspaces without an owner cannot vend credentials via policy 1d
+    // Workspaces without an owner cannot vend credentials via policy 1b
     // (which requires `principal has owner`). They need explicit per-credential
     // grants instead.
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
@@ -829,8 +826,7 @@ fn ownerless_agent_denied_vend_via_default_policy() {
 #[test]
 fn list_grant_does_not_allow_access() {
     // A "list" grant only permits listing. `access` (raw secret visibility)
-    // requires an explicit access grant. `vend_credential` is allowed via
-    // default policy 1d regardless.
+    // requires an explicit access grant.
     let agent = make_agent("reader-bot", vec![], true);
     let cred = make_credential("github-pat", "github", vec!["repo"]);
     let engine =
@@ -1807,7 +1803,7 @@ fn agent_resource_without_owner_evaluates_correctly() {
 }
 
 // -----------------------------------------------------------------------
-// R-006: Disabled principal forbid rule tests
+// R-006: Disabled principal tests (implicit deny via enabled checks)
 // -----------------------------------------------------------------------
 
 #[test]
@@ -1833,7 +1829,7 @@ fn disabled_admin_agent_is_denied() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled admin agent should be denied by forbid rule"
+        "disabled admin agent should be denied — no permit matches when !enabled"
     );
 }
 
@@ -1876,7 +1872,7 @@ fn disabled_admin_user_is_denied() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled admin user should be denied by forbid rule"
+        "disabled admin user should be denied — no permit matches when !enabled"
     );
 }
 
@@ -1898,14 +1894,14 @@ fn disabled_operator_user_is_denied() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled operator user should be denied by forbid rule"
+        "disabled operator user should be denied — no permit matches when !enabled"
     );
 }
 
 #[test]
 fn disabled_owner_agent_cannot_access_own_credential() {
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    // Owner agent, but disabled -- forbid rule overrides ownership permit
+    // Owner agent, but disabled — no permit matches when !enabled
     let user = make_user("owner-user", UserRole::Operator, false);
     let disabled_owner = make_agent_with_owner("disabled-owner", vec![], false, &user);
     let cred = make_credential_owned_by("my-token", "slack", vec![], &disabled_owner);
@@ -1948,7 +1944,7 @@ fn disabled_viewer_user_is_denied() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled viewer user should be denied by forbid rule"
+        "disabled viewer user should be denied — no permit matches when !enabled"
     );
 }
 
@@ -1975,7 +1971,7 @@ fn disabled_non_admin_agent_is_denied() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled non-admin agent should be denied by forbid rule"
+        "disabled non-admin agent should be denied — no permit matches when !enabled"
     );
 }
 
@@ -2099,9 +2095,8 @@ fn make_device(id: &str, name: &str, enabled: bool) -> Workspace {
 
 #[test]
 fn enabled_device_allowed_vend_own_credential_via_default_policy() {
-    // Default policy 1d grants enabled workspaces (including devices)
-    // `vend_credential` for their owner's credentials. Devices use
-    // credentials through the proxy.
+    // Policy 1b grants enabled workspaces (including devices)
+    // `vend_credential` for their owner's credentials.
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
     let user = make_user("device-owner", UserRole::Operator, false);
     let device = make_agent_with_owner("test-device", vec![], true, &user);
@@ -2123,7 +2118,7 @@ fn enabled_device_allowed_vend_own_credential_via_default_policy() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Permit,
-        "enabled device should be allowed vend_credential for own credentials via default policy 1d"
+        "enabled device should be allowed vend_credential for own credentials via policy 1b"
     );
 }
 
@@ -2156,7 +2151,8 @@ fn disabled_device_denied_vend_credential() {
 #[test]
 fn enabled_device_allowed_mcp_tool_call() {
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    let device = make_device("sc-3", "mcp-device", true);
+    let owner = make_user("mcp-owner", UserRole::Operator, false);
+    let device = make_agent_with_owner("mcp-device", vec![], true, &owner);
 
     let result = engine
         .evaluate(
@@ -2167,6 +2163,7 @@ fn enabled_device_allowed_mcp_tool_call() {
                 name: "test-mcp".to_string(),
                 enabled: true,
                 tags: vec![],
+                owner: Some(owner.id.clone()),
             },
             &PolicyContext {
                 tool_name: Some("my_tool".to_string()),
@@ -2178,14 +2175,15 @@ fn enabled_device_allowed_mcp_tool_call() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Permit,
-        "enabled device should be allowed mcp_tool_call on enabled McpServer"
+        "enabled device should be allowed mcp_tool_call on same-owner McpServer via policy 3a"
     );
 }
 
 #[test]
 fn disabled_device_denied_mcp_tool_call() {
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    let device = make_device("sc-4", "disabled-mcp-device", false);
+    let owner = make_user("mcp-owner", UserRole::Operator, false);
+    let device = make_agent_with_owner("disabled-mcp-device", vec![], false, &owner);
 
     let result = engine
         .evaluate(
@@ -2196,6 +2194,7 @@ fn disabled_device_denied_mcp_tool_call() {
                 name: "test-mcp".to_string(),
                 enabled: true,
                 tags: vec![],
+                owner: Some(owner.id.clone()),
             },
             &PolicyContext {
                 tool_name: Some("my_tool".to_string()),
@@ -2208,6 +2207,137 @@ fn disabled_device_denied_mcp_tool_call() {
         result.decision,
         PolicyDecisionResult::Forbid,
         "disabled device should be denied mcp_tool_call"
+    );
+}
+
+#[test]
+fn workspace_denied_mcp_tool_call_different_owner() {
+    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
+    let user_a = make_user("user-a", UserRole::Operator, false);
+    let user_b = make_user("user-b", UserRole::Operator, false);
+    let device = make_agent_with_owner("device-a", vec![], true, &user_a);
+
+    let result = engine
+        .evaluate(
+            &PolicyPrincipal::Workspace(&device),
+            "mcp_tool_call",
+            &PolicyResource::McpServer {
+                id: "mcp-x".to_string(),
+                name: "other-owner-mcp".to_string(),
+                enabled: true,
+                tags: vec![],
+                owner: Some(user_b.id.clone()),
+            },
+            &PolicyContext {
+                tool_name: Some("my_tool".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("evaluate");
+
+    assert_eq!(
+        result.decision,
+        PolicyDecisionResult::Forbid,
+        "workspace must not call MCP servers owned by a different user"
+    );
+}
+
+#[test]
+fn workspace_denied_mcp_tool_call_no_owner() {
+    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
+    let mcp_owner = make_user("mcp-owner", UserRole::Operator, false);
+    // Workspace has no owner_id.
+    let device = make_device("sc-5", "ownerless-device", true);
+
+    let result = engine
+        .evaluate(
+            &PolicyPrincipal::Workspace(&device),
+            "mcp_tool_call",
+            &PolicyResource::McpServer {
+                id: "mcp-y".to_string(),
+                name: "owned-mcp".to_string(),
+                enabled: true,
+                tags: vec![],
+                owner: Some(mcp_owner.id.clone()),
+            },
+            &PolicyContext {
+                tool_name: Some("my_tool".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("evaluate");
+
+    assert_eq!(
+        result.decision,
+        PolicyDecisionResult::Forbid,
+        "ownerless workspace must be denied mcp_tool_call"
+    );
+}
+
+#[test]
+fn owned_workspace_denied_ownerless_mcp_server() {
+    // Backward-compat case: legacy MCP servers with created_by_user = NULL.
+    // An owned workspace must NOT inherit access just because the server has
+    // no owner — implicit deny via the `resource has owner` guard.
+    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
+    let user = make_user("ws-owner", UserRole::Operator, false);
+    let workspace = make_agent_with_owner("owned-ws", vec![], true, &user);
+
+    let result = engine
+        .evaluate(
+            &PolicyPrincipal::Workspace(&workspace),
+            "mcp_tool_call",
+            &PolicyResource::McpServer {
+                id: "legacy-mcp".to_string(),
+                name: "legacy-server".to_string(),
+                enabled: true,
+                tags: vec![],
+                owner: None, // legacy NULL row
+            },
+            &PolicyContext {
+                tool_name: Some("my_tool".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("evaluate");
+
+    assert_eq!(
+        result.decision,
+        PolicyDecisionResult::Forbid,
+        "legacy ownerless MCP server must not be reachable from any workspace via the default policy"
+    );
+}
+
+#[test]
+fn admin_workspace_forbidden_disabled_mcp_server() {
+    // Security boundary: even admin-tagged workspaces (which get the blanket
+    // permit 1a) cannot call tools on a disabled MCP server. This is enforced
+    // by the disabled-server forbid in section 4 of default.cedar.
+    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
+    let admin_ws = make_agent("admin-bot", vec!["admin"], true);
+
+    let result = engine
+        .evaluate(
+            &PolicyPrincipal::Workspace(&admin_ws),
+            "mcp_tool_call",
+            &PolicyResource::McpServer {
+                id: "disabled-mcp".to_string(),
+                name: "disabled-server".to_string(),
+                enabled: false, // disabled
+                tags: vec![],
+                owner: None,
+            },
+            &PolicyContext {
+                tool_name: Some("my_tool".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("evaluate");
+
+    assert_eq!(
+        result.decision,
+        PolicyDecisionResult::Forbid,
+        "admin workspace must not bypass the disabled-server forbid"
     );
 }
 
@@ -2250,17 +2380,18 @@ fn implicit_deny_has_empty_reasons() {
 
 #[test]
 fn explicit_forbid_has_non_empty_reasons() {
-    // A disabled workspace (enabled=false) tries to list system resources.
-    // Forbid rule 3a fires (!principal.enabled), so reasons should contain
-    // the forbid policy ID.
+    // An enabled admin workspace tries to unprotect a credential.
+    // The security boundary forbid fires (workspaces must never see raw secrets),
+    // so reasons should contain the forbid policy ID.
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
-    let disabled_ws = make_agent("disabled-bot", vec!["admin"], false);
+    let admin_ws = make_agent("admin-bot", vec!["admin"], true);
+    let cred = make_credential("some-token", "slack", vec![]);
 
     let result = engine
         .evaluate(
-            &PolicyPrincipal::Workspace(&disabled_ws),
-            "list",
-            &PolicyResource::System,
+            &PolicyPrincipal::Workspace(&admin_ws),
+            "unprotect",
+            &PolicyResource::Credential { credential: cred },
             &empty_ctx(),
         )
         .expect("evaluate");
@@ -2268,7 +2399,7 @@ fn explicit_forbid_has_non_empty_reasons() {
     assert_eq!(
         result.decision,
         PolicyDecisionResult::Forbid,
-        "disabled workspace should be denied by forbid rule 3a"
+        "workspace should be denied unprotect by security boundary forbid"
     );
     assert!(
         !result.reasons.is_empty(),

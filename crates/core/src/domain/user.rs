@@ -17,9 +17,6 @@ pub struct User {
     pub role: UserRole,
     pub is_root: bool,
     pub enabled: bool,
-    /// Controls progressive disclosure UI mode.
-    /// `true` = advanced (all features visible), `false` = beginner (simplified).
-    pub show_advanced: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

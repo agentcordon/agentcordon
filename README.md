@@ -107,20 +107,42 @@ agentcordon-broker --server-url http://localhost:3140
 
 The broker starts on port 3141 by default and opens a browser for OAuth consent on first run.
 
-### 3. Register a workspace
+### 3. Set up a workspace
 
-From your agent's project directory:
+From your agent's project directory, point the CLI at the broker and run the one-command setup:
 
 ```bash
-agentcordon init
-agentcordon register
+export AGTCRDN_BROKER_URL=http://localhost:3141   # default; set if broker is on another host/port
+agentcordon setup http://localhost:3140
 ```
+
+This generates an Ed25519 keypair, registers the workspace with the broker, and writes agent instruction files in one step.
+
+<details>
+<summary>Manual setup (advanced)</summary>
+
+If you prefer to control each step individually:
+
+```bash
+agentcordon init                 # Generate Ed25519 keypair + agent instruction files
+agentcordon register             # Register workspace with broker
+```
+
+</details>
 
 ### 4. Use credentials
 
 ```bash
 agentcordon credentials                    # List available credentials
 agentcordon proxy github-token GET /repos/org/repo   # Proxied API call
+```
+
+### 5. Use MCP tools
+
+```bash
+agentcordon mcp-servers                    # List available MCP servers
+agentcordon mcp-tools                      # Discover tools across all servers
+agentcordon mcp-call github list_repos --arg owner=myorg  # Call an MCP tool
 ```
 
 The CLI routes all requests through the broker. Credentials are injected server-side and never reach the agent.
@@ -155,6 +177,8 @@ docker run -d \
 - **Cedar policy engine** -- deny-by-default, deterministic, testable authorization
 - **Encrypted vault** -- AES-256-GCM, per-credential key derivation via HKDF
 - **MCP gateway** -- proxy MCP tool calls with credential injection, policy enforcement, and response leak scanning
+- **MCP Marketplace** -- one-click installation of popular MCP servers (GitHub, Slack, Linear, etc.) with automatic credential binding
+- **OAuth2 for MCP servers** -- authorization code flow support for MCP servers that require OAuth2 authentication
 - **Broker daemon** -- per-user service that holds OAuth tokens and proxies upstream requests; credentials never reach agents
 - **Workspace identity** -- Ed25519 keypairs, passwordless enrollment, per-project isolation
 - **OAuth 2.0 authorization server** -- authorization code + PKCE (S256), client credentials grants, consent page, token refresh
@@ -191,6 +215,11 @@ Environment variables prefixed with `AGTCRDN_`:
 | `AGTCRDN_MASTER_SECRET` | auto-generated | Master encryption key (persist in production) |
 | `AGTCRDN_ROOT_USERNAME` | auto-generated | Admin username |
 | `AGTCRDN_ROOT_PASSWORD` | auto-generated | Admin password (printed on first boot) |
+| `AGTCRDN_LOG_LEVEL` | `info` | Logging level (trace, debug, info, warn, error) |
+| `AGTCRDN_LOG_FORMAT` | `json` | Log output format (json or pretty) |
+| `AGTCRDN_BASE_URL` | — | Server base URL, required for OAuth2 MCP flows (callback redirect URI) |
+| `AGTCRDN_SESSION_TTL` | `28800` | Session TTL in seconds (default: 8 hours) |
+| `AGTCRDN_PROXY_ALLOW_LOOPBACK` | `false` | Allow proxy to localhost targets (dev only) |
 | `AGTCRDN_BROKER_PORT` | `3141` | Broker daemon listen port |
 | `AGTCRDN_BROKER_URL` | — | Override broker URL |
 | `AGTCRDN_OAUTH_AUTH_CODE_TTL` | `300` | OAuth authorization code TTL (seconds) |

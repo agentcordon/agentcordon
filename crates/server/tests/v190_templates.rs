@@ -166,7 +166,7 @@ async fn test_nav_links_present() {
         );
     }
 
-    // Advanced nav links (behind showAdvanced toggle, present when show_advanced=true)
+    // Additional nav links
     let advanced_links = ["/workspaces", "/security", "/mcp-servers", "/audit"];
     for link in &advanced_links {
         assert!(

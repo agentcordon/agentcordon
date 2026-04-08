@@ -168,6 +168,7 @@ fn build_test_resource(
             name: attrs.name.clone().unwrap_or_default(),
             enabled: attrs.enabled.unwrap_or(true),
             tags: attrs.tags.clone().unwrap_or_default(),
+            owner: attrs.owner.as_ref().map(|o| UserId(id_to_uuid(o))),
         }),
         other => Err(ApiError::BadRequest(format!(
             "unknown resource type: {other}"
@@ -260,7 +261,6 @@ pub(super) async fn test_policy(
                 },
                 is_root: attrs.is_root.unwrap_or(false),
                 enabled: attrs.enabled.unwrap_or(true),
-                show_advanced: true,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             };

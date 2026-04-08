@@ -3,6 +3,8 @@ pub mod audit;
 pub mod credential;
 pub mod device;
 pub mod mcp;
+pub mod mcp_oauth;
+pub mod oauth_provider_client;
 pub mod oidc;
 pub mod policy;
 pub mod session;

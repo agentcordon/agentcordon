@@ -24,13 +24,25 @@ pub struct TransformedRequest {
 }
 
 /// Credential material for transforms (local type, decoupled from server client).
-#[derive(Debug)]
+///
+/// SECURITY: Manual Debug impl redacts `value` to prevent secret leakage to logs.
 pub struct CredentialMaterial {
     pub credential_type: Option<String>,
     pub value: String,
     #[allow(dead_code)]
     pub username: Option<String>,
     pub metadata: HashMap<String, String>,
+}
+
+impl std::fmt::Debug for CredentialMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialMaterial")
+            .field("credential_type", &self.credential_type)
+            .field("value", &"[REDACTED]")
+            .field("username", &self.username)
+            .field("metadata", &self.metadata)
+            .finish()
+    }
 }
 
 /// Apply credential material to an outgoing request.
@@ -70,7 +82,10 @@ pub fn apply(
         }
         _ => {
             let effective_transform_name = transform_name.or(match credential_type {
-                "bearer" | "generic" | "oauth2_client_credentials" => Some("bearer"),
+                "bearer"
+                | "generic"
+                | "oauth2_client_credentials"
+                | "oauth2_user_authorization" => Some("bearer"),
                 "basic" => Some("basic-auth"),
                 "aws" => Some("aws-sigv4"),
                 _ => None,

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 
 use super::{db_err, is_unique_violation, McpServerRow, PostgresStore};
 use crate::domain::mcp::{McpServer, McpServerId};
+use crate::domain::user::UserId;
 use crate::domain::workspace::WorkspaceId;
 use crate::error::StoreError;
 use crate::storage::shared::MCP_SERVER_COLUMNS;
@@ -21,10 +22,16 @@ impl McpStore for PostgresStore {
             serde_json::to_value(&ids).unwrap_or_default()
         });
         let created_by_str = server.created_by.as_ref().map(|w| w.0.to_string());
+        let created_by_user_str = server.created_by_user.as_ref().map(|u| u.0.to_string());
+
+        let discovered = server
+            .discovered_tools
+            .as_ref()
+            .map(|dt| serde_json::to_value(dt).unwrap_or_default());
 
         let result = sqlx::query(
             &format!(
-                "INSERT INTO mcp_servers ({}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                "INSERT INTO mcp_servers ({}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
                 MCP_SERVER_COLUMNS
             ),
         )
@@ -32,7 +39,7 @@ impl McpStore for PostgresStore {
         .bind(server.workspace_id.0)
         .bind(&server.name)
         .bind(&server.upstream_url)
-        .bind(&server.transport)
+        .bind(server.transport.to_string())
         .bind(&bindings)
         .bind(&tools)
         .bind(server.enabled)
@@ -41,6 +48,10 @@ impl McpStore for PostgresStore {
         .bind(server.updated_at)
         .bind(&tags)
         .bind(&req_creds)
+        .bind(server.auth_method.to_string())
+        .bind(&server.template_key)
+        .bind(&discovered)
+        .bind(&created_by_user_str)
         .execute(&self.pool)
         .await;
 
@@ -112,6 +123,21 @@ impl McpStore for PostgresStore {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    async fn list_mcp_servers_by_user(
+        &self,
+        user_id: &UserId,
+    ) -> Result<Vec<McpServer>, StoreError> {
+        let rows = sqlx::query_as::<_, McpServerRow>(&format!(
+            "SELECT {} FROM mcp_servers WHERE created_by_user = $1 ORDER BY name ASC",
+            MCP_SERVER_COLUMNS
+        ))
+        .bind(user_id.0.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     async fn update_mcp_server(&self, server: &McpServer) -> Result<(), StoreError> {
         let bindings = serde_json::Value::Array(vec![]);
         let tools = server
@@ -124,20 +150,30 @@ impl McpStore for PostgresStore {
             serde_json::to_value(&ids).unwrap_or_default()
         });
 
+        let discovered = server
+            .discovered_tools
+            .as_ref()
+            .map(|dt| serde_json::to_value(dt).unwrap_or_default());
+
+        let created_by_user_str = server.created_by_user.as_ref().map(|u| u.0.to_string());
         sqlx::query(
             "UPDATE mcp_servers SET workspace_id = $1, name = $2, upstream_url = $3, transport = $4, credential_bindings = $5, \
-             allowed_tools = $6, enabled = $7, updated_at = $8, tags = $9, required_credentials = $10 WHERE id = $11",
+             allowed_tools = $6, enabled = $7, updated_at = $8, tags = $9, required_credentials = $10, auth_method = $11, template_key = $12, discovered_tools = $13, created_by_user = $14 WHERE id = $15",
         )
         .bind(server.workspace_id.0)
         .bind(&server.name)
         .bind(&server.upstream_url)
-        .bind(&server.transport)
+        .bind(server.transport.to_string())
         .bind(&bindings)
         .bind(&tools)
         .bind(server.enabled)
         .bind(server.updated_at)
         .bind(&tags)
         .bind(&req_creds)
+        .bind(server.auth_method.to_string())
+        .bind(&server.template_key)
+        .bind(&discovered)
+        .bind(&created_by_user_str)
         .bind(server.id.0)
         .execute(&self.pool)
         .await

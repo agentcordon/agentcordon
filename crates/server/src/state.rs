@@ -11,6 +11,7 @@ use crate::config::AppConfig;
 use crate::events::{EventBus, SseConnectionTracker, UiEventBus};
 use crate::rate_limit::LoginRateLimiter;
 use crate::routes::admin_api::credential_templates::CredentialTemplate;
+use crate::routes::admin_api::mcp_templates::McpServerTemplate;
 use crate::routes::admin_api::policy_templates::PolicyTemplate;
 
 pub type SharedStore = Arc<dyn Store + Send + Sync>;
@@ -37,6 +38,8 @@ pub struct AppState {
     pub sse_tracker: SseConnectionTracker,
     /// Pre-loaded credential templates (embedded + runtime overrides).
     pub credential_templates: Vec<CredentialTemplate>,
+    /// Pre-loaded MCP server templates (embedded + runtime overrides).
+    pub mcp_templates: Vec<McpServerTemplate>,
     /// Pre-loaded policy templates (embedded + runtime overrides).
     pub policy_templates: Vec<PolicyTemplate>,
 }

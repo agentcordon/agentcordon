@@ -11,7 +11,7 @@ pub async fn run(server_url: String) -> Result<(), CliError> {
     println!("  Broker: {broker_url}");
 
     // 2. Init keypair (idempotent)
-    super::init::run()?;
+    super::init::run("claude-code")?;
 
     // 3. Register with broker (default scopes, no force)
     let scopes = vec![
@@ -20,7 +20,7 @@ pub async fn run(server_url: String) -> Result<(), CliError> {
         "mcp:discover".to_string(),
         "mcp:invoke".to_string(),
     ];
-    super::register::run(scopes, false).await?;
+    super::register::run(scopes, false, false).await?;
 
     println!("\n  Setup complete! Try:");
     println!("    agentcordon credentials");

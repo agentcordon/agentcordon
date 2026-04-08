@@ -1,0 +1,15 @@
+{
+  "key": "notion",
+  "name": "Notion",
+  "description": "Pages, databases, blocks, and workspace search via Notion's hosted MCP server.",
+  "upstream_url": "https://mcp.notion.com/mcp",
+  "transport": "sse",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.notion.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": ["notion", "wiki", "oauth"],
+  "icon": "notion",
+  "sort_order": 40
+}

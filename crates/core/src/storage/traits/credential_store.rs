@@ -53,4 +53,10 @@ pub trait CredentialStore: Send + Sync {
     ) -> Result<Vec<CredentialSummary>, StoreError>;
     /// Load all full credentials in a single query.
     async fn list_all_stored_credentials(&self) -> Result<Vec<StoredCredential>, StoreError>;
+    /// Load all full credentials matching a given name. Used by vend-by-name
+    /// to avoid loading the entire credential table.
+    async fn list_stored_credentials_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Vec<StoredCredential>, StoreError>;
 }

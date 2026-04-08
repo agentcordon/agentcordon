@@ -288,7 +288,7 @@ async fn test_rsop_mcpserver_returns_matrix() {
         workspace_id: d_uuid,
         name: "rsop-test-mcp".to_string(),
         upstream_url: "http://localhost:9999".to_string(),
-        transport: "http".to_string(),
+        transport: agent_cordon_core::domain::mcp::McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -296,6 +296,10 @@ async fn test_rsop_mcpserver_returns_matrix() {
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store
         .create_mcp_server(&mcp)
@@ -336,7 +340,7 @@ async fn test_rsop_mcpserver_includes_mcp_actions() {
         workspace_id: d_uuid,
         name: "rsop-mcp-actions".to_string(),
         upstream_url: "http://localhost:9999".to_string(),
-        transport: "http".to_string(),
+        transport: agent_cordon_core::domain::mcp::McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -344,6 +348,10 @@ async fn test_rsop_mcpserver_includes_mcp_actions() {
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store
         .create_mcp_server(&mcp)
@@ -1210,7 +1218,7 @@ async fn test_rsop_detects_tool_specific_conditional_policy() {
         workspace_id: d_uuid,
         name: "conditional-mcp".to_string(),
         upstream_url: "http://localhost:9999".to_string(),
-        transport: "http".to_string(),
+        transport: agent_cordon_core::domain::mcp::McpTransport::Http,
         allowed_tools: None,
         enabled: true,
         created_by: None,
@@ -1218,6 +1226,10 @@ async fn test_rsop_detects_tool_specific_conditional_policy() {
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
+        created_by_user: None,
     };
     ctx.store
         .create_mcp_server(&mcp)

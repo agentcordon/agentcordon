@@ -2930,56 +2930,6 @@ paths:
   # ============================================================================
 
   /api/v1/mcp-servers:
-    post:
-      tags: [MCP]
-      summary: Register an MCP server
-      description: |
-        Admin only. Registers an MCP server with upstream URL, transport,
-        credential bindings, and optional tool allowlist.
-      security:
-        - SessionCookie: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name, upstream_url]
-              properties:
-                name:
-                  type: string
-                upstream_url:
-                  type: string
-                transport:
-                  type: string
-                  enum: [http]
-                  default: http
-                tags:
-                  type: array
-                  items:
-                    type: string
-                allowed_tools:
-                  type: array
-                  items:
-                    type: string
-                enabled:
-                  type: boolean
-                  default: true
-      responses:
-        '200':
-          description: MCP server registered
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        $ref: '#/components/schemas/McpServerResponse'
-        '400':
-          description: Invalid input
-
     get:
       tags: [MCP]
       summary: List MCP servers
@@ -3068,13 +3018,13 @@ paths:
         '404':
           description: Not found
 
-  /api/v1/mcp-servers/from-catalog:
+  /api/v1/mcp-servers/import:
     post:
       tags: [MCP]
-      summary: Create MCP server from catalog
+      summary: Import MCP servers from configuration
       description: |
-        Admin only. Creates an MCP server from a predefined catalog entry.
-        Optionally override the name and deployment mode.
+        Admin only. Imports MCP server definitions from a JSON payload.
+        Requires manage_mcp_servers policy.
       security:
         - SessionCookie: []
       requestBody:
@@ -3083,94 +3033,144 @@ paths:
           application/json:
             schema:
               type: object
-              required: [catalog_slug]
+              required: [servers]
               properties:
-                catalog_slug:
-                  type: string
-                  description: Slug identifier of the catalog entry
-                name_override:
-                  type: string
-                  description: Optional custom name for the server
-                deployment_mode:
-                  type: string
-                  description: Deployment mode (e.g. docker, local)
-      responses:
-        '200':
-          description: MCP server created from catalog
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
+                servers:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, upstream_url]
                     properties:
-                      data:
-                        type: object
-                        properties:
-                          mcp_server:
-                            $ref: '#/components/schemas/McpServerResponse'
-                          env_vars_needed:
-                            type: array
-                            items:
-                              type: string
-                          compose_snippet:
-                            type: string
-                            nullable: true
+                      name:
+                        type: string
+                      upstream_url:
+                        type: string
+                      transport:
+                        type: string
+                        enum: [http]
+                        default: http
+      responses:
+        '200':
+          description: MCP servers imported
         '400':
-          description: Invalid catalog slug or input
-        '404':
-          description: Catalog entry not found
+          description: Invalid input
 
-  /api/v1/mcp-servers/compose:
-    get:
-      tags: [MCP]
-      summary: Export docker-compose for all MCP servers
-      description: |
-        Admin only. Generates a docker-compose YAML snippet that includes
-        all registered MCP servers.
-      security:
-        - SessionCookie: []
-      responses:
-        '200':
-          description: Docker Compose YAML for all MCP servers
-          content:
-            text/yaml:
-              schema:
-                type: string
-
-  /api/v1/mcp-servers/{id}/compose:
-    get:
-      tags: [MCP]
-      summary: Export docker-compose for a single MCP server
-      description: |
-        Admin only. Generates a docker-compose YAML snippet for a single
-        registered MCP server.
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Docker Compose YAML for the MCP server
-          content:
-            text/yaml:
-              schema:
-                type: string
-        '404':
-          description: MCP server not found
-
-  /api/v1/mcp-servers/{id}/discover-tools:
+  /api/v1/mcp-servers/provision:
     post:
       tags: [MCP]
-      summary: Discover tools from upstream MCP server
+      summary: Provision MCP server from marketplace template
       description: |
-        Admin only. Connects to the upstream MCP server and discovers
-        available tools via the tools/list JSON-RPC method.
+        Admin only. Provisions an MCP server from a marketplace template
+        for a specific workspace. Creates the server record and optionally
+        binds credentials. Requires manage_mcp_servers policy.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [template_key]
+              properties:
+                template_key:
+                  type: string
+                  description: Key of the MCP template to provision (e.g. 'github')
+                workspace_id:
+                  type: string
+                  format: uuid
+                  description: Workspace to provision the server for
+      responses:
+        '200':
+          description: MCP server provisioned from template
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/McpServerResponse'
+        '400':
+          description: Invalid template key or input
+        '404':
+          description: Template not found
+
+  /api/v1/mcp-servers/oauth/initiate:
+    post:
+      tags: [MCP]
+      summary: Start OAuth flow for MCP server
+      description: |
+        Initiates an OAuth2 authorization code flow for an MCP server that
+        requires OAuth authentication. Returns an authorization URL to redirect
+        the user to the identity provider. Requires AGTCRDN_BASE_URL to be configured.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mcp_server_id]
+              properties:
+                mcp_server_id:
+                  type: string
+                  format: uuid
+                  description: ID of the MCP server to authenticate
+      responses:
+        '200':
+          description: OAuth authorization URL
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          authorize_url:
+                            type: string
+                            format: uri
+        '400':
+          description: AGTCRDN_BASE_URL not configured or invalid input
+
+  /api/v1/mcp-servers/oauth/callback:
+    get:
+      tags: [MCP]
+      summary: OAuth callback handler for MCP servers
+      description: |
+        Handles the OAuth2 callback from the identity provider after user
+        authorization. Exchanges the authorization code for tokens and stores
+        them for the MCP server.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirects to MCP server detail page on success
+        '400':
+          description: Invalid or expired state/code
+
+  /api/v1/mcp-servers/{id}/permissions:
+    get:
+      tags: [MCP]
+      summary: Get MCP server permissions
+      description: |
+        Returns the list of agent permissions for this MCP server.
+        Requires manage_mcp_servers policy.
       security:
         - SessionCookie: []
       parameters:
@@ -3182,30 +3182,209 @@ paths:
             format: uuid
       responses:
         '200':
-          description: Discovered tools
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          tools:
-                            type: array
-                            items:
-                              type: object
-                              properties:
-                                name:
-                                  type: string
-                                description:
-                                  type: string
-                                inputSchema:
-                                  type: object
+          description: List of permissions
         '404':
           description: MCP server not found
+    post:
+      tags: [MCP]
+      summary: Grant MCP server permission
+      description: |
+        Grants an agent permission to use this MCP server.
+        Requires manage_mcp_servers policy.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, permission]
+              properties:
+                agent_id:
+                  type: string
+                  format: uuid
+                permission:
+                  type: string
+      responses:
+        '200':
+          description: Permission granted
+        '404':
+          description: MCP server not found
+
+  /api/v1/mcp-servers/{id}/permissions/{agent_id}/{permission}:
+    delete:
+      tags: [MCP]
+      summary: Revoke MCP server permission
+      description: |
+        Revokes an agent's permission on this MCP server.
+        Requires manage_mcp_servers policy.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: permission
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Permission revoked
+        '404':
+          description: MCP server or permission not found
+
+  # ── MCP OAuth Apps ─────────────────────────────────────────────────────────
+
+  /api/v1/mcp-oauth-apps:
+    post:
+      tags: [MCP]
+      summary: Create MCP OAuth App
+      description: |
+        Creates an OAuth app configuration (client_id/client_secret) for use
+        with MCP server marketplace templates. Client secret is encrypted at rest.
+        Requires manage_mcp_servers policy.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, client_id, client_secret]
+              properties:
+                name:
+                  type: string
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+                provider:
+                  type: string
+                auth_url:
+                  type: string
+                  format: uri
+                token_url:
+                  type: string
+                  format: uri
+                scopes:
+                  type: string
+      responses:
+        '200':
+          description: OAuth app created
+        '400':
+          description: Invalid input
+    get:
+      tags: [MCP]
+      summary: List MCP OAuth Apps
+      description: |
+        Lists all MCP OAuth Apps. Client secrets are not returned in the response.
+        Requires manage_mcp_servers policy.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of OAuth apps
+
+  /api/v1/mcp-oauth-apps/{id}:
+    get:
+      tags: [MCP]
+      summary: Get MCP OAuth App by ID
+      description: Requires manage_mcp_servers policy.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: OAuth app details
+        '404':
+          description: Not found
+    put:
+      tags: [MCP]
+      summary: Update MCP OAuth App
+      description: |
+        Updates an MCP OAuth App. If a new client_secret is provided, it is
+        re-encrypted. Requires manage_mcp_servers policy.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+                provider:
+                  type: string
+                auth_url:
+                  type: string
+                  format: uri
+                token_url:
+                  type: string
+                  format: uri
+                scopes:
+                  type: string
+      responses:
+        '200':
+          description: OAuth app updated
+        '404':
+          description: Not found
+    delete:
+      tags: [MCP]
+      summary: Delete MCP OAuth App
+      description: Requires manage_mcp_servers policy.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: OAuth app deleted
+        '404':
+          description: Not found
 
   /api/v1/mcp-servers/{id}/generate-policies:
     post:
@@ -4008,47 +4187,6 @@ paths:
           description: Access denied by policy
 
   # ============================================================================
-  # Settings (v1.8.0)
-  # ============================================================================
-
-  /api/v1/settings/advanced-mode:
-    put:
-      tags: [Settings]
-      summary: Toggle advanced mode
-      description: |
-        Toggle the authenticated user's `show_advanced` UI preference.
-        No Cedar policy check required — users can always change their own
-        preferences. Emits a `UserUpdated` audit event.
-      security:
-        - SessionCookie: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [enabled]
-              properties:
-                enabled:
-                  type: boolean
-                  description: Whether advanced mode is enabled
-      responses:
-        '200':
-          description: Preference updated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  data:
-                    type: object
-                    properties:
-                      show_advanced:
-                        type: boolean
-
-  # ============================================================================
   # Agent Tags (v1.8.0)
   # ============================================================================
 
@@ -4219,22 +4357,3 @@ paths:
               schema:
                 type: string
 
-  # ============================================================================
-  # Enrollment Discovery (not under /api/v1)
-  # ============================================================================
-
-  /enroll.md:
-    get:
-      tags: [Enrollment]
-      summary: Agent enrollment instructions (Markdown)
-      description: |
-        Unauthenticated. Serves the agent enrollment instructions as markdown.
-        Cached for 1 hour.
-      security: []
-      responses:
-        '200':
-          description: Enrollment instructions
-          content:
-            text/markdown:
-              schema:
-                type: string

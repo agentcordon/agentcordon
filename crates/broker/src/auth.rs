@@ -138,6 +138,19 @@ pub async fn auth_middleware(
     {
         let workspaces = state.workspaces.read().await;
         if !workspaces.contains_key(&hash) {
+            // If the IdP returned an OAuth error during registration, surface
+            // it instead of the generic "not registered" response so the CLI
+            // can exit non-zero immediately rather than polling until timeout.
+            let err_msg = {
+                let errs = state.registration_errors.read().await;
+                errs.get(&hash).cloned()
+            };
+            if let Some(msg) = err_msg {
+                // One-shot: clear the error after surfacing it once so a
+                // retry doesn't keep failing on stale state.
+                state.registration_errors.write().await.remove(&hash);
+                return registration_failed_response(&msg);
+            }
             return reregistration_required_response();
         }
     }
@@ -165,6 +178,19 @@ fn auth_error_response() -> Response {
             "error": {
                 "code": "unauthorized",
                 "message": "Signature verification failed"
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn registration_failed_response(message: &str) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(serde_json::json!({
+            "error": {
+                "code": "registration_failed",
+                "message": format!("OAuth authorization failed: {message}")
             }
         })),
     )

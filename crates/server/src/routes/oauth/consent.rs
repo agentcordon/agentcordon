@@ -28,6 +28,15 @@ use super::authorize::{compute_csrf_token, extract_session_token, validate_new_w
 use super::{generate_auth_code, is_localhost_uri};
 use agent_cordon_core::oauth2::tokens::generate_client_id;
 
+/// Minimal HTML escape for embedding error messages in the fallback error page.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/v1/oauth/authorize — Process consent decision
 // ---------------------------------------------------------------------------
@@ -51,13 +60,63 @@ pub(crate) struct AuthorizeForm {
 }
 
 /// POST /api/v1/oauth/authorize
+///
+/// If the session has expired between viewing the consent page and submitting,
+/// redirect back through the authorization flow (which will land on login).
 pub(crate) async fn authorize_post(
     State(state): State<AppState>,
-    auth: AuthenticatedUser,
+    auth: Result<AuthenticatedUser, ApiError>,
     headers: axum::http::HeaderMap,
     axum::Extension(corr): axum::Extension<CorrelationId>,
     axum::Form(form): axum::Form<AuthorizeForm>,
 ) -> Result<Response, ApiError> {
+    // If session expired, redirect back through the authorize flow
+    let auth = match auth {
+        Ok(a) => a,
+        Err(_) => {
+            // Reconstruct the authorize URL so the user re-authenticates and sees
+            // the consent page again.
+            let mut qs = format!(
+                "response_type=code&redirect_uri={}&scope={}&state={}",
+                urlencoding::encode(&form.redirect_uri),
+                urlencoding::encode(&form.scope),
+                urlencoding::encode(&form.state),
+            );
+            if !form.client_id.is_empty() {
+                qs.push_str(&format!(
+                    "&client_id={}",
+                    urlencoding::encode(&form.client_id)
+                ));
+            }
+            if !form.public_key_hash.is_empty() {
+                qs.push_str(&format!(
+                    "&public_key_hash={}",
+                    urlencoding::encode(&form.public_key_hash)
+                ));
+            }
+            if !form.workspace_name.is_empty() {
+                qs.push_str(&format!(
+                    "&workspace_name={}",
+                    urlencoding::encode(&form.workspace_name)
+                ));
+            }
+            if !form.code_challenge.is_empty() {
+                qs.push_str(&format!(
+                    "&code_challenge={}",
+                    urlencoding::encode(&form.code_challenge)
+                ));
+            }
+            if !form.code_challenge_method.is_empty() {
+                qs.push_str(&format!(
+                    "&code_challenge_method={}",
+                    urlencoding::encode(&form.code_challenge_method)
+                ));
+            }
+            let next = format!("/api/v1/oauth/authorize?{qs}");
+            let login_url = format!("/login?next={}", urlencoding::encode(&next));
+            return Ok(Redirect::to(&login_url).into_response());
+        }
+    };
     // Validate CSRF token: recompute from session and compare
     let session_token = extract_session_token(&headers)
         .ok_or_else(|| ApiError::Unauthorized("session required".into()))?;
@@ -91,7 +150,47 @@ pub(crate) async fn authorize_post(
 
     // Determine client_id: create new client if new workspace, or validate existing
     let (client_id, client_uuid, is_new) = if form.is_new_workspace {
-        let new_client = create_client_on_consent(&state, &auth, &corr, &form).await?;
+        let new_client = match create_client_on_consent(&state, &auth, &corr, &form).await {
+            Ok(c) => c,
+            Err(e) => {
+                // Browser-friendly: redirect back to the broker callback with
+                // an OAuth error so the CLI sees a real failure (not a hang)
+                // and the user sees the redirect_uri's error page (not raw JSON).
+                let err_code = match &e {
+                    ApiError::Conflict(_) => "access_denied",
+                    _ => "server_error",
+                };
+                let err_desc = format!("{e:?}");
+                if is_localhost_uri(&form.redirect_uri) {
+                    let redirect = format!(
+                        "{}?error={}&error_description={}&state={}",
+                        form.redirect_uri,
+                        urlencoding::encode(err_code),
+                        urlencoding::encode(&err_desc),
+                        urlencoding::encode(&form.state),
+                    );
+                    return Ok(
+                        (StatusCode::FOUND, [("Location", redirect.as_str())]).into_response()
+                    );
+                }
+                // Fallback: render an HTML error page so the browser doesn't show raw JSON.
+                let html = format!(
+                    "<!DOCTYPE html><html><head><title>Authorization Failed</title>\
+                    <style>body{{font-family:system-ui;max-width:600px;margin:60px auto;padding:20px;color:#1a1a1a}}\
+                    h1{{color:#c00}}code{{background:#f4f4f4;padding:2px 6px;border-radius:3px}}</style></head>\
+                    <body><h1>Authorization Failed</h1>\
+                    <p>{}</p>\
+                    <p><a href=\"/dashboard\">Return to dashboard</a></p></body></html>",
+                    html_escape(&err_desc),
+                );
+                return Ok((
+                    StatusCode::CONFLICT,
+                    [("Content-Type", "text/html; charset=utf-8")],
+                    html,
+                )
+                    .into_response());
+            }
+        };
         let cid = new_client.client_id.clone();
         let uuid = new_client.id;
         (cid, uuid, true)
@@ -233,22 +332,26 @@ async fn create_client_on_consent(
 
     let scopes = OAuthScope::parse_scope_string(&form.scope).map_err(ApiError::BadRequest)?;
 
-    // If an existing client for this public_key_hash exists, revoke it so the
-    // new registration succeeds.  This handles `--force` re-registrations where
-    // the CLI cleared its local state but the server still has the old client.
+    // If an existing client for this public_key_hash exists, delete it so the
+    // new registration can succeed. The schema enforces UNIQUE on public_key_hash,
+    // so a soft-revoke leaves the row in place and blocks the INSERT. This handles
+    // re-registrations where the CLI cleared its local state but the server still
+    // has the old client.
     if let Some(existing) = state
         .store
         .get_oauth_client_by_public_key_hash(&form.public_key_hash)
         .await?
     {
+        // Revoke first to cascade-revoke any active tokens, then delete the row.
         if existing.revoked_at.is_none() {
-            state.store.revoke_oauth_client(&existing.client_id).await?;
-            tracing::info!(
-                client_id = %existing.client_id,
-                pk_hash = %form.public_key_hash,
-                "revoked existing OAuth client for re-registration"
-            );
+            let _ = state.store.revoke_oauth_client(&existing.client_id).await;
         }
+        state.store.delete_oauth_client(&existing.client_id).await?;
+        tracing::info!(
+            client_id = %existing.client_id,
+            pk_hash = %form.public_key_hash,
+            "deleted existing OAuth client for re-registration"
+        );
     }
 
     let client_id = generate_client_id();

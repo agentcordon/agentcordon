@@ -252,6 +252,7 @@ async fn rsop(
                     name: server.name.clone(),
                     enabled: server.enabled,
                     tags: server.tags.clone(),
+                    owner: server.created_by_user.clone(),
                 };
 
                 let actions = vec![actions::MCP_TOOL_CALL, actions::MCP_LIST_TOOLS];

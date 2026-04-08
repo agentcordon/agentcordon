@@ -81,25 +81,8 @@ pub(crate) async fn update_credential(
         }
     }
 
-    // If name is being changed, check uniqueness scoped to the credential's creator
-    if let Some(ref new_name) = req.name {
-        let existing = if let Some(ref creator) = cred.created_by {
-            state
-                .store
-                .get_credential_by_workspace_and_name(creator, new_name)
-                .await?
-        } else {
-            state.store.get_credential_by_name(new_name).await?
-        };
-        if let Some(existing) = existing {
-            if existing.id != cred_id {
-                return Err(ApiError::Conflict(format!(
-                    "credential with name '{}' already exists",
-                    new_name
-                )));
-            }
-        }
-    }
+    // Names are not unique — no conflict check needed on rename.
+    // Cedar policies control access; names are human-friendly labels.
 
     // Handle secret value rotation
     let secret_rotated = req.secret_value.is_some();
@@ -252,30 +235,60 @@ pub(crate) async fn get_credential(
 
 /// Look up a credential by name instead of UUID.
 /// Returns the same `CredentialSummary` as `GET /credentials/{id}`.
+///
+/// If multiple credentials match, evaluate Cedar `list` action on each and
+/// return `MultipleChoices` when more than one is authorized.
 pub(crate) async fn get_credential_by_name(
     State(state): State<AppState>,
     actor: AuthenticatedActor,
     Path(name): Path<String>,
 ) -> Result<Json<ApiResponse<CredentialSummary>>, ApiError> {
-    let cred = state
-        .store
-        .get_credential_by_name(&name)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("credential '{}' not found", name)))?;
+    let name_matches = state.store.list_stored_credentials_by_name(&name).await?;
 
-    // Same policy check as get_credential
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::LIST,
-        &PolicyResource::Credential {
-            credential: cred.clone(),
-        },
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
+    let mut authorized: Vec<agent_cordon_core::domain::credential::StoredCredential> = Vec::new();
+    for cred in &name_matches {
+        let decision = state.policy_engine.evaluate(
+            &actor.policy_principal(),
+            actions::LIST,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+            &actor.policy_context(None),
+        )?;
+        if decision.decision != PolicyDecisionResult::Forbid {
+            authorized.push(cred.clone());
+        }
     }
+
+    let cred = match authorized.len() {
+        0 => {
+            return Err(ApiError::NotFound(format!(
+                "credential '{}' not found or not authorized",
+                name
+            )));
+        }
+        1 => authorized.into_iter().next().unwrap(),
+        _ => {
+            let candidates: Vec<serde_json::Value> = authorized
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "id": c.id.0.to_string(),
+                        "name": c.name,
+                        "service": c.service,
+                        "description": c.description,
+                    })
+                })
+                .collect();
+            return Err(ApiError::MultipleChoices {
+                message: format!(
+                    "Multiple credentials match name '{}'. Specify by ID or use a unique name.",
+                    name
+                ),
+                candidates,
+            });
+        }
+    };
 
     let mut summary: CredentialSummary = cred.into();
     enrich_owner_usernames(state.store.as_ref(), std::slice::from_mut(&mut summary)).await;

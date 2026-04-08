@@ -1,0 +1,15 @@
+{
+  "key": "wix",
+  "name": "Wix",
+  "description": "Sites, content, and store management via Wix's hosted MCP server.",
+  "upstream_url": "https://mcp.wix.com/sse",
+  "transport": "sse",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.wix.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": ["wix", "cms", "oauth"],
+  "icon": "wix",
+  "sort_order": 110
+}

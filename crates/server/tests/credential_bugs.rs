@@ -96,11 +96,11 @@ async fn store_test_credential(
 }
 
 // ===========================================================================
-// Tests: B-006 — Unique Credential Names (duplicate name returns 409)
+// Tests: B-006 — Duplicate credential names are allowed (names are labels)
 // ===========================================================================
 
 #[tokio::test]
-async fn test_duplicate_credential_name_returns_409() {
+async fn test_duplicate_credential_name_allowed() {
     let (app, store, _state) = setup_test_app().await;
     let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let (cookie, csrf) = login_combined(&app, "admin", TEST_PASSWORD).await;
@@ -114,7 +114,7 @@ async fn test_duplicate_credential_name_returns_409() {
         Some(&cookie),
         Some(&csrf),
         Some(json!({
-            "name": "unique-cred-name",
+            "name": "shared-name",
             "service": "github",
             "secret_value": "ghp_test1111111111"
         })),
@@ -122,7 +122,7 @@ async fn test_duplicate_credential_name_returns_409() {
     .await;
     assert_eq!(status, StatusCode::OK, "first credential: {}", body);
 
-    // Create second credential with the same name — should fail with 409
+    // Create second credential with the same name — should succeed
     let (status, body) = send_json(
         &app,
         Method::POST,
@@ -131,7 +131,7 @@ async fn test_duplicate_credential_name_returns_409() {
         Some(&cookie),
         Some(&csrf),
         Some(json!({
-            "name": "unique-cred-name",
+            "name": "shared-name",
             "service": "slack",
             "secret_value": "xoxb-test2222222222"
         })),
@@ -139,16 +139,8 @@ async fn test_duplicate_credential_name_returns_409() {
     .await;
     assert_eq!(
         status,
-        StatusCode::CONFLICT,
-        "duplicate name should return 409: {}",
-        body
-    );
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("already exists"),
-        "error should mention name already exists: {}",
+        StatusCode::OK,
+        "duplicate name should succeed — names are labels, UUID is the key: {}",
         body
     );
 }
@@ -301,7 +293,7 @@ async fn test_update_credential_name_uniqueness_check() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Try to rename cred-one to cred-two — should fail with 409
+    // Rename cred-one to cred-two — names are not unique, this should succeed
     let update_uri = format!("/api/v1/credentials/{}", cred1_id);
     let (status, body) = send_json(
         &app,
@@ -317,8 +309,8 @@ async fn test_update_credential_name_uniqueness_check() {
     .await;
     assert_eq!(
         status,
-        StatusCode::CONFLICT,
-        "rename to existing name should 409: {}",
+        StatusCode::OK,
+        "rename to existing name should succeed — names are labels: {}",
         body
     );
 }

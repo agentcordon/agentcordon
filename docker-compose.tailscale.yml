@@ -1,0 +1,89 @@
+# AgentCordon + Tailscale Sidecar
+#
+# Exposes AgentCordon as a Tailscale service so it's reachable
+# only within your tailnet — no public ports needed.
+#
+# Quick start:
+#   1. Generate an auth key at https://login.tailscale.com/admin/settings/keys
+#      (reusable + ephemeral recommended)
+#   2. Set TS_AUTHKEY in .env or export it:
+#        export TS_AUTHKEY=tskey-auth-...
+#   3. docker compose -f docker-compose.tailscale.yml up -d
+#
+# The server will appear on your tailnet as "agentcordon" (override with TS_HOSTNAME).
+# Access it at http://agentcordon:3140 from any tailnet device.
+#
+# Optional .env overrides:
+#   TS_AUTHKEY              — (required) Tailscale auth key
+#   TS_HOSTNAME             — Tailscale machine name (default: agentcordon)
+#   TS_EXTRA_ARGS           — Extra args to `tailscale up` (e.g. --advertise-tags=tag:server)
+#   TS_STATE_DIR            — Tailscale state directory inside container (default: /var/lib/tailscale)
+#   AGTCRDN_SEED_DEMO      — Seed demo data on first boot (default: true)
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: agentcordon-tailscale
+    hostname: "${TS_HOSTNAME:-agentcordon}"
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - tailscale-state:${TS_STATE_DIR:-/var/lib/tailscale}
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TS_AUTHKEY: "${TS_AUTHKEY}"
+      TS_STATE_DIR: "${TS_STATE_DIR:-/var/lib/tailscale}"
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_EXTRA_ARGS: "${TS_EXTRA_ARGS:-}"
+    configs:
+      - source: ts-serve-config
+        target: /config/serve.json
+    restart: unless-stopped
+
+  agentcordon:
+    image: ghcr.io/agentcordon/agentcordon:latest
+    container_name: agentcordon
+    command: ["agent-cordon-server"]
+    network_mode: service:tailscale
+    depends_on:
+      tailscale:
+        condition: service_started
+    volumes:
+      - agentcordon-data:/data
+    environment:
+      AGTCRDN_SEED_DEMO: "${AGTCRDN_SEED_DEMO:-true}"
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3140/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    restart: unless-stopped
+
+configs:
+  ts-serve-config:
+    content: |
+      {
+        "TCP": {
+          "443": {
+            "HTTPS": true
+          }
+        },
+        "Web": {
+          "${TS_HOSTNAME:-agentcordon}.${TS_TAILNET:-tail-scale}.ts.net:443": {
+            "Handlers": {
+              "/": {
+                "Proxy": "http://127.0.0.1:3140"
+              }
+            }
+          }
+        }
+      }
+
+volumes:
+  agentcordon-data:
+  tailscale-state:

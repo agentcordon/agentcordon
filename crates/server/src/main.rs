@@ -66,6 +66,10 @@ async fn main() {
             config.credential_templates_dir.as_deref(),
         );
 
+    let mcp_templates = agent_cordon_server::routes::admin_api::mcp_templates::load_mcp_templates(
+        config.mcp_templates_dir.as_deref(),
+    );
+
     let policy_templates = agent_cordon_server::routes::admin_api::policy_templates::load_templates(
         config.policy_templates_dir.as_deref(),
     );
@@ -85,6 +89,7 @@ async fn main() {
         ui_event_bus: agent_cordon_server::events::UiEventBus::new(256),
         sse_tracker: agent_cordon_server::events::SseConnectionTracker::new(5),
         credential_templates,
+        mcp_templates,
         policy_templates,
     };
 
@@ -279,7 +284,6 @@ async fn bootstrap_root_user(store: &(dyn Store + Send + Sync), config: &AppConf
                 role: UserRole::Admin,
                 is_root: true,
                 enabled: true,
-                show_advanced: false,
                 created_at: now,
                 updated_at: now,
             };
@@ -341,6 +345,19 @@ fn spawn_cleanup_task(app_state: &AppState, config: &AppConfig) {
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "OIDC state cleanup failed");
+                }
+            }
+            match store.cleanup_expired_mcp_oauth_states().await {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!(
+                            expired_mcp_oauth_states_cleaned = count,
+                            "MCP OAuth state cleanup completed"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "MCP OAuth state cleanup failed");
                 }
             }
             rate_limiter.cleanup_stale_entries();

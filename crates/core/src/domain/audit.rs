@@ -104,7 +104,16 @@ pub enum AuditEventType {
     McpToolCallDenied,
     McpPoliciesGenerated,
     McpToolCall,
+    McpToolCalled,
     McpToolDenied,
+    McpServerProvisioned,
+
+    // OAuth Provider Clients
+    OAuthProviderClientCreated,
+    OAuthProviderClientUpdated,
+    OAuthProviderClientDeleted,
+    OAuthProviderClientRotated,
+    OAuthProviderDiscoveryFailed,
 
     // Subprocess
     SubprocessSpawned,

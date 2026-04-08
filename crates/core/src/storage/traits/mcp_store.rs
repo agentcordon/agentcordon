@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use crate::domain::mcp::{McpServer, McpServerId};
+use crate::domain::user::UserId;
 use crate::domain::workspace::WorkspaceId;
 use crate::error::StoreError;
 
@@ -19,6 +20,11 @@ pub trait McpStore: Send + Sync {
     async fn list_mcp_servers_by_workspace(
         &self,
         workspace_id: &WorkspaceId,
+    ) -> Result<Vec<McpServer>, StoreError>;
+    /// List MCP servers created/owned by a specific user.
+    async fn list_mcp_servers_by_user(
+        &self,
+        user_id: &UserId,
     ) -> Result<Vec<McpServer>, StoreError>;
     async fn update_mcp_server(&self, server: &McpServer) -> Result<(), StoreError>;
     async fn delete_mcp_server(&self, id: &McpServerId) -> Result<bool, StoreError>;

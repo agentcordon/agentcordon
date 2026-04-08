@@ -15,7 +15,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use agent_cordon_core::crypto::password::hash_password;
-use agent_cordon_core::domain::mcp::{McpServer, McpServerId};
+use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::user::{User, UserId, UserRole};
 use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource};
@@ -50,7 +50,6 @@ async fn create_user_in_db(
         role,
         is_root: false,
         enabled: true,
-        show_advanced: true,
         created_at: now,
         updated_at: now,
     };
@@ -228,7 +227,7 @@ async fn register_mcp_server_in_store(
         workspace_id: workspace.id,
         name: name.to_string(),
         upstream_url: upstream_url.to_string(),
-        transport: "http".to_string(),
+        transport: McpTransport::Http,
         allowed_tools,
         enabled,
         created_by: None,
@@ -236,6 +235,10 @@ async fn register_mcp_server_in_store(
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
+        created_by_user: None,
     };
     store
         .create_mcp_server(&server)
@@ -531,6 +534,7 @@ async fn test_cedar_mcp_tool_call_admin_allowed() {
                 name: "test-server".to_string(),
                 enabled: true,
                 tags: vec![],
+                owner: None,
             },
             &PolicyContext {
                 tool_name: Some("create_issue".to_string()),
@@ -553,23 +557,27 @@ async fn test_cedar_mcp_tool_call_admin_allowed() {
 
 #[tokio::test]
 async fn test_cedar_mcp_tool_call_non_admin_allowed() {
+    use agent_cordon_core::domain::user::UserId;
     let ctx = TestAppBuilder::new()
         .with_agent("viewer-bot", &["viewer"])
         .build()
         .await;
-    let viewer = ctx.agents.get("viewer-bot").expect("viewer agent");
+    let mut viewer = ctx.agents.get("viewer-bot").expect("viewer agent").clone();
+    let owner_id = UserId(Uuid::new_v4());
+    viewer.owner_id = Some(owner_id.clone());
 
     let result = ctx
         .state
         .policy_engine
         .evaluate(
-            &PolicyPrincipal::Workspace(viewer),
+            &PolicyPrincipal::Workspace(&viewer),
             "mcp_tool_call",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
                 name: "test-server".to_string(),
                 enabled: true,
                 tags: vec![],
+                owner: Some(owner_id),
             },
             &PolicyContext {
                 tool_name: Some("create_issue".to_string()),
@@ -592,23 +600,31 @@ async fn test_cedar_mcp_tool_call_non_admin_allowed() {
 
 #[tokio::test]
 async fn test_cedar_mcp_list_tools_enabled_agent_allowed() {
+    use agent_cordon_core::domain::user::UserId;
     let ctx = TestAppBuilder::new()
         .with_agent("enabled-bot", &["worker"])
         .build()
         .await;
-    let agent = ctx.agents.get("enabled-bot").expect("enabled agent");
+    let mut agent = ctx
+        .agents
+        .get("enabled-bot")
+        .expect("enabled agent")
+        .clone();
+    let owner_id = UserId(Uuid::new_v4());
+    agent.owner_id = Some(owner_id.clone());
 
     let result = ctx
         .state
         .policy_engine
         .evaluate(
-            &PolicyPrincipal::Workspace(agent),
+            &PolicyPrincipal::Workspace(&agent),
             "mcp_list_tools",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
                 name: "test-server".to_string(),
                 enabled: true,
                 tags: vec![],
+                owner: Some(owner_id),
             },
             &PolicyContext::default(),
         )
@@ -707,6 +723,7 @@ async fn test_cedar_mcp_tool_call_disabled_server_forbidden() {
                 name: "disabled-server".to_string(),
                 enabled: false,
                 tags: vec![],
+                owner: None,
             },
             &PolicyContext {
                 tool_name: Some("create_issue".to_string()),
@@ -745,6 +762,7 @@ async fn test_cedar_mcp_list_tools_disabled_server_forbidden() {
                 name: "disabled-server".to_string(),
                 enabled: false,
                 tags: vec![],
+                owner: None,
             },
             &PolicyContext::default(),
         )

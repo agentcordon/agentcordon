@@ -6,7 +6,7 @@
 use axum::http::{Method, StatusCode};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::mcp::{McpServer, McpServerId};
+use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::workspace::WorkspaceId;
 use agent_cordon_core::storage::Store;
 
@@ -30,7 +30,7 @@ async fn create_mcp_server_for_workspace(
         workspace_id: workspace_id.clone(),
         name: name.to_string(),
         upstream_url: format!("http://localhost:9999/{}", name),
-        transport: "stdio".to_string(),
+        transport: McpTransport::Http,
         allowed_tools: Some(vec!["list_issues".to_string(), "create_pr".to_string()]),
         enabled,
         created_by: None,
@@ -38,6 +38,10 @@ async fn create_mcp_server_for_workspace(
         updated_at: now,
         tags: vec![],
         required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools: None,
+        created_by_user: None,
     };
     store
         .create_mcp_server(&server)
@@ -254,13 +258,13 @@ async fn test_mcp_authorize_cross_workspace_isolation() {
 
     assert_eq!(status, StatusCode::OK, "cross-ws mcp-authorize: {}", body);
     let data = &body["data"];
-    // MCP servers are a global catalog — any enabled workspace can call tools
-    // on any enabled MCP server. Cedar policy 4b permits this by default.
-    // Admins can restrict with explicit forbid policies per workspace/server.
+    // Owner-based access: WS-B is owned by a different user than WS-A's server,
+    // so the default MCP permit (workspace.owner == server.owner) does not apply.
+    // Cross-user access requires an explicit Cedar grant policy.
     assert_eq!(
         data["decision"].as_str().unwrap(),
-        "permit",
-        "WS-B should be permitted on WS-A's server (global MCP catalog): {}",
+        "forbid",
+        "WS-B should be denied on WS-A's server (different owner): {}",
         body
     );
 }

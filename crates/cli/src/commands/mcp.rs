@@ -127,7 +127,7 @@ pub async fn list_tools() -> Result<(), CliError> {
 struct McpCallRequest {
     server: String,
     tool: String,
-    arguments: HashMap<String, String>,
+    arguments: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -151,7 +151,7 @@ struct McpContent {
 pub async fn call(server: String, tool: String, args: Vec<String>) -> Result<(), CliError> {
     let client = BrokerClient::connect().await?;
 
-    // Parse --arg KEY=VALUE pairs
+    // Parse --arg KEY=VALUE pairs with auto-detection of value types
     let mut arguments = HashMap::new();
     for arg in &args {
         let (key, value) = arg.split_once('=').ok_or_else(|| {
@@ -159,7 +159,20 @@ pub async fn call(server: String, tool: String, args: Vec<String>) -> Result<(),
                 "invalid argument format: {arg} (expected KEY=VALUE)"
             ))
         })?;
-        arguments.insert(key.to_string(), value.to_string());
+        let json_value = if let Ok(n) = value.parse::<i64>() {
+            serde_json::Value::Number(n.into())
+        } else if let Ok(n) = value.parse::<f64>() {
+            serde_json::Number::from_f64(n)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::String(value.to_string()))
+        } else if value == "true" {
+            serde_json::Value::Bool(true)
+        } else if value == "false" {
+            serde_json::Value::Bool(false)
+        } else {
+            serde_json::Value::String(value.to_string())
+        };
+        arguments.insert(key.to_string(), json_value);
     }
 
     let req = McpCallRequest {

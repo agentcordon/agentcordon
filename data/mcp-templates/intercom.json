@@ -1,0 +1,15 @@
+{
+  "key": "intercom",
+  "name": "Intercom",
+  "description": "Conversations, contacts, and support workflows via Intercom's hosted MCP server.",
+  "upstream_url": "https://mcp.intercom.com/sse",
+  "transport": "sse",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.intercom.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": ["intercom", "support", "oauth"],
+  "icon": "intercom",
+  "sort_order": 70
+}

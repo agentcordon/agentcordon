@@ -236,6 +236,7 @@ impl CedarPolicyEngine {
                 name,
                 enabled,
                 tags,
+                owner,
             } => {
                 let type_name: EntityTypeName = entities::MCP_SERVER
                     .parse()
@@ -248,7 +249,7 @@ impl CedarPolicyEngine {
                         .map(|t| RestrictedExpression::new_string(t.clone())),
                 );
 
-                let attrs: HashMap<String, RestrictedExpression> = HashMap::from([
+                let mut attrs: HashMap<String, RestrictedExpression> = HashMap::from([
                     (
                         "name".to_string(),
                         RestrictedExpression::new_string(name.clone()),
@@ -259,6 +260,13 @@ impl CedarPolicyEngine {
                     ),
                     ("tags".to_string(), tags_set),
                 ]);
+
+                if let Some(owner_id) = owner {
+                    attrs.insert(
+                        "owner".to_string(),
+                        RestrictedExpression::new_entity_uid(Self::user_uid_from_id(owner_id)),
+                    );
+                }
 
                 let entity = Entity::new(uid.clone(), attrs, HashSet::new())
                     .map_err(|e| PolicyError::Evaluation(format!("mcp server entity: {e}")))?;

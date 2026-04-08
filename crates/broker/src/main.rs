@@ -2,6 +2,8 @@ mod auth;
 mod config;
 mod credential_transform;
 mod daemon;
+mod mcp_sync;
+mod oauth2_refresh;
 mod routes;
 mod server_client;
 mod state;
