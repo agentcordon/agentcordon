@@ -65,7 +65,7 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: gateway-${{ matrix.target }}
+          key: gateway-${{ matrix.target }}-${{ matrix.os }}
 
       - name: Install cross-compilation tools
         if: matrix.cross
@@ -127,7 +127,7 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: broker-${{ matrix.target }}
+          key: broker-${{ matrix.target }}-${{ matrix.os }}
 
       - name: Install cross-compilation tools
         if: matrix.cross
@@ -180,7 +180,7 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: server-${{ matrix.target }}
+          key: server-${{ matrix.target }}-22.04
 
       - name: Install cross-compilation tools
         if: matrix.cross
