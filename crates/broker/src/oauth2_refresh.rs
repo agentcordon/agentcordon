@@ -5,10 +5,27 @@
 //! Follows the same pattern as `agent_cordon_core::oauth2::client_credentials::OAuth2TokenManager`.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use tokio::sync::Mutex;
+
+/// Async callback invoked when the token endpoint returns a rotated refresh
+/// token. The broker MUST NOT cache the new access token unless this callback
+/// succeeds — otherwise the new refresh token is lost on process restart.
+///
+/// The `String` argument is the new refresh token value. The callback is
+/// expected to (a) persist the rotation server-side and (b) update the
+/// broker's in-memory credential cache atomically before returning `Ok`.
+pub type RotationFuture = Pin<Box<dyn Future<Output = Result<(), RotationError>> + Send>>;
+pub type RotationCallback = Arc<dyn Fn(String) -> RotationFuture + Send + Sync>;
+
+/// Error returned by a `RotationCallback`.
+#[derive(Debug, thiserror::Error)]
+#[error("refresh token rotation persistence failed: {0}")]
+pub struct RotationError(pub String);
 
 /// Errors from the OAuth2 refresh token exchange flow.
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +41,9 @@ pub enum OAuth2RefreshError {
 
     #[error("token endpoint timeout")]
     Timeout,
+
+    #[error("rotated refresh token persistence failed: {0}")]
+    RotationPersistFailed(String),
 }
 
 /// A cached OAuth2 access token with its expiry time.
@@ -82,6 +102,7 @@ impl OAuth2RefreshManager {
         token_url: &str,
         client_id: &str,
         client_secret: &str,
+        rotation_callback: Option<RotationCallback>,
     ) -> Result<String, OAuth2RefreshError> {
         // TODO: Replace single mutex with per-credential locking (e.g., DashMap
         // with per-entry lock) when credential count grows. Currently this
@@ -147,12 +168,40 @@ impl OAuth2RefreshManager {
         let effective_ttl = (expires_in - buffer_secs).max(0);
         let expires_at = Utc::now() + chrono::Duration::seconds(effective_ttl);
 
-        // Warn if refresh token was rotated (v1: we don't persist back)
-        if body.get("refresh_token").and_then(|v| v.as_str()).is_some() {
-            tracing::warn!(
-                credential = %credential_name,
-                "OAuth2 provider rotated refresh token -- new token NOT persisted (v1 limitation)"
-            );
+        // If the provider rotated the refresh token, persist the new value
+        // BEFORE caching the access token. If persistence fails we abort the
+        // whole refresh: no access token is cached, no in-memory state is
+        // mutated, and the caller sees an error. On the next attempt the old
+        // (possibly already-consumed) refresh token will be used; if that
+        // also fails, re-consent is the only path — but either way the
+        // broker's state stays consistent.
+        if let Some(new_refresh) = body
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+        {
+            match rotation_callback.as_ref() {
+                Some(cb) => {
+                    tracing::info!(
+                        credential = %credential_name,
+                        "OAuth2 provider rotated refresh token -- persisting new value"
+                    );
+                    if let Err(e) = cb(new_refresh).await {
+                        tracing::error!(
+                            credential = %credential_name,
+                            error = %e,
+                            "failed to persist rotated refresh token; aborting refresh"
+                        );
+                        return Err(OAuth2RefreshError::RotationPersistFailed(e.0));
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        credential = %credential_name,
+                        "OAuth2 provider rotated refresh token but no rotation callback was provided"
+                    );
+                }
+            }
         }
 
         // Update cache under same lock
@@ -219,6 +268,7 @@ mod tests {
                 "http://unreachable.invalid/token",
                 "client-id",
                 "client-secret",
+                None,
             )
             .await
             .unwrap();
@@ -244,6 +294,118 @@ mod tests {
         assert!(cache.get("test-cred").is_none());
     }
 
+    /// Start a one-shot mock token endpoint that returns the given JSON body
+    /// once. Returns `(base_url, join_handle)`.
+    async fn mock_token_endpoint(body: serde_json::Value) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}/token", addr);
+
+        let handle = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let body_str = body.to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\n\r\n{}",
+                    body_str.len(),
+                    body_str
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        (url, handle)
+    }
+
+    #[tokio::test]
+    async fn test_rotated_refresh_token_invokes_callback() {
+        let mgr = OAuth2RefreshManager::new();
+
+        let (token_url, _h) = mock_token_endpoint(serde_json::json!({
+            "access_token": "new-access",
+            "expires_in": 3600,
+            "refresh_token": "ROTATED-REFRESH",
+            "token_type": "Bearer",
+        }))
+        .await;
+
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        let callback: RotationCallback = Arc::new(move |new_token: String| {
+            let captured = captured_clone.clone();
+            Box::pin(async move {
+                *captured.lock().await = Some(new_token);
+                Ok::<(), RotationError>(())
+            })
+        });
+
+        let token = mgr
+            .get_access_token(
+                "notion-cred",
+                "OLD-REFRESH",
+                &token_url,
+                "client-id",
+                "client-secret",
+                Some(callback),
+            )
+            .await
+            .expect("refresh should succeed");
+
+        assert_eq!(token, "new-access");
+        assert_eq!(
+            captured.lock().await.as_deref(),
+            Some("ROTATED-REFRESH"),
+            "callback must receive the rotated refresh token"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rotation_callback_failure_aborts_refresh() {
+        let mgr = OAuth2RefreshManager::new();
+
+        let (token_url, _h) = mock_token_endpoint(serde_json::json!({
+            "access_token": "new-access",
+            "expires_in": 3600,
+            "refresh_token": "ROTATED",
+        }))
+        .await;
+
+        let callback: RotationCallback = Arc::new(|_new_token: String| {
+            Box::pin(async move {
+                Err::<(), RotationError>(RotationError("server unreachable".to_string()))
+            })
+        });
+
+        let result = mgr
+            .get_access_token(
+                "cred",
+                "OLD",
+                &token_url,
+                "client-id",
+                "client-secret",
+                Some(callback),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(OAuth2RefreshError::RotationPersistFailed(_))
+        ));
+
+        // Atomicity: cache MUST NOT have been populated.
+        let cache = mgr.cache.lock().await;
+        assert!(
+            cache.get("cred").is_none(),
+            "access token must not be cached when rotation persistence fails"
+        );
+    }
+
     #[tokio::test]
     async fn test_expired_token_not_returned() {
         let mgr = OAuth2RefreshManager::new();
@@ -266,6 +428,7 @@ mod tests {
                 "http://unreachable.invalid/token",
                 "client-id",
                 "client-secret",
+                None,
             )
             .await;
         assert!(result.is_err());

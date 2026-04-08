@@ -3,6 +3,7 @@
 pub mod audit_stream;
 pub mod jwks;
 pub mod mcp_authorize;
+mod rotate_refresh_token;
 pub mod workspace_identity;
 mod workspace_sync;
 
@@ -24,6 +25,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/workspaces/mcp-tools", get(workspace_sync::sync_mcp_tools))
         .route("/workspaces/mcp-authorize", post(mcp_authorize::authorize))
+        .route(
+            "/workspaces/mcp/rotate-refresh-token",
+            post(rotate_refresh_token::rotate),
+        )
         .route(
             "/workspaces/audit-stream",
             get(audit_stream::audit_stream_ws),

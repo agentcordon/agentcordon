@@ -3,11 +3,11 @@ resolver = "2"
 members = ["crates/core", "crates/server", "crates/broker", "crates/cli"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT"
 homepage = "https://agentcordon.dev"
-repository = "https://github.com/hotnops/AgentCordon"
+repository = "https://github.com/agentcordon/agentcordon"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

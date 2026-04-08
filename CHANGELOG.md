@@ -2,67 +2,22 @@
 
 All notable changes to AgentCordon are documented in this file.
 
-## [3.0.0] - 2026-03-30
+## [0.2.2] - 2026-04-08
 
-### Summary
+### Fixed
 
-AgentCordon v3.0.0 replaces the Ed25519 challenge-response workspace authentication model with a three-tier OAuth 2.0 architecture. Agents no longer receive credentials directly -- all credential access is brokered through a per-user daemon that holds OAuth tokens and proxies upstream requests.
+- **OAuth2 refresh token rotation** — the broker now persists rotated refresh tokens back to the server when an upstream OAuth provider issues a new `refresh_token` on exchange. Previously, rotated tokens were discarded with a warning, which broke any RFC 6749 §6-compliant provider (Notion, Google, OAuth 2.1 implementations) after the first refresh: the cached access token would mask the problem for ~1 hour, then every subsequent call would return 401 until manual re-consent. The fix is atomic — if the server-side persistence call fails, the new access token is also not cached, preventing state divergence across broker restarts. (`crates/broker/src/oauth2_refresh.rs`, new server endpoint `POST /api/v1/workspaces/mcp/rotate-refresh-token`)
+  - **Recovery note**: users currently locked out of a rotating provider must re-authorize the MCP server once through the admin UI. The fix cannot recover refresh tokens that have already been invalidated by the upstream.
 
-### Architecture
+- **MCP server template URLs refreshed** — verified all 12 remote MCP templates in `data/mcp-templates/` against current vendor documentation and updated endpoints that had migrated from SSE to streamable HTTP. Changed URLs: `asana` (`/sse` → `/v2/mcp`, deprecating 2026-05-11), `cloudflare` (`/sse` → `/mcp`), `intercom` (`/sse` → `/mcp`), `wix` (`/sse` → `/mcp`). Transport aligned from `sse` to `http` on: `asana`, `atlassian`, `cloudflare`, `github`, `granola`, `intercom`, `linear`, `notion`, `sentry`, `wix`. Granola's `oauth2_resource_url` updated to include the `/mcp` path suffix to match its RFC 9728 protected-resource metadata. PayPal and Square kept on `/sse` since their vendor docs still publish that as canonical.
 
-```
-Agent <-> CLI (agentcordon) <-> Broker (agentcordon-broker) <-> Server (agent-cordon-server)
-```
+- **Release workflow publishes broker binary** — `build-broker` matrix added to `.github/workflows/release.yml`, mirroring the CLI's target set (5 targets including Windows). Previously, `/install.sh` served by the running server tried to download `agentcordon-broker-<target>` from GitHub releases and 404'd because no job was uploading it.
 
-- **Server** acts as an OAuth 2.0 Authorization Server with authorization code + PKCE flow, consent page, token endpoint, and dynamic client registration.
-- **Broker** is a per-user persistent daemon that holds OAuth tokens, vends credentials to workspaces, and proxies upstream HTTP requests. Credentials never leave the broker boundary.
-- **CLI** is a lightweight workspace agent that manages Ed25519 keypairs and signs requests to the broker. It never touches credentials.
+- **Linux binary glibc compatibility** — all three Rust build jobs (`build-gateway`, `build-broker`, `build-server`) now run on `ubuntu-22.04` (glibc 2.35) instead of `ubuntu-latest` (glibc 2.39). Fixes `GLIBC_2.38 not found` / `GLIBC_2.39 not found` errors on Ubuntu 22.04, Debian 12, and other distros with older glibc.
 
-### Added
+- **Install script `curl | sh` compatibility** — the install script served by `GET /install.sh` now re-execs itself under bash when invoked via `sh` (e.g. Debian/Ubuntu `/bin/sh` is dash, which doesn't support `set -o pipefail`). Users running `curl ... | sh` no longer get `Illegal option -o pipefail`.
 
-- **OAuth 2.0 Authorization Server** on the AgentCordon server: authorization code + PKCE (S256), token endpoint, client registration, and revocation.
-- **Consent page** for human-in-the-loop approval of OAuth grants (server-rendered HTML).
-- **Broker daemon** (`agentcordon-broker`): per-user service that manages OAuth sessions, token refresh, credential vending, and upstream HTTP proxying.
-- **Thin CLI** (`agentcordon`): new lightweight binary for workspace agents -- manages Ed25519 identity and signs requests to the broker.
-- **Client credentials grant** for machine-to-machine flows (service accounts).
-- **OAuth token storage** in core (SQLite and Postgres backends).
-- **Database migration** `003_oauth.sql` for OAuth clients, authorization codes, and tokens.
-
-### Breaking Changes
-
-- **Gateway crate removed.** The `crates/gateway` crate and its binary are deleted. All gateway functionality is replaced by the broker + CLI split.
-- **Ed25519 challenge-response auth removed.** Workspace identity JWTs are no longer issued or accepted. Workspaces authenticate via the broker's OAuth session.
-- **Challenge-response endpoints deleted** (`/api/workspace-identity/challenge`, `/api/workspace-identity/registration`).
-- **Provisioning tokens endpoint deleted.**
-- **`agentcordon` CLI binary replaced.** The binary name is the same but the behavior is completely different -- it now communicates with the broker, not the server directly.
-- **Workspace identity JWT validation removed** from server extractors.
-
-### Migration Guide
-
-1. **Deploy the new server** (v3.0.0) -- it includes the OAuth authorization server.
-2. **Run the broker daemon** (`agentcordon-broker`) on each user's machine or as a shared service. The broker connects to the server and manages OAuth sessions.
-3. **Re-register workspaces.** Old workspace registrations (Ed25519 challenge-response) are not compatible. Use `agentcordon register` to register each workspace with the broker.
-4. **Update agent configurations.** The CLI commands (`agentcordon proxy`, `agentcordon credentials`, etc.) work the same way but now route through the broker.
-5. **Remove old gateway references.** If you have scripts or configs referencing the `agentcordon` gateway binary, they need to be updated for the new CLI.
-
-### Security Improvements
-
-- Credentials never reach agent workspaces -- they stay within the broker boundary.
-- PKCE (S256) enforced on all authorization code flows.
-- OAuth tokens are scoped and time-limited with refresh rotation.
-- Consent page requires explicit human approval for new grants.
-- CSRF protection on consent flow via state parameter.
-
-### Removed
-
-- `crates/gateway` (replaced by `crates/broker` + `crates/cli`)
-- Ed25519 challenge-response workspace authentication
-- Workspace identity JWT issuance and validation
-- `/api/workspace-identity/challenge` endpoint
-- `/api/workspace-identity/registration` endpoint
-- `/api/control-plane/auth` endpoint
-- Provisioning tokens endpoint
-- ECIES credential encryption in transit (broker holds credentials directly)
+- **Repository URL** — corrected stale `hotnops/AgentCordon` reference in workspace `Cargo.toml`.
 
 ## [0.1.4] - 2026-03-15
 

@@ -497,6 +497,52 @@ impl ServerClient {
         Ok(envelope.data)
     }
 
+    /// Persist a rotated OAuth2 refresh token for an MCP credential.
+    ///
+    /// Calls the server's workspace-scoped rotation endpoint. The server
+    /// enforces that the credential belongs to the calling workspace and
+    /// emits an audit event. On success returns `Ok(())`; any non-2xx or
+    /// transport error is propagated so the broker can abort the refresh
+    /// and avoid caching a stale access token.
+    ///
+    /// SECURITY: the new refresh token value is sent in the JSON body and
+    /// MUST NOT be logged at any level.
+    pub async fn update_mcp_credential_refresh_token(
+        &self,
+        workspace_token: &str,
+        credential_name: &str,
+        new_refresh_token: &str,
+    ) -> Result<(), ServerClientError> {
+        let url = format!(
+            "{}/api/v1/workspaces/mcp/rotate-refresh-token",
+            self.base_url
+        );
+
+        let body = serde_json::json!({
+            "credential_name": credential_name,
+            "new_refresh_token": new_refresh_token,
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(workspace_token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ServerClientError::ServerError {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+        Ok(())
+    }
+
     /// Check if the server is reachable.
     pub async fn health_check(&self) -> bool {
         let url = format!("{}/health", self.base_url);

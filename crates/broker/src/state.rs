@@ -138,5 +138,44 @@ pub struct BrokerState {
     pub bound_port: u16,
 }
 
+impl BrokerState {
+    /// Update the cached credential `value` field for a named MCP credential
+    /// belonging to the given workspace (keyed by `pk_hash`). Used to reflect
+    /// a rotated OAuth2 refresh token in the in-memory cache atomically after
+    /// server-side persistence succeeds.
+    ///
+    /// Returns `true` if a matching credential was found and updated.
+    pub async fn update_mcp_credential_value(
+        &self,
+        pk_hash: &str,
+        credential_name: &str,
+        new_value: String,
+    ) -> bool {
+        let mut configs = self.mcp_configs.write().await;
+        let Some(servers) = configs.get_mut(pk_hash) else {
+            return false;
+        };
+        for server in servers.iter_mut() {
+            if server.name == credential_name {
+                if let Some(cred) = server.credential.as_mut() {
+                    cred.value = new_value;
+                    return true;
+                }
+            }
+        }
+        // Fall back: credential_name may not match server name (e.g., named
+        // credential distinct from server name). Scan all servers for a
+        // credential whose cached name matches via metadata.
+        // The current cache layout keys credentials by server; a credential
+        // attached to a server is identified only by the server name. If the
+        // caller supplies a credential_name that matches the server name the
+        // loop above succeeds; otherwise we return false and let the caller
+        // log a warning. This is acceptable because the broker only resolves
+        // credentials through the server cache by server name in the current
+        // resolve_credential_value flow.
+        false
+    }
+}
+
 /// Type alias used in route handlers.
 pub type SharedState = Arc<BrokerState>;

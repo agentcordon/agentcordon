@@ -3,7 +3,7 @@
   "name": "Sentry",
   "description": "Errors, issues, and performance monitoring via Sentry's hosted MCP server.",
   "upstream_url": "https://mcp.sentry.dev/mcp",
-  "transport": "sse",
+  "transport": "http",
   "auth_method": "oauth2",
   "oauth2_resource_url": "https://mcp.sentry.dev",
   "oauth2_prefer_dcr": true,

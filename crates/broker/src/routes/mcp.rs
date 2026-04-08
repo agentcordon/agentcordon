@@ -9,10 +9,13 @@ use agent_cordon_core::proxy::url_safety::validate_proxy_target_resolved;
 
 use crate::auth::AuthenticatedWorkspace;
 use crate::credential_transform::{self, CredentialMaterial};
+use crate::oauth2_refresh::{RotationCallback, RotationError};
 use crate::server_client::ServerClient;
 use crate::state::{CachedCredential, SharedState};
 
-use super::helpers::{error_response, ok_response, require_scope, with_token_refresh};
+use super::helpers::{
+    error_response, get_access_token, ok_response, require_scope, with_token_refresh,
+};
 
 /// Resolve the effective credential value for a cached credential.
 ///
@@ -21,6 +24,7 @@ use super::helpers::{error_response, ok_response, require_scope, with_token_refr
 /// returns the raw value as-is.
 async fn resolve_credential_value(
     state: &SharedState,
+    pk_hash: &str,
     credential_name: &str,
     cred: &CachedCredential,
 ) -> Option<String> {
@@ -34,6 +38,48 @@ async fn resolve_credential_value(
 
     match (token_url, client_id, client_secret) {
         (Some(token_url), Some(client_id), Some(client_secret)) => {
+            // Build a rotation callback closing over the workspace context
+            // so that when the provider rotates the refresh token, the new
+            // value is (a) persisted on the server, then (b) reflected in
+            // the broker's in-memory cache — both before the access token
+            // is cached. See `OAuth2RefreshManager::get_access_token`.
+            let state_cb = state.clone();
+            let pk_hash_cb = pk_hash.to_string();
+            let cred_name_cb = credential_name.to_string();
+            let rotation_callback: RotationCallback = std::sync::Arc::new(
+                move |new_refresh: String| {
+                    let state = state_cb.clone();
+                    let pk_hash = pk_hash_cb.clone();
+                    let cred_name = cred_name_cb.clone();
+                    Box::pin(async move {
+                        let workspace_token = get_access_token(&state, &pk_hash).await.ok_or_else(
+                        || {
+                            RotationError(
+                                "no workspace access token available to persist rotated refresh token"
+                                    .to_string(),
+                            )
+                        },
+                    )?;
+                        let server_client =
+                            ServerClient::new(state.http_client.clone(), state.server_url.clone());
+                        server_client
+                            .update_mcp_credential_refresh_token(
+                                &workspace_token,
+                                &cred_name,
+                                &new_refresh,
+                            )
+                            .await
+                            .map_err(|e| RotationError(e.to_string()))?;
+                        // Persist succeeded — now update the broker's in-memory
+                        // cache so the next refresh uses the rotated value.
+                        state
+                            .update_mcp_credential_value(&pk_hash, &cred_name, new_refresh.clone())
+                            .await;
+                        Ok(())
+                    })
+                },
+            );
+
             match state
                 .oauth2_refresh
                 .get_access_token(
@@ -42,6 +88,7 @@ async fn resolve_credential_value(
                     token_url,
                     client_id,
                     client_secret,
+                    Some(rotation_callback),
                 )
                 .await
             {
@@ -268,7 +315,9 @@ pub async fn list_tools(
             .timeout(std::time::Duration::from_secs(5));
 
         // Resolve credential value (exchanges refresh token for access token if OAuth2 authz code)
-        if let Some(effective_value) = resolve_credential_value(&state, &server_name, &cred).await {
+        if let Some(effective_value) =
+            resolve_credential_value(&state, &auth.pk_hash, &server_name, &cred).await
+        {
             let material = CredentialMaterial {
                 credential_type: Some(cred.credential_type.clone()),
                 value: effective_value,
@@ -524,7 +573,9 @@ pub async fn call_tool(
 
     if let Some(ref cred) = cached_credential {
         // Resolve credential value (exchanges refresh token for access token if OAuth2 authz code)
-        if let Some(effective_value) = resolve_credential_value(&state, &server_name, cred).await {
+        if let Some(effective_value) =
+            resolve_credential_value(&state, &auth.pk_hash, &server_name, cred).await
+        {
             let material = CredentialMaterial {
                 credential_type: Some(cred.credential_type.clone()),
                 value: effective_value,

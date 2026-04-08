@@ -18,6 +18,7 @@ mod e2e_two_minute_setup;
 mod lifecycle_cross_principal;
 mod mcp_tests;
 mod metrics;
+mod oauth2_refresh_rotation;
 mod oidc;
 mod permission_grants;
 mod phase2_tags_status;

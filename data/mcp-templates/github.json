@@ -3,7 +3,7 @@
   "name": "GitHub",
   "description": "Repositories, issues, PRs, and code search",
   "upstream_url": "https://api.githubcopilot.com/mcp",
-  "transport": "sse",
+  "transport": "http",
   "auth_method": "api_key",
   "credential_template_key": "github",
   "category": "developer-tools",

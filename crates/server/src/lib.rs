@@ -91,7 +91,17 @@ async fn install_sh_info(headers: HeaderMap) -> impl IntoResponse {
     let server_url = format!("http://{host}");
 
     let script = format!(
-        r#"#!/bin/bash
+        r#"#!/bin/sh
+# Re-exec under bash so users can `curl ... | sh` on systems where /bin/sh
+# is dash (Debian/Ubuntu). Everything below this guard is bash.
+if [ -z "${{BASH_VERSION:-}}" ]; then
+    if command -v bash >/dev/null 2>&1; then
+        exec bash -c "$(curl -fsSL {server_url}/install.sh)"
+    else
+        echo "agentcordon installer requires bash. Install bash and retry." >&2
+        exit 1
+    fi
+fi
 set -euo pipefail
 
 INSTALL_DIR="${{HOME}}/.local/bin"
