@@ -76,10 +76,7 @@ pub async fn run(
         // ambiguous credential names). Fall back to a generic message.
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_text) {
             if let Some(err) = parsed.get("error") {
-                let code = err
-                    .get("code")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("error");
+                let code = err.get("code").and_then(|c| c.as_str()).unwrap_or("error");
                 let message = err
                     .get("message")
                     .and_then(|m| m.as_str())
@@ -87,9 +84,7 @@ pub async fn run(
                 eprintln!("Error: {} ({})", message, code);
                 if let Some(candidates) = err.get("candidates").and_then(|c| c.as_array()) {
                     if !candidates.is_empty() {
-                        eprintln!(
-                            "\nHint: multiple credentials match. Use one of these IDs:"
-                        );
+                        eprintln!("\nHint: multiple credentials match. Use one of these IDs:");
                         for cand in candidates {
                             let name = cand
                                 .get("name")

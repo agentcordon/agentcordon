@@ -248,16 +248,8 @@ async fn test_mcp_sync_with_credentials_returns_envelopes() {
         "/api/v1/workspaces/mcp-servers?include_credentials=true&broker_public_key={}",
         broker_pub
     );
-    let (status, body) = common::send_json(
-        &ctx.app,
-        Method::GET,
-        &uri,
-        Some(&jwt),
-        None,
-        None,
-        None,
-    )
-    .await;
+    let (status, body) =
+        common::send_json(&ctx.app, Method::GET, &uri, Some(&jwt), None, None, None).await;
 
     assert_eq!(status, StatusCode::OK, "sync with creds: {}", body);
     let servers = body["data"]["servers"].as_array().expect("servers array");
@@ -306,7 +298,9 @@ async fn test_mcp_sync_with_credentials_returns_envelopes() {
 #[tokio::test]
 #[ignore = "requires Phase 4 sync endpoint extension (BE-1 in progress)"]
 async fn test_mcp_sync_envelope_is_decryptable() {
-    use agent_cordon_core::crypto::ecies::{CredentialEnvelopeDecryptor, EciesEncryptor, EncryptedEnvelope};
+    use agent_cordon_core::crypto::ecies::{
+        CredentialEnvelopeDecryptor, EciesEncryptor, EncryptedEnvelope,
+    };
 
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let ws = ctx.admin_agent.as_ref().unwrap();
@@ -331,16 +325,8 @@ async fn test_mcp_sync_envelope_is_decryptable() {
         "/api/v1/workspaces/mcp-servers?include_credentials=true&broker_public_key={}",
         broker_pub
     );
-    let (status, body) = common::send_json(
-        &ctx.app,
-        Method::GET,
-        &uri,
-        Some(&jwt),
-        None,
-        None,
-        None,
-    )
-    .await;
+    let (status, body) =
+        common::send_json(&ctx.app, Method::GET, &uri, Some(&jwt), None, None, None).await;
     assert_eq!(status, StatusCode::OK, "sync: {}", body);
 
     let servers = body["data"]["servers"].as_array().unwrap();
@@ -395,16 +381,8 @@ async fn test_mcp_sync_invalid_broker_key_rejected() {
     let jwt = common::ctx_admin_jwt(&ctx).await;
 
     let uri = "/api/v1/workspaces/mcp-servers?include_credentials=true&broker_public_key=AAAA";
-    let (status, body) = common::send_json(
-        &ctx.app,
-        Method::GET,
-        uri,
-        Some(&jwt),
-        None,
-        None,
-        None,
-    )
-    .await;
+    let (status, body) =
+        common::send_json(&ctx.app, Method::GET, uri, Some(&jwt), None, None, None).await;
 
     assert_eq!(
         status,
@@ -428,16 +406,8 @@ async fn test_mcp_sync_include_credentials_without_key_rejected() {
     let jwt = common::ctx_admin_jwt(&ctx).await;
 
     let uri = "/api/v1/workspaces/mcp-servers?include_credentials=true";
-    let (status, body) = common::send_json(
-        &ctx.app,
-        Method::GET,
-        uri,
-        Some(&jwt),
-        None,
-        None,
-        None,
-    )
-    .await;
+    let (status, body) =
+        common::send_json(&ctx.app, Method::GET, uri, Some(&jwt), None, None, None).await;
 
     assert_eq!(
         status,
@@ -470,16 +440,8 @@ async fn test_mcp_sync_no_envelopes_for_no_auth_servers() {
         "/api/v1/workspaces/mcp-servers?include_credentials=true&broker_public_key={}",
         broker_pub
     );
-    let (status, body) = common::send_json(
-        &ctx.app,
-        Method::GET,
-        &uri,
-        Some(&jwt),
-        None,
-        None,
-        None,
-    )
-    .await;
+    let (status, body) =
+        common::send_json(&ctx.app, Method::GET, &uri, Some(&jwt), None, None, None).await;
     assert_eq!(status, StatusCode::OK, "sync: {}", body);
 
     let servers = body["data"]["servers"].as_array().unwrap();
@@ -523,16 +485,8 @@ async fn test_mcp_sync_no_plaintext_secrets() {
         "/api/v1/workspaces/mcp-servers?include_credentials=true&broker_public_key={}",
         broker_pub
     );
-    let (status, body) = common::send_json(
-        &ctx.app,
-        Method::GET,
-        &uri,
-        Some(&jwt),
-        None,
-        None,
-        None,
-    )
-    .await;
+    let (status, body) =
+        common::send_json(&ctx.app, Method::GET, &uri, Some(&jwt), None, None, None).await;
     assert_eq!(status, StatusCode::OK);
 
     let body_str = serde_json::to_string(&body).unwrap();

@@ -81,7 +81,9 @@ mod tests {
     #[tokio::test]
     async fn test_cache_get_put() {
         let cache = DiscoveryCache::new();
-        cache.put("https://as.example.com".to_string(), sample_meta()).await;
+        cache
+            .put("https://as.example.com".to_string(), sample_meta())
+            .await;
         let got = cache.get("https://as.example.com").await.unwrap();
         assert_eq!(got.issuer, "https://as.example.com");
     }
@@ -106,7 +108,9 @@ mod tests {
     #[tokio::test]
     async fn test_cache_invalidate() {
         let cache = DiscoveryCache::new();
-        cache.put("https://as.example.com".to_string(), sample_meta()).await;
+        cache
+            .put("https://as.example.com".to_string(), sample_meta())
+            .await;
         cache.invalidate("https://as.example.com").await;
         assert!(cache.get("https://as.example.com").await.is_none());
     }

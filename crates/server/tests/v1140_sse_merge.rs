@@ -381,8 +381,8 @@ async fn test_rapid_grants_emit_individual_events() {
             required_credentials: None,
             auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
             template_key: None,
-        discovered_tools: None,
-        created_by_user: None,
+            discovered_tools: None,
+            created_by_user: None,
         };
         ctx.store.create_mcp_server(&mcp).await.unwrap();
         let server_id = mcp.id.0.to_string();

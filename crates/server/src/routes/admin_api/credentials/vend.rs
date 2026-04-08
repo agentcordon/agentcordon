@@ -158,15 +158,14 @@ async fn vend_inner(
     };
 
     // Decrypt (AES-GCM) → re-encrypt (ECIES) for the recipient device
-    let (envelope, vend_id) =
-        crate::crypto_helpers::reencrypt_credential_for_device_with_prefix(
-            state.encryptor.as_ref(),
-            cred,
-            &workspace.id.0.to_string(),
-            &ws_pub_bytes,
-            "vnd",
-        )
-        .await?;
+    let (envelope, vend_id) = crate::crypto_helpers::reencrypt_credential_for_device_with_prefix(
+        state.encryptor.as_ref(),
+        cred,
+        &workspace.id.0.to_string(),
+        &ws_pub_bytes,
+        "vnd",
+    )
+    .await?;
 
     // Domain audit: credential was vended — NEVER include credential secret values.
     // Include the policy reasoning so the audit UI can link to contributing policies.

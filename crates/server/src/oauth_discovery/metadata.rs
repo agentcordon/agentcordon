@@ -204,11 +204,9 @@ mod tests {
 
     #[test]
     fn test_validate_endpoint_origin_mismatch() {
-        let err = validate_endpoint_origin(
-            "https://example.com/resource",
-            "https://evil.com/token",
-        )
-        .unwrap_err();
+        let err =
+            validate_endpoint_origin("https://example.com/resource", "https://evil.com/token")
+                .unwrap_err();
         assert!(matches!(err, DiscoveryError::CrossOriginEndpoint { .. }));
     }
 }

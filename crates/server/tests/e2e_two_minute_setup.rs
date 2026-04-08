@@ -8,22 +8,12 @@
 
 use crate::common::*;
 
-use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::credential::CredentialId;
-use agent_cordon_core::domain::policy::{PolicyId, StoredPolicy};
 use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
-use agent_cordon_core::policy::PolicyEngine;
 
 use agent_cordon_server::test_helpers::TestAppBuilder;
-
-use base64::Engine;
-
-use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -75,99 +65,6 @@ async fn enroll_agent_via_device(
         .expect("create agent in DB");
 
     (agent_id.0.to_string(), String::new())
-}
-
-/// Issue a JWT for an agent bound to a device (API key exchange removed in v1.6.1).
-/// Returns (StatusCode::OK, json with access_token) to maintain test interface.
-async fn exchange_token_through_device(
-    state: &agent_cordon_server::state::AppState,
-    _device_key: &p256::ecdsa::SigningKey,
-    device_id: &str,
-    _api_key: &str,
-) -> (StatusCode, Value) {
-    let jwt = get_jwt_via_device(state, _device_key, device_id, _api_key).await;
-    (
-        StatusCode::OK,
-        json!({
-            "data": {
-                "access_token": jwt,
-                "token_type": "bearer"
-            }
-        }),
-    )
-}
-
-/// Call the vend endpoint and return (status, body).
-async fn vend_credential_raw(
-    state: &agent_cordon_server::state::AppState,
-    device_key: &p256::ecdsa::SigningKey,
-    device_id: &str,
-    agent_jwt: &str,
-    credential_id: &str,
-    correlation_id: Option<&str>,
-) -> (StatusCode, Value) {
-    let jti = Uuid::new_v4().to_string();
-    let device_jwt_token = sign_device_jwt(device_key, device_id, &jti);
-
-    let app = agent_cordon_server::build_router(state.clone());
-
-    let mut builder = axum::http::Request::builder()
-        .method(Method::POST)
-        .uri(format!("/api/v1/credentials/{}/vend", credential_id))
-        .header(
-            axum::http::header::AUTHORIZATION,
-            format!("Bearer {}", device_jwt_token),
-        )
-        .header("x-agent-jwt", agent_jwt)
-        .header(axum::http::header::CONTENT_TYPE, "application/json");
-
-    if let Some(corr) = correlation_id {
-        builder = builder.header("x-correlation-id", corr);
-    }
-
-    let request = builder.body(axum::body::Body::empty()).unwrap();
-    let response = tower::ServiceExt::oneshot(app, request).await.unwrap();
-    let status = response.status();
-    let bytes = http_body_util::BodyExt::collect(response.into_body())
-        .await
-        .unwrap()
-        .to_bytes();
-    let json: Value = serde_json::from_slice(&bytes).unwrap_or(json!(null));
-    (status, json)
-}
-
-/// Create a credential via admin API, returns credential_id.
-async fn create_credential_via_api(
-    state: &agent_cordon_server::state::AppState,
-    cookie: &str,
-    csrf: &str,
-    name: &str,
-    service: &str,
-    secret: &str,
-) -> String {
-    let app = agent_cordon_server::build_router(state.clone());
-    let (status, body) = send_json(
-        &app,
-        Method::POST,
-        "/api/v1/credentials",
-        None,
-        Some(cookie),
-        Some(csrf),
-        Some(json!({
-            "name": name,
-            "service": service,
-            "secret_value": secret,
-        })),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "create credential '{}': {}",
-        name,
-        body
-    );
-    body["data"]["id"].as_str().unwrap().to_string()
 }
 
 // ===========================================================================

@@ -20,8 +20,12 @@ use manage::{delete_credential, get_credential, get_credential_by_name, update_c
 use vend::{reveal_credential, vend_credential, vend_credential_to_device};
 
 /// Known credential types. Unknown types are rejected at creation time.
-pub(crate) const KNOWN_CREDENTIAL_TYPES: &[&str] =
-    &["generic", "aws", "oauth2_client_credentials", "oauth2_user_authorization"];
+pub(crate) const KNOWN_CREDENTIAL_TYPES: &[&str] = &[
+    "generic",
+    "aws",
+    "oauth2_client_credentials",
+    "oauth2_user_authorization",
+];
 
 pub fn routes() -> Router<AppState> {
     Router::new()

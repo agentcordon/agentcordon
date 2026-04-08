@@ -16,13 +16,13 @@ use agent_cordon_core::domain::credential::CredentialId;
 use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::workspace::WorkspaceId;
 
-use agent_cordon_core::crypto::SecretEncryptor;
 use crate::credential_service::{self, NewCredentialParams};
 use crate::events::UiEvent;
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
 use crate::state::AppState;
+use agent_cordon_core::crypto::SecretEncryptor;
 
 use super::{check_manage_mcp_servers, McpServerResponse};
 
@@ -55,10 +55,7 @@ pub(crate) async fn provision_from_catalog(
         .iter()
         .find(|t| t.key == req.template_key)
         .ok_or_else(|| {
-            ApiError::NotFound(format!(
-                "MCP template '{}' not found",
-                req.template_key
-            ))
+            ApiError::NotFound(format!("MCP template '{}' not found", req.template_key))
         })?
         .clone();
 
@@ -71,10 +68,7 @@ pub(crate) async fn provision_from_catalog(
         .ok_or_else(|| ApiError::NotFound("workspace not found".to_string()))?;
 
     // 4. Check for duplicate: user already has server with this template_key
-    let user_servers = state
-        .store
-        .list_mcp_servers_by_user(&auth.user.id)
-        .await?;
+    let user_servers = state.store.list_mcp_servers_by_user(&auth.user.id).await?;
     if user_servers
         .iter()
         .any(|s| s.template_key.as_deref() == Some(&req.template_key))
@@ -146,11 +140,7 @@ pub(crate) async fn provision_from_catalog(
                 },
             )?;
             state.store.store_credential(&cred).await?;
-            credential_service::emit_credential_created(
-                &state,
-                cred.id.0,
-                cred_name,
-            );
+            credential_service::emit_credential_created(&state, cred.id.0, cred_name);
             Some(cred.id)
         }
         (None, None) => {
@@ -224,7 +214,9 @@ pub(crate) async fn provision_from_catalog(
     // upstream not reachable) are non-fatal: the user may be installing for a
     // server they'll bring online later.
     let provided_credential = discovery_secret.is_some();
-    match super::discover::attempt_tool_discovery(&state, &server, discovery_secret.as_deref()).await {
+    match super::discover::attempt_tool_discovery(&state, &server, discovery_secret.as_deref())
+        .await
+    {
         Ok(tools) if !tools.is_empty() => {
             let mut updated = server.clone();
             updated.allowed_tools = Some(tools.iter().map(|t| t.name.clone()).collect());

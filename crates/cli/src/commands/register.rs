@@ -144,9 +144,7 @@ pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(
                     // until the 5-minute polling timeout. Any other 401
                     // (e.g. `reregistration_required`) just means the
                     // callback hasn't fired yet — keep polling.
-                    if let Ok(parsed) =
-                        serde_json::from_str::<serde_json::Value>(&body)
-                    {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
                         let code = parsed
                             .get("error")
                             .and_then(|e| e.get("code"))

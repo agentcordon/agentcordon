@@ -119,9 +119,7 @@ impl McpOAuthStore for SqliteStore {
 }
 
 /// Convert a SQLite row to an `McpOAuthState`.
-fn row_to_mcp_oauth_state(
-    row: &rusqlite::Row<'_>,
-) -> Result<McpOAuthState, rusqlite::Error> {
+fn row_to_mcp_oauth_state(row: &rusqlite::Row<'_>) -> Result<McpOAuthState, rusqlite::Error> {
     let state: String = row.get(0)?;
     let template_key: String = row.get(1)?;
     let workspace_id_str: String = row.get(2)?;
@@ -141,20 +139,12 @@ fn row_to_mcp_oauth_state(
     let created_at = DateTime::parse_from_rfc3339(&created_at_str)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                6,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
         })?;
     let expires_at = DateTime::parse_from_rfc3339(&expires_at_str)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                7,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
         })?;
 
     Ok(McpOAuthState {

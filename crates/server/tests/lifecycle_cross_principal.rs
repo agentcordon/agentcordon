@@ -16,7 +16,6 @@ use agent_cordon_core::crypto::SecretEncryptor;
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
 type Agent = Workspace;
 use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
-use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::storage::Store;
 
 use agent_cordon_server::test_helpers::TestAppBuilder;
@@ -24,8 +23,6 @@ use agent_cordon_server::test_helpers::TestAppBuilder;
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
-
-const TEST_PASSWORD: &str = "strong-test-password-123!";
 
 async fn create_agent(
     store: &(dyn Store + Send + Sync),

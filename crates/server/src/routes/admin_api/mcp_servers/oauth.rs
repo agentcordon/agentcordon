@@ -32,7 +32,10 @@ use super::oauth_token::{exchange_code_for_tokens, generate_pkce, generate_state
 
 /// Map a `DiscoveryError` from `ensure_provider_client` into an `ApiError`
 /// suitable for returning to admins via the initiate endpoint.
-fn map_discovery_error(template: &crate::routes::admin_api::mcp_templates::McpServerTemplate, e: DiscoveryError) -> ApiError {
+fn map_discovery_error(
+    template: &crate::routes::admin_api::mcp_templates::McpServerTemplate,
+    e: DiscoveryError,
+) -> ApiError {
     match e {
         DiscoveryError::NoDcrSupport => ApiError::BadRequest(format!(
             "Provider '{}' does not support Dynamic Client Registration. \
@@ -89,8 +92,7 @@ pub(crate) async fn initiate_oauth(
     // Resolve OAuth provider client via discovery (RFC 9728 + 8414 + 7591).
     // If a row already exists for the discovered authorization server (manual or
     // DCR), it is reused. Otherwise we attempt DCR.
-    let oauth_app = match crate::oauth_discovery::ensure_provider_client(&state, &template).await
-    {
+    let oauth_app = match crate::oauth_discovery::ensure_provider_client(&state, &template).await {
         Ok(app) => app,
         Err(e) => {
             // Emit discovery-failure audit event (sink: audit log)
@@ -305,10 +307,9 @@ async fn oauth_callback(
         oauth_app.encrypted_client_secret.as_ref(),
         oauth_app.nonce.as_ref(),
     ) {
-        let bytes =
-            state
-                .encryptor
-                .decrypt(enc, nonce, oauth_app.id.0.to_string().as_bytes())?;
+        let bytes = state
+            .encryptor
+            .decrypt(enc, nonce, oauth_app.id.0.to_string().as_bytes())?;
         Some(String::from_utf8(bytes).map_err(|_| {
             ApiError::Internal("oauth provider client_secret is not valid UTF-8".to_string())
         })?)
@@ -383,10 +384,7 @@ async fn oauth_callback(
     // Fix #1: Reuse an existing MCP server for this (user, template) pair if
     // present. The server stays bound to its original workspace_id; Cedar's
     // same-owner default policy makes it usable from the new workspace too.
-    let user_servers = state
-        .store
-        .list_mcp_servers_by_user(&auth.user.id)
-        .await?;
+    let user_servers = state.store.list_mcp_servers_by_user(&auth.user.id).await?;
     let existing_server = user_servers
         .into_iter()
         .find(|s| s.template_key.as_deref() == Some(template.key.as_str()));
@@ -400,7 +398,12 @@ async fn oauth_callback(
         );
         (s, true)
     } else {
-        let s = create_mcp_server(&template, &mcp_state.workspace_id, &cred_id, &mcp_state.user_id);
+        let s = create_mcp_server(
+            &template,
+            &mcp_state.workspace_id,
+            &cred_id,
+            &mcp_state.user_id,
+        );
         state.store.create_mcp_server(&s).await?;
         (s, false)
     };

@@ -155,9 +155,19 @@ pub async fn list_servers(
     State(state): State<SharedState>,
     request: axum::extract::Request,
 ) -> impl IntoResponse {
-    let auth = match request.extensions().get::<AuthenticatedWorkspace>().cloned() {
+    let auth = match request
+        .extensions()
+        .get::<AuthenticatedWorkspace>()
+        .cloned()
+    {
         Some(a) => a,
-        None => return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "missing workspace authentication"),
+        None => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "missing workspace authentication",
+            )
+        }
     };
 
     if let Err(e) = require_scope(&state, &auth.pk_hash, "mcp:discover", "mcp.list_servers").await {
@@ -182,9 +192,19 @@ pub async fn list_tools(
     State(state): State<SharedState>,
     request: axum::extract::Request,
 ) -> impl IntoResponse {
-    let auth = match request.extensions().get::<AuthenticatedWorkspace>().cloned() {
+    let auth = match request
+        .extensions()
+        .get::<AuthenticatedWorkspace>()
+        .cloned()
+    {
         Some(a) => a,
-        None => return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "missing workspace authentication"),
+        None => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "missing workspace authentication",
+            )
+        }
     };
 
     if let Err(e) = require_scope(&state, &auth.pk_hash, "mcp:discover", "mcp.list_tools").await {
@@ -193,15 +213,16 @@ pub async fn list_tools(
 
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
 
-    let mut all_tools: Vec<crate::server_client::McpToolSummary> = match with_token_refresh(&state, &auth.pk_hash, |token| {
-        let sc = server_client.clone();
-        async move { sc.list_mcp_tools(&token).await }
-    })
-    .await
-    {
-        Ok(tools) => tools,
-        Err(e) => return e,
-    };
+    let mut all_tools: Vec<crate::server_client::McpToolSummary> =
+        match with_token_refresh(&state, &auth.pk_hash, |token| {
+            let sc = server_client.clone();
+            async move { sc.list_mcp_tools(&token).await }
+        })
+        .await
+        {
+            Ok(tools) => tools,
+            Err(e) => return e,
+        };
 
     // Live discovery: for servers with empty tools but cached credentials,
     // call tools/list on the upstream with auth injection. This handles servers
@@ -284,8 +305,14 @@ pub async fn list_tools(
             .and_then(|t| t.as_array())
         {
             for tool in tools {
-                let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or_default();
-                let description = tool.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+                let name = tool
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default();
+                let description = tool
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .map(|s| s.to_string());
                 let input_schema = tool.get("inputSchema").cloned();
                 all_tools.push(crate::server_client::McpToolSummary {
                     server: server_name.clone(),
@@ -312,9 +339,19 @@ pub async fn call_tool(
     State(state): State<SharedState>,
     request: axum::extract::Request,
 ) -> impl IntoResponse {
-    let auth = match request.extensions().get::<AuthenticatedWorkspace>().cloned() {
+    let auth = match request
+        .extensions()
+        .get::<AuthenticatedWorkspace>()
+        .cloned()
+    {
         Some(a) => a,
-        None => return error_response(StatusCode::UNAUTHORIZED, "unauthorized", "missing workspace authentication"),
+        None => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "missing workspace authentication",
+            )
+        }
     };
 
     // Read body
@@ -400,8 +437,7 @@ pub async fn call_tool(
             .map(|s| s.auth_method.clone())
     };
     let needs_sync = mcp_url.is_none()
-        || (cached_credential.is_none()
-            && cached_auth_method.as_deref() != Some("none"));
+        || (cached_credential.is_none() && cached_auth_method.as_deref() != Some("none"));
     let (mcp_url, cached_credential) = if needs_sync {
         tracing::info!(
             server = %server_name,
@@ -416,7 +452,11 @@ pub async fn call_tool(
         let configs = state.mcp_configs.read().await;
         if let Some(servers) = configs.get(&auth.pk_hash) {
             if let Some(cached) = servers.iter().find(|s| s.name == server_name) {
-                let url = if cached.url.is_empty() { None } else { Some(cached.url.clone()) };
+                let url = if cached.url.is_empty() {
+                    None
+                } else {
+                    Some(cached.url.clone())
+                };
                 tracing::info!(
                     server = %server_name,
                     has_url_after = url.is_some(),
@@ -447,7 +487,10 @@ pub async fn call_tool(
             return error_response(
                 StatusCode::NOT_FOUND,
                 "not_found",
-                &format!("MCP server '{}' not found or has no URL configured", server_name),
+                &format!(
+                    "MCP server '{}' not found or has no URL configured",
+                    server_name
+                ),
             );
         }
     };
@@ -482,54 +525,54 @@ pub async fn call_tool(
     if let Some(ref cred) = cached_credential {
         // Resolve credential value (exchanges refresh token for access token if OAuth2 authz code)
         if let Some(effective_value) = resolve_credential_value(&state, &server_name, cred).await {
-        let material = CredentialMaterial {
-            credential_type: Some(cred.credential_type.clone()),
-            value: effective_value,
-            username: None,
-            metadata: cred.metadata.clone(),
-        };
-        match credential_transform::apply(
-            &material,
-            cred.transform_name.as_deref(),
-            "POST",
-            &mcp_url,
-            &HashMap::new(),
-            None,
-        ) {
-            Ok(transformed) => {
-                for (k, v) in &transformed.headers {
-                    req_builder = req_builder.header(k, v);
-                }
-                // Query params are not directly injectable on reqwest builder
-                // after URL construction, but MCP servers typically use header auth.
-                if !transformed.query_params.is_empty() {
-                    let mut url_with_params = match reqwest::Url::parse(&mcp_url) {
-                        Ok(u) => u,
-                        Err(e) => {
-                            return error_response(
-                                StatusCode::BAD_GATEWAY,
-                                "bad_gateway",
-                                &format!("invalid MCP server URL '{}': {}", server_name, e),
-                            );
-                        }
-                    };
-                    for (k, v) in &transformed.query_params {
-                        url_with_params.query_pairs_mut().append_pair(k, v);
-                    }
-                    req_builder = state
-                        .http_client
-                        .post(url_with_params)
-                        .header("Content-Type", "application/json");
-                    // Re-add credential headers
+            let material = CredentialMaterial {
+                credential_type: Some(cred.credential_type.clone()),
+                value: effective_value,
+                username: None,
+                metadata: cred.metadata.clone(),
+            };
+            match credential_transform::apply(
+                &material,
+                cred.transform_name.as_deref(),
+                "POST",
+                &mcp_url,
+                &HashMap::new(),
+                None,
+            ) {
+                Ok(transformed) => {
                     for (k, v) in &transformed.headers {
                         req_builder = req_builder.header(k, v);
                     }
+                    // Query params are not directly injectable on reqwest builder
+                    // after URL construction, but MCP servers typically use header auth.
+                    if !transformed.query_params.is_empty() {
+                        let mut url_with_params = match reqwest::Url::parse(&mcp_url) {
+                            Ok(u) => u,
+                            Err(e) => {
+                                return error_response(
+                                    StatusCode::BAD_GATEWAY,
+                                    "bad_gateway",
+                                    &format!("invalid MCP server URL '{}': {}", server_name, e),
+                                );
+                            }
+                        };
+                        for (k, v) in &transformed.query_params {
+                            url_with_params.query_pairs_mut().append_pair(k, v);
+                        }
+                        req_builder = state
+                            .http_client
+                            .post(url_with_params)
+                            .header("Content-Type", "application/json");
+                        // Re-add credential headers
+                        for (k, v) in &transformed.headers {
+                            req_builder = req_builder.header(k, v);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, server = %server_name, "credential transform failed, proceeding without injection");
                 }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, server = %server_name, "credential transform failed, proceeding without injection");
-            }
-        }
         } // if let Some(effective_value)
     }
 
@@ -621,4 +664,3 @@ pub async fn call_tool(
         })),
     )
 }
-

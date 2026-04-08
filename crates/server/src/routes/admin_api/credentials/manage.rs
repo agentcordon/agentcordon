@@ -243,10 +243,7 @@ pub(crate) async fn get_credential_by_name(
     actor: AuthenticatedActor,
     Path(name): Path<String>,
 ) -> Result<Json<ApiResponse<CredentialSummary>>, ApiError> {
-    let name_matches = state
-        .store
-        .list_stored_credentials_by_name(&name)
-        .await?;
+    let name_matches = state.store.list_stored_credentials_by_name(&name).await?;
 
     let mut authorized: Vec<agent_cordon_core::domain::credential::StoredCredential> = Vec::new();
     for cred in &name_matches {

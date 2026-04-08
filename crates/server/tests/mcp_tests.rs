@@ -605,7 +605,11 @@ async fn test_cedar_mcp_list_tools_enabled_agent_allowed() {
         .with_agent("enabled-bot", &["worker"])
         .build()
         .await;
-    let mut agent = ctx.agents.get("enabled-bot").expect("enabled agent").clone();
+    let mut agent = ctx
+        .agents
+        .get("enabled-bot")
+        .expect("enabled agent")
+        .clone();
     let owner_id = UserId(Uuid::new_v4());
     agent.owner_id = Some(owner_id.clone());
 

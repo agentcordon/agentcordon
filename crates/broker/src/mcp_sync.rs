@@ -21,8 +21,7 @@ use crate::vend::decrypt_vend_envelope;
 pub fn spawn_mcp_sync_task(state: SharedState) -> tokio::task::JoinHandle<()> {
     let interval_secs = state.config.mcp_sync_interval;
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
         loop {
             interval.tick().await;
             sync_all_workspaces(&state).await;

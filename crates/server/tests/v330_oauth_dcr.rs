@@ -144,8 +144,7 @@ impl MockAuthServer {
                 "grant_types_supported": ["authorization_code", "refresh_token"],
             });
             if !behavior.no_registration_endpoint {
-                metadata["registration_endpoint"] =
-                    json!(format!("{}/register", issuer));
+                metadata["registration_endpoint"] = json!(format!("{}/register", issuer));
             }
 
             let mut tmpl = ResponseTemplate::new(200)
@@ -175,8 +174,7 @@ impl MockAuthServer {
             }
             impl Respond for DcrResponder {
                 fn respond(&self, req: &Request) -> ResponseTemplate {
-                    let body: Value =
-                        serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+                    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
                     self.captured.lock().unwrap().push(body);
                     let mut resp = json!({
                         "client_id": "dcr-client-123",
@@ -375,8 +373,11 @@ async fn test_dcr_first_register() {
 
     // Body had the RFC 7591 fields
     let reg = mock.last_register_body().expect("register body captured");
-    assert_eq!(reg["client_name"].as_str().is_some(), true);
-    assert!(reg["redirect_uris"].is_array(), "redirect_uris must be array");
+    assert!(reg["client_name"].as_str().is_some());
+    assert!(
+        reg["redirect_uris"].is_array(),
+        "redirect_uris must be array"
+    );
     let redirects = reg["redirect_uris"].as_array().unwrap();
     assert!(
         redirects
@@ -675,7 +676,9 @@ async fn test_dcr_cross_origin_endpoint_rejected() {
     let (_, list) = list_provider_clients(&ctx, &cookie).await;
     let items = list["data"].as_array().or_else(|| list.as_array()).unwrap();
     assert!(
-        !items.iter().any(|r| r["client_id"].as_str() == Some("dcr-client-123")),
+        !items
+            .iter()
+            .any(|r| r["client_id"].as_str() == Some("dcr-client-123")),
         "no row should be stored on cross-origin rejection"
     );
 }
@@ -778,8 +781,7 @@ async fn test_provider_client_crud_rename() {
         UserRole::Admin,
     )
     .await;
-    let cookie =
-        common::login_user_combined(&ctx.app, "rename-user", common::TEST_PASSWORD).await;
+    let cookie = common::login_user_combined(&ctx.app, "rename-user", common::TEST_PASSWORD).await;
 
     // Old path is gone (404, not just disabled).
     let (old_status, _) = common::send_json_auto_csrf(
@@ -873,11 +875,7 @@ async fn test_reregister_dcr_row() {
         None,
     )
     .await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "reregister failed: {status} {body}"
-    );
+    assert_eq!(status, StatusCode::OK, "reregister failed: {status} {body}");
     assert_eq!(
         mock.register_call_count(),
         calls_before + 1,
@@ -886,7 +884,10 @@ async fn test_reregister_dcr_row() {
 
     // Row id is stable.
     let (_, list2) = list_provider_clients(&ctx, &cookie).await;
-    let items2 = list2["data"].as_array().or_else(|| list2.as_array()).unwrap();
+    let items2 = list2["data"]
+        .as_array()
+        .or_else(|| list2.as_array())
+        .unwrap();
     assert!(
         items2.iter().any(|r| r["id"].as_str() == Some(&id)),
         "row id must be stable across reregister"

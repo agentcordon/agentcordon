@@ -29,9 +29,10 @@ impl SqliteStore {
             let ids: Vec<String> = r.iter().map(|c| c.0.to_string()).collect();
             serde_json::to_string(&ids).unwrap_or_default()
         });
-        let discovered_tools_json = server.discovered_tools.as_ref().map(|dt| {
-            serde_json::to_string(dt).unwrap_or_default()
-        });
+        let discovered_tools_json = server
+            .discovered_tools
+            .as_ref()
+            .map(|dt| serde_json::to_string(dt).unwrap_or_default());
         let created_by_str = server.created_by.as_ref().map(|w| w.0.to_string());
         let created_by_user_str = server.created_by_user.as_ref().map(|u| u.0.to_string());
         let workspace_id_str = server.workspace_id.0.to_string();
@@ -216,9 +217,10 @@ impl SqliteStore {
             let ids: Vec<String> = r.iter().map(|c| c.0.to_string()).collect();
             serde_json::to_string(&ids).unwrap_or_default()
         });
-        let discovered_tools_json = server.discovered_tools.as_ref().map(|dt| {
-            serde_json::to_string(dt).unwrap_or_default()
-        });
+        let discovered_tools_json = server
+            .discovered_tools
+            .as_ref()
+            .map(|dt| serde_json::to_string(dt).unwrap_or_default());
         let workspace_id_str = server.workspace_id.0.to_string();
         let created_by_user_str = server.created_by_user.as_ref().map(|u| u.0.to_string());
         self.conn()

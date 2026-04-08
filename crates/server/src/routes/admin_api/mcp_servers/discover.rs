@@ -213,7 +213,11 @@ async fn send_mcp_request(
         let body_text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
         body_text
             .lines()
-            .filter_map(|line| line.trim().strip_prefix("data:").map(|d| d.trim().to_string()))
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix("data:")
+                    .map(|d| d.trim().to_string())
+            })
             .filter(|d| !d.is_empty())
             .find_map(|d| {
                 serde_json::from_str::<serde_json::Value>(&d)
@@ -278,11 +282,7 @@ fn generate_cedar_policy(tag: &str, tool_name: &str, server_id: &str) -> Result<
         )));
     }
     // server_id is a UUID string — validate it contains only hex digits and hyphens
-    if server_id.is_empty()
-        || !server_id
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() || c == '-')
-    {
+    if server_id.is_empty() || !server_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         return Err(ApiError::BadRequest(format!(
             "unsafe server_id value for Cedar policy generation: '{}'",
             server_id

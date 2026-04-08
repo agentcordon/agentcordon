@@ -36,10 +36,7 @@ fn opt_dt_to_string(dt: Option<DateTime<Utc>>) -> Option<String> {
     dt.map(|d| d.to_rfc3339())
 }
 
-fn parse_opt_dt(
-    s: Option<String>,
-    col: usize,
-) -> Result<Option<DateTime<Utc>>, rusqlite::Error> {
+fn parse_opt_dt(s: Option<String>, col: usize) -> Result<Option<DateTime<Utc>>, rusqlite::Error> {
     match s {
         None => Ok(None),
         Some(s) => DateTime::parse_from_rfc3339(&s)
@@ -154,9 +151,8 @@ impl SqliteStore {
     pub(crate) async fn list_oauth_provider_clients(
         &self,
     ) -> Result<Vec<OAuthProviderClientSummary>, StoreError> {
-        let sql = format!(
-            "SELECT {SUMMARY_COLUMNS} FROM oauth_provider_clients ORDER BY label ASC"
-        );
+        let sql =
+            format!("SELECT {SUMMARY_COLUMNS} FROM oauth_provider_clients ORDER BY label ASC");
         self.conn()
             .call(move |conn| {
                 let mut stmt = conn

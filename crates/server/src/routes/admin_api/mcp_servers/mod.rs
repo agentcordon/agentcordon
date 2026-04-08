@@ -32,10 +32,7 @@ pub fn routes() -> Router<AppState> {
             "/mcp-servers/provision",
             post(provision::provision_from_catalog),
         )
-        .route(
-            "/mcp-servers/oauth/initiate",
-            post(oauth::initiate_oauth),
-        )
+        .route("/mcp-servers/oauth/initiate", post(oauth::initiate_oauth))
         .route(
             "/mcp-servers/oauth/callback",
             get(oauth::oauth_callback_wrapper),

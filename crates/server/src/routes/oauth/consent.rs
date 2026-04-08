@@ -83,7 +83,10 @@ pub(crate) async fn authorize_post(
                 urlencoding::encode(&form.state),
             );
             if !form.client_id.is_empty() {
-                qs.push_str(&format!("&client_id={}", urlencoding::encode(&form.client_id)));
+                qs.push_str(&format!(
+                    "&client_id={}",
+                    urlencoding::encode(&form.client_id)
+                ));
             }
             if !form.public_key_hash.is_empty() {
                 qs.push_str(&format!(
@@ -166,7 +169,9 @@ pub(crate) async fn authorize_post(
                         urlencoding::encode(&err_desc),
                         urlencoding::encode(&form.state),
                     );
-                    return Ok((StatusCode::FOUND, [("Location", redirect.as_str())]).into_response());
+                    return Ok(
+                        (StatusCode::FOUND, [("Location", redirect.as_str())]).into_response()
+                    );
                 }
                 // Fallback: render an HTML error page so the browser doesn't show raw JSON.
                 let html = format!(

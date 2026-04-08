@@ -66,10 +66,9 @@ async fn main() {
             config.credential_templates_dir.as_deref(),
         );
 
-    let mcp_templates =
-        agent_cordon_server::routes::admin_api::mcp_templates::load_mcp_templates(
-            config.mcp_templates_dir.as_deref(),
-        );
+    let mcp_templates = agent_cordon_server::routes::admin_api::mcp_templates::load_mcp_templates(
+        config.mcp_templates_dir.as_deref(),
+    );
 
     let policy_templates = agent_cordon_server::routes::admin_api::policy_templates::load_templates(
         config.policy_templates_dir.as_deref(),

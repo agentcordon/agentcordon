@@ -124,7 +124,8 @@ pub const CREDENTIAL_COLUMNS: &str = "id, name, service, encrypted_value, nonce,
 pub const CREDENTIAL_SUMMARY_COLUMNS: &str = "id, name, service, scopes, metadata, created_by, created_at, allowed_url_pattern, created_by_user, expires_at, transform_script, transform_name, vault, credential_type, tags, description, target_identity";
 
 /// Columns for the `users` table (SELECT).
-pub const USER_COLUMNS: &str = "id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at";
+pub const USER_COLUMNS: &str =
+    "id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at";
 
 /// Columns for the `policies` table (SELECT).
 pub const POLICY_COLUMNS: &str =

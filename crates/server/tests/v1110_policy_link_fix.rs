@@ -5,8 +5,8 @@
 //!
 //! Feature 2: `/security?search=X` pre-filters policies on page load.
 
-use agent_cordon_core::domain::mcp::McpTransport;
 use crate::common;
+use agent_cordon_core::domain::mcp::McpTransport;
 
 use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_server::test_helpers::TestAppBuilder;

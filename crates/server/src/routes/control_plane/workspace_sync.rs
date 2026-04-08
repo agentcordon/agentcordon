@@ -216,13 +216,7 @@ pub(super) async fn sync_mcp_servers(
     for s in servers {
         let credential_envelopes = if let Some(ref pub_bytes) = broker_pub_bytes {
             // Encrypt each required credential for the broker
-            let envelopes = encrypt_server_credentials(
-                &state,
-                &workspace,
-                &s,
-                pub_bytes,
-            )
-            .await?;
+            let envelopes = encrypt_server_credentials(&state, &workspace, &s, pub_bytes).await?;
             if envelopes.is_empty() {
                 None
             } else {
@@ -309,10 +303,18 @@ async fn encrypt_server_credentials(
         // metadata inside the ECIES envelope so the broker can refresh tokens.
         let (envelope, _vend_id) = if cred.credential_type == "oauth2_user_authorization" {
             let mut meta = std::collections::HashMap::new();
-            if let Some(token_url) = cred.metadata.get("oauth2_token_url").and_then(|v| v.as_str()) {
+            if let Some(token_url) = cred
+                .metadata
+                .get("oauth2_token_url")
+                .and_then(|v| v.as_str())
+            {
                 meta.insert("oauth2_token_url".to_string(), token_url.to_string());
             }
-            if let Some(cid) = cred.metadata.get("oauth2_client_id").and_then(|v| v.as_str()) {
+            if let Some(cid) = cred
+                .metadata
+                .get("oauth2_client_id")
+                .and_then(|v| v.as_str())
+            {
                 meta.insert("oauth2_client_id".to_string(), cid.to_string());
             }
             // Include client_secret from the OAuth provider client row that
@@ -335,17 +337,13 @@ async fn encrypt_server_credentials(
                     {
                         let enc = app.encrypted_client_secret.as_ref().unwrap();
                         let n = app.nonce.as_ref().unwrap();
-                        match state.encryptor.decrypt(
-                            enc,
-                            n,
-                            app.id.0.to_string().as_bytes(),
-                        ) {
+                        match state
+                            .encryptor
+                            .decrypt(enc, n, app.id.0.to_string().as_bytes())
+                        {
                             Ok(secret_bytes) => {
                                 if let Ok(secret) = String::from_utf8(secret_bytes) {
-                                    meta.insert(
-                                        "oauth2_client_secret".to_string(),
-                                        secret,
-                                    );
+                                    meta.insert("oauth2_client_secret".to_string(), secret);
                                 }
                             }
                             Err(e) => {
@@ -499,7 +497,9 @@ pub(super) async fn report_tools(
     let all_servers = state.store.list_mcp_servers().await?;
     let server = all_servers
         .into_iter()
-        .find(|s| s.name == req.server_name && s.enabled && s.workspace_id == workspace.workspace.id)
+        .find(|s| {
+            s.name == req.server_name && s.enabled && s.workspace_id == workspace.workspace.id
+        })
         .ok_or_else(|| ApiError::NotFound(format!("MCP server '{}' not found", req.server_name)))?;
 
     let tool_names: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();

@@ -108,16 +108,15 @@ pub async fn ensure_provider_client(
             (None, None)
         };
 
-    let (rat_enc, rat_nonce) =
-        if let Some(rat) = dcr_resp.registration_access_token.as_deref() {
-            let (enc, nonce) = state
-                .encryptor
-                .encrypt(rat.as_bytes(), aad_bytes)
-                .map_err(|e| DiscoveryError::RequestFailed(format!("encryption: {e}")))?;
-            (Some(enc), Some(nonce))
-        } else {
-            (None, None)
-        };
+    let (rat_enc, rat_nonce) = if let Some(rat) = dcr_resp.registration_access_token.as_deref() {
+        let (enc, nonce) = state
+            .encryptor
+            .encrypt(rat.as_bytes(), aad_bytes)
+            .map_err(|e| DiscoveryError::RequestFailed(format!("encryption: {e}")))?;
+        (Some(enc), Some(nonce))
+    } else {
+        (None, None)
+    };
 
     let now = chrono::Utc::now();
     let client = OAuthProviderClient {
@@ -128,7 +127,9 @@ pub async fn ensure_provider_client(
         token_endpoint: as_meta.token_endpoint.clone(),
         registration_endpoint: as_meta.registration_endpoint.clone(),
         code_challenge_methods_supported: as_meta.code_challenge_methods_supported.clone(),
-        token_endpoint_auth_methods_supported: as_meta.token_endpoint_auth_methods_supported.clone(),
+        token_endpoint_auth_methods_supported: as_meta
+            .token_endpoint_auth_methods_supported
+            .clone(),
         scopes_supported: as_meta.scopes_supported.clone(),
         client_id: dcr_resp.client_id.clone(),
         encrypted_client_secret,

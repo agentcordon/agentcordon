@@ -397,7 +397,7 @@ mod rsop_ui {
             required_credentials: None,
             auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
             template_key: None,
-        discovered_tools: None,
+            discovered_tools: None,
             created_by_user: None,
         };
         store

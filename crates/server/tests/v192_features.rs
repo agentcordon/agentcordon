@@ -99,73 +99,6 @@ mod loading_states {
 
 mod device_agents {
     //! Integration tests — v1.9.2 Feature 13: Device Detail Shows Enrolled Agents.
-    //!
-    //! Verifies that the agents API is filterable by device_id and that the
-    //! device detail page has an "Enrolled Agents" section.
-
-    use crate::common;
-
-    use agent_cordon_core::domain::user::UserRole;
-    use agent_cordon_server::test_helpers::TestAppBuilder;
-    use axum::body::Body;
-    use axum::http::{header, Method, Request, StatusCode};
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-
-    // ---------------------------------------------------------------------------
-    // Helpers
-    // ---------------------------------------------------------------------------
-
-    async fn setup() -> (agent_cordon_server::test_helpers::TestContext, String) {
-        let ctx = TestAppBuilder::new()
-            .with_admin()
-            .with_agent("device-agent-1", &["user"])
-            .with_agent("device-agent-2", &["user"])
-            .build()
-            .await;
-        let _user = common::create_test_user(
-            &*ctx.store,
-            "device-agents-user",
-            common::TEST_PASSWORD,
-            UserRole::Admin,
-        )
-        .await;
-        let cookie =
-            common::login_user_combined(&ctx.app, "device-agents-user", common::TEST_PASSWORD)
-                .await;
-        (ctx, cookie)
-    }
-
-    async fn get_html(app: &axum::Router, uri: &str, cookie: &str) -> (StatusCode, String) {
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri(uri)
-                    .header(header::COOKIE, cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        let status = resp.status();
-        let body = String::from_utf8(
-            resp.into_body()
-                .collect()
-                .await
-                .unwrap()
-                .to_bytes()
-                .to_vec(),
-        )
-        .unwrap();
-        (status, body)
-    }
-
-    // ===========================================================================
-    // 13A. Happy Path
-    // ===========================================================================
 }
 
 mod mcp_tools_display {
@@ -221,7 +154,7 @@ mod mcp_tools_display {
             required_credentials: None,
             auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::default(),
             template_key: None,
-        discovered_tools: None,
+            discovered_tools: None,
             created_by_user: None,
         };
         store

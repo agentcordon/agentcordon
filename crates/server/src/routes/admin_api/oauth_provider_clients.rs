@@ -25,7 +25,10 @@ use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/oauth-provider-clients", post(create_client).get(list_clients))
+        .route(
+            "/oauth-provider-clients",
+            post(create_client).get(list_clients),
+        )
         .route(
             "/oauth-provider-clients/{id}",
             get(get_client).put(update_client).delete(delete_client),
@@ -469,21 +472,23 @@ async fn reregister_client(
         Some(existing.requested_scopes.as_str())
     };
 
-    let dcr_resp = crate::oauth_discovery::register_client(&as_meta, &redirect_uri, &client_name, scopes)
-        .await
-        .map_err(|e| ApiError::BadRequest(format!("DCR re-registration failed: {e}")))?;
+    let dcr_resp =
+        crate::oauth_discovery::register_client(&as_meta, &redirect_uri, &client_name, scopes)
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("DCR re-registration failed: {e}")))?;
 
     // Build the updated row, keeping the same id.
     let id_bytes = existing.id.0.to_string();
-    let (encrypted_client_secret, secret_nonce) = if let Some(secret) = dcr_resp.client_secret.as_deref() {
-        let (enc, nonce) = state
-            .encryptor
-            .encrypt(secret.as_bytes(), id_bytes.as_bytes())
-            .map_err(|e| ApiError::Internal(format!("encryption: {e}")))?;
-        (Some(enc), Some(nonce))
-    } else {
-        (None, None)
-    };
+    let (encrypted_client_secret, secret_nonce) =
+        if let Some(secret) = dcr_resp.client_secret.as_deref() {
+            let (enc, nonce) = state
+                .encryptor
+                .encrypt(secret.as_bytes(), id_bytes.as_bytes())
+                .map_err(|e| ApiError::Internal(format!("encryption: {e}")))?;
+            (Some(enc), Some(nonce))
+        } else {
+            (None, None)
+        };
     let (rat_enc, rat_nonce) = if let Some(rat) = dcr_resp.registration_access_token.as_deref() {
         let (enc, nonce) = state
             .encryptor

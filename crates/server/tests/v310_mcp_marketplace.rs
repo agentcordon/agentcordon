@@ -8,6 +8,7 @@ use crate::common;
 
 use agent_cordon_core::domain::mcp::McpTransport;
 use agent_cordon_core::domain::user::UserRole;
+use agent_cordon_server::routes::admin_api::mcp_templates::McpServerTemplate;
 use agent_cordon_server::test_helpers::TestAppBuilder;
 use axum::http::{Method, StatusCode};
 
@@ -15,8 +16,39 @@ use axum::http::{Method, StatusCode};
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Build a synthetic `mock-mcp` template for provisioning tests.
+///
+/// The real `mock-mcp.json` template was removed from the production marketplace
+/// (we don't ship test fixtures to users). Tests that need it inject this
+/// synthetic copy via `TestAppBuilder::with_mcp_template`.
+fn mock_mcp_template() -> McpServerTemplate {
+    McpServerTemplate {
+        key: "mock-mcp".to_string(),
+        name: "Mock MCP".to_string(),
+        description: "Synthetic MCP template used by integration tests.".to_string(),
+        upstream_url: "http://127.0.0.1:1/mock-mcp".to_string(),
+        transport: "http".to_string(),
+        auth_method: "api_key".to_string(),
+        credential_template_key: None,
+        category: "testing".to_string(),
+        tags: vec!["test".to_string()],
+        icon: "beaker".to_string(),
+        sort_order: 9999,
+        oauth2_authorize_url: None,
+        oauth2_token_url: None,
+        oauth2_scopes: None,
+        oauth2_app_credential_template_key: None,
+        oauth2_resource_url: None,
+        oauth2_prefer_dcr: None,
+    }
+}
+
 async fn setup() -> (agent_cordon_server::test_helpers::TestContext, String) {
-    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let ctx = TestAppBuilder::new()
+        .with_admin()
+        .with_mcp_template(mock_mcp_template())
+        .build()
+        .await;
     let _user = common::create_test_user(
         &*ctx.store,
         "mcp-marketplace-user",
@@ -30,7 +62,11 @@ async fn setup() -> (agent_cordon_server::test_helpers::TestContext, String) {
 }
 
 /// Setup returning (ctx, cookie, workspace_id_string) for provisioning tests.
-async fn setup_with_workspace() -> (agent_cordon_server::test_helpers::TestContext, String, String) {
+async fn setup_with_workspace() -> (
+    agent_cordon_server::test_helpers::TestContext,
+    String,
+    String,
+) {
     let (ctx, cookie) = setup().await;
     let ws_id = ctx
         .admin_agent
@@ -80,7 +116,11 @@ async fn test_mcp_transport_enum_rejects_unknown() {
     assert!(grpc.is_err(), "grpc should be rejected: {:?}", grpc);
 
     let empty = serde_json::from_str::<McpTransport>("\"\"");
-    assert!(empty.is_err(), "empty string should be rejected: {:?}", empty);
+    assert!(
+        empty.is_err(),
+        "empty string should be rejected: {:?}",
+        empty
+    );
 }
 
 // ===========================================================================
@@ -169,7 +209,10 @@ async fn test_mcp_templates_sorted_by_sort_order() {
     assert_eq!(status, StatusCode::OK);
 
     let templates = body["data"].as_array().expect("data array");
-    assert!(templates.len() >= 2, "need at least 2 templates for ordering test");
+    assert!(
+        templates.len() >= 2,
+        "need at least 2 templates for ordering test"
+    );
 
     let sort_orders: Vec<u64> = templates
         .iter()
@@ -251,10 +294,7 @@ async fn test_mcp_templates_all_have_required_fields() {
             key
         );
         assert!(
-            tpl["icon"]
-                .as_str()
-                .map(|s| !s.is_empty())
-                .unwrap_or(false),
+            tpl["icon"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
             "template '{}' must have icon",
             key
         );
@@ -377,7 +417,9 @@ async fn test_mcp_templates_credential_template_keys_exist() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let cred_templates = cred_body["data"].as_array().expect("credential templates array");
+    let cred_templates = cred_body["data"]
+        .as_array()
+        .expect("credential templates array");
     let cred_keys: Vec<&str> = cred_templates
         .iter()
         .filter_map(|t| t["key"].as_str())
@@ -447,7 +489,12 @@ async fn test_provision_with_existing_credential() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "provision should succeed: {:?}", body);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "provision should succeed: {:?}",
+        body
+    );
 
     let data = &body["data"];
     assert!(data["id"].is_string(), "response should have server id");
@@ -518,9 +565,7 @@ async fn test_provision_does_not_create_cedar_policy() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let policies = policies_body["data"]
-        .as_array()
-        .expect("policies array");
+    let policies = policies_body["data"].as_array().expect("policies array");
     let server_id = body["data"]["id"].as_str().unwrap_or("");
     let has_mcp_provision_policy = policies.iter().any(|p| {
         let name = p["name"].as_str().unwrap_or("");
@@ -565,9 +610,7 @@ async fn test_provision_audit_event() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let events = audit_body["data"]
-        .as_array()
-        .expect("audit events array");
+    let events = audit_body["data"].as_array().expect("audit events array");
     let has_provision_event = events.iter().any(|e| {
         e["event_type"].as_str() == Some("mcp_server_provisioned")
             || e["action"].as_str() == Some("provision")

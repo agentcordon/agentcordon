@@ -114,9 +114,7 @@ impl From<&OAuthProviderClient> for OAuthProviderClientSummary {
             token_endpoint: c.token_endpoint.clone(),
             registration_endpoint: c.registration_endpoint.clone(),
             code_challenge_methods_supported: c.code_challenge_methods_supported.clone(),
-            token_endpoint_auth_methods_supported: c
-                .token_endpoint_auth_methods_supported
-                .clone(),
+            token_endpoint_auth_methods_supported: c.token_endpoint_auth_methods_supported.clone(),
             scopes_supported: c.scopes_supported.clone(),
             client_id: c.client_id.clone(),
             requested_scopes: c.requested_scopes.clone(),

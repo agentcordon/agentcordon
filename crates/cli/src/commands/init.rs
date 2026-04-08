@@ -222,7 +222,11 @@ fn generate_claude_md(pk_hash: &str) -> Result<(), CliError> {
             return Ok(());
         }
         // Append AgentCordon section to existing CLAUDE.md
-        let separator = if content.ends_with('\n') { "\n" } else { "\n\n" };
+        let separator = if content.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
         let section = format!(
             "{separator}## AgentCordon\n\
              \n\
@@ -256,8 +260,9 @@ fn generate_codex_config() -> Result<(), CliError> {
     let instructions_path = codex_dir.join("instructions.md");
 
     if instructions_path.exists() {
-        let content = fs::read_to_string(&instructions_path)
-            .map_err(|e| CliError::general(format!("failed to read .codex/instructions.md: {e}")))?;
+        let content = fs::read_to_string(&instructions_path).map_err(|e| {
+            CliError::general(format!("failed to read .codex/instructions.md: {e}"))
+        })?;
         if content.contains("AgentCordon") {
             return Ok(());
         }
@@ -290,10 +295,9 @@ fn generate_openclaw_config() -> Result<(), CliError> {
     let instructions_path = openclaw_dir.join("instructions.md");
 
     if instructions_path.exists() {
-        let content = fs::read_to_string(&instructions_path)
-            .map_err(|e| {
-                CliError::general(format!("failed to read .openclaw/instructions.md: {e}"))
-            })?;
+        let content = fs::read_to_string(&instructions_path).map_err(|e| {
+            CliError::general(format!("failed to read .openclaw/instructions.md: {e}"))
+        })?;
         if content.contains("AgentCordon") {
             return Ok(());
         }
@@ -313,10 +317,9 @@ fn generate_openclaw_config() -> Result<(), CliError> {
                    - Skills are at `.agents/skills/` (native OpenClaw discovery path)\n\
                    - Skill hot-reload is supported — changes take effect without restart\n";
 
-    fs::write(&instructions_path, content)
-        .map_err(|e| {
-            CliError::general(format!("failed to write .openclaw/instructions.md: {e}"))
-        })?;
+    fs::write(&instructions_path, content).map_err(|e| {
+        CliError::general(format!("failed to write .openclaw/instructions.md: {e}"))
+    })?;
 
     println!("Created .openclaw/instructions.md");
     Ok(())

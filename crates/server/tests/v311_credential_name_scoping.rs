@@ -107,10 +107,8 @@ async fn test_two_users_same_credential_name() {
     let ctx = TestAppBuilder::new().build().await;
 
     // Create two admin users
-    let _user_a =
-        create_test_user(&*ctx.store, "alice", TEST_PASSWORD, UserRole::Admin).await;
-    let _user_b =
-        create_test_user(&*ctx.store, "bob", TEST_PASSWORD, UserRole::Admin).await;
+    let _user_a = create_test_user(&*ctx.store, "alice", TEST_PASSWORD, UserRole::Admin).await;
+    let _user_b = create_test_user(&*ctx.store, "bob", TEST_PASSWORD, UserRole::Admin).await;
 
     let cookie_a = login_user_combined(&ctx.app, "alice", TEST_PASSWORD).await;
     let cookie_b = login_user_combined(&ctx.app, "bob", TEST_PASSWORD).await;
@@ -183,7 +181,10 @@ async fn test_same_user_duplicate_name_succeeds() {
     assert_eq!(s2, StatusCode::OK, "second create: {}", b2);
     let id2 = b2["data"]["id"].as_str().unwrap().to_string();
 
-    assert_ne!(id1, id2, "duplicate names must produce distinct credentials");
+    assert_ne!(
+        id1, id2,
+        "duplicate names must produce distinct credentials"
+    );
 }
 
 // ===========================================================================
@@ -328,27 +329,13 @@ async fn test_rename_to_existing_name_succeeds() {
     let csrf = extract_csrf_from_cookie(&cookie).unwrap();
 
     // Create cred-a and cred-b
-    let (s1, b1) = create_credential_as(
-        &ctx.app,
-        &cookie,
-        &csrf,
-        "cred-a",
-        "github",
-        "ghp_aaaa",
-    )
-    .await;
+    let (s1, b1) =
+        create_credential_as(&ctx.app, &cookie, &csrf, "cred-a", "github", "ghp_aaaa").await;
     assert_eq!(s1, StatusCode::OK, "create cred-a: {}", b1);
     let id_a = b1["data"]["id"].as_str().unwrap().to_string();
 
-    let (s2, b2) = create_credential_as(
-        &ctx.app,
-        &cookie,
-        &csrf,
-        "cred-b",
-        "slack",
-        "xoxb_bbbb",
-    )
-    .await;
+    let (s2, b2) =
+        create_credential_as(&ctx.app, &cookie, &csrf, "cred-b", "slack", "xoxb_bbbb").await;
     assert_eq!(s2, StatusCode::OK, "create cred-b: {}", b2);
 
     // Rename cred-a to "cred-b" — should succeed since names are not unique
@@ -405,7 +392,12 @@ async fn test_300_response_contains_candidates() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::MULTIPLE_CHOICES, "should be 300: {}", body);
+    assert_eq!(
+        status,
+        StatusCode::MULTIPLE_CHOICES,
+        "should be 300: {}",
+        body
+    );
 
     // Verify candidates structure
     let candidates = body["error"]["candidates"]
@@ -438,10 +430,7 @@ async fn test_300_response_contains_candidates() {
     }
 
     // Verify the candidate IDs match the credentials we created
-    let candidate_ids: Vec<&str> = candidates
-        .iter()
-        .filter_map(|c| c["id"].as_str())
-        .collect();
+    let candidate_ids: Vec<&str> = candidates.iter().filter_map(|c| c["id"].as_str()).collect();
     assert!(
         candidate_ids.contains(&cred_a.0.to_string().as_str()),
         "candidates should include cred_a"
@@ -506,10 +495,7 @@ async fn test_300_candidates_only_authorized() {
         candidates
     );
 
-    let candidate_ids: Vec<&str> = candidates
-        .iter()
-        .filter_map(|c| c["id"].as_str())
-        .collect();
+    let candidate_ids: Vec<&str> = candidates.iter().filter_map(|c| c["id"].as_str()).collect();
     assert!(
         candidate_ids.contains(&cred_a.0.to_string().as_str()),
         "candidates should include cred_a"
@@ -606,10 +592,7 @@ async fn test_vend_expired_credential_authorized() {
         let (encrypted, nonce) = ctx
             .state
             .encryptor
-            .encrypt(
-                b"expired-secret",
-                cred_id.0.to_string().as_bytes(),
-            )
+            .encrypt(b"expired-secret", cred_id.0.to_string().as_bytes())
             .expect("encrypt");
         let now = chrono::Utc::now();
         let past = now - chrono::Duration::hours(24);
@@ -686,33 +669,18 @@ async fn test_vend_expired_credential_authorized() {
 async fn test_list_credentials_duplicate_names() {
     let ctx = TestAppBuilder::new().build().await;
 
-    let _admin =
-        create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let cookie = login_user_combined(&ctx.app, "admin", TEST_PASSWORD).await;
     let csrf = extract_csrf_from_cookie(&cookie).unwrap();
 
     // Create two credentials with the same name
-    let (s1, b1) = create_credential_as(
-        &ctx.app,
-        &cookie,
-        &csrf,
-        "dup-name",
-        "github",
-        "ghp_first",
-    )
-    .await;
+    let (s1, b1) =
+        create_credential_as(&ctx.app, &cookie, &csrf, "dup-name", "github", "ghp_first").await;
     assert_eq!(s1, StatusCode::OK, "first create: {}", b1);
     let id1 = b1["data"]["id"].as_str().unwrap().to_string();
 
-    let (s2, b2) = create_credential_as(
-        &ctx.app,
-        &cookie,
-        &csrf,
-        "dup-name",
-        "slack",
-        "xoxb_second",
-    )
-    .await;
+    let (s2, b2) =
+        create_credential_as(&ctx.app, &cookie, &csrf, "dup-name", "slack", "xoxb_second").await;
     assert_eq!(s2, StatusCode::OK, "second create: {}", b2);
     let id2 = b2["data"]["id"].as_str().unwrap().to_string();
 
@@ -742,12 +710,15 @@ async fn test_list_credentials_duplicate_names() {
         "both duplicate-named credentials should appear in list"
     );
 
-    let listed_ids: Vec<&str> = matching
-        .iter()
-        .filter_map(|c| c["id"].as_str())
-        .collect();
-    assert!(listed_ids.contains(&id1.as_str()), "should include first credential");
-    assert!(listed_ids.contains(&id2.as_str()), "should include second credential");
+    let listed_ids: Vec<&str> = matching.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert!(
+        listed_ids.contains(&id1.as_str()),
+        "should include first credential"
+    );
+    assert!(
+        listed_ids.contains(&id2.as_str()),
+        "should include second credential"
+    );
 }
 
 // ===========================================================================
@@ -764,8 +735,7 @@ async fn test_list_credentials_duplicate_names() {
 async fn test_by_name_endpoint_with_duplicates() {
     let ctx = TestAppBuilder::new().build().await;
 
-    let _admin =
-        create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let cookie = login_user_combined(&ctx.app, "admin", TEST_PASSWORD).await;
     let csrf = extract_csrf_from_cookie(&cookie).unwrap();
 
@@ -817,10 +787,7 @@ async fn test_by_name_endpoint_with_duplicates() {
         .as_array()
         .expect("should have candidates array");
     assert_eq!(candidates.len(), 2, "should have 2 candidates");
-    let candidate_ids: Vec<&str> = candidates
-        .iter()
-        .filter_map(|c| c["id"].as_str())
-        .collect();
+    let candidate_ids: Vec<&str> = candidates.iter().filter_map(|c| c["id"].as_str()).collect();
     assert!(candidate_ids.contains(&id1.as_str()), "should contain id1");
     assert!(candidate_ids.contains(&id2.as_str()), "should contain id2");
 }
