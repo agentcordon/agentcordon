@@ -1,4 +1,5 @@
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -86,6 +87,11 @@ pub fn load_keypair() -> Result<Keypair, CliError> {
 }
 
 /// Check that file/dir permissions are not more permissive than `max_mode`.
+///
+/// On Unix this enforces POSIX mode bits. On Windows there is no equivalent
+/// POSIX mode, so we rely on NTFS ACL defaults (the user's profile directory
+/// is already ACL-protected) and skip the check.
+#[cfg(unix)]
 fn check_permissions(path: &Path, max_mode: u32, label: &str) -> Result<(), CliError> {
     let metadata =
         fs::metadata(path).map_err(|e| CliError::general(format!("cannot stat {label}: {e}")))?;
@@ -97,6 +103,11 @@ fn check_permissions(path: &Path, max_mode: u32, label: &str) -> Result<(), CliE
             path.display()
         )));
     }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_permissions(_path: &Path, _max_mode: u32, _label: &str) -> Result<(), CliError> {
     Ok(())
 }
 

@@ -1,4 +1,5 @@
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -41,9 +42,10 @@ pub fn run(agent: &str) -> Result<(), CliError> {
         return Ok(());
     }
 
-    // Create .agentcordon/ directory with mode 0700
+    // Create .agentcordon/ directory with mode 0700 (Unix only; Windows uses ACL defaults).
     fs::create_dir_all(&dir)
         .map_err(|e| CliError::general(format!("failed to create .agentcordon/: {e}")))?;
+    #[cfg(unix)]
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
         .map_err(|e| CliError::general(format!("failed to set directory permissions: {e}")))?;
 
@@ -56,6 +58,7 @@ pub fn run(agent: &str) -> Result<(), CliError> {
     let seed_hex = hex::encode(signing_key.to_bytes());
     fs::write(&key_path, &seed_hex)
         .map_err(|e| CliError::general(format!("failed to write private key: {e}")))?;
+    #[cfg(unix)]
     fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))
         .map_err(|e| CliError::general(format!("failed to set key permissions: {e}")))?;
 
@@ -63,6 +66,7 @@ pub fn run(agent: &str) -> Result<(), CliError> {
     let pub_hex = hex::encode(verifying_key.to_bytes());
     fs::write(&pub_path, &pub_hex)
         .map_err(|e| CliError::general(format!("failed to write public key: {e}")))?;
+    #[cfg(unix)]
     fs::set_permissions(&pub_path, fs::Permissions::from_mode(0o644))
         .map_err(|e| CliError::general(format!("failed to set pubkey permissions: {e}")))?;
 
