@@ -193,7 +193,7 @@ pub async fn dashboard_page(State(state): State<AppState>, request: Request) -> 
         // Deduplicate by event ID, sort, and truncate
         let mut seen = std::collections::HashSet::new();
         events.retain(|e| seen.insert(e.id));
-        events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        events.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
         events.truncate(5);
         events
     };
@@ -220,7 +220,7 @@ pub async fn dashboard_page(State(state): State<AppState>, request: Request) -> 
         .into_iter()
         .chain(cred_deny_events)
         .collect();
-    all_cred_events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    all_cred_events.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
     all_cred_events.truncate(5);
 
     // Fetch MCP activity events (user-initiated + workspace-initiated)
@@ -241,7 +241,7 @@ pub async fn dashboard_page(State(state): State<AppState>, request: Request) -> 
     )
     .await;
     let mut all_mcp_events: Vec<_> = mcp_call_events.into_iter().chain(mcp_deny_events).collect();
-    all_mcp_events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    all_mcp_events.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
     all_mcp_events.truncate(5);
 
     let workspaces_total = workspaces.len();

@@ -139,6 +139,81 @@ pub struct OAuthConsent {
     pub granted_at: DateTime<Utc>,
 }
 
+// ---------------------------------------------------------------------------
+// RFC 8628 Device Authorization Grant
+// ---------------------------------------------------------------------------
+
+/// Lifecycle status of a device authorization code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceCodeStatus {
+    /// Issued; waiting for user action.
+    Pending,
+    /// User approved via `/activate`. Awaiting token exchange.
+    Approved,
+    /// User denied via `/activate`.
+    Denied,
+    /// Expired before approval.
+    Expired,
+    /// Token exchange succeeded; single-use row is burned.
+    Consumed,
+}
+
+impl DeviceCodeStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DeviceCodeStatus::Pending => "pending",
+            DeviceCodeStatus::Approved => "approved",
+            DeviceCodeStatus::Denied => "denied",
+            DeviceCodeStatus::Expired => "expired",
+            DeviceCodeStatus::Consumed => "consumed",
+        }
+    }
+}
+
+impl std::str::FromStr for DeviceCodeStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(DeviceCodeStatus::Pending),
+            "approved" => Ok(DeviceCodeStatus::Approved),
+            "denied" => Ok(DeviceCodeStatus::Denied),
+            "expired" => Ok(DeviceCodeStatus::Expired),
+            "consumed" => Ok(DeviceCodeStatus::Consumed),
+            other => Err(format!("unknown device code status: {}", other)),
+        }
+    }
+}
+
+/// RFC 8628 device authorization grant record.
+///
+/// `device_code` is the high-entropy secret returned to the client; `user_code` is the
+/// short human-entry code displayed to the user. Both are persisted as stored SHA-256
+/// hashes at the handler/service layer — the Store trait treats them as opaque lookup
+/// strings. The handler decides whether to pass a plaintext token or a hash.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeviceCode {
+    pub device_code: String,
+    pub user_code: String,
+    pub client_id: String,
+    pub scopes: Vec<OAuthScope>,
+    pub status: DeviceCodeStatus,
+    pub workspace_name_prefill: Option<String>,
+    /// SHA-256 hash of the workspace public key supplied by the broker at
+    /// device_code issue time. Persisted so the approve endpoint can verify
+    /// that the user is approving the same signing identity that initiated
+    /// the device authorization grant — a mismatch is a hard 400.
+    pub pk_hash_prefill: Option<String>,
+    /// Populated when the user approves (approving user's UserId, stringified).
+    pub approved_user_id: Option<String>,
+    /// Populated for pending rows that have been polled at least once.
+    pub last_polled_at: Option<DateTime<Utc>>,
+    /// Current poll interval in seconds. RFC 8628 `slow_down` doubles this value.
+    pub interval_secs: i64,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

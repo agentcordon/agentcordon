@@ -288,7 +288,7 @@ def isolation_workspace_listing_scoped(ctx: dict) -> dict:
 ISOLATION_WORKSPACE_LISTING_NODE = DagNode(
     name="isolation.workspace_listing_scoped",
     fn=isolation_workspace_listing_scoped,
-    depends_on=["workspace.oauth_register"],
+    depends_on=["workspace.device_code_exchange"],
     produces=[],
     consumes=["base_url", "admin_session_cookie", "csrf_token"],
     critical=False,

@@ -176,7 +176,7 @@ async fn test_mcp_template_github_has_correct_fields() {
         .expect("should have a github template");
 
     assert_eq!(github["name"].as_str().unwrap(), "GitHub");
-    assert_eq!(github["transport"].as_str().unwrap(), "sse");
+    assert_eq!(github["transport"].as_str().unwrap(), "http");
     assert_eq!(github["auth_method"].as_str().unwrap(), "api_key");
     assert_eq!(
         github["credential_template_key"].as_str().unwrap(),

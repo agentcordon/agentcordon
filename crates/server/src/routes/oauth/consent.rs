@@ -408,7 +408,7 @@ async fn create_client_on_consent(
 /// - Same `pk_hash` -- reuse it (update pk_hash to ensure consistency)
 /// - Different `pk_hash` -- reject with a conflict error
 /// - No existing workspace -- create a new one
-async fn create_or_reuse_workspace(
+pub(super) async fn create_or_reuse_workspace(
     state: &AppState,
     auth: &AuthenticatedUser,
     workspace_name: &str,

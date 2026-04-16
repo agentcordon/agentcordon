@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Request Denied — Agent Cordon{% endblock %}
+{% block head %}
+<style>
+.activate-result-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+    background: var(--wash);
+}
+
+.activate-result-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    width: 100%;
+    max-width: 400px;
+    padding: 40px 32px;
+    text-align: center;
+}
+
+.activate-result-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 16px;
+    font-size: 24px;
+    background: var(--danger-bg);
+    color: var(--danger);
+}
+
+.activate-result-title {
+    font-size: var(--text-xl);
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 8px;
+}
+
+.activate-result-msg {
+    font-size: var(--text-base);
+    color: var(--ink-faint);
+    line-height: 1.6;
+}
+</style>
+{% endblock %}
+{% block body %}
+<div class="activate-result-wrap">
+    <div class="activate-result-card" role="main">
+        <div class="activate-result-icon" aria-hidden="true">&#x2717;</div>
+        <h1 class="activate-result-title">Request denied</h1>
+        <p class="activate-result-msg">You've denied this authorization request.</p>
+    </div>
+</div>
+{% endblock %}

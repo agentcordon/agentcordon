@@ -1,5 +1,6 @@
 mod audit;
 mod credentials;
+mod device_codes;
 mod mcp;
 mod mcp_oauth;
 mod oauth;

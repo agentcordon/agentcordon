@@ -52,3 +52,4 @@ tools/__pycache__/
 
 # AgentCordon workspace identity
 .agentcordon/
+AGENTS.md

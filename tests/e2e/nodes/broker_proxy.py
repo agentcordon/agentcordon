@@ -71,7 +71,7 @@ def credential_discover_via_broker(ctx: dict) -> dict:
 CREDENTIAL_DISCOVER_VIA_BROKER_NODE = DagNode(
     name="credential.discover_via_broker",
     fn=credential_discover_via_broker,
-    depends_on=["workspace.oauth_register", "credential.create"],
+    depends_on=["workspace.device_code_exchange", "credential.create"],
     produces=["broker_discovered_credentials"],
     consumes=["broker_url", "broker_pem_key_path"],
     critical=True,
@@ -206,7 +206,7 @@ def proxy_via_broker_denied(ctx: dict) -> dict:
 PROXY_VIA_BROKER_DENIED_NODE = DagNode(
     name="proxy.via_broker_denied",
     fn=proxy_via_broker_denied,
-    depends_on=["workspace.oauth_register"],
+    depends_on=["workspace.device_code_exchange"],
     produces=[],
     consumes=["broker_url", "broker_pem_key_path"],
     critical=False,

@@ -6,14 +6,25 @@ pub const MIGRATION_003: &str = include_str!("../../../../migrations/003_mcp_oau
 pub const MIGRATION_004: &str = include_str!("../../../../migrations/004_mcp_user_ownership.sql");
 pub const MIGRATION_005: &str =
     include_str!("../../../../migrations/005_oauth_provider_clients.sql");
+pub const MIGRATION_006: &str = include_str!("../../../../migrations/006_device_codes.sql");
+pub const MIGRATION_007: &str =
+    include_str!("../../../../migrations/007_credential_name_unique.sql");
+pub const MIGRATION_008: &str =
+    include_str!("../../../../migrations/008_bootstrap_client_mcp_discover_scope.sql");
+pub const MIGRATION_009: &str =
+    include_str!("../../../../migrations/009_device_code_pk_hash.sql");
 
 /// All migrations in order. Each entry is (version, SQL content).
-const MIGRATIONS: [(i64, &str); 5] = [
+const MIGRATIONS: [(i64, &str); 9] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
     (3, MIGRATION_003),
     (4, MIGRATION_004),
     (5, MIGRATION_005),
+    (6, MIGRATION_006),
+    (7, MIGRATION_007),
+    (8, MIGRATION_008),
+    (9, MIGRATION_009),
 ];
 
 /// Run all pending migrations, tracking applied versions in a `schema_migrations` table.
@@ -159,6 +170,7 @@ mod tests {
             "credential_secret_history",
             "credentials",
             "crypto_state",
+            "device_codes",
             "mcp_oauth_states",
             "mcp_servers",
             "oauth_access_tokens",
@@ -209,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn test_credential_names_not_unique() {
+    fn test_credential_names_globally_unique() {
         let conn = open_memory_db();
         run_migrations(&conn).expect("run migrations");
 
@@ -223,24 +235,65 @@ mod tests {
             [],
         ).expect("insert ws2");
 
-        // Same name under different workspaces — should succeed
+        // First credential — should succeed.
         conn.execute(
             "INSERT INTO credentials (id, name, service, encrypted_value, nonce, created_by, created_at, updated_at)
              VALUES ('c1', 'api-key', 'github', X'00', X'00', 'ws1', '2026-01-01', '2026-01-01')",
             [],
         ).expect("insert cred for ws1");
-        conn.execute(
+
+        // Same name under a different workspace — should FAIL (migration 007
+        // enforces a global UNIQUE INDEX on credentials(name) so vend-by-name
+        // and discovery-by-name have a single unambiguous target).
+        let err_diff_workspace = conn.execute(
             "INSERT INTO credentials (id, name, service, encrypted_value, nonce, created_by, created_at, updated_at)
              VALUES ('c2', 'api-key', 'github', X'00', X'00', 'ws2', '2026-01-01', '2026-01-01')",
             [],
-        ).expect("insert same name for ws2 should succeed");
+        ).unwrap_err();
+        assert!(
+            matches!(
+                err_diff_workspace,
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error { extended_code, .. }, _)
+                    if extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+            ),
+            "duplicate name across workspaces must violate UNIQUE, got: {err_diff_workspace:?}"
+        );
 
-        // Same name under same workspace — also allowed (names are labels, UUID is the key)
-        conn.execute(
+        // Same name under the same workspace — also FAIL.
+        let err_same_workspace = conn.execute(
             "INSERT INTO credentials (id, name, service, encrypted_value, nonce, created_by, created_at, updated_at)
              VALUES ('c3', 'api-key', 'github', X'00', X'00', 'ws1', '2026-01-01', '2026-01-01')",
             [],
-        ).expect("duplicate name under same workspace should succeed after migration 006");
+        ).unwrap_err();
+        assert!(
+            matches!(
+                err_same_workspace,
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error { extended_code, .. }, _)
+                    if extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+            ),
+            "duplicate name in same workspace must violate UNIQUE, got: {err_same_workspace:?}"
+        );
+    }
+
+    #[test]
+    fn test_bootstrap_client_has_mcp_discover_scope() {
+        let conn = open_memory_db();
+        run_migrations(&conn).expect("run migrations");
+
+        let scopes: String = conn
+            .query_row(
+                "SELECT allowed_scopes FROM oauth_clients WHERE client_id = 'agentcordon-broker'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("bootstrap client row");
+
+        for required in ["credentials:discover", "credentials:vend", "mcp:discover", "mcp:invoke"] {
+            assert!(
+                scopes.split(',').any(|s| s.trim() == required),
+                "bootstrap client must allow scope {required:?}, got: {scopes:?}"
+            );
+        }
     }
 
     #[test]

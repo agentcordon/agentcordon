@@ -114,7 +114,7 @@ def oauth_token_revocation_propagation(ctx: dict) -> dict:
 OAUTH_TOKEN_REVOCATION_NODE = DagNode(
     name="oauth.token_revocation_propagation",
     fn=oauth_token_revocation_propagation,
-    depends_on=["workspace.oauth_register"],
+    depends_on=["workspace.device_code_exchange"],
     produces=[],
     consumes=["base_url", "admin_session_cookie", "csrf_token"],
     critical=False,

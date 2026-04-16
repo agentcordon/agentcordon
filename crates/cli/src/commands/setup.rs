@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::error::CliError;
+use crate::platform;
 
 /// One-command onboarding: starts broker, generates keys, registers workspace.
 pub async fn run(server_url: String) -> Result<(), CliError> {
@@ -44,20 +45,23 @@ async fn ensure_broker_running(server_url: &str) -> Result<String, CliError> {
     println!("  Starting broker daemon...");
     let broker_port = find_broker_port();
 
-    std::process::Command::new("agentcordon-broker")
-        .arg("--server-url")
+    let mut cmd = std::process::Command::new("agentcordon-broker");
+    cmd.arg("--server-url")
         .arg(server_url)
         .arg("--port")
         .arg(broker_port.to_string())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| {
-            CliError::general(format!(
-                "failed to start broker: {e}\n\
-                 Install it with: curl -fsSL http://your-server/install.sh | bash"
-            ))
-        })?;
+        .stderr(std::process::Stdio::null());
+
+    // On Windows, attach the broker to a Job Object so it dies when the
+    // CLI exits (per v0.3.0 locked decision #4). On Unix this is a plain
+    // `Command::spawn`.
+    platform::spawn_broker(&mut cmd).map_err(|e| {
+        CliError::general(format!(
+            "failed to start broker: {e}\n\
+             Install it with: curl -fsSL http://your-server/install.sh | bash"
+        ))
+    })?;
 
     // Wait for health
     let broker_url = format!("http://localhost:{broker_port}");

@@ -63,13 +63,16 @@ struct TokenResponse {
 
 #[derive(Deserialize)]
 pub(crate) struct TokenRequest {
-    grant_type: String,
+    #[serde(default)]
+    grant_type: Option<String>,
     // authorization_code fields
     code: Option<String>,
     redirect_uri: Option<String>,
     code_verifier: Option<String>,
     // refresh_token fields
     refresh_token: Option<String>,
+    // device_code grant fields (RFC 8628)
+    device_code: Option<String>,
     // common
     client_id: Option<String>,
     client_secret: Option<String>,
@@ -82,15 +85,19 @@ pub(crate) async fn token_endpoint(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     axum::Form(req): axum::Form<TokenRequest>,
 ) -> axum::response::Response {
-    match req.grant_type.as_str() {
+    match req.grant_type.as_deref().unwrap_or("") {
         "authorization_code" => handle_authorization_code(state, corr, req).await,
         "refresh_token" => handle_refresh_token(state, corr, req).await,
         "client_credentials" => handle_client_credentials(state, corr, req).await,
+        "urn:ietf:params:oauth:grant-type:device_code" => {
+            handle_device_code(state, corr, req).await
+        }
         _ => {
             let (status, body) = oauth_error(
                 StatusCode::BAD_REQUEST,
                 "unsupported_grant_type",
-                "grant_type must be authorization_code, refresh_token, or client_credentials",
+                "grant_type must be authorization_code, refresh_token, client_credentials, \
+                 or urn:ietf:params:oauth:grant-type:device_code",
             );
             (status, body).into_response()
         }
@@ -679,4 +686,370 @@ async fn handle_client_credentials(
     };
 
     (StatusCode::OK, Json(response)).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// grant_type=urn:ietf:params:oauth:grant-type:device_code (RFC 8628)
+// ---------------------------------------------------------------------------
+//
+// Polling contract per RFC 8628 §3.5:
+//   - `authorization_pending`: user has not yet approved; retry after `interval`.
+//   - `slow_down`: client polled too fast; MUST increase interval by 5s. We
+//     implement this as "double the stored interval" and persist, so a client
+//     that ignores the hint keeps hitting slow_down on subsequent polls.
+//   - `expired_token`: device_code TTL elapsed; row transitioned to `expired`.
+//   - `access_denied`: user denied via `/activate`.
+//   - `invalid_grant`: unknown device_code, client_id mismatch, or the row is
+//     in a terminal state it shouldn't be polled from (denied — covered above
+//     — or already `consumed`, which is invalid_grant to prevent replay).
+//
+// **Secret handling**: the `device_code` sent by the broker is the plaintext
+// issued at `/oauth/device/code`. We persist only its hash, so every lookup
+// MUST call `hash_token` first. A DB dump alone cannot yield a pollable
+// device_code.
+async fn handle_device_code(
+    state: AppState,
+    corr: CorrelationId,
+    req: TokenRequest,
+) -> axum::response::Response {
+    use agent_cordon_core::domain::user::UserId;
+    use agent_cordon_core::oauth2::types::DeviceCodeStatus;
+    use uuid::Uuid;
+
+    use crate::device_code_service::DeviceCodeService;
+
+    // --- Parse required fields ---
+    let device_code_plain = match req.device_code.as_deref() {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "device_code is required",
+            );
+            return (s, b).into_response();
+        }
+    };
+    let client_id_req = match req.client_id.as_deref() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => {
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "client_id is required",
+            );
+            return (s, b).into_response();
+        }
+    };
+
+    let device_code_hash = hash_token(device_code_plain);
+    let service = DeviceCodeService::new(state.store.clone());
+
+    // --- Lookup by hash ---
+    let row = match service.get_by_device_code(&device_code_hash).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            // RFC 6749 §5.2: if the client_id is also unknown, the proper
+            // error is invalid_client (401), not invalid_grant.
+            let client_exists = matches!(
+                state
+                    .store
+                    .get_oauth_client_by_client_id(&client_id_req)
+                    .await,
+                Ok(Some(c)) if c.revoked_at.is_none()
+            );
+            if !client_exists {
+                let (s, b) = oauth_error(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_client",
+                    "unknown or revoked client",
+                );
+                return (s, b).into_response();
+            }
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "unknown device_code",
+            );
+            return (s, b).into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "device_code lookup failed");
+            let (s, b) = oauth_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "internal error",
+            );
+            return (s, b).into_response();
+        }
+    };
+
+    if row.client_id != client_id_req {
+        let (s, b) = oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "client_id does not match device_code",
+        );
+        return (s, b).into_response();
+    }
+
+    let now = Utc::now();
+
+    // --- Terminal/state dispatch ---
+    match row.status {
+        DeviceCodeStatus::Denied => {
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "access_denied",
+                "user denied request",
+            );
+            (s, b).into_response()
+        }
+        DeviceCodeStatus::Expired => {
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "expired_token",
+                "device_code expired",
+            );
+            (s, b).into_response()
+        }
+        DeviceCodeStatus::Consumed => {
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "device_code already exchanged",
+            );
+            (s, b).into_response()
+        }
+        DeviceCodeStatus::Pending => {
+            // Expiry check: if TTL elapsed, transition to expired and return expired_token.
+            // The row won't self-heal otherwise until the sweeper runs.
+            if row.expires_at <= now {
+                // Best-effort: mark expired so subsequent polls get expired_token
+                // directly. A failure here just means the sweeper will catch it.
+                if let Err(e) = service.sweep_expired(&corr.0).await {
+                    tracing::warn!(error = %e, "failed to transition expired device_code");
+                }
+                let (s, b) = oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "expired_token",
+                    "device_code expired",
+                );
+                return (s, b).into_response();
+            }
+
+            // Poll interval enforcement.
+            let too_fast = match row.last_polled_at {
+                Some(last) => (now - last).num_seconds() < row.interval_secs,
+                None => false,
+            };
+
+            if too_fast {
+                // slow_down: double the stored interval, update poll timestamp.
+                let new_interval = row.interval_secs.saturating_mul(2).min(60);
+                if let Err(e) = service
+                    .update_poll(&device_code_hash, Some(new_interval))
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to update device_code poll (slow_down)");
+                }
+                let (s, b) = oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "slow_down",
+                    "polling too fast; increase interval",
+                );
+                return (s, b).into_response();
+            }
+
+            // Not too fast — bump the last_polled_at timestamp and return pending.
+            if let Err(e) = service.update_poll(&device_code_hash, None).await {
+                tracing::warn!(error = %e, "failed to update device_code poll");
+            }
+            let (s, b) = oauth_error(
+                StatusCode::BAD_REQUEST,
+                "authorization_pending",
+                "waiting for user approval",
+            );
+            (s, b).into_response()
+        }
+        DeviceCodeStatus::Approved => {
+            // CAS consume: strict single-use. If two pollers race, exactly one wins.
+            let consumed = match service.consume(&device_code_hash).await {
+                Ok(true) => true,
+                Ok(false) => {
+                    let (s, b) = oauth_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_grant",
+                        "device_code already exchanged",
+                    );
+                    return (s, b).into_response();
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "CAS consume failed");
+                    let (s, b) = oauth_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        "internal error",
+                    );
+                    return (s, b).into_response();
+                }
+            };
+            debug_assert!(consumed);
+
+            // Resolve approving user.
+            let approving_user_id_str = match row.approved_user_id.as_deref() {
+                Some(s) => s,
+                None => {
+                    tracing::error!("approved row missing approved_user_id");
+                    let (s, b) = oauth_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        "internal error",
+                    );
+                    return (s, b).into_response();
+                }
+            };
+            let approving_user_uuid = match Uuid::parse_str(approving_user_id_str) {
+                Ok(u) => u,
+                Err(_) => {
+                    tracing::error!("approved_user_id is not a valid UUID");
+                    let (s, b) = oauth_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        "internal error",
+                    );
+                    return (s, b).into_response();
+                }
+            };
+            let user_id = UserId(approving_user_uuid);
+
+            // If the device code was bound to a workspace identity during
+            // approval, look up the workspace-specific OAuth client and issue
+            // the token against that client. No silent bootstrap fallback:
+            // a workspace-bound row with a missing workspace, missing pk_hash,
+            // or missing/revoked client is an inconsistent state and MUST
+            // fail with invalid_grant rather than issuing a token against
+            // the bootstrap client.
+            let token_client_id = if let Some(workspace_name) = row.workspace_name_prefill.as_deref() {
+                let ws = match state.store.get_workspace_by_name(workspace_name).await {
+                    Ok(Some(ws)) => ws,
+                    _ => {
+                        tracing::error!(%workspace_name, "approved device_code has no workspace row");
+                        let (s, b) = oauth_error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_grant",
+                            "workspace registration is incomplete; retry device authorization",
+                        );
+                        return (s, b).into_response();
+                    }
+                };
+                let pk_hash = ws.pk_hash.as_deref().unwrap_or("");
+                if pk_hash.is_empty() {
+                    tracing::error!(workspace_id = %ws.id.0, "workspace missing pk_hash");
+                    let (s, b) = oauth_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_grant",
+                        "workspace registration is incomplete; retry device authorization",
+                    );
+                    return (s, b).into_response();
+                }
+                let client = match state.store.get_oauth_client_by_public_key_hash(pk_hash).await {
+                    Ok(Some(c)) if c.revoked_at.is_none() => c,
+                    _ => {
+                        tracing::error!(%pk_hash, "workspace missing OAuth client");
+                        let (s, b) = oauth_error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_grant",
+                            "workspace OAuth client is missing or revoked",
+                        );
+                        return (s, b).into_response();
+                    }
+                };
+                // Scope intersect defense-in-depth: every device_code scope
+                // must be within the client's allowed_scopes envelope.
+                for s in &row.scopes {
+                    if !client.allowed_scopes.contains(s) {
+                        let (code, body) = oauth_error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_scope",
+                            "device_code scope exceeds workspace client allowed_scopes",
+                        );
+                        return (code, body).into_response();
+                    }
+                }
+                client.client_id
+            } else {
+                // Non-workspace-bound device_code: pin to the device_code's
+                // own client (bootstrap or direct). Legacy path, unchanged.
+                row.client_id.clone()
+            };
+
+            // Issue access + refresh tokens (parity with authorization_code arm).
+            let (access_raw, access_hash) = generate_access_token();
+            let (refresh_raw, refresh_hash) = generate_refresh_token();
+
+            let access_token = OAuthAccessToken {
+                token_hash: access_hash.clone(),
+                client_id: token_client_id.clone(),
+                user_id: user_id.clone(),
+                scopes: row.scopes.clone(),
+                created_at: now,
+                expires_at: now + Duration::seconds(ACCESS_TOKEN_TTL_SECS),
+                revoked_at: None,
+            };
+            let refresh_token = OAuthRefreshToken {
+                token_hash: refresh_hash,
+                client_id: token_client_id,
+                user_id,
+                scopes: row.scopes.clone(),
+                access_token_hash: access_hash,
+                created_at: now,
+                expires_at: now + Duration::seconds(REFRESH_TOKEN_TTL_SECS),
+                revoked_at: None,
+            };
+
+            if let Err(e) = state.store.create_oauth_access_token(&access_token).await {
+                tracing::error!(error = %e, "failed to store access token");
+                let (s, b) = oauth_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "internal error",
+                );
+                return (s, b).into_response();
+            }
+            if let Err(e) = state.store.create_oauth_refresh_token(&refresh_token).await {
+                tracing::error!(error = %e, "failed to store refresh token");
+                let (s, b) = oauth_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "internal error",
+                );
+                return (s, b).into_response();
+            }
+
+            let event = AuditEvent::builder(AuditEventType::Oauth2TokenAcquired)
+                .action("oauth_token_issued")
+                .resource("oauth_client", &row.client_id)
+                .correlation_id(&corr.0)
+                .decision(AuditDecision::Permit, Some("device_code exchange"))
+                .details(serde_json::json!({
+                    "client_id": row.client_id,
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                }))
+                .build();
+            if let Err(e) = state.store.append_audit_event(&event).await {
+                tracing::warn!(error = %e, "failed to write audit event");
+            }
+
+            let scope_string = OAuthScope::to_scope_string(&row.scopes);
+            let response = TokenResponse {
+                access_token: access_raw,
+                token_type: "Bearer".to_string(),
+                expires_in: ACCESS_TOKEN_TTL_SECS,
+                refresh_token: Some(refresh_raw),
+                scope: scope_string,
+            };
+            (StatusCode::OK, Json(response)).into_response()
+        }
+    }
 }

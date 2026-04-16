@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Confirm Replace Workspace — Agent Cordon{% endblock %}
+{% block head %}
+<style>
+.activate-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+    background: var(--wash);
+}
+
+.activate-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    width: 100%;
+    max-width: 440px;
+    overflow: hidden;
+}
+
+.activate-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 20px 28px 16px;
+    border-bottom: 1px solid var(--line);
+}
+
+.activate-header .logo-mark {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent);
+    border-radius: var(--radius-sm);
+    color: #fff;
+}
+
+.activate-header .logo-text {
+    font-weight: 600;
+    font-size: var(--text-lg);
+    color: var(--ink);
+}
+
+.activate-body {
+    padding: 24px 28px;
+}
+
+.activate-title {
+    font-size: var(--text-xl);
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 8px;
+}
+
+.activate-warning {
+    background: var(--danger-bg);
+    color: var(--danger);
+    border: 1px solid rgba(194,48,48,0.2);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    margin-bottom: 20px;
+}
+
+.activate-warning strong {
+    font-weight: 600;
+}
+
+.activate-existing {
+    font-size: var(--text-sm);
+    color: var(--ink-faint);
+    margin-bottom: 20px;
+}
+
+.activate-actions {
+    display: flex;
+    gap: 12px;
+}
+
+.activate-actions .btn {
+    flex: 1;
+    justify-content: center;
+    height: 40px;
+    font-size: var(--text-base);
+}
+
+@media (max-width: 480px) {
+    .activate-wrap { padding: 16px; }
+    .activate-card { border-radius: var(--radius-md); }
+    .activate-header, .activate-body {
+        padding-left: 20px;
+        padding-right: 20px;
+    }
+}
+</style>
+{% endblock %}
+{% block body %}
+<div class="activate-wrap">
+    <div class="activate-card" role="main">
+        <div class="activate-header">
+            <div class="logo-mark" aria-hidden="true">
+                <svg width="14" height="9" viewBox="0 0 220 140" fill="none">
+                    <path d="M8 18 Q8 12, 14 12 L75 55 Q82 60, 82 70 Q82 80, 75 85 L14 128 Q8 128, 8 122 Z" fill="currentColor"/>
+                    <path d="M212 18 Q212 12, 206 12 L145 55 Q138 60, 138 70 Q138 80, 145 85 L206 128 Q212 128, 212 122 Z" fill="currentColor"/>
+                    <rect x="84" y="44" width="52" height="52" rx="12" fill="currentColor"/>
+                </svg>
+            </div>
+            <span class="logo-text">Agent Cordon</span>
+        </div>
+
+        <div class="activate-body">
+            <h1 class="activate-title">Replace existing workspace?</h1>
+
+            <div class="activate-warning" role="alert">
+                A workspace named <strong>{{ workspace_name }}</strong> already exists.
+                Replacing will invalidate the existing registration. Continue?
+            </div>
+
+            {% if let Some(info) = existing_device_info %}
+            <p class="activate-existing">Current registration: {{ info }}</p>
+            {% endif %}
+
+            <form method="POST" action="/activate">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="user_code" value="{{ user_code }}">
+                <input type="hidden" name="confirm_replace" value="true">
+
+                <div class="activate-actions">
+                    <a href="/activate" class="btn btn-deny" role="button">Cancel</a>
+                    <button type="submit" name="decision" value="approve" class="btn btn-approve" autofocus>Replace</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

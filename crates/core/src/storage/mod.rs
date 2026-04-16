@@ -21,6 +21,7 @@ pub trait Store:
     UserStore
     + SessionStore
     + CredentialStore
+    + DeviceCodeStore
     + SecretHistoryStore
     + PolicyStore
     + AuditStore

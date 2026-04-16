@@ -6,6 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use agent_cordon_core::oauth2::client_credentials::OAuth2TokenManager;
+
 use crate::config::BrokerConfig;
 use crate::oauth2_refresh::OAuth2RefreshManager;
 
@@ -58,16 +60,25 @@ impl WorkspaceState {
     }
 }
 
-/// Pending OAuth registration (in-flight consent flow).
+/// Pending RFC 8628 device authorization registration (in-flight approval).
+///
+/// Keyed by `pk_hash` in [`BrokerState::pending`]. The broker polls the
+/// server's token endpoint in a background task; on success the workspace is
+/// inserted into [`BrokerState::workspaces`] and this entry is removed. On
+/// failure (expired, denied) the error is surfaced via
+/// [`BrokerState::registration_errors`].
+///
+/// SECURITY: `device_code` is an opaque secret — it must NEVER be logged or
+/// returned to the CLI. Only `user_code` / `verification_uri` are surfaced.
 #[derive(Debug, Clone)]
-pub struct PendingRegistration {
+pub struct PendingDeviceRegistration {
     pub workspace_name: String,
-    pub client_id: String,
-    pub code_verifier: String,
-    pub redirect_uri: String,
-    pub pk_hash: String,
-    /// When this registration was created; used for TTL cleanup.
+    /// Opaque device code from the server — secret, do not log.
+    pub device_code: String,
+    /// When this pending entry was created; used for TTL cleanup.
     pub created_at: Instant,
+    /// Device code TTL (from server `expires_in`).
+    pub expires_in: std::time::Duration,
 }
 
 /// Cached MCP server with optional decrypted credential.
@@ -116,11 +127,12 @@ impl std::fmt::Debug for CachedCredential {
 pub struct BrokerState {
     /// Workspace states keyed by SHA-256 hex hash of Ed25519 public key.
     pub workspaces: RwLock<HashMap<String, WorkspaceState>>,
-    /// Pending OAuth registrations keyed by the `state` parameter.
-    pub pending: RwLock<HashMap<String, PendingRegistration>>,
-    /// Recent OAuth errors keyed by `pk_hash`. Set by the `/callback` route
-    /// when the IdP returns `error=...` so the polling `/status` endpoint can
-    /// surface the failure to the CLI instead of hanging until timeout.
+    /// Pending device-flow registrations keyed by `pk_hash`.
+    pub pending: RwLock<HashMap<String, PendingDeviceRegistration>>,
+    /// Recent registration errors keyed by `pk_hash`. Set by the background
+    /// device-code poll task when the server returns `access_denied`,
+    /// `expired_token`, or a transport failure so the polling `/status`
+    /// endpoint can surface the failure to the CLI instead of hanging.
     pub registration_errors: RwLock<HashMap<String, String>>,
     /// Cached MCP server configs per workspace (keyed by pk_hash).
     pub mcp_configs: RwLock<HashMap<String, Vec<CachedMcpServer>>>,
@@ -134,8 +146,9 @@ pub struct BrokerState {
     pub config: BrokerConfig,
     /// OAuth2 refresh token manager for authorization code credentials.
     pub oauth2_refresh: OAuth2RefreshManager,
-    /// Actual port the broker is bound to (resolves port-0 auto-select).
-    pub bound_port: u16,
+    /// OAuth2 client credentials token manager — acquires and caches access
+    /// tokens for `oauth2_client_credentials` credentials.
+    pub oauth2_cc: OAuth2TokenManager,
 }
 
 impl BrokerState {

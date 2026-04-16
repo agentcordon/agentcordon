@@ -50,7 +50,7 @@ def oauth_proxy_client_list(ctx: dict) -> dict:
 OAUTH_PROXY_CLIENT_LIST_NODE = DagNode(
     name="oauth_proxy.client_list",
     fn=oauth_proxy_client_list,
-    depends_on=["workspace.oauth_register"],
+    depends_on=["workspace.device_code_exchange"],
     produces=[],
     consumes=["base_url", "admin_session_cookie"],
     critical=False,

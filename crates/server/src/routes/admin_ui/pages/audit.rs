@@ -118,7 +118,7 @@ pub async fn audit_page(State(state): State<AppState>, request: Request) -> Resp
         // Deduplicate by event ID, sort newest-first, and truncate
         let mut seen = std::collections::HashSet::new();
         events.retain(|e| seen.insert(e.id));
-        events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        events.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
         events.truncate(50);
         events
     };

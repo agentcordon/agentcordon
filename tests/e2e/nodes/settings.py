@@ -262,7 +262,7 @@ def settings_workspace_count_accurate(ctx: dict) -> dict:
 SETTINGS_WORKSPACE_COUNT_NODE = DagNode(
     name="settings.workspace_count_accurate",
     fn=settings_workspace_count_accurate,
-    depends_on=["workspace.oauth_register"],
+    depends_on=["workspace.device_code_exchange"],
     produces=[],
     consumes=["base_url", "admin_session_cookie"],
     critical=False,

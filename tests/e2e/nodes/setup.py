@@ -280,7 +280,7 @@ def permission_grant(ctx: dict) -> dict:
 PERMISSION_GRANT_NODE = DagNode(
     name="permission.grant",
     fn=permission_grant,
-    depends_on=["workspace.oauth_register", "credential.create"],
+    depends_on=["workspace.device_code_exchange", "credential.create"],
     produces=["permission_granted"],
     consumes=[
         "base_url", "admin_session_cookie", "csrf_token", "credential_id",

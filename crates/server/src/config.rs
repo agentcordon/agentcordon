@@ -55,6 +55,26 @@ pub struct AppConfig {
     /// or "AgentCordon"). Helps distinguish multiple AgentCordon instances in a
     /// provider's admin UI.
     pub instance_label: Option<String>,
+    /// RFC 8628 device authorization grant: TTL for device_code / user_code (seconds).
+    /// Default 600 (10 minutes). Override via `AGTCRDN_DEVICE_CODE_TTL_SECS`.
+    pub device_code_ttl_secs: i64,
+    /// RFC 8628 device authorization grant: baseline poll interval in seconds.
+    /// Default 5. Override via `AGTCRDN_DEVICE_CODE_POLL_INTERVAL_SECS`.
+    pub device_code_poll_interval_secs: i64,
+}
+
+impl AppConfig {
+    /// Canonical base URL for this server, used to construct absolute URIs
+    /// in OAuth responses (device flow verification_uri, etc.). Strips
+    /// trailing slashes. Falls back to `http://<listen_addr>` if `base_url`
+    /// is not set.
+    pub fn server_base_url(&self) -> String {
+        let raw = self
+            .base_url
+            .clone()
+            .unwrap_or_else(|| format!("http://{}", self.listen_addr));
+        raw.trim_end_matches('/').to_string()
+    }
 }
 
 impl std::fmt::Debug for AppConfig {
@@ -108,6 +128,8 @@ impl AppConfig {
             mcp_templates_dir: None,
             policy_templates_dir: None,
             instance_label: None,
+            device_code_ttl_secs: 600,
+            device_code_poll_interval_secs: 5,
         }
     }
 
@@ -313,6 +335,16 @@ impl AppConfig {
             mcp_templates_dir: env::var("AGTCRDN_MCP_TEMPLATES_DIR").ok(),
             policy_templates_dir: env::var("AGTCRDN_POLICY_TEMPLATES_DIR").ok(),
             instance_label: env::var("AGTCRDN_INSTANCE_LABEL").ok(),
+            device_code_ttl_secs: env::var("AGTCRDN_DEVICE_CODE_TTL_SECS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .map(|v| v.clamp(30, 3600))
+                .unwrap_or(600),
+            device_code_poll_interval_secs: env::var("AGTCRDN_DEVICE_CODE_POLL_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .map(|v| v.clamp(1, 60))
+                .unwrap_or(5),
         })
     }
 }

@@ -105,7 +105,10 @@ The broker daemon runs on the user's machine (or as a shared service) and manage
 agentcordon-broker --server-url http://localhost:3140
 ```
 
-The broker starts on port 3141 by default and opens a browser for OAuth consent on first run.
+The broker starts on port 3141 by default. On first run it requests a
+device code from the server and prints a short 4-word passphrase plus an
+activation URL — you approve the registration in any browser, on any host.
+There is no loopback callback and no ephemeral port to forward.
 
 ### 3. Set up a workspace
 
@@ -116,7 +119,30 @@ export AGTCRDN_BROKER_URL=http://localhost:3141   # default; set if broker is on
 agentcordon setup http://localhost:3140
 ```
 
-This generates an Ed25519 keypair, registers the workspace with the broker, and writes agent instruction files in one step.
+You will see something like:
+
+```
+To finish setting up this workspace, open:
+
+    http://localhost:3140/activate
+
+and enter the code:
+
+    tidy-zoned-zit-ramp
+
+Waiting for approval... (expires in 10 minutes)
+```
+
+Open the URL in any browser (including one on a completely different
+machine), sign in, paste the 4-word code, and click **Approve**. The CLI
+will detect the approval, generate an Ed25519 keypair, register the
+workspace with the broker, and write agent instruction files — all in one
+step.
+
+This uses [RFC 8628 OAuth 2.0 Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628),
+the same flow as `gh auth login`, `az login --use-device-code`, and
+`aws sso login`. The broker can run on a remote host, inside a container,
+or on a headless server without any port forwarding.
 
 <details>
 <summary>Manual setup (advanced)</summary>
@@ -125,10 +151,38 @@ If you prefer to control each step individually:
 
 ```bash
 agentcordon init                 # Generate Ed25519 keypair + agent instruction files
-agentcordon register             # Register workspace with broker
+agentcordon register             # Start the device flow and register workspace with broker
 ```
 
 </details>
+
+### Installing on Windows
+
+On Windows 10 / 11, the fastest way to install both the CLI and the broker
+is the one-liner PowerShell installer served by your AgentCordon server:
+
+```powershell
+irm https://your-server.example.com/install.ps1 | iex
+```
+
+This downloads `agentcordon.exe` and `agentcordon-broker.exe` from the
+matching GitHub release, verifies their SHA-256 checksums, installs them
+to `%LOCALAPPDATA%\AgentCordon\bin`, and adds that directory to your
+user PATH. No admin rights required, no Windows service — the broker
+runs in the terminal you started it from and exits when that terminal
+closes, just like on Unix.
+
+![Activate page](docs/assets/activate-page.png)
+
+After the installer finishes, open a new terminal and run:
+
+```powershell
+agentcordon-broker --server-url https://your-server.example.com
+agentcordon setup https://your-server.example.com
+```
+
+The device flow works identically on Windows — copy the 4-word code into
+a browser and approve.
 
 ### 4. Use credentials
 

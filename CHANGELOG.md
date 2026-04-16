@@ -2,6 +2,26 @@
 
 All notable changes to AgentCordon are documented in this file.
 
+## [0.3.0] - 2026-04-09
+
+### Added
+
+- **RFC 8628 Device Authorization Grant** for workspace registration. The broker prints a 4-word passphrase user code and an activation URL; users approve the registration from any browser, on any host — matching the `gh auth login`, `az login --use-device-code`, and `aws sso login` pattern. New endpoints: `POST /oauth/device/code`, `POST /oauth/token` (extended with the `urn:ietf:params:oauth:grant-type:device_code` grant), and `GET/POST /activate` with `GET /activate/success`. New `device_codes` table. New audit events: `DeviceCodeIssued`, `DeviceCodeApproved`, `DeviceCodeDenied`, `DeviceCodeExpired`.
+- **Windows PowerShell installer** — one-liner `irm https://<server>/install.ps1 | iex`. Downloads both `agentcordon.exe` and `agentcordon-broker.exe` from the GitHub release, verifies SHA-256 checksums, installs to `%LOCALAPPDATA%\AgentCordon\bin`, and adds that directory to the user PATH. New server route `GET /install.ps1` serves the templated installer. (`tools/install.ps1`)
+- Broker now runs on Windows with the same lifecycle as on Unix: started from a terminal, dies with the terminal, no Windows service required.
+
+### Changed
+
+- Workspace registration UX: users copy a 4-word code into a browser instead of waiting for a loopback redirect. No more ephemeral listener on the broker host.
+
+### Breaking
+
+- **Workspace registration now uses RFC 8628 device flow exclusively.** The previous loopback Authorization Code flow has been removed, along with the broker's ephemeral HTTP listener. Any automation that drove the old loopback callback will stop working. There is no `--legacy-loopback` flag. **Existing registered workspaces are unaffected** — their refresh tokens continue to work and no re-registration is required.
+
+### Fixed
+
+- **Broker works on a different host from the user's browser** — remote dev boxes, containers, headless servers, and SSH sessions. Previously the loopback callback required broker, browser, and server to share a host. This was the original headless-broker bug.
+
 ## [0.2.2] - 2026-04-08
 
 ### Fixed

@@ -184,8 +184,8 @@ pub fn load_recovery(path: &Path) -> HashMap<String, RecoveryEntry> {
 /// Convenience helper: read all workspaces from shared state, map to recovery
 /// entries, and save to disk.
 ///
-/// Called from multiple persistence points (callback, refresh, deregister,
-/// shutdown) to keep the recovery store in sync.
+/// Called from multiple persistence points (device approval, refresh,
+/// deregister, shutdown) to keep the recovery store in sync.
 pub async fn save_recovery_store(state: &SharedState) {
     let entries: HashMap<String, RecoveryEntry> = {
         let workspaces = state.workspaces.read().await;

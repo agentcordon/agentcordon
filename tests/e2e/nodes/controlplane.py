@@ -82,7 +82,7 @@ def controlplane_workspace_list(ctx: dict) -> dict:
 CONTROLPLANE_WORKSPACE_LIST_NODE = DagNode(
     name="controlplane.workspace_list",
     fn=controlplane_workspace_list,
-    depends_on=["workspace.oauth_register"],
+    depends_on=["workspace.device_code_exchange"],
     produces=[],
     consumes=["base_url", "admin_session_cookie"],
     critical=False,

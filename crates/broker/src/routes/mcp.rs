@@ -17,17 +17,89 @@ use super::helpers::{
     error_response, get_access_token, ok_response, require_scope, with_token_refresh,
 };
 
+/// Exchange an `oauth2_client_credentials` credential for an access token
+/// via the provider's token endpoint, using the broker's `OAuth2TokenManager`.
+async fn resolve_client_credentials_value(
+    state: &SharedState,
+    credential_name: &str,
+    cred: &CachedCredential,
+) -> Option<String> {
+    let client_id = cred.metadata.get("oauth2_client_id")?;
+    let token_endpoint = cred.metadata.get("oauth2_token_endpoint")?;
+    let scopes = cred
+        .metadata
+        .get("oauth2_scopes")
+        .cloned()
+        .unwrap_or_default();
+
+    // Build a minimal StoredCredential for the token manager's cache key.
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(credential_name.as_bytes());
+    let cache_id = uuid::Uuid::from_bytes(hash[..16].try_into().unwrap());
+    let cache_cred = agent_cordon_core::domain::credential::StoredCredential {
+        id: agent_cordon_core::domain::credential::CredentialId(cache_id),
+        name: credential_name.to_string(),
+        service: String::new(),
+        encrypted_value: vec![],
+        nonce: vec![],
+        scopes: vec![],
+        metadata: serde_json::json!({
+            "oauth2_client_id": client_id,
+            "oauth2_token_endpoint": token_endpoint,
+            "oauth2_scopes": scopes,
+        }),
+        created_by: None,
+        created_by_user: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        allowed_url_pattern: None,
+        expires_at: None,
+        transform_script: None,
+        transform_name: None,
+        vault: String::new(),
+        credential_type: "oauth2_client_credentials".to_string(),
+        tags: vec![],
+        description: None,
+        target_identity: None,
+        key_version: 0,
+    };
+
+    match state.oauth2_cc.get_token(&cache_cred, &cred.value).await {
+        Ok(result) => {
+            tracing::debug!(
+                credential = %credential_name,
+                cached = !result.was_refreshed,
+                "oauth2 client_credentials token acquired for MCP"
+            );
+            Some(result.access_token)
+        }
+        Err(e) => {
+            tracing::warn!(
+                credential = %credential_name,
+                error = %e,
+                "OAuth2 client_credentials token exchange failed for MCP credential"
+            );
+            None
+        }
+    }
+}
+
 /// Resolve the effective credential value for a cached credential.
 ///
 /// For `oauth2_user_authorization` credentials, exchanges the stored refresh
-/// token for an access token via the token endpoint. For all other types,
-/// returns the raw value as-is.
+/// token for an access token via the token endpoint. For `oauth2_client_credentials`,
+/// exchanges the client secret for an access token via the client credentials grant.
+/// For all other types, returns the raw value as-is.
 async fn resolve_credential_value(
     state: &SharedState,
     pk_hash: &str,
     credential_name: &str,
     cred: &CachedCredential,
 ) -> Option<String> {
+    if cred.credential_type == "oauth2_client_credentials" {
+        return resolve_client_credentials_value(state, credential_name, cred).await;
+    }
+
     if cred.credential_type != "oauth2_user_authorization" {
         return Some(cred.value.clone());
     }

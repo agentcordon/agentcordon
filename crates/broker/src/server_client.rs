@@ -19,6 +19,46 @@ pub struct ApiEnvelope<T> {
     pub data: T,
 }
 
+/// Response from `POST /api/v1/oauth/device/code` (RFC 8628 §3.2).
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceCodeResponse {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    #[serde(default)]
+    pub verification_uri_complete: Option<String>,
+    pub expires_in: u64,
+    #[serde(default = "default_device_interval")]
+    pub interval: u64,
+}
+
+fn default_device_interval() -> u64 {
+    5
+}
+
+/// Outcome of a single device-code token poll. The four RFC 8628 §3.5
+/// error values are first-class variants so the broker's poll loop can
+/// implement its `slow_down`/`expired_token`/`access_denied` state machine
+/// without reparsing strings.
+#[derive(Debug)]
+pub enum DeviceTokenPollResult {
+    Pending,
+    SlowDown,
+    Expired,
+    Denied,
+    Success(TokenResponse),
+    /// Any other RFC-defined error (e.g. `invalid_grant`).
+    Other(String),
+    /// Transport / deserialization error — treat like `Pending` in the
+    /// caller (retry) but log.
+    Transport(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct DeviceTokenErrorBody {
+    error: String,
+}
+
 /// Response from `POST /api/v1/oauth/token`.
 #[derive(Debug, Deserialize)]
 pub struct TokenResponse {
@@ -150,22 +190,28 @@ impl ServerClient {
         }
     }
 
-    /// Exchange an authorization code for tokens.
-    pub async fn exchange_auth_code(
+    /// Request a device authorization code (RFC 8628 §3.1).
+    ///
+    /// Extends RFC 8628 with AgentCordon-specific `workspace_name` and
+    /// `public_key_hash` form fields so the server can bind the pending
+    /// device code to a specific workspace identity. On approval the server
+    /// creates (or replaces, per the v0.3.0 locked-decision behaviour) the
+    /// workspace owned by the approving user.
+    pub async fn request_device_code(
         &self,
-        code: &str,
-        code_verifier: &str,
-        redirect_uri: &str,
         client_id: &str,
-    ) -> Result<TokenResponse, ServerClientError> {
-        let url = format!("{}/api/v1/oauth/token", self.base_url);
+        scopes: &[String],
+        workspace_name: &str,
+        public_key_hash: &str,
+    ) -> Result<DeviceCodeResponse, ServerClientError> {
+        let url = format!("{}/api/v1/oauth/device/code", self.base_url);
 
+        let scope = scopes.join(" ");
         let params = [
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", redirect_uri),
             ("client_id", client_id),
-            ("code_verifier", code_verifier),
+            ("scope", &scope),
+            ("workspace_name", workspace_name),
+            ("public_key_hash", public_key_hash),
         ];
 
         let resp = self
@@ -185,12 +231,59 @@ impl ServerClient {
             });
         }
 
-        let token_resp: TokenResponse = resp
+        let device_resp: DeviceCodeResponse = resp
             .json()
             .await
             .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
+        Ok(device_resp)
+    }
 
-        Ok(token_resp)
+    /// Poll the server's token endpoint once with the device_code grant
+    /// (RFC 8628 §3.4). Returns a [`DeviceTokenPollResult`] rather than an
+    /// error for the four RFC-defined pending/failure cases, because the
+    /// caller drives its own state machine around them.
+    ///
+    /// SECURITY: `device_code` is a secret — callers must not log it.
+    pub async fn poll_device_token(
+        &self,
+        device_code: &str,
+        client_id: &str,
+    ) -> DeviceTokenPollResult {
+        let url = format!("{}/api/v1/oauth/token", self.base_url);
+
+        let params = [
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ("device_code", device_code),
+            ("client_id", client_id),
+        ];
+
+        let resp = match self.http.post(&url).form(&params).send().await {
+            Ok(r) => r,
+            Err(e) => return DeviceTokenPollResult::Transport(e.to_string()),
+        };
+
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+
+        if status.is_success() {
+            match serde_json::from_str::<TokenResponse>(&text) {
+                Ok(t) => DeviceTokenPollResult::Success(t),
+                Err(e) => DeviceTokenPollResult::Transport(format!("invalid token JSON: {e}")),
+            }
+        } else {
+            // RFC 8628 §3.5 defines error codes in a JSON body on 4xx.
+            let err: DeviceTokenErrorBody =
+                serde_json::from_str(&text).unwrap_or(DeviceTokenErrorBody {
+                    error: "invalid_request".to_string(),
+                });
+            match err.error.as_str() {
+                "authorization_pending" => DeviceTokenPollResult::Pending,
+                "slow_down" => DeviceTokenPollResult::SlowDown,
+                "expired_token" => DeviceTokenPollResult::Expired,
+                "access_denied" => DeviceTokenPollResult::Denied,
+                other => DeviceTokenPollResult::Other(other.to_string()),
+            }
+        }
     }
 
     /// Refresh an OAuth token.

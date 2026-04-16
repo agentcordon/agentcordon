@@ -1,4 +1,3 @@
-pub mod callback;
 pub mod credentials;
 pub mod deregister;
 pub mod health;
@@ -40,7 +39,6 @@ pub fn build_router(state: SharedState) -> Router {
     let public = Router::new()
         .route("/health", get(health::get_health))
         .route("/register", post(register::post_register))
-        .route("/callback", get(callback::get_callback))
         .with_state(state);
 
     public.merge(authenticated)

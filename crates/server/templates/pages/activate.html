@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}Activate Device — Agent Cordon{% endblock %}
+{% block head %}
+<style>
+.activate-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+    background: var(--wash);
+}
+
+.activate-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    width: 100%;
+    max-width: 440px;
+    overflow: hidden;
+}
+
+.activate-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 20px 28px 16px;
+    border-bottom: 1px solid var(--line);
+}
+
+.activate-header .logo-mark {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent);
+    border-radius: var(--radius-sm);
+    color: #fff;
+    flex-shrink: 0;
+}
+
+.activate-header .logo-text {
+    font-weight: 600;
+    font-size: var(--text-lg);
+    color: var(--ink);
+}
+
+.activate-body {
+    padding: 24px 28px;
+}
+
+.activate-title {
+    font-size: var(--text-xl);
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 8px;
+}
+
+.activate-desc {
+    font-size: var(--text-base);
+    color: var(--ink-soft);
+    line-height: 1.6;
+    margin-bottom: 20px;
+}
+
+.activate-alert {
+    background: var(--danger-bg);
+    color: var(--danger);
+    border: 1px solid rgba(194,48,48,0.2);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    font-size: var(--text-sm);
+    margin-bottom: 16px;
+}
+
+.activate-form-group {
+    margin-bottom: 20px;
+}
+
+.activate-form-group label {
+    display: block;
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--ink);
+    margin-bottom: 6px;
+}
+
+.activate-code-input {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: var(--text-lg);
+    letter-spacing: 0.08em;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--ink);
+    text-align: center;
+    box-sizing: border-box;
+}
+
+.activate-code-input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: var(--accent);
+}
+
+.activate-scopes {
+    list-style: none;
+    margin: 0 0 20px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+}
+
+.activate-scope-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    font-size: var(--text-sm);
+    color: var(--ink);
+}
+
+.activate-scope-item:last-child {
+    border-bottom: none;
+}
+
+.activate-scope-item::before {
+    content: "\2713";
+    color: var(--safe);
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.activate-actions {
+    display: flex;
+    gap: 12px;
+}
+
+.activate-actions .btn {
+    flex: 1;
+    justify-content: center;
+    height: 40px;
+    font-size: var(--text-base);
+}
+
+.activate-footer {
+    padding: 14px 28px;
+    border-top: 1px solid var(--line);
+    text-align: center;
+    font-size: var(--text-xs);
+    color: var(--ink-faint);
+}
+
+@media (max-width: 480px) {
+    .activate-wrap { padding: 16px; }
+    .activate-card { border-radius: var(--radius-md); }
+    .activate-header, .activate-body, .activate-footer {
+        padding-left: 20px;
+        padding-right: 20px;
+    }
+}
+</style>
+{% endblock %}
+{% block body %}
+<div class="activate-wrap">
+    <div class="activate-card" role="main">
+        <div class="activate-header">
+            <div class="logo-mark" aria-hidden="true">
+                <svg width="14" height="9" viewBox="0 0 220 140" fill="none">
+                    <path d="M8 18 Q8 12, 14 12 L75 55 Q82 60, 82 70 Q82 80, 75 85 L14 128 Q8 128, 8 122 Z" fill="currentColor"/>
+                    <path d="M212 18 Q212 12, 206 12 L145 55 Q138 60, 138 70 Q138 80, 145 85 L206 128 Q212 128, 212 122 Z" fill="currentColor"/>
+                    <rect x="84" y="44" width="52" height="52" rx="12" fill="currentColor"/>
+                </svg>
+            </div>
+            <span class="logo-text">Agent Cordon</span>
+        </div>
+
+        <div class="activate-body">
+            <h1 class="activate-title">Activate a new device</h1>
+            <p class="activate-desc">
+                Enter the code shown in your terminal to connect this device to AgentCordon.
+            </p>
+
+            {% if let Some(msg) = error_message %}
+            <div class="activate-alert" role="alert" aria-live="assertive">{{ msg }}</div>
+            {% endif %}
+
+            <form method="POST" action="/activate" autocomplete="off">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <div class="activate-form-group">
+                    <label for="activate-user-code">Activation code</label>
+                    <input
+                        id="activate-user-code"
+                        name="user_code"
+                        type="text"
+                        class="activate-code-input"
+                        placeholder="word-word-word-word"
+                        required
+                        spellcheck="false"
+                        autocapitalize="off"
+                        autocorrect="off"
+                        {% if let Some(code) = user_code_prefill %}value="{{ code }}"{% else %}autofocus{% endif %}
+                    >
+                </div>
+
+                {% if !scopes_description.is_empty() %}
+                <ul class="activate-scopes" aria-label="Permissions to be granted">
+                    {% for scope in scopes_description %}
+                    <li class="activate-scope-item">{{ scope }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+
+                <div class="activate-actions">
+                    <button type="submit" name="decision" value="deny" class="btn btn-deny">Deny</button>
+                    <button type="submit" name="decision" value="approve" class="btn btn-approve"
+                        {% if user_code_prefill.is_some() %}autofocus{% endif %}>Approve</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="activate-footer">
+            Approving will connect this device to your workspace.
+        </div>
+    </div>
+</div>
+{% endblock %}

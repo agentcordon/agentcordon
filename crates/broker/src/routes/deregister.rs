@@ -38,10 +38,15 @@ pub async fn post_deregister(
     // Update recovery store (remove deregistered workspace)
     token_store::save_recovery_store(&state).await;
 
-    // Remove any pending registrations for this pk_hash
+    // Remove any pending device-flow registration for this pk_hash.
+    // The background poll task observes this deletion and exits cleanly.
     {
         let mut pending = state.pending.write().await;
-        pending.retain(|_state, reg| reg.pk_hash != auth.pk_hash);
+        pending.remove(&auth.pk_hash);
+    }
+    {
+        let mut errs = state.registration_errors.write().await;
+        errs.remove(&auth.pk_hash);
     }
 
     tracing::info!(pk_hash = %auth.pk_hash, "workspace deregistered via --force");

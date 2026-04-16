@@ -301,6 +301,8 @@ impl TestAppBuilder {
             encryptor: encryptor.clone(),
             config,
             login_rate_limiter,
+            device_approve_limiter:
+                crate::middleware::rate_limit_device_approve::DeviceApproveRateLimiter::new(),
             metrics_handle,
             session_hash_key,
             oauth2_token_manager: agent_cordon_core::oauth2::OAuth2TokenManager::new(),

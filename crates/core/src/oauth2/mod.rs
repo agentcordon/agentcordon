@@ -8,6 +8,7 @@
 #[cfg(feature = "http-client")]
 pub mod client_credentials;
 
+pub mod eff_wordlist;
 pub mod storage;
 pub mod tokens;
 pub mod types;

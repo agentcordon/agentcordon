@@ -157,15 +157,41 @@ async fn vend_inner(
         jwk_to_uncompressed_point(&encryption_jwk)?
     };
 
-    // Decrypt (AES-GCM) → re-encrypt (ECIES) for the recipient device
-    let (envelope, vend_id) = crate::crypto_helpers::reencrypt_credential_for_device_with_prefix(
-        state.encryptor.as_ref(),
-        cred,
-        &workspace.id.0.to_string(),
-        &ws_pub_bytes,
-        "vnd",
-    )
-    .await?;
+    // Decrypt (AES-GCM) → re-encrypt (ECIES) for the recipient device.
+    // For oauth2_client_credentials, include OAuth2 metadata (client_id,
+    // token_endpoint, scopes) so the broker can exchange the client secret
+    // for an access token before proxying upstream.
+    let (envelope, vend_id) = if cred.credential_type == "oauth2_client_credentials" {
+        let mut meta = std::collections::HashMap::new();
+        if let Some(obj) = cred.metadata.as_object() {
+            for key in &[
+                "oauth2_client_id",
+                "oauth2_token_endpoint",
+                "oauth2_scopes",
+            ] {
+                if let Some(val) = obj.get(*key).and_then(|v| v.as_str()) {
+                    meta.insert(key.to_string(), val.to_string());
+                }
+            }
+        }
+        crate::crypto_helpers::reencrypt_credential_with_metadata(
+            state.encryptor.as_ref(),
+            cred,
+            &workspace.id.0.to_string(),
+            &ws_pub_bytes,
+            meta,
+        )
+        .await?
+    } else {
+        crate::crypto_helpers::reencrypt_credential_for_device_with_prefix(
+            state.encryptor.as_ref(),
+            cred,
+            &workspace.id.0.to_string(),
+            &ws_pub_bytes,
+            "vnd",
+        )
+        .await?
+    };
 
     // Domain audit: credential was vended — NEVER include credential secret values.
     // Include the policy reasoning so the audit UI can link to contributing policies.

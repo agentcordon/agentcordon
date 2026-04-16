@@ -4,6 +4,7 @@
 mod broker;
 mod commands;
 mod error;
+mod platform;
 mod signing;
 
 use clap::{Parser, Subcommand};

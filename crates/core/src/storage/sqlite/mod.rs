@@ -1,5 +1,6 @@
 mod audit;
 mod credentials;
+mod device_codes;
 pub(crate) mod helpers;
 mod mcp;
 mod mcp_oauth;

@@ -9,6 +9,7 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use crate::auditing_policy_engine::AuditingPolicyEngine;
 use crate::config::AppConfig;
 use crate::events::{EventBus, SseConnectionTracker, UiEventBus};
+use crate::middleware::rate_limit_device_approve::DeviceApproveRateLimiter;
 use crate::rate_limit::LoginRateLimiter;
 use crate::routes::admin_api::credential_templates::CredentialTemplate;
 use crate::routes::admin_api::mcp_templates::McpServerTemplate;
@@ -24,6 +25,8 @@ pub struct AppState {
     pub encryptor: Arc<AesGcmEncryptor>,
     pub config: AppConfig,
     pub login_rate_limiter: Arc<LoginRateLimiter>,
+    /// Per-(IP,user) rate limiter for `/oauth/device/approve` and `/oauth/device/deny`.
+    pub device_approve_limiter: Arc<DeviceApproveRateLimiter>,
     pub metrics_handle: PrometheusHandle,
     /// HMAC key for session token hashing (domain-separated from encryption/signing keys).
     pub session_hash_key: [u8; 32],

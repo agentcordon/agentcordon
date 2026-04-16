@@ -1,4 +1,11 @@
-use std::io::Write;
+//! `agentcordon register` — initiate RFC 8628 device flow.
+//!
+//! UX mirrors `gh auth login`: print the one-time code, pause for Enter,
+//! open the activation URL in the user's browser, then poll the broker's
+//! `/status` endpoint until the background device-code poll task inside
+//! the broker reports the workspace as registered (or errored).
+
+use std::io::{self, BufRead, Write};
 use std::time::Duration;
 
 use ed25519_dalek::Signer;
@@ -22,7 +29,14 @@ struct RegisterResponse {
 
 #[derive(Deserialize)]
 struct RegisterData {
-    authorization_url: String,
+    user_code: String,
+    verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: Option<String>,
+    expires_in: u64,
+    #[allow(dead_code)]
+    #[serde(default)]
+    interval: Option<u64>,
     #[allow(dead_code)]
     status: String,
 }
@@ -39,19 +53,15 @@ struct StatusData {
     scopes: Vec<String>,
 }
 
-/// Register this workspace with the broker, initiating OAuth consent.
+/// Register this workspace with the broker via device flow.
 pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(), CliError> {
     let client = BrokerClient::connect_for_registration().await?;
 
-    // If --force, clear any stale broker registration first
     if force {
         println!("Force mode: clearing existing broker registration...");
         match client.post_signed_empty("/deregister").await {
             Ok(_) => println!("Previous registration cleared."),
-            Err(_) => {
-                // Not registered or broker doesn't recognize us — that's fine
-                println!("No existing registration to clear (continuing).");
-            }
+            Err(_) => println!("No existing registration to clear (continuing)."),
         }
     }
 
@@ -66,7 +76,6 @@ pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(
         scopes
     };
 
-    // Derive workspace name from current directory
     let workspace_name = std::env::current_dir()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
@@ -74,15 +83,13 @@ pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(
 
     let public_key = client.keypair().public_key_hex();
 
-    // Sign: workspace_name \n public_key \n scopes_joined
-    // Field separators prevent boundary manipulation attacks.
     let scopes_joined = scopes.join(" ");
     let sign_payload = format!("{workspace_name}\n{public_key}\n{scopes_joined}");
     let signature = client.keypair().signing_key.sign(sign_payload.as_bytes());
     let signature_hex = hex::encode(signature.to_bytes());
 
     let req = RegisterRequest {
-        workspace_name,
+        workspace_name: workspace_name.clone(),
         public_key,
         scopes: scopes.clone(),
         signature: signature_hex,
@@ -90,35 +97,52 @@ pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(
 
     let resp: RegisterResponse = client.post_unsigned("/register", &req).await?;
 
-    // Try to open browser (unless --no-browser was passed for headless envs)
-    let url = &resp.data.authorization_url;
-    if no_browser {
-        println!("Open this URL in your browser to authorize:");
-        println!("  {url}");
-    } else if open_browser(url).is_err() {
-        println!("Open this URL in your browser to authorize:");
-        println!("  {url}");
-        println!("(tip: paste the URL into your browser if it didn't open automatically)");
-    } else {
-        println!("Opened authorization URL in browser.");
-        println!("If the browser did not open, visit: {url}");
-    }
-    // Flush so the URL is visible immediately even when stdout is piped
-    // or redirected (block-buffered). Without this, users running
-    // `agentcordon register | tee log.txt` see nothing until exit.
-    let _ = std::io::stdout().flush();
+    let activation_url = resp
+        .data
+        .verification_uri_complete
+        .clone()
+        .unwrap_or_else(|| resp.data.verification_uri.clone());
 
-    // Poll for registration completion (timeout: 5 minutes)
-    println!("Waiting for authorization...");
-    let _ = std::io::stdout().flush();
-    let timeout = Duration::from_secs(300);
+    // Print to stderr per locked decision #7 so the user_code is visible
+    // even when stdout is captured.
+    eprintln!();
+    eprintln!("! First, copy your one-time code: {}", resp.data.user_code);
+    eprintln!(
+        "Press Enter to open {} in your browser...",
+        resp.data.verification_uri
+    );
+    let _ = io::stderr().flush();
+
+    if !no_browser {
+        // Wait for the user to press Enter, then open the browser.
+        let stdin = io::stdin();
+        let mut line = String::new();
+        let _ = stdin.lock().read_line(&mut line);
+
+        if open_browser(&activation_url).is_err() {
+            eprintln!("Could not open browser automatically. Open this URL manually:");
+            eprintln!("  {activation_url}");
+        }
+    } else {
+        eprintln!("Open this URL in your browser to authorize:");
+        eprintln!("  {activation_url}");
+    }
+
+    eprintln!();
+    eprint!("Waiting for approval... ");
+    let _ = io::stderr().flush();
+
+    // Poll the broker until the background device-code task reports the
+    // workspace as registered (or surfaces an error via the auth middleware).
+    let timeout = Duration::from_secs(resp.data.expires_in.max(60));
     let poll_interval = Duration::from_secs(2);
     let start = std::time::Instant::now();
 
     loop {
         if start.elapsed() > timeout {
+            eprintln!();
             return Err(CliError::general(
-                "registration timed out. Visit the URL manually.",
+                "Code expired. Run agentcordon register to try again.",
             ));
         }
 
@@ -129,21 +153,16 @@ pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(
                 if status == 200 {
                     if let Ok(status_resp) = serde_json::from_str::<StatusResponse>(&body) {
                         if status_resp.data.registered {
+                            eprintln!("done!");
                             let scope_list = status_resp.data.scopes.join(", ");
-                            println!("Registered successfully. Scopes: [{scope_list}]");
+                            println!("Logged in as {workspace_name}. Scopes: [{scope_list}]");
                             return Ok(());
                         }
                     }
                 } else if status == 403 {
-                    return Err(CliError::authorization_denied(
-                        "authorization denied by user",
-                    ));
+                    eprintln!();
+                    return Err(CliError::authorization_denied("Authorization denied."));
                 } else if status == 401 {
-                    // Broker surfaces OAuth callback errors via the
-                    // `registration_failed` error code so we don't hang
-                    // until the 5-minute polling timeout. Any other 401
-                    // (e.g. `reregistration_required`) just means the
-                    // callback hasn't fired yet — keep polling.
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
                         let code = parsed
                             .get("error")
@@ -155,15 +174,26 @@ pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(
                                 .get("error")
                                 .and_then(|e| e.get("message"))
                                 .and_then(|m| m.as_str())
-                                .unwrap_or("OAuth authorization failed")
+                                .unwrap_or("device flow failed")
                                 .to_string();
+                            eprintln!();
+                            if msg.contains("expired") {
+                                return Err(CliError::general(
+                                    "Code expired. Run agentcordon register to try again.",
+                                ));
+                            }
+                            if msg.contains("denied") {
+                                return Err(CliError::authorization_denied(
+                                    "Authorization denied.",
+                                ));
+                            }
                             return Err(CliError::authorization_denied(msg));
                         }
                     }
                 }
             }
             Err(_) => {
-                // Broker may be processing, continue polling
+                // Broker may be starting/restarting; keep polling.
             }
         }
     }
@@ -176,12 +206,17 @@ fn open_browser(url: &str) -> Result<(), CliError> {
     #[cfg(target_os = "macos")]
     let cmd = "open";
     #[cfg(target_os = "windows")]
-    let cmd = "start";
+    let cmd = "cmd";
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     return Err(CliError::general("cannot detect browser command"));
 
+    #[cfg(target_os = "windows")]
+    let args: Vec<&str> = vec!["/C", "start", "", url];
+    #[cfg(not(target_os = "windows"))]
+    let args: Vec<&str> = vec![url];
+
     std::process::Command::new(cmd)
-        .arg(url)
+        .args(&args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()

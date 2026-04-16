@@ -70,6 +70,26 @@ pub async fn reencrypt_credential_with_metadata(
     recipient_pub_bytes: &[u8],
     metadata: std::collections::HashMap<String, String>,
 ) -> Result<(ReencryptedEnvelope, String), ApiError> {
+    reencrypt_credential_with_metadata_and_prefix(
+        encryptor,
+        cred,
+        workspace_id_str,
+        recipient_pub_bytes,
+        metadata,
+        "vnd",
+    )
+    .await
+}
+
+/// Like [`reencrypt_credential_with_metadata`] but with a custom vend-ID prefix.
+pub async fn reencrypt_credential_with_metadata_and_prefix(
+    encryptor: &dyn SecretEncryptor,
+    cred: &StoredCredential,
+    workspace_id_str: &str,
+    recipient_pub_bytes: &[u8],
+    metadata: std::collections::HashMap<String, String>,
+    vend_id_prefix: &str,
+) -> Result<(ReencryptedEnvelope, String), ApiError> {
     // Decrypt credential material (AES-GCM with credential ID as AAD)
     let plaintext = encryptor.decrypt(
         &cred.encrypted_value,
@@ -88,7 +108,7 @@ pub async fn reencrypt_credential_with_metadata(
         .map_err(|e| ApiError::Internal(format!("failed to serialize credential material: {e}")))?;
 
     // Build AAD: workspace_id||credential_id||vend_id||timestamp
-    let vend_id = format!("sync_{}", Uuid::new_v4());
+    let vend_id = format!("{}_{}", vend_id_prefix, Uuid::new_v4());
     let timestamp = chrono::Utc::now().timestamp().to_string();
     let aad = build_aad(
         workspace_id_str,

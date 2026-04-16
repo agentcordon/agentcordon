@@ -9,8 +9,11 @@ from tests.e2e.nodes.setup import get_nodes as _setup_nodes
 # --- Broker lifecycle ---
 from tests.e2e.nodes.broker import get_nodes as _broker_nodes
 
-# --- OAuth flow ---
-from tests.e2e.nodes.oauth_flow import get_nodes as _oauth_nodes
+# --- Device flow (v0.3.0 RFC 8628, replaces oauth_flow) ---
+from tests.e2e.nodes.device_flow import get_nodes as _device_flow_nodes
+
+# --- Windows installer assets ---
+from tests.e2e.nodes.windows import get_nodes as _windows_nodes
 
 # --- Broker proxy ---
 from tests.e2e.nodes.broker_proxy import get_nodes as _broker_proxy_nodes
@@ -64,7 +67,8 @@ def all_nodes():
     return (
         _setup_nodes()
         + _broker_nodes()
-        + _oauth_nodes()
+        + _device_flow_nodes()
+        + _windows_nodes()
         + _broker_proxy_nodes()
         + _oauth_security_nodes()
         + _oauth_audit_nodes()

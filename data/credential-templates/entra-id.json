@@ -6,7 +6,7 @@
   "auth_type": "oauth2_client_credentials",
   "header": "Authorization",
   "allowed_url_pattern": "https://*.microsoft.com/*",
-  "fields": ["secret_value", "oauth2_client_id", "oauth2_token_endpoint", "oauth2_scopes"],
+  "fields": ["secret_value", "oauth2_client_id", "tenant_id", "oauth2_scopes"],
   "description": "OAuth2 client credentials for Microsoft Entra ID (Azure AD). Tokens are acquired automatically and injected as a Bearer header.",
   "tags": ["azure", "microsoft", "entra", "oauth2"],
   "sort_order": 65,

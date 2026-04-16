@@ -8,6 +8,7 @@ pub mod compose;
 pub mod config;
 pub mod credential_service;
 pub mod crypto_helpers;
+pub mod device_code_service;
 pub mod docs;
 pub mod events;
 pub mod extractors;
@@ -50,7 +51,7 @@ pub fn build_router(app_state: AppState) -> Router {
         .merge(swagger::routes())
         .nest(
             "/api/v1",
-            routes::api_routes().merge(routes::shared::sse::routes()),
+            routes::api_routes(app_state.clone()).merge(routes::shared::sse::routes()),
         )
         .merge(routes::admin_ui::pages::page_routes(app_state.clone()))
         .route("/install.sh", get(install_sh_info))

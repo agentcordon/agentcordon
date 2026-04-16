@@ -15,11 +15,11 @@ use axum::Router;
 
 use crate::state::AppState;
 
-pub fn api_routes() -> Router<AppState> {
+pub fn api_routes(state: AppState) -> Router<AppState> {
     Router::new()
         .merge(control_plane::routes())
         .merge(admin_api::routes())
-        .merge(oauth::routes())
+        .merge(oauth::routes(state))
         .merge(shared::docs::routes())
         .merge(shared::openapi::routes())
 }

@@ -1,5 +1,6 @@
 mod audit_store;
 mod credential_store;
+mod device_code_store;
 mod mcp_oauth_store;
 mod mcp_store;
 mod oauth_provider_client_store;
@@ -14,6 +15,7 @@ mod workspace_store;
 
 pub use audit_store::{AuditFilter, AuditStore};
 pub use credential_store::CredentialStore;
+pub use device_code_store::DeviceCodeStore;
 pub use mcp_oauth_store::McpOAuthStore;
 pub use mcp_store::McpStore;
 pub use oauth_provider_client_store::OAuthProviderClientStore;

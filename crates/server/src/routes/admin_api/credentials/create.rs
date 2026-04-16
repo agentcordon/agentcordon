@@ -207,6 +207,11 @@ pub(crate) async fn store_credential(
                 ));
             }
         }
+        if token_endpoint.contains('{') || token_endpoint.contains('}') {
+            return Err(ApiError::BadRequest(
+                "oauth2_token_endpoint contains unresolved placeholder (e.g. {tenant_id}); substitute before submitting".to_string(),
+            ));
+        }
 
         // secret_value is required (the client_secret)
         match req.secret_value {

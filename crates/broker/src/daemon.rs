@@ -11,6 +11,8 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
+use agent_cordon_core::oauth2::client_credentials::OAuth2TokenManager;
+
 use crate::config::BrokerConfig;
 use crate::mcp_sync;
 use crate::oauth2_refresh::OAuth2RefreshManager;
@@ -67,7 +69,7 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
         encryption_key,
         config: config.clone(),
         oauth2_refresh: OAuth2RefreshManager::new(),
-        bound_port,
+        oauth2_cc: OAuth2TokenManager::new(),
     });
 
     // 6. Write port and PID files

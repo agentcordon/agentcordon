@@ -27,16 +27,21 @@ pub fn spawn_refresh_task(state: SharedState) -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// Remove pending registrations older than 10 minutes.
+/// Remove pending device-flow registrations whose device code has passed
+/// its server-advertised TTL (with a small grace buffer). The background
+/// poll task also removes entries on terminal outcomes; this sweep is a
+/// safety net for tasks that never ran (e.g. broker just started with a
+/// stale pending entry from a previous session — currently impossible
+/// since pending is in-memory, but guards against future persistence).
 async fn cleanup_stale_pending(state: &SharedState) {
-    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
+    const GRACE: std::time::Duration = std::time::Duration::from_secs(60);
     let now = Instant::now();
     let mut pending = state.pending.write().await;
     let before = pending.len();
-    pending.retain(|_, reg| now.duration_since(reg.created_at) < MAX_AGE);
+    pending.retain(|_, reg| now.duration_since(reg.created_at) < reg.expires_in + GRACE);
     let removed = before - pending.len();
     if removed > 0 {
-        info!(removed, "cleaned up stale pending registrations");
+        info!(removed, "cleaned up stale pending device registrations");
     }
 }
 

@@ -96,6 +96,12 @@ pub enum AuditEventType {
     Oauth2TokenAcquired,
     Oauth2TokenFailed,
 
+    // OAuth2 Device Authorization Grant (RFC 8628)
+    DeviceCodeIssued,
+    DeviceCodeApproved,
+    DeviceCodeDenied,
+    DeviceCodeExpired,
+
     // MCP
     McpServerRegistered,
     McpServerUpdated,

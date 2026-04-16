@@ -87,6 +87,22 @@ def broker_start(ctx: dict) -> dict:
     ctx["broker_port"] = port
     ctx["broker_process"] = proc
 
+    # Invariant (v0.3.0): broker must NOT bind the legacy loopback OAuth
+    # callback port 9876. Device flow removes this entirely. Verify no
+    # process is LISTENing on 9876 — if the connect attempt succeeds, the
+    # port is bound and we've regressed.
+    import socket as _socket
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    sock.settimeout(0.5)
+    try:
+        result = sock.connect_ex(("127.0.0.1", 9876))
+        assert result != 0, (
+            "Regression: something is LISTENing on 127.0.0.1:9876. "
+            "Broker must not bind the legacy loopback OAuth callback port."
+        )
+    finally:
+        sock.close()
+
     return ctx
 
 

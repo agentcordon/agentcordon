@@ -81,6 +81,9 @@ async fn main() {
         encryptor: crypto.encryptor,
         config: config.clone(),
         login_rate_limiter,
+        device_approve_limiter:
+            agent_cordon_server::middleware::rate_limit_device_approve::DeviceApproveRateLimiter::new(
+            ),
         metrics_handle,
         session_hash_key: crypto.session_hash_key,
         oauth2_token_manager: agent_cordon_core::oauth2::OAuth2TokenManager::new(),
