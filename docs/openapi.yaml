@@ -4000,11 +4000,27 @@ paths:
       tags: [OAuth]
       summary: OAuth token endpoint
       description: |
-        Exchanges credentials for an access token. Supports two grant types:
-        - `authorization_code` with PKCE verification
+        Exchanges credentials for an access token. Supports three grant types:
+        - `authorization_code` with PKCE verification (legacy; used by the
+          web dashboard and by MCP-OAuth client flows — **not** by workspace
+          registration, which uses `urn:ietf:params:oauth:grant-type:device_code`)
         - `client_credentials` with Basic auth or body credentials
+        - `urn:ietf:params:oauth:grant-type:device_code` — RFC 8628 Device
+          Authorization Grant. Used by the broker to complete workspace
+          registration after obtaining a `device_code` from
+          `POST /oauth/device/code`. The broker polls this endpoint at the
+          `interval` returned by `/oauth/device/code` (default 5 seconds)
+          until the user approves or denies the code at `/activate`, or
+          the code expires.
 
         Request body is form-encoded (application/x-www-form-urlencoded).
+
+        Device-flow poll responses follow RFC 8628 §3.5 error codes:
+        - `authorization_pending` — user has not yet approved or denied
+        - `slow_down` — polling faster than `interval`; add 5s to the interval
+        - `access_denied` — user clicked Deny at `/activate`
+        - `expired_token` — device_code passed its 10-minute TTL
+        - `invalid_grant` — device_code unknown or already consumed
       security: []
       requestBody:
         required: true
@@ -4016,7 +4032,10 @@ paths:
               properties:
                 grant_type:
                   type: string
-                  enum: [authorization_code, client_credentials]
+                  enum:
+                    - authorization_code
+                    - client_credentials
+                    - urn:ietf:params:oauth:grant-type:device_code
                 code:
                   type: string
                   description: Required for authorization_code grant
@@ -4034,6 +4053,11 @@ paths:
                 scope:
                   type: string
                   description: Space-delimited scopes for client_credentials
+                device_code:
+                  type: string
+                  description: |
+                    Required for the device_code grant. Opaque value
+                    returned by `POST /oauth/device/code`.
       responses:
         '200':
           description: Token issued
@@ -4045,6 +4069,190 @@ paths:
           description: Invalid grant, expired code, PKCE mismatch
         '401':
           description: Invalid client credentials
+
+  /oauth/device/code:
+    post:
+      tags: [OAuth]
+      summary: RFC 8628 Device Authorization Grant — request a device code
+      description: |
+        Initiates the OAuth 2.0 Device Authorization Grant (RFC 8628) used
+        by the AgentCordon broker to register a workspace without a
+        loopback redirect. Returns a short 4-word passphrase `user_code`
+        (drawn from the EFF short wordlist, ~43 bits entropy), an opaque
+        `device_code` the broker polls with, and a `verification_uri`
+        the user opens in any browser.
+
+        After calling this endpoint, the broker MUST poll
+        `POST /oauth/token` with
+        `grant_type=urn:ietf:params:oauth:grant-type:device_code` at the
+        returned `interval` (default 5 seconds) until the user approves
+        or denies the code at `/activate`, or the device code expires
+        (default 600 seconds).
+
+        Public endpoint. Rate-limited per source IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id:
+                  type: string
+                  description: Public client identifier, typically `broker`.
+                scope:
+                  type: string
+                  description: Space-delimited scopes being requested.
+      responses:
+        '200':
+          description: Device code issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - device_code
+                  - user_code
+                  - verification_uri
+                  - expires_in
+                  - interval
+                properties:
+                  device_code:
+                    type: string
+                    description: |
+                      Opaque high-entropy token the broker polls with.
+                      Never displayed to the user. Single-use.
+                  user_code:
+                    type: string
+                    example: tidy-zoned-zit-ramp
+                    description: |
+                      4-word passphrase drawn from the EFF short wordlist.
+                      Case-insensitive. Displayed to the user to paste into
+                      the `/activate` page.
+                  verification_uri:
+                    type: string
+                    format: uri
+                    example: https://server.example.com/activate
+                  verification_uri_complete:
+                    type: string
+                    format: uri
+                    description: |
+                      Convenience URL that pre-fills the user_code in the
+                      activation form, e.g.
+                      `https://server.example.com/activate?user_code=tidy-zoned-zit-ramp`.
+                  expires_in:
+                    type: integer
+                    example: 600
+                    description: Device code TTL in seconds. Fixed at 600.
+                  interval:
+                    type: integer
+                    example: 5
+                    description: Minimum polling interval in seconds.
+        '400':
+          description: Invalid client_id or malformed request
+        '429':
+          description: Rate limit exceeded
+
+  /activate:
+    get:
+      tags: [OAuth]
+      summary: Device-flow activation page
+      description: |
+        HTML page where a user enters the 4-word `user_code` shown in
+        their terminal to approve a broker workspace registration.
+        Requires an authenticated admin session. If the query parameter
+        `user_code` is present, the form is pre-filled.
+      parameters:
+        - name: user_code
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional pre-fill for the activation form.
+      responses:
+        '200':
+          description: HTML activation form
+          content:
+            text/html:
+              schema:
+                type: string
+        '302':
+          description: Redirect to `/login` if the user is not authenticated
+    post:
+      tags: [OAuth]
+      summary: Submit a device-flow activation decision
+      description: |
+        Approves or denies a pending device code. Requires an authenticated
+        admin session. On approval, the bound device code transitions from
+        `pending` to `approved` and the broker's next poll of
+        `POST /oauth/token` will receive an access token. Emits a
+        `DeviceCodeApproved` or `DeviceCodeDenied` audit event.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [user_code, decision]
+              properties:
+                user_code:
+                  type: string
+                decision:
+                  type: string
+                  enum: [approve, deny]
+      responses:
+        '302':
+          description: Redirect to `/activate/success` (on approve) or back to `/activate` with an error (on deny or unknown code)
+        '400':
+          description: Unknown, expired, or already-consumed user_code
+        '401':
+          description: Not authenticated
+        '429':
+          description: Rate limit exceeded
+
+  /activate/success:
+    get:
+      tags: [OAuth]
+      summary: Device-flow activation success page
+      description: |
+        Confirmation page shown after a user successfully approves a
+        device code. Instructs the user to return to their terminal.
+      responses:
+        '200':
+          description: HTML success page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /install.ps1:
+    get:
+      tags: [Install]
+      summary: Windows PowerShell installer script
+      description: |
+        Returns a PowerShell script that downloads both
+        `agentcordon.exe` and `agentcordon-broker.exe` from the GitHub
+        release matching this server's version, installs them to
+        `%LOCALAPPDATA%\AgentCordon\bin`, and adds that directory to the
+        user PATH. Intended invocation:
+
+        ```powershell
+        irm https://<server>/install.ps1 | iex
+        ```
+
+        The installer does not require admin rights and does not create a
+        Windows service. The broker runs in the terminal it was started
+        from and exits with that terminal, matching the Unix lifecycle.
+      security: []
+      responses:
+        '200':
+          description: PowerShell installer script
+          content:
+            text/plain:
+              schema:
+                type: string
 
   /.well-known/oauth-authorization-server:
     get:
