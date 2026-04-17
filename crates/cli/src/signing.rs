@@ -111,7 +111,42 @@ fn check_permissions(_path: &Path, _max_mode: u32, _label: &str) -> Result<(), C
     Ok(())
 }
 
+/// Canonicalise a request path-and-query for inclusion in the signed payload.
+///
+/// The rule is applied byte-identically on the broker side
+/// (`crates/broker/src/auth.rs`):
+///
+/// - Strip a single trailing `/` from `path` unless `path == "/"`.
+/// - If `query` is `Some(non-empty)`, append `"?"` + the query verbatim
+///   (percent-encoding untouched, parameters NOT re-sorted).
+/// - If `query` is `None` or `Some("")`, append nothing.
+///
+/// Fragments never appear in `Uri::query()` and are not included in the
+/// outgoing CLI path, so no fragment-stripping is needed.
+pub(crate) fn canonicalise_path_and_query(path: &str, query: Option<&str>) -> String {
+    let trimmed: &str = if path.len() > 1 && path.ends_with('/') {
+        &path[..path.len() - 1]
+    } else {
+        path
+    };
+    match query {
+        Some(q) if !q.is_empty() => format!("{trimmed}?{q}"),
+        _ => trimmed.to_string(),
+    }
+}
+
 /// Build the signed payload and produce signing headers.
+///
+/// Payload format: `METHOD\nPATH_WITH_QUERY\nTIMESTAMP\nBODY`.
+///
+/// `path` MUST already be in the canonical path-and-query form produced by
+/// [`canonicalise_path_and_query`]; callers in `broker.rs` apply it before
+/// invoking `sign_request`. The broker verifier reconstructs the same
+/// canonical form from the incoming `Uri`, so signatures round-trip.
+///
+/// Breaking change vs. pre-2026-04-17 CLIs: the old payload used only the
+/// path (no query), so any mixed-version CLI+broker pair will fail
+/// verification with 401 until both sides are upgraded together.
 pub fn sign_request(
     keypair: &Keypair,
     method: &str,
@@ -139,4 +174,50 @@ pub struct SignedHeaders {
     pub public_key: String,
     pub timestamp: String,
     pub signature: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonicalise_plain_path() {
+        assert_eq!(canonicalise_path_and_query("/foo/bar", None), "/foo/bar");
+    }
+
+    #[test]
+    fn canonicalise_strips_trailing_slash() {
+        assert_eq!(canonicalise_path_and_query("/foo/bar/", None), "/foo/bar");
+    }
+
+    #[test]
+    fn canonicalise_with_query() {
+        assert_eq!(
+            canonicalise_path_and_query("/foo/bar", Some("a=1&b=2")),
+            "/foo/bar?a=1&b=2"
+        );
+    }
+
+    #[test]
+    fn canonicalise_strips_trailing_slash_with_query() {
+        assert_eq!(
+            canonicalise_path_and_query("/foo/bar/", Some("a=1&b=2")),
+            "/foo/bar?a=1&b=2"
+        );
+    }
+
+    #[test]
+    fn canonicalise_root_path() {
+        assert_eq!(canonicalise_path_and_query("/", None), "/");
+    }
+
+    #[test]
+    fn canonicalise_root_with_query() {
+        assert_eq!(canonicalise_path_and_query("/", Some("a=1")), "/?a=1");
+    }
+
+    #[test]
+    fn canonicalise_root_with_empty_query() {
+        assert_eq!(canonicalise_path_and_query("/", Some("")), "/");
+    }
 }
