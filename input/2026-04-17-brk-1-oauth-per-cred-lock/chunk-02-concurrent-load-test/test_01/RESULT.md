@@ -2,7 +2,7 @@
 
 Worktree: `/workspace/.worktrees/test_01-chunk-02-concurrent-load-test`
 Branch: `test/brk-1-concurrent-load`
-Commit: (pending — will be filled after git commit)
+Commit: `9aa486a test(brk-1): concurrent load test for per-credential OAuth2 refresh lock`
 
 ## Placement decision
 
