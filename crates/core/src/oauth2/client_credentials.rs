@@ -3,10 +3,10 @@
 //! Acquires and caches access tokens using the OAuth2 client_credentials grant.
 //! Tokens are cached per-credential with automatic expiry (30s buffer).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use tokio::sync::Mutex;
 
 use crate::domain::credential::{CredentialId, StoredCredential};
@@ -39,14 +39,24 @@ struct CachedToken {
     expires_at: DateTime<Utc>,
 }
 
+/// Per-credential slot: a `tokio::sync::Mutex` guards the check-and-acquire
+/// sequence for one credential. Held across the HTTP refresh to preserve
+/// single-flight semantics per credential, but never across credentials —
+/// different keys use different `Arc<Mutex>` slots.
+type TokenSlot = Arc<Mutex<Option<CachedToken>>>;
+
 /// Manages OAuth2 client_credentials token acquisition and caching.
 ///
-/// Thread-safe: uses `Arc<Mutex<...>>` for the cache so it can be shared
-/// across request handlers.
+/// Thread-safe: uses a `DashMap` keyed by `CredentialId` with a per-credential
+/// `tokio::sync::Mutex` guarding each entry. Acquisitions for different
+/// credentials run concurrently; acquisitions for the same credential are
+/// single-flighted so we never issue a thundering herd of upstream requests.
 #[derive(Clone)]
 pub struct OAuth2TokenManager {
     client: reqwest::Client,
-    cache: Arc<Mutex<HashMap<CredentialId, CachedToken>>>,
+    /// `DashMap` is `Clone` via an internal `Arc`, so cloning the manager
+    /// shares the same cache across handlers.
+    cache: DashMap<CredentialId, TokenSlot>,
 }
 
 /// Result of a token acquisition, indicating whether it was from cache or fresh.
@@ -74,7 +84,7 @@ impl OAuth2TokenManager {
 
         Self {
             client,
-            cache: Arc::new(Mutex::new(HashMap::new())),
+            cache: DashMap::new(),
         }
     }
 
@@ -83,13 +93,19 @@ impl OAuth2TokenManager {
     pub fn with_client(client: reqwest::Client) -> Self {
         Self {
             client,
-            cache: Arc::new(Mutex::new(HashMap::new())),
+            cache: DashMap::new(),
         }
     }
 
     /// Evict a credential's cached token, e.g. after deletion or rotation.
+    ///
+    /// Removes the entry from the DashMap. Any concurrent caller that has
+    /// already cloned the old `Arc<Mutex<...>>` slot will finish its work
+    /// against that detached slot; its writes are harmless because the slot
+    /// is no longer reachable from the map and drops when the last `Arc`
+    /// does. The next caller for this credential inserts a fresh slot.
     pub async fn evict(&self, credential_id: &CredentialId) {
-        self.cache.lock().await.remove(credential_id);
+        self.cache.remove(credential_id);
     }
 
     /// Get a valid access token for the given OAuth2 credential.
@@ -101,10 +117,10 @@ impl OAuth2TokenManager {
     /// * `credential` - The stored credential (must be type `oauth2_client_credentials`)
     /// * `client_secret` - The decrypted client secret (secret_value from the credential)
     ///
-    /// This method holds the cache lock for the entire check-and-acquire sequence
-    /// to prevent TOCTOU races (thundering herd on expired tokens). Since the
-    /// credential count is small and the HTTP call has a 10s timeout, serializing
-    /// all credential token acquisitions is acceptable for v1.0.
+    /// Holds only the per-credential slot mutex across the upstream token
+    /// acquisition, so requests for different credentials run in parallel
+    /// while requests for the same credential remain single-flight
+    /// (thundering-herd-safe).
     pub async fn get_token(
         &self,
         credential: &StoredCredential,
@@ -112,13 +128,19 @@ impl OAuth2TokenManager {
     ) -> Result<TokenResult, OAuth2Error> {
         let now = Utc::now();
 
-        // Hold the lock for the entire check-and-acquire sequence to prevent
-        // multiple concurrent requests from racing to acquire tokens for the
-        // same expired credential.
-        let mut cache = self.cache.lock().await;
+        // Brief DashMap write to get-or-create this credential's slot. The
+        // entry guard is dropped at the end of this statement; we only hold
+        // the per-credential mutex across the `.await` below.
+        let slot: TokenSlot = self
+            .cache
+            .entry(credential.id.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone();
 
-        // Check cache under lock
-        if let Some(cached) = cache.get(&credential.id) {
+        let mut slot_guard = slot.lock().await;
+
+        // Check cache under the per-credential lock.
+        if let Some(cached) = slot_guard.as_ref() {
             if cached.expires_at > now {
                 return Ok(TokenResult {
                     access_token: cached.access_token.clone(),
@@ -127,17 +149,16 @@ impl OAuth2TokenManager {
             }
         }
 
-        // Cache miss or expired — acquire new token (still holding lock)
+        // Cache miss or expired — acquire new token (still holding the
+        // per-credential lock so concurrent callers for the same credential
+        // wait and reuse the fresh token).
         let token_result = self.acquire_token_inner(credential, client_secret).await?;
 
-        // Update cache under the same lock
-        cache.insert(
-            credential.id.clone(),
-            CachedToken {
-                access_token: token_result.access_token.clone(),
-                expires_at: token_result.expires_at,
-            },
-        );
+        // Update cache under the same per-credential lock.
+        *slot_guard = Some(CachedToken {
+            access_token: token_result.access_token.clone(),
+            expires_at: token_result.expires_at,
+        });
 
         Ok(TokenResult {
             access_token: token_result.access_token,

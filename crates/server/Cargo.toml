@@ -35,7 +35,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 askama = "0.15"
 rust-embed = { version = "8", features = ["compression"] }
 mime_guess = "2"
-dashmap = "6"
+dashmap = { workspace = true }
 url = "2"
 urlencoding = "2"
 metrics = "0.24"
