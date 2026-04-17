@@ -1,6 +1,7 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use ed25519_dalek::SigningKey;
@@ -9,6 +10,39 @@ use sha2::{Digest, Sha256};
 
 use crate::error::CliError;
 use crate::signing::workspace_dir;
+
+/// Create a file atomically at `path` with the given body.
+///
+/// Uses `O_CREAT | O_EXCL` (Unix) / `CREATE_NEW` (Windows) so the file is
+/// created in a single syscall that fails if anything already exists at
+/// the path — closing the check-then-write TOCTOU window that a plain
+/// `fs::write` leaves open. On Unix, `mode` is passed to `open(2)` so the
+/// file is created with the requested permissions from the first instant
+/// it exists, not widened to umask-default and then chmod'd.
+///
+/// `_mode` is accepted on all platforms for call-site symmetry but is
+/// only honoured on Unix; Windows files inherit NTFS ACLs from the parent
+/// directory.
+fn create_new_file(path: &Path, _mode: u32, body: &[u8], label: &str) -> Result<(), CliError> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    opts.mode(_mode);
+
+    let mut file = match opts.open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(CliError::general(format!(
+                "{label} appeared concurrently — re-run `agentcordon init`"
+            )));
+        }
+        Err(e) => {
+            return Err(CliError::general(format!("failed to write {label}: {e}")));
+        }
+    };
+    file.write_all(body)
+        .map_err(|e| CliError::general(format!("failed to write {label}: {e}")))
+}
 
 /// Generate Ed25519 keypair and prepare workspace for registration.
 pub fn run(agent: &str) -> Result<(), CliError> {
@@ -54,21 +88,15 @@ pub fn run(agent: &str) -> Result<(), CliError> {
     let signing_key = SigningKey::generate(&mut csprng);
     let verifying_key = signing_key.verifying_key();
 
-    // Write private key (hex seed, mode 0600)
+    // Write private key (hex seed, mode 0600) atomically: create_new +
+    // explicit mode close the TOCTOU window that `fs::write` +
+    // follow-up `set_permissions` left open.
     let seed_hex = hex::encode(signing_key.to_bytes());
-    fs::write(&key_path, &seed_hex)
-        .map_err(|e| CliError::general(format!("failed to write private key: {e}")))?;
-    #[cfg(unix)]
-    fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))
-        .map_err(|e| CliError::general(format!("failed to set key permissions: {e}")))?;
+    create_new_file(&key_path, 0o600, seed_hex.as_bytes(), "private key")?;
 
-    // Write public key (hex, mode 0644)
+    // Write public key (hex, mode 0644) atomically.
     let pub_hex = hex::encode(verifying_key.to_bytes());
-    fs::write(&pub_path, &pub_hex)
-        .map_err(|e| CliError::general(format!("failed to write public key: {e}")))?;
-    #[cfg(unix)]
-    fs::set_permissions(&pub_path, fs::Permissions::from_mode(0o644))
-        .map_err(|e| CliError::general(format!("failed to set pubkey permissions: {e}")))?;
+    create_new_file(&pub_path, 0o644, pub_hex.as_bytes(), "public key")?;
 
     // Compute pk_hash
     let hash = hex::encode(Sha256::digest(verifying_key.to_bytes()));
@@ -490,5 +518,62 @@ mod tests {
         let servers = json["mcpServers"].as_object().unwrap();
         assert_eq!(servers.len(), 1);
         assert!(servers.contains_key("agentcordon"));
+    }
+
+    #[test]
+    fn create_new_file_writes_exact_body() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("key");
+
+        create_new_file(&path, 0o600, b"hello world", "private key").unwrap();
+
+        let body = fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "hello world");
+    }
+
+    #[test]
+    fn create_new_file_rejects_existing_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("key");
+        fs::write(&path, b"pre-existing").unwrap();
+
+        let err = create_new_file(&path, 0o600, b"new content", "private key").unwrap_err();
+
+        assert_eq!(err.code, crate::error::ExitCode::GeneralError);
+        assert!(
+            err.message.contains("appeared concurrently"),
+            "message was: {}",
+            err.message
+        );
+        // The pre-existing content must be untouched — TOCTOU hardening
+        // means we never overwrite on race.
+        assert_eq!(fs::read_to_string(&path).unwrap(), "pre-existing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_new_file_sets_mode_atomically() {
+        let dir = TempDir::new().unwrap();
+        let key_path = dir.path().join("workspace.key");
+        let pub_path = dir.path().join("workspace.pub");
+
+        create_new_file(&key_path, 0o600, b"seed", "private key").unwrap();
+        create_new_file(&pub_path, 0o644, b"pk", "public key").unwrap();
+
+        let key_mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        let pub_mode = fs::metadata(&pub_path).unwrap().permissions().mode() & 0o777;
+        // The active umask masks off group/world bits; just assert the
+        // file never got broader perms than we asked for.
+        assert!(
+            key_mode & !0o600 == 0,
+            "private key mode {key_mode:o} wider than 0o600"
+        );
+        assert!(
+            pub_mode & !0o644 == 0,
+            "public key mode {pub_mode:o} wider than 0o644"
+        );
+        // And that owner-read is set on both (sanity).
+        assert_eq!(key_mode & 0o400, 0o400);
+        assert_eq!(pub_mode & 0o400, 0o400);
     }
 }
