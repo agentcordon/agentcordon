@@ -267,7 +267,7 @@ async fn discover_broker() -> Result<String, CliError> {
     }
 
     // 2. Port file
-    let port_path = dirs_or_home().join("broker.port");
+    let port_path = dirs_or_home()?.join("broker.port");
     let port_str = fs::read_to_string(&port_path).map_err(|_| CliError::broker_not_running())?;
     let port: u16 = port_str
         .trim()
@@ -307,7 +307,103 @@ async fn discover_broker() -> Result<String, CliError> {
 }
 
 /// Get `~/.agentcordon/` path.
-fn dirs_or_home() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::PathBuf::from(home).join(".agentcordon")
+///
+/// Returns an error if no user home directory can be resolved on the
+/// current platform (e.g. `HOME` unset on Unix, `USERPROFILE` unset on
+/// Windows). The caller surfaces this to the user rather than silently
+/// writing to a nonsense path.
+fn dirs_or_home() -> Result<std::path::PathBuf, CliError> {
+    agentcordon_dir_from(dirs::home_dir())
+}
+
+/// Inner form of `dirs_or_home` taking the resolved home-dir lookup as a
+/// parameter so the error path can be exercised under test without
+/// relying on the host's `HOME` / passwd-database state.
+fn agentcordon_dir_from(home: Option<std::path::PathBuf>) -> Result<std::path::PathBuf, CliError> {
+    let home = home.ok_or_else(|| {
+        CliError::general(
+            "could not resolve user home directory; \
+             set HOME (Unix/macOS) or USERPROFILE (Windows)",
+        )
+    })?;
+    Ok(home.join(".agentcordon"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard};
+    use tempfile::TempDir;
+
+    /// Serialise env-var mutation across parallel tests. `HOME` /
+    /// `USERPROFILE` are process-global, so tests that touch them must
+    /// run one at a time. Copy of the `EnvGuard` pattern in
+    /// `crates/cli/src/commands/init.rs:413-435`.
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        prior_home: Option<String>,
+        prior_userprofile: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            static LOCK: Mutex<()> = Mutex::new(());
+            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prior_home = std::env::var("HOME").ok();
+            let prior_userprofile = std::env::var("USERPROFILE").ok();
+            Self {
+                _lock: lock,
+                prior_home,
+                prior_userprofile,
+            }
+        }
+
+        fn set_home(&self, path: &std::path::Path) {
+            // SAFETY: tests are serialised via the mutex above.
+            unsafe {
+                std::env::set_var("HOME", path);
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: tests are serialised via the mutex above.
+            unsafe {
+                match &self.prior_home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                match &self.prior_userprofile {
+                    Some(v) => std::env::set_var("USERPROFILE", v),
+                    None => std::env::remove_var("USERPROFILE"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolves_home_when_present() {
+        let dir = TempDir::new().unwrap();
+        let guard = EnvGuard::new();
+        guard.set_home(dir.path());
+
+        let resolved = dirs_or_home().expect("home should resolve");
+        assert_eq!(resolved, dir.path().join(".agentcordon"));
+    }
+
+    /// Pins the error path of the resolver without depending on whether
+    /// the host's `dirs::home_dir()` returns `None` — on Linux the crate
+    /// falls back to `getpwuid_r`, so simply clearing `HOME` does not
+    /// force `None`. `agentcordon_dir_from` takes the lookup result as
+    /// input, letting us exercise the `None` branch directly.
+    #[test]
+    fn errors_when_no_home() {
+        let err = agentcordon_dir_from(None).expect_err("missing home should error");
+        assert!(
+            err.message.contains("home directory"),
+            "unexpected error message: {}",
+            err.message
+        );
+    }
 }

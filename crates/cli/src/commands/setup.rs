@@ -91,7 +91,7 @@ async fn discover_existing_broker(client: &reqwest::Client) -> Result<String, Cl
     }
 
     // 2. Port file
-    let port_path = broker_port_path();
+    let port_path = broker_port_path()?;
     if let Ok(port_str) = std::fs::read_to_string(&port_path) {
         if let Ok(port) = port_str.trim().parse::<u16>() {
             let url = format!("http://localhost:{port}");
@@ -105,12 +105,111 @@ async fn discover_existing_broker(client: &reqwest::Client) -> Result<String, Cl
 }
 
 /// Get the broker port file path (~/.agentcordon/broker.port).
-fn broker_port_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".agentcordon").join("broker.port")
+///
+/// Returns an error if no user home directory can be resolved on the
+/// current platform (e.g. `HOME` unset on Unix, `USERPROFILE` unset on
+/// Windows). The caller surfaces this to the user rather than silently
+/// writing to a nonsense path.
+fn broker_port_path() -> Result<PathBuf, CliError> {
+    broker_port_path_from(dirs::home_dir())
+}
+
+/// Inner form of `broker_port_path` taking the resolved home-dir lookup
+/// as a parameter so the error path can be exercised under test without
+/// relying on the host's `HOME` / passwd-database state.
+fn broker_port_path_from(home: Option<PathBuf>) -> Result<PathBuf, CliError> {
+    let home = home.ok_or_else(|| {
+        CliError::general(
+            "could not resolve user home directory; \
+             set HOME (Unix/macOS) or USERPROFILE (Windows)",
+        )
+    })?;
+    Ok(home.join(".agentcordon").join("broker.port"))
 }
 
 /// Pick a port for the broker (default 9876).
 fn find_broker_port() -> u16 {
     9876
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard};
+    use tempfile::TempDir;
+
+    /// Serialise env-var mutation across parallel tests. `HOME` /
+    /// `USERPROFILE` are process-global, so tests that touch them must
+    /// run one at a time. Copy of the `EnvGuard` pattern in
+    /// `crates/cli/src/commands/init.rs:413-435`.
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        prior_home: Option<String>,
+        prior_userprofile: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            static LOCK: Mutex<()> = Mutex::new(());
+            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prior_home = std::env::var("HOME").ok();
+            let prior_userprofile = std::env::var("USERPROFILE").ok();
+            Self {
+                _lock: lock,
+                prior_home,
+                prior_userprofile,
+            }
+        }
+
+        fn set_home(&self, path: &std::path::Path) {
+            // SAFETY: tests are serialised via the mutex above.
+            unsafe {
+                std::env::set_var("HOME", path);
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: tests are serialised via the mutex above.
+            unsafe {
+                match &self.prior_home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                match &self.prior_userprofile {
+                    Some(v) => std::env::set_var("USERPROFILE", v),
+                    None => std::env::remove_var("USERPROFILE"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolves_home_when_present() {
+        let dir = TempDir::new().unwrap();
+        let guard = EnvGuard::new();
+        guard.set_home(dir.path());
+
+        let resolved = broker_port_path().expect("home should resolve");
+        assert_eq!(
+            resolved,
+            dir.path().join(".agentcordon").join("broker.port")
+        );
+    }
+
+    /// Pins the error path of the resolver without depending on whether
+    /// the host's `dirs::home_dir()` returns `None` — on Linux the crate
+    /// falls back to `getpwuid_r`, so simply clearing `HOME` does not
+    /// force `None`. `broker_port_path_from` takes the lookup result as
+    /// input, letting us exercise the `None` branch directly.
+    #[test]
+    fn errors_when_no_home() {
+        let err = broker_port_path_from(None).expect_err("missing home should error");
+        assert!(
+            err.message.contains("home directory"),
+            "unexpected error message: {}",
+            err.message
+        );
+    }
 }
