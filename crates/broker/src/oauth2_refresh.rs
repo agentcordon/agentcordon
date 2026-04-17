@@ -66,12 +66,20 @@ type TokenSlot = Arc<Mutex<Option<CachedAccessToken>>>;
 /// credential are single-flighted so we never issue a thundering herd of
 /// upstream requests.
 ///
+/// ## Cloning
+///
+/// `#[derive(Clone)]` gives `OAuth2RefreshManager` a `.clone()` method, but
+/// `DashMap::clone` is a **deep copy** of the shards at clone time — it is
+/// NOT an `Arc`-shared view. Subsequent inserts on one clone are invisible
+/// to the other, which breaks the single-flight invariant across the two
+/// copies. To share the cache across handlers / tasks, put the manager
+/// behind `Arc<OAuth2RefreshManager>` (which is what `BrokerState` does
+/// today via `Arc<BrokerState>`) and clone the `Arc`, not the manager.
+///
 /// SECURITY: Manual Debug impl to prevent token leakage via `{:?}`.
 #[derive(Clone)]
 pub struct OAuth2RefreshManager {
     client: reqwest::Client,
-    /// Keyed by credential name. `DashMap` is `Clone` via an internal `Arc`,
-    /// so cloning the manager shares the same cache across handlers.
     cache: DashMap<String, TokenSlot>,
 }
 
@@ -446,5 +454,333 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // BRK-1 concurrent load tests.
+    //
+    // These pin the per-credential-lock behaviour introduced in chunk-01:
+    //   1. single-flight per credential (many callers → one upstream request),
+    //   2. parallelism across different credentials (no cross-credential
+    //      serialisation, as the old single `Arc<Mutex<HashMap>>` would
+    //      cause), and
+    //   3. rotation-callback atomicity under concurrent callers (BRK-2's
+    //      invariant preserved: callback failure → cache empty, every caller
+    //      sees `RotationPersistFailed`).
+    //
+    // All three use only the public API (`get_access_token`). The helper
+    // below is a multi-connection TCP mock -- the existing
+    // `mock_token_endpoint` above accepts a single connection, which is not
+    // enough for 10-20 concurrent `reqwest` clients that each open their
+    // own connection.
+    // ------------------------------------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// Per-connection handler for the multi-connection mock. Drains the
+    /// request, counts it, optionally sleeps, then writes a JSON response.
+    async fn handle_mock_conn(
+        mut sock: tokio::net::TcpStream,
+        body: serde_json::Value,
+        latency: Option<Duration>,
+        counter: Arc<AtomicUsize>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Drain a single request. A single 4 KiB read is enough for the
+        // broker's form-encoded refresh request on loopback.
+        let mut buf = [0u8; 4096];
+        let _ = sock.read(&mut buf).await;
+
+        // Count *after* reading so partial / aborted connections are not
+        // counted. SeqCst keeps reasoning trivial; perf is irrelevant here.
+        counter.fetch_add(1, Ordering::SeqCst);
+
+        if let Some(d) = latency {
+            tokio::time::sleep(d).await;
+        }
+
+        let body_str = body.to_string();
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body_str.len(),
+            body_str
+        );
+        let _ = sock.write_all(resp.as_bytes()).await;
+        let _ = sock.shutdown().await;
+    }
+
+    /// Start a multi-connection mock token endpoint. Every accepted
+    /// connection increments the returned counter and, after optional
+    /// `latency`, responds with `body` as a JSON OAuth2 token response.
+    /// Returns `(base_url, counter, join_handle)`; the handle is detached
+    /// on drop (the listener is closed when the test ends).
+    async fn multi_conn_mock_token_endpoint(
+        body: serde_json::Value,
+        latency: Option<Duration>,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}/token", addr);
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_for_task = counter.clone();
+
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let body = body.clone();
+                let counter = counter_for_task.clone();
+                tokio::spawn(async move {
+                    handle_mock_conn(sock, body, latency, counter).await;
+                });
+            }
+        });
+
+        (url, counter, handle)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn brk_1_concurrent_single_flight_per_key() {
+        let (url, counter, _h) = multi_conn_mock_token_endpoint(
+            serde_json::json!({
+                "access_token": "single-flight-token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            }),
+            None,
+        )
+        .await;
+
+        // NOTE: we wrap the manager in `Arc` and clone the `Arc` into each
+        // task so all 20 callers share the SAME underlying cache. The
+        // manager's own `#[derive(Clone)]` is not enough: `DashMap`'s
+        // `Clone` is a deep copy (see `dashmap-6.1.0/src/lib.rs` line 95),
+        // so `mgr.clone()` would produce 20 independent caches and the
+        // single-flight invariant would be silently bypassed.
+        let mgr = Arc::new(OAuth2RefreshManager::new());
+
+        let tasks: Vec<_> = (0..20)
+            .map(|_| {
+                let mgr = Arc::clone(&mgr);
+                let url = url.clone();
+                tokio::spawn(async move {
+                    mgr.get_access_token(
+                        "same-cred",
+                        "refresh-tok",
+                        &url,
+                        "client-id",
+                        "client-secret",
+                        None,
+                    )
+                    .await
+                })
+            })
+            .collect();
+
+        let results = futures_util::future::join_all(tasks).await;
+
+        for (i, r) in results.into_iter().enumerate() {
+            let token = r.unwrap_or_else(|e| panic!("task {i} panicked: {e:?}"));
+            let token = token.unwrap_or_else(|e| panic!("task {i} returned error: {e:?}"));
+            assert_eq!(
+                token, "single-flight-token",
+                "task {i} did not receive the shared access token"
+            );
+        }
+
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "expected exactly 1 upstream refresh for 20 concurrent same-key callers",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn brk_1_concurrent_per_key_parallelism() {
+        let (url, counter, _h) = multi_conn_mock_token_endpoint(
+            serde_json::json!({
+                "access_token": "per-key-token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            }),
+            Some(Duration::from_millis(200)),
+        )
+        .await;
+
+        // Shared Arc so all 10 tasks hit the SAME DashMap. See the note on
+        // `brk_1_concurrent_single_flight_per_key` for why `mgr.clone()` is
+        // NOT a substitute here (DashMap's Clone is deep).
+        let mgr = Arc::new(OAuth2RefreshManager::new());
+
+        let start = tokio::time::Instant::now();
+
+        let tasks: Vec<_> = (0..10)
+            .map(|i| {
+                let mgr = Arc::clone(&mgr);
+                let url = url.clone();
+                let cred = format!("cred-{i}");
+                tokio::spawn(async move {
+                    mgr.get_access_token(
+                        &cred,
+                        "refresh-tok",
+                        &url,
+                        "client-id",
+                        "client-secret",
+                        None,
+                    )
+                    .await
+                })
+            })
+            .collect();
+
+        let results = futures_util::future::join_all(tasks).await;
+        let elapsed = start.elapsed();
+
+        for (i, r) in results.into_iter().enumerate() {
+            let token = r.unwrap_or_else(|e| panic!("task {i} panicked: {e:?}"));
+            let token = token.unwrap_or_else(|e| panic!("task {i} returned error: {e:?}"));
+            assert_eq!(token, "per-key-token", "task {i} got unexpected token");
+        }
+
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            10,
+            "expected 10 upstream refreshes for 10 distinct credentials",
+        );
+
+        // Serial execution under the old single-mutex shape would be
+        // >= 2000 ms (10 * 200 ms). Per-credential locks must let these
+        // run in parallel. 800 ms is a generous 4x ceiling to absorb CI
+        // jitter, cold-start, and reqwest connection setup.
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "per-key parallelism regression: 10 refreshes took {elapsed:?} \
+             (ceiling 800 ms; serial-old-behaviour would be >= 2000 ms)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn brk_1_concurrent_rotation_callback_atomicity() {
+        // Endpoint A: always returns a rotated refresh_token so the
+        // rotation callback fires on every refresh attempt.
+        let (url_a, _counter_a, _h_a) = multi_conn_mock_token_endpoint(
+            serde_json::json!({
+                "access_token": "should-not-be-cached",
+                "expires_in": 3600,
+                "refresh_token": "ROTATED",
+                "token_type": "Bearer",
+            }),
+            None,
+        )
+        .await;
+
+        // Shared Arc — see note on `brk_1_concurrent_single_flight_per_key`.
+        let mgr = Arc::new(OAuth2RefreshManager::new());
+
+        let callback_hits = Arc::new(AtomicUsize::new(0));
+        let callback_hits_for_cb = callback_hits.clone();
+        let callback: RotationCallback = Arc::new(move |_new_refresh: String| {
+            let hits = callback_hits_for_cb.clone();
+            Box::pin(async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                Err::<(), RotationError>(RotationError("persist failed".to_string()))
+            })
+        });
+
+        let tasks: Vec<_> = (0..5)
+            .map(|_| {
+                let mgr = Arc::clone(&mgr);
+                let url = url_a.clone();
+                let cb = callback.clone();
+                tokio::spawn(async move {
+                    mgr.get_access_token(
+                        "shared-cred",
+                        "refresh-tok",
+                        &url,
+                        "client-id",
+                        "client-secret",
+                        Some(cb),
+                    )
+                    .await
+                })
+            })
+            .collect();
+
+        let results = futures_util::future::join_all(tasks).await;
+
+        for (i, r) in results.into_iter().enumerate() {
+            let outcome = r.unwrap_or_else(|e| panic!("task {i} panicked: {e:?}"));
+            assert!(
+                matches!(outcome, Err(OAuth2RefreshError::RotationPersistFailed(_))),
+                "task {i} expected RotationPersistFailed, got {outcome:?}"
+            );
+        }
+
+        // Callback-invocation count under concurrent failure.
+        //
+        // What this proves: BRK-2's atomicity invariant holds under
+        // concurrency — no partial state is cached between callers. All 5
+        // callers observe `RotationPersistFailed`, and the cache-empty
+        // follow-up below confirms the slot is left unpopulated.
+        //
+        // What this does NOT prove: failures are NOT coalesced across
+        // concurrent callers. Each caller serialises on the per-credential
+        // mutex, observes the still-empty slot on entry, and re-runs the
+        // full refresh path (HTTP → rotation callback). The leader's
+        // failure is not cached and followers do not share the leader's
+        // future, so with N concurrent callers the callback fires N times,
+        // not once. Pinning the assertion at `== 5` documents this as the
+        // current, deterministic behaviour of the per-credential-lock
+        // implementation — any change (accidental dedup, or an extra call)
+        // would trip this test.
+        //
+        // Follow-up: adding `futures::future::Shared` / single-flight
+        // future dedup would reduce this to 1 and eliminate redundant
+        // upstream work when a provider is persistently failing. Tracked
+        // as a follow-up recommendation in this chunk's RESULT.md.
+        assert_eq!(
+            callback_hits.load(Ordering::SeqCst),
+            5,
+            "rotation callback fires once per caller under the current \
+             per-credential-lock implementation (no future-dedup); each of \
+             the 5 concurrent callers re-runs the refresh path after the \
+             previous caller releases the mutex with an empty slot",
+        );
+
+        // Cache-empty invariant verified via public API: a subsequent call
+        // against a DIFFERENT, non-rotating endpoint must hit the refresh
+        // path again (proving the slot was left unpopulated).
+        let (url_b, counter_b, _h_b) = multi_conn_mock_token_endpoint(
+            serde_json::json!({
+                "access_token": "recovery-token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            }),
+            None,
+        )
+        .await;
+
+        let token = mgr
+            .get_access_token(
+                "shared-cred",
+                "refresh-tok",
+                &url_b,
+                "client-id",
+                "client-secret",
+                None,
+            )
+            .await
+            .expect("follow-up call against recovery endpoint must succeed");
+
+        assert_eq!(token, "recovery-token");
+        assert_eq!(
+            counter_b.load(Ordering::SeqCst),
+            1,
+            "follow-up call must take the refresh path (cache was empty after failure)",
+        );
     }
 }
