@@ -85,7 +85,7 @@ The broker reviewer skipped BRK-1 (already fixed) and started at BRK-2.
 
 | ID | Severity | Title | Location | Fix sketch |
 |----|----------|-------|----------|-----------|
-| BRK-2 | High | **Signed payload omits URL query string — request reuse across query params** | crates/broker/src/auth.rs:109 | Append `uri().query()` to the signed payload; update CLI canonicalisation to match. Dual-sided with CLI-2. |
+| BRK-2 | High | **Signed payload omits URL query string — request reuse across query params** | crates/broker/src/auth.rs:109 | Append `uri().query()` to the signed payload; update CLI canonicalisation to match. Dual-sided with CLI-2. **Resolved by plan 2026-04-17-high-cli-and-mig-1** (commit 28973d8) |
 | BRK-3 | Medium | Plaintext credential values held in `String` (no zeroise on drop) | crates/broker/src/credential_transform.rs:31; vend.rs:23; state.rs:108 | Wrap in `zeroize::Zeroizing<Vec<u8>>` or a custom `Drop` type; `&str` only at moment of use |
 | BRK-4 | Medium | Timestamp parsing accepts negative / overflow values | crates/broker/src/auth.rs:48 | `if timestamp < 0 \|\| now.saturating_sub(timestamp).abs() > MAX_CLOCK_SKEW { reject }` |
 | BRK-5 | Medium | Registration-error surfacing races between `/register` and `/status` | crates/broker/src/auth.rs:145-151 | Atomic CAS on `registration_errors`; single-op remove scoped to pk_hash |
@@ -103,10 +103,10 @@ Also noted: no explicit zeroise of `new_refresh: String` after the rotation call
 
 | ID | Severity | Title | Location | Fix sketch |
 |----|----------|-------|----------|-----------|
-| CLI-1 | High | Keypair file creation is not TOCTOU-safe | crates/cli/src/commands/init.rs:30-63 | `OpenOptions::new().create_new(true).write(true).mode(0o600)`; retry on `EEXIST` with user confirmation; `CreateFileW` + `CREATE_NEW` on Windows |
-| CLI-2 | High | **Query strings silently dropped from signed payload** | crates/cli/src/commands/proxy.rs:35; signing.rs:127 | Append canonicalised query string to signed path. Dual-sided with BRK-2 |
-| CLI-3 | High | Trailing-slash disagreement with server path normalisation produces signature mismatches | crates/cli/src/signing.rs:127 | Canonicalise path on both ends, or reject trailing slashes at sign time |
-| CLI-4 | High | Windows `HOME` fallback to `/tmp` instead of `USERPROFILE` | crates/cli/src/broker.rs:311; commands/setup.rs:109 | Use `dirs::home_dir()` crate or `USERPROFILE`; last-resort fallback to current dir, never `/tmp` |
+| CLI-1 | High | Keypair file creation is not TOCTOU-safe | crates/cli/src/commands/init.rs:30-63 | `OpenOptions::new().create_new(true).write(true).mode(0o600)`; retry on `EEXIST` with user confirmation; `CreateFileW` + `CREATE_NEW` on Windows **Resolved by plan 2026-04-17-high-cli-and-mig-1** (commit 31ccd67) |
+| CLI-2 | High | **Query strings silently dropped from signed payload** | crates/cli/src/commands/proxy.rs:35; signing.rs:127 | Append canonicalised query string to signed path. Dual-sided with BRK-2 **Resolved by plan 2026-04-17-high-cli-and-mig-1** (commit 28973d8) |
+| CLI-3 | High | Trailing-slash disagreement with server path normalisation produces signature mismatches | crates/cli/src/signing.rs:127 | Canonicalise path on both ends, or reject trailing slashes at sign time **Resolved by plan 2026-04-17-high-cli-and-mig-1** (commit 28973d8) |
+| CLI-4 | High | Windows `HOME` fallback to `/tmp` instead of `USERPROFILE` | crates/cli/src/broker.rs:311; commands/setup.rs:109 | Use `dirs::home_dir()` crate or `USERPROFILE`; last-resort fallback to current dir, never `/tmp` **Resolved by plan 2026-04-17-high-cli-and-mig-1** (commit c6b9f5b) |
 | CLI-5 | Medium | `.unwrap()` on JSON mutation can panic | crates/cli/src/commands/init.rs:355, 362 | `.ok_or_else(CliError::…)` |
 | CLI-6 | Medium | HTTP method case not normalised before signing | crates/cli/src/commands/proxy.rs:65 | Reject anything not uppercase `{GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH}` |
 | CLI-7 | Medium | `Content-Type` is assumed `application/json` but not covered by the signature | crates/cli/src/broker.rs:105-106, 131 | Either include `Content-Type` in the signed payload or reject non-JSON bodies on signed routes |
@@ -140,7 +140,7 @@ Also noted: no explicit zeroise of `new_refresh: String` after the rotation call
 
 | ID | Severity | Title | Location | Fix sketch |
 |----|----------|-------|----------|-----------|
-| MIG-1 | High | **Migration 007 fails destructively on duplicate `(workspace_id, owner_id, name)` rows with no pre-flight scanner** | migrations/007_credential_name_unique.sql | Pre-check script: `SELECT workspace_id, owner_id, name, COUNT(*) FROM credentials GROUP BY 1,2,3 HAVING COUNT(*) > 1`. Document dedup path before upgrading |
+| MIG-1 | High | **Migration 007 fails destructively on duplicate `(workspace_id, owner_id, name)` rows with no pre-flight scanner** | migrations/007_credential_name_unique.sql | Pre-check script: `SELECT workspace_id, owner_id, name, COUNT(*) FROM credentials GROUP BY 1,2,3 HAVING COUNT(*) > 1`. Document dedup path before upgrading **Resolved by plan 2026-04-17-high-cli-and-mig-1** (commit 2fe5700) |
 | MIG-2 | Low | Migration 009 `pk_hash_prefill` nullable semantics undocumented | migrations/009_device_code_pk_hash.sql | Make the column `NOT NULL DEFAULT ''`; document that empty means "pre-existing device code, no binding" |
 
 ---
