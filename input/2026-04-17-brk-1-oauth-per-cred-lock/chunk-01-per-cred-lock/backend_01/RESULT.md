@@ -123,7 +123,9 @@ Excluding the 13 pre-existing failures, `cargo test --workspace` reports
   and elsewhere), which is present on `main` and untouched by this
   chunk. Per the chunk plan's "Reuse / Keep" section I did not reformat
   unrelated files.
-- `cargo build --workspace --release`: **PASS** (1m25s, success).
+- `cargo build --workspace` (dev): **PASS** (rolled into the test step
+  above, which builds every target). Per team-lead scope correction,
+  dev-flow validates with dev builds only; no release build required.
 
 ## Invariants (must be empty)
 
