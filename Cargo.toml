@@ -19,3 +19,4 @@ tracing = "0.1"
 tokio = { version = "1", features = ["full"] }
 jsonwebtoken = "9"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid", "json"] }
+dashmap = "6"

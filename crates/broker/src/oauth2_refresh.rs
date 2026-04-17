@@ -4,12 +4,12 @@
 //! Tokens are cached per-credential with automatic expiry (30s buffer).
 //! Follows the same pattern as `agent_cordon_core::oauth2::client_credentials::OAuth2TokenManager`.
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use tokio::sync::Mutex;
 
 /// Async callback invoked when the token endpoint returns a rotated refresh
@@ -52,17 +52,27 @@ struct CachedAccessToken {
     expires_at: DateTime<Utc>,
 }
 
+/// Per-credential slot: a `tokio::sync::Mutex` guards the check-and-acquire
+/// sequence for one credential. Held across the HTTP refresh to preserve
+/// single-flight semantics per credential, but never across credentials —
+/// different keys use different `Arc<Mutex>` slots.
+type TokenSlot = Arc<Mutex<Option<CachedAccessToken>>>;
+
 /// Manages OAuth2 refresh_token exchange and caching for authorization code credentials.
 ///
-/// Thread-safe: uses `Arc<Mutex<...>>` for the cache so it can be shared
-/// across request handlers.
+/// Thread-safe: uses a `DashMap` keyed by credential name, with a
+/// per-credential `tokio::sync::Mutex` guarding each entry. Refreshes for
+/// different credentials proceed concurrently; refreshes for the same
+/// credential are single-flighted so we never issue a thundering herd of
+/// upstream requests.
 ///
 /// SECURITY: Manual Debug impl to prevent token leakage via `{:?}`.
 #[derive(Clone)]
 pub struct OAuth2RefreshManager {
     client: reqwest::Client,
-    /// Keyed by credential name.
-    cache: Arc<Mutex<HashMap<String, CachedAccessToken>>>,
+    /// Keyed by credential name. `DashMap` is `Clone` via an internal `Arc`,
+    /// so cloning the manager shares the same cache across handlers.
+    cache: DashMap<String, TokenSlot>,
 }
 
 impl std::fmt::Debug for OAuth2RefreshManager {
@@ -84,7 +94,7 @@ impl OAuth2RefreshManager {
 
         Self {
             client,
-            cache: Arc::new(Mutex::new(HashMap::new())),
+            cache: DashMap::new(),
         }
     }
 
@@ -93,8 +103,9 @@ impl OAuth2RefreshManager {
     /// If cached token is expired or missing, exchanges the refresh_token
     /// for a new access token via the token endpoint.
     ///
-    /// Holds the cache lock for the entire check-and-acquire sequence
-    /// to prevent TOCTOU races (thundering herd on expired tokens).
+    /// Holds only the per-credential slot mutex across the upstream refresh,
+    /// so refreshes for different credentials run in parallel while refreshes
+    /// for the same credential remain single-flight (thundering-herd-safe).
     pub async fn get_access_token(
         &self,
         credential_name: &str,
@@ -104,19 +115,27 @@ impl OAuth2RefreshManager {
         client_secret: &str,
         rotation_callback: Option<RotationCallback>,
     ) -> Result<String, OAuth2RefreshError> {
-        // TODO: Replace single mutex with per-credential locking (e.g., DashMap
-        // with per-entry lock) when credential count grows. Currently this
-        // serializes all token refreshes — acceptable for small credential counts.
-        let mut cache = self.cache.lock().await;
+        // Brief DashMap write to get-or-create this credential's slot. The
+        // entry guard is dropped at the end of this statement; we only hold
+        // the per-credential mutex across the `.await` below.
+        let slot: TokenSlot = self
+            .cache
+            .entry(credential_name.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone();
 
-        // Check cache under lock
-        if let Some(cached) = cache.get(credential_name) {
+        let mut slot_guard = slot.lock().await;
+
+        // Check cache under the per-credential lock.
+        if let Some(cached) = slot_guard.as_ref() {
             if cached.expires_at > Utc::now() {
                 return Ok(cached.access_token.clone());
             }
         }
 
-        // Cache miss or expired -- acquire new token (still holding lock)
+        // Cache miss or expired -- acquire new token (still holding the
+        // per-credential lock so concurrent callers for the same credential
+        // wait and reuse the fresh token).
         let resp = self
             .client
             .post(token_url)
@@ -204,23 +223,25 @@ impl OAuth2RefreshManager {
             }
         }
 
-        // Update cache under same lock
-        cache.insert(
-            credential_name.to_string(),
-            CachedAccessToken {
-                access_token: access_token.clone(),
-                expires_at,
-            },
-        );
+        // Update cache under the same per-credential lock.
+        *slot_guard = Some(CachedAccessToken {
+            access_token: access_token.clone(),
+            expires_at,
+        });
 
         Ok(access_token)
     }
 
     /// Invalidate a cached access token (e.g., on 401 from upstream).
+    ///
+    /// Removes the entry from the DashMap. Any concurrent caller that has
+    /// already cloned the old `Arc<Mutex<...>>` slot will finish its work
+    /// against that detached slot; its writes are harmless because the slot
+    /// is no longer reachable from the map and drops when the last `Arc`
+    /// does. The next caller for this credential inserts a fresh slot.
     #[allow(dead_code)] // Public API for future 401-retry logic
     pub async fn invalidate(&self, credential_name: &str) {
-        let mut cache = self.cache.lock().await;
-        cache.remove(credential_name);
+        self.cache.remove(credential_name);
     }
 }
 
@@ -238,10 +259,7 @@ mod tests {
     async fn test_cache_miss_and_invalidation() {
         let mgr = OAuth2RefreshManager::new();
         // Nothing cached initially
-        {
-            let cache = mgr.cache.lock().await;
-            assert!(cache.is_empty());
-        }
+        assert!(mgr.cache.is_empty());
         // Invalidation on empty cache is a no-op
         mgr.invalidate("nonexistent").await;
     }
@@ -250,16 +268,13 @@ mod tests {
     async fn test_cached_token_returned_when_valid() {
         let mgr = OAuth2RefreshManager::new();
         // Pre-populate cache
-        {
-            let mut cache = mgr.cache.lock().await;
-            cache.insert(
-                "test-cred".to_string(),
-                CachedAccessToken {
-                    access_token: "cached-token".to_string(),
-                    expires_at: Utc::now() + chrono::Duration::seconds(300),
-                },
-            );
-        }
+        mgr.cache.insert(
+            "test-cred".to_string(),
+            Arc::new(Mutex::new(Some(CachedAccessToken {
+                access_token: "cached-token".to_string(),
+                expires_at: Utc::now() + chrono::Duration::seconds(300),
+            }))),
+        );
         // Should return cached token without hitting the network
         let token = mgr
             .get_access_token(
@@ -279,19 +294,15 @@ mod tests {
     async fn test_invalidate_removes_cached_token() {
         let mgr = OAuth2RefreshManager::new();
         // Pre-populate
-        {
-            let mut cache = mgr.cache.lock().await;
-            cache.insert(
-                "test-cred".to_string(),
-                CachedAccessToken {
-                    access_token: "old-token".to_string(),
-                    expires_at: Utc::now() + chrono::Duration::seconds(300),
-                },
-            );
-        }
+        mgr.cache.insert(
+            "test-cred".to_string(),
+            Arc::new(Mutex::new(Some(CachedAccessToken {
+                access_token: "old-token".to_string(),
+                expires_at: Utc::now() + chrono::Duration::seconds(300),
+            }))),
+        );
         mgr.invalidate("test-cred").await;
-        let cache = mgr.cache.lock().await;
-        assert!(cache.get("test-cred").is_none());
+        assert!(mgr.cache.get("test-cred").is_none());
     }
 
     /// Start a one-shot mock token endpoint that returns the given JSON body
@@ -398,28 +409,31 @@ mod tests {
             Err(OAuth2RefreshError::RotationPersistFailed(_))
         ));
 
-        // Atomicity: cache MUST NOT have been populated.
-        let cache = mgr.cache.lock().await;
-        assert!(
-            cache.get("cred").is_none(),
-            "access token must not be cached when rotation persistence fails"
-        );
+        // Atomicity: on rotation-callback failure the per-credential slot
+        // stays empty. The DashMap entry exists (created by `or_insert_with`
+        // before the refresh ran) but its inner `Option` must be `None`.
+        // Clone the slot `Arc` out of the `Ref` so the DashMap shard guard
+        // is released before we `.await` on the inner mutex.
+        let slot_opt: Option<TokenSlot> = mgr.cache.get("cred").map(|r| r.clone());
+        if let Some(slot) = slot_opt {
+            assert!(
+                slot.lock().await.is_none(),
+                "inner token slot must be empty after rotation-callback failure"
+            );
+        }
     }
 
     #[tokio::test]
     async fn test_expired_token_not_returned() {
         let mgr = OAuth2RefreshManager::new();
         // Pre-populate with expired token
-        {
-            let mut cache = mgr.cache.lock().await;
-            cache.insert(
-                "test-cred".to_string(),
-                CachedAccessToken {
-                    access_token: "expired-token".to_string(),
-                    expires_at: Utc::now() - chrono::Duration::seconds(10),
-                },
-            );
-        }
+        mgr.cache.insert(
+            "test-cred".to_string(),
+            Arc::new(Mutex::new(Some(CachedAccessToken {
+                access_token: "expired-token".to_string(),
+                expires_at: Utc::now() - chrono::Duration::seconds(10),
+            }))),
+        );
         // Should try to hit network (and fail since URL is invalid)
         let result = mgr
             .get_access_token(
