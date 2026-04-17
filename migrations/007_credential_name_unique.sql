@@ -1,4 +1,5 @@
 -- Enforce unique credential names.
+-- Pre-flight: run scripts/migration-007-precheck.sh to detect duplicate names before applying.
 --
 -- The store layer (crates/core/src/storage/sqlite/credentials/mod.rs) already
 -- detects SQLITE_CONSTRAINT_UNIQUE and maps it to StoreError::Conflict (→ 409),
