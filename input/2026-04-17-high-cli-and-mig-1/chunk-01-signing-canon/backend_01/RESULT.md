@@ -2,17 +2,21 @@
 
 ## Files changed
 
-- `crates/cli/src/signing.rs` — modified — +72/-1 lines (added
+- `crates/cli/src/signing.rs` — modified — 223 lines (was 143; added
   `canonicalise_path_and_query` helper, updated `sign_request` doc
   comment, added 7 unit tests).
-- `crates/cli/src/broker.rs` — modified — +23/-6 lines (added
+- `crates/cli/src/broker.rs` — modified — 332 lines (was 314; added
   `canonical_sign_path` helper; updated 5 signed call sites `get`,
   `post`, `post_raw`, `post_signed_empty`, `get_raw` to canonicalise
   before signing).
-- `crates/broker/src/auth.rs` — modified — +108/-1 lines (added
+- `crates/broker/src/auth.rs` — modified — 237 lines (was 317; added
   byte-identical `canonicalise_path_and_query`; replaced
-  `request.uri().path().to_string()` at line 109 with canonical form;
-  added 3 new tests).
+  `request.uri().path().to_string()` with canonical form; test module
+  moved to `auth_tests.rs` via `#[path]` attribute to stay under the
+  R-001 400-line file cap).
+- `crates/broker/src/auth_tests.rs` — **new** — 180 lines (test module
+  pulled out of `auth.rs`; contains the 4 pre-existing tests updated
+  trivially plus the 3 new chunk tests).
 
 ## Tests added
 
@@ -111,6 +115,17 @@ $ cargo build --workspace
 `pub(crate)` rather than `pub` so only `broker.rs` in the same crate
 can reach it (no external consumers); this matches plan intent of
 "helper in both crates".
+
+## Round 2 changes
+
+- **R-001 (file size cap).** Round 1 pushed `crates/broker/src/auth.rs`
+  to 424 lines, exceeding the 400-line cap by 24. Split the test module
+  into a sibling file `crates/broker/src/auth_tests.rs` referenced via
+  `#[cfg(test)] #[path = "auth_tests.rs"] mod tests;` at the bottom of
+  `auth.rs`. Post-split line counts: `auth.rs` 237, `auth_tests.rs` 180
+  — both comfortably under the cap. No logic changed; all 30 broker
+  tests still pass, clippy clean, rustfmt clean on all four modified
+  files.
 
 ## Breaking change note
 
