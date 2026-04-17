@@ -9,6 +9,20 @@ use serde::{Deserialize, Serialize};
 use crate::error::{self, CliError};
 use crate::signing::{self, Keypair, SignedHeaders};
 
+/// Split a caller-supplied path-with-query like `"/foo?a=1"` into its
+/// components and run them through `canonicalise_path_and_query`, so
+/// `sign_request` always receives the canonical signed form. The outbound
+/// HTTP URL is still built from the raw `path`; only the signed payload is
+/// normalised. The broker verifier applies the identical canonicalisation
+/// against `Uri::path()` / `Uri::query()`.
+fn canonical_sign_path(raw: &str) -> String {
+    let (path, query) = match raw.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (raw, None),
+    };
+    signing::canonicalise_path_and_query(path, query)
+}
+
 /// Broker HTTP client with Ed25519 request signing.
 pub struct BrokerClient {
     base_url: String,
@@ -73,7 +87,8 @@ impl BrokerClient {
 
     /// Send a signed GET request.
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, CliError> {
-        let headers = signing::sign_request(&self.keypair, "GET", path, "")?;
+        let sign_path = canonical_sign_path(path);
+        let headers = signing::sign_request(&self.keypair, "GET", &sign_path, "")?;
         let url = format!("{}{}", self.base_url, path);
 
         let resp = self
@@ -95,7 +110,8 @@ impl BrokerClient {
     ) -> Result<T, CliError> {
         let body_str = serde_json::to_string(body)
             .map_err(|e| CliError::general(format!("failed to serialize request: {e}")))?;
-        let headers = signing::sign_request(&self.keypair, "POST", path, &body_str)?;
+        let sign_path = canonical_sign_path(path);
+        let headers = signing::sign_request(&self.keypair, "POST", &sign_path, &body_str)?;
         let url = format!("{}{}", self.base_url, path);
 
         let resp = self
@@ -121,7 +137,8 @@ impl BrokerClient {
     ) -> Result<(u16, String), CliError> {
         let body_str = serde_json::to_string(body)
             .map_err(|e| CliError::general(format!("failed to serialize request: {e}")))?;
-        let headers = signing::sign_request(&self.keypair, "POST", path, &body_str)?;
+        let sign_path = canonical_sign_path(path);
+        let headers = signing::sign_request(&self.keypair, "POST", &sign_path, &body_str)?;
         let url = format!("{}{}", self.base_url, path);
 
         let resp = self
@@ -145,7 +162,8 @@ impl BrokerClient {
     /// Send a signed POST request with an empty body. Returns raw (status, body).
     /// Used for simple control endpoints like `/deregister`.
     pub async fn post_signed_empty(&self, path: &str) -> Result<(u16, String), CliError> {
-        let headers = signing::sign_request(&self.keypair, "POST", path, "")?;
+        let sign_path = canonical_sign_path(path);
+        let headers = signing::sign_request(&self.keypair, "POST", &sign_path, "")?;
         let url = format!("{}{}", self.base_url, path);
 
         let resp = self
@@ -184,7 +202,8 @@ impl BrokerClient {
 
     /// Send a signed GET and return raw response text (for status polling).
     pub async fn get_raw(&self, path: &str) -> Result<(u16, String), CliError> {
-        let headers = signing::sign_request(&self.keypair, "GET", path, "")?;
+        let sign_path = canonical_sign_path(path);
+        let headers = signing::sign_request(&self.keypair, "GET", &sign_path, "")?;
         let url = format!("{}{}", self.base_url, path);
 
         let resp = self
