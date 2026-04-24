@@ -112,11 +112,12 @@ There is no loopback callback and no ephemeral port to forward.
 
 ### 3. Set up a workspace
 
-From your agent's project directory, point the CLI at the broker and run the one-command setup:
+From your agent's project directory, initialize the workspace and register it with the broker:
 
 ```bash
 export AGTCRDN_BROKER_URL=http://localhost:3141   # default; set if broker is on another host/port
-agentcordon setup http://localhost:3140
+agentcordon init
+agentcordon register --server-url http://localhost:3140
 ```
 
 You will see something like:
@@ -135,9 +136,9 @@ Waiting for approval... (expires in 10 minutes)
 
 Open the URL in any browser (including one on a completely different
 machine), sign in, paste the 4-word code, and click **Approve**. The CLI
-will detect the approval, generate an Ed25519 keypair, register the
-workspace with the broker, and write agent instruction files — all in one
-step.
+will detect the approval and finish registering the workspace with the
+broker. If no broker is running yet, `agentcordon register --server-url`
+auto-starts one for you before kicking off the device flow.
 
 This uses [RFC 8628 OAuth 2.0 Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628),
 the same flow as `gh auth login`, `az login --use-device-code`, and
@@ -147,11 +148,11 @@ or on a headless server without any port forwarding.
 <details>
 <summary>Manual setup (advanced)</summary>
 
-If you prefer to control each step individually:
+If you already have a broker running and want to skip the auto-start step:
 
 ```bash
 agentcordon init                 # Generate Ed25519 keypair + agent instruction files
-agentcordon register             # Start the device flow and register workspace with broker
+agentcordon register             # Start the device flow (uses the running broker)
 ```
 
 </details>
@@ -178,7 +179,8 @@ After the installer finishes, open a new terminal and run:
 
 ```powershell
 agentcordon-broker --server-url https://your-server.example.com
-agentcordon setup https://your-server.example.com
+agentcordon init
+agentcordon register --server-url https://your-server.example.com
 ```
 
 The device flow works identically on Windows — copy the 4-word code into

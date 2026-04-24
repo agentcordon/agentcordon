@@ -46,10 +46,13 @@ docker-compose.override.yml
 /tmp/
 *.png
 tools/__pycache__/
+/test-results/
 
 # Dolt database files (added by bd init)
 .dolt/
 
 # AgentCordon workspace identity
 .agentcordon/
+.mcp.json
 AGENTS.md
+.claude

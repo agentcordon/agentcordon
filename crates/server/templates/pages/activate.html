@@ -183,9 +183,15 @@
 
         <div class="activate-body">
             <h1 class="activate-title">Activate a new device</h1>
+            {% if let Some(ws) = workspace_name %}
+            <p class="activate-desc">
+                You are authorizing workspace <strong>{{ ws }}</strong> to access AgentCordon.
+            </p>
+            {% else %}
             <p class="activate-desc">
                 Enter the code shown in your terminal to connect this device to AgentCordon.
             </p>
+            {% endif %}
 
             {% if let Some(msg) = error_message %}
             <div class="activate-alert" role="alert" aria-live="assertive">{{ msg }}</div>

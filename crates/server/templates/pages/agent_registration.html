@@ -111,16 +111,24 @@
         </div>
         <script>
             document.getElementById('cli-register-cmd').textContent =
-                'agentcordon setup ' + window.location.origin;
+                'agentcordon init && agentcordon register --server-url ' + window.location.origin;
         </script>
 
         <p class="text-sm opacity-muted mt-2">
-            This single command starts the broker, generates workspace keys, opens the
-            approval page in your browser, and auto-completes when approved.
+            <code>agentcordon init</code> generates workspace keys and writes
+            the MCP gateway config; <code>agentcordon register</code> starts
+            the broker (if needed), prints a short human-readable activation
+            code (e.g. <code>aide-avert-bovs-bonus</code>), and opens
+            <a href="/activate">/activate</a> in your browser. Enter the code,
+            verify it matches what the CLI showed, and click
+            <strong>Approve</strong>. The CLI polls in the background and
+            finishes registration automatically once you approve.
         </p>
         <p class="text-sm opacity-muted mt-2">
-            After running the command, approve the registration in your browser.
-            The CLI will detect the approval automatically and finish setup.
+            This uses the
+            <a href="https://datatracker.ietf.org/doc/html/rfc8628" target="_blank" rel="noopener">RFC 8628 OAuth 2.0 Device Authorization Grant</a>
+            &mdash; the <code>device_code</code> never leaves the broker, so
+            only the human-readable activation code is ever shown.
         </p>
     </div>
 </div>

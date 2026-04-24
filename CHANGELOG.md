@@ -2,6 +2,18 @@
 
 All notable changes to AgentCordon are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **`agentcordon register` is now the one canonical workspace-registration command.** When you pass `--server-url <url>` (or set `AGTCRDN_SERVER_URL`) and no broker is running, `register` auto-starts a local broker pointed at that server before kicking off the RFC 8628 device code flow — matching the old `agentcordon setup` UX. Use `agentcordon init && agentcordon register --server-url <url>` for first-time onboarding.
+- Error messages for "workspace needs re-registration" now point users at `agentcordon register --force` instead of the removed `agentcordon setup` command.
+
+### Removed
+
+- **`agentcordon setup` subcommand.** Its broker auto-start behaviour moved into `agentcordon register --server-url`, so there is one registration path instead of two. Users on existing scripts should replace `agentcordon setup <url>` with `agentcordon init && agentcordon register --server-url <url>` (if keypairs are not yet generated) or `agentcordon register --server-url <url>` (if `init` has already run).
+- Broken `GET /enroll.md` documentation pointer in the top-level README — the endpoint had no handler and always 404'd.
+
 ## [0.3.0] - 2026-04-09
 
 ### Added

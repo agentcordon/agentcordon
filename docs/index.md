@@ -52,19 +52,20 @@ On first run the broker requests a device code from the server and prints a 4-wo
 From your agent's project directory:
 
 ```bash
-agentcordon setup http://localhost:3140
+agentcordon init
+agentcordon register --server-url http://localhost:3140
 ```
 
-This uses [RFC 8628 Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628) -- the same flow as `gh auth login` and `az login --use-device-code`. Open the activation URL in any browser, enter the 4-word code, and click **Approve**. The CLI generates an Ed25519 keypair, registers the workspace with the broker, and writes agent instruction files -- all in one step.
+This uses [RFC 8628 Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628) -- the same flow as `gh auth login` and `az login --use-device-code`. Open the activation URL in any browser, enter the 4-word code, and click **Approve**. `agentcordon register --server-url` auto-starts a local broker if none is running, registers the workspace, and completes the device flow. `agentcordon init` generated the Ed25519 keypair and wrote the agent instruction files.
 
 <details>
-<summary>Manual setup (advanced)</summary>
+<summary>Manual (broker already running)</summary>
 
-If you prefer to control each step individually:
+If you already have a broker running, `--server-url` is optional:
 
 ```bash
 agentcordon init                 # Generate Ed25519 keypair + agent instruction files
-agentcordon register             # Start the device flow and register workspace with broker
+agentcordon register             # Start the device flow using the running broker
 ```
 
 </details>
@@ -103,7 +104,7 @@ The CLI routes all requests through the broker. Credentials are injected server-
 
 | Page | Description |
 |------|-------------|
-| **[CLI Reference](cli-reference.md)** | Complete command reference -- `setup`, `proxy`, `mcp-servers`, `mcp-tools`, `mcp-call`, and all flags |
+| **[CLI Reference](cli-reference.md)** | Complete command reference -- `register`, `proxy`, `mcp-servers`, `mcp-tools`, `mcp-call`, and all flags |
 
 ---
 

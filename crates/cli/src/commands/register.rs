@@ -12,6 +12,7 @@ use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 
 use crate::broker::BrokerClient;
+use crate::broker_autostart;
 use crate::error::CliError;
 
 #[derive(Serialize)]
@@ -54,8 +55,41 @@ struct StatusData {
 }
 
 /// Register this workspace with the broker via device flow.
-pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(), CliError> {
-    let client = BrokerClient::connect_for_registration().await?;
+///
+/// If `server_url` is provided (via `--server-url` or `AGTCRDN_SERVER_URL`)
+/// and no broker is already running, this will auto-start the broker
+/// pointed at that server before initiating the device flow. If the
+/// broker is already running the flag is ignored.
+pub async fn run(
+    scopes: Vec<String>,
+    force: bool,
+    no_browser: bool,
+    server_url: Option<String>,
+) -> Result<(), CliError> {
+    // If --server-url was supplied, give the broker a chance to come up
+    // before we attempt discovery. `ensure_broker_running` itself tries
+    // the env-var + port-file path first, so passing --server-url when a
+    // broker is already running is a no-op.
+    if let Some(ref url) = server_url {
+        broker_autostart::ensure_broker_running(url).await?;
+    }
+
+    let client = match BrokerClient::connect_for_registration().await {
+        Ok(c) => c,
+        Err(e) if e.code == crate::error::ExitCode::BrokerNotRunning => {
+            return Err(CliError::broker_not_running());
+        }
+        Err(e) => return Err(e),
+    };
+
+    // If already registered and --force wasn't passed, refuse up-front
+    // rather than kick off a new device flow and print a user_code that
+    // never actually replaces the existing registration. Without --force,
+    // `register` was previously a lying no-op from the user's POV.
+    if !force && is_already_registered(&client).await {
+        println!("Workspace already registered. Use --force to re-register.");
+        return Ok(());
+    }
 
     if force {
         println!("Force mode: clearing existing broker registration...");
@@ -107,14 +141,21 @@ pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(
     // even when stdout is captured.
     eprintln!();
     eprintln!("! First, copy your one-time code: {}", resp.data.user_code);
-    eprintln!(
-        "Press Enter to open {} in your browser...",
-        resp.data.verification_uri
-    );
-    let _ = io::stderr().flush();
 
     if !no_browser {
-        // Wait for the user to press Enter, then open the browser.
+        // Interactive path: pause so the user can copy the code, then open
+        // the default browser to the activation URL.
+        eprintln!();
+        eprintln!("Then open this URL in your browser:");
+        eprintln!("  {}", resp.data.verification_uri);
+        if resp.data.verification_uri_complete.is_some() {
+            eprintln!();
+            eprintln!("Or use this link to skip typing the code:");
+            eprintln!("  {activation_url}");
+        }
+        eprintln!();
+        eprint!("Press Enter to open the browser for you...");
+        let _ = io::stderr().flush();
         let stdin = io::stdin();
         let mut line = String::new();
         let _ = stdin.lock().read_line(&mut line);
@@ -124,8 +165,18 @@ pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(
             eprintln!("  {activation_url}");
         }
     } else {
-        eprintln!("Open this URL in your browser to authorize:");
-        eprintln!("  {activation_url}");
+        // Headless / scripted path: skip the stdin pause. The caller
+        // explicitly opted into opening the URL themselves, so blocking
+        // on Enter would hang the process.
+        eprintln!();
+        eprintln!("Then open this URL in your browser:");
+        eprintln!("  {}", resp.data.verification_uri);
+        if resp.data.verification_uri_complete.is_some() {
+            eprintln!();
+            eprintln!("Or use this link to skip typing the code:");
+            eprintln!("  {activation_url}");
+        }
+        let _ = io::stderr().flush();
     }
 
     eprintln!();
@@ -197,6 +248,24 @@ pub async fn run(scopes: Vec<String>, force: bool, no_browser: bool) -> Result<(
             }
         }
     }
+}
+
+/// Probe the broker's `/status` endpoint to see whether this workspace is
+/// already registered. Returns `false` on any error (auth failure, network
+/// error, malformed body) so a flaky broker doesn't block a fresh setup —
+/// the device flow will fail-closed on its own if something is genuinely
+/// wrong. Used to short-circuit `register` without `--force` so the CLI
+/// doesn't print a user_code that can never be redeemed.
+async fn is_already_registered(client: &BrokerClient) -> bool {
+    let Ok((status, body)) = client.get_raw("/status").await else {
+        return false;
+    };
+    if status != 200 {
+        return false;
+    }
+    serde_json::from_str::<StatusResponse>(&body)
+        .map(|r| r.data.registered)
+        .unwrap_or(false)
 }
 
 /// Attempt to open URL in default browser.

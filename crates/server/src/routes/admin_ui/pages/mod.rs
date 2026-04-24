@@ -3,6 +3,7 @@
 //! All authenticated page routes use `page_auth` middleware that redirects
 //! to `/login` (not 401 JSON) when the session is invalid.
 
+pub mod activate;
 pub mod audit;
 pub mod auth;
 pub mod credentials;
@@ -146,22 +147,14 @@ pub async fn page_auth(
 
     let session_token = match parse_cookie(cookie_header, SESSION_COOKIE_NAME) {
         Some(t) => t.to_string(),
-        None => {
-            let next_path = request.uri().path();
-            return Redirect::to(&format!("/login?next={}", urlencoding::encode(next_path)))
-                .into_response();
-        }
+        None => return redirect_to_login(&request),
     };
 
     let token_hash = hash_session_token_hmac(&session_token, &state.session_hash_key);
 
     let session = match state.store.get_session(&token_hash).await {
         Ok(Some(s)) if s.expires_at >= chrono::Utc::now() => s,
-        _ => {
-            let next_path = request.uri().path();
-            return Redirect::to(&format!("/login?next={}", urlencoding::encode(next_path)))
-                .into_response();
-        }
+        _ => return redirect_to_login(&request),
     };
 
     let user = match state.store.get_user(&session.user_id).await {
@@ -188,6 +181,28 @@ pub async fn page_auth(
 /// CSRF token extracted from cookie, available in request extensions.
 #[derive(Clone)]
 pub struct CsrfToken(pub String);
+
+/// Build a 303 redirect to `/login` preserving the caller's full path and
+/// query string in the `next` param so the post-login JS can land them back
+/// on the exact URL they tried to reach — e.g. `/activate?user_code=X` from
+/// an RFC 8628 `verification_uri_complete` link.
+///
+/// The value is URL-encoded once here; the client-side login JS reads it via
+/// `URLSearchParams.get('next')` (which URL-decodes) and validates the decoded
+/// value starts with `/` and does not start with `//` before navigating,
+/// preventing open-redirect attacks.
+fn redirect_to_login(request: &Request) -> Response {
+    let path_and_query = request
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+    Redirect::to(&format!(
+        "/login?next={}",
+        urlencoding::encode(path_and_query)
+    ))
+    .into_response()
+}
 
 // ---------------------------------------------------------------------------
 // Route registration
@@ -273,6 +288,15 @@ pub fn page_routes(app_state: AppState) -> Router<AppState> {
         .route("/security/{id}/partial", get(panels::policy_partial))
         .route("/mcp-servers/{id}/partial", get(panels::mcp_server_partial))
         .route("/register", get(special::agent_registration_page))
+        // RFC 8628 device-flow activation page. `GET` renders the consent
+        // form; `POST` records the approve/deny decision via
+        // `DeviceCodeService` (which emits the audit event). Both routes
+        // require an authenticated session because the approving user's
+        // identity is the whole point of the step.
+        .route("/activate", get(activate::get).post(activate::post))
+        .route("/activate/success", get(activate::success_page))
+        .route("/activate/denied", get(activate::denied_page))
+        .route("/activate/expired", get(activate::expired_page))
         .layer(axum::middleware::from_fn_with_state(app_state, page_auth));
 
     public.merge(authenticated)

@@ -444,17 +444,25 @@ pub fn build_credential_update_sql(
 ///
 /// Both backends must log every audit event identically. Centralising the
 /// call here prevents drift between the two implementations.
+///
+/// Optional fields (`resource_id`, `workspace_name`, `user_name`) are logged
+/// as Display strings with an empty fallback for `None`, so absent values
+/// render as empty rather than the literal string `"None"` that `{:?}` on an
+/// `Option::None` produces.
 pub fn log_audit_event(event: &AuditEvent) {
+    let resource_id = event.resource_id.as_deref().unwrap_or("");
+    let workspace_name = event.workspace_name.as_deref().unwrap_or("");
+    let user_name = event.user_name.as_deref().unwrap_or("");
     tracing::info!(
         audit_event_id = %event.id,
         event_type = ?event.event_type,
         correlation_id = %event.correlation_id,
         action = %event.action,
         resource_type = %event.resource_type,
-        resource_id = ?event.resource_id,
+        resource_id = %resource_id,
         decision = ?event.decision,
-        workspace_name = ?event.workspace_name,
-        user_name = ?event.user_name,
+        workspace_name = %workspace_name,
+        user_name = %user_name,
         "audit_event"
     );
 }

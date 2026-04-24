@@ -1,0 +1,73 @@
+#!/bin/sh
+# Re-exec under bash so users can `curl ... | sh` on systems where /bin/sh
+# is dash (Debian/Ubuntu). Everything below this guard is bash.
+if [ -z "${BASH_VERSION:-}" ]; then
+    if command -v bash >/dev/null 2>&1; then
+        exec bash -c "$(curl -fsSL {server_url}/install.sh)"
+    else
+        echo "agentcordon installer requires bash. Install bash and retry." >&2
+        exit 1
+    fi
+fi
+set -euo pipefail
+
+INSTALL_DIR="${HOME}/.local/bin"
+mkdir -p "$INSTALL_DIR"
+
+SERVER_URL="${AGENTCORDON_SERVER_URL:-{server_url}}"
+GITHUB_RELEASE="https://github.com/agentcordon/agentcordon/releases/latest/download"
+
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+
+case "$OS" in
+    linux)
+        case "$ARCH" in
+            x86_64|amd64) TARGET="x86_64-unknown-linux-gnu" ;;
+            aarch64|arm64) TARGET="aarch64-unknown-linux-gnu" ;;
+            *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        ;;
+    darwin)
+        case "$ARCH" in
+            x86_64|amd64) TARGET="x86_64-apple-darwin" ;;
+            aarch64|arm64) TARGET="aarch64-apple-darwin" ;;
+            *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        ;;
+    *)
+        echo "Unsupported OS: $OS (use the Windows binary from GitHub Releases)"
+        exit 1
+        ;;
+esac
+
+DOWNLOAD_URL_CLI="${GITHUB_RELEASE}/agentcordon-${TARGET}"
+DOWNLOAD_URL_BROKER="${GITHUB_RELEASE}/agentcordon-broker-${TARGET}"
+
+echo "Downloading agentcordon CLI (${TARGET})..."
+curl -fsSL "$DOWNLOAD_URL_CLI" -o "${INSTALL_DIR}/agentcordon"
+chmod +x "${INSTALL_DIR}/agentcordon"
+
+echo "Downloading agentcordon-broker (${TARGET})..."
+curl -fsSL "$DOWNLOAD_URL_BROKER" -o "${INSTALL_DIR}/agentcordon-broker"
+chmod +x "${INSTALL_DIR}/agentcordon-broker"
+
+echo ""
+echo "Installed:"
+echo "  ${INSTALL_DIR}/agentcordon        (workspace CLI)"
+echo "  ${INSTALL_DIR}/agentcordon-broker  (credential broker)"
+echo ""
+
+# Check if install dir is on PATH
+case ":$PATH:" in
+    *":$INSTALL_DIR:"*) ;;
+    *)
+        echo "Add ${INSTALL_DIR} to your PATH:"
+        echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+        echo ""
+        ;;
+esac
+
+echo "Get started:"
+echo "  agentcordon init"
+echo "  agentcordon register --server-url ${SERVER_URL}"

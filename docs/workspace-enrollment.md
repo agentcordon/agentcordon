@@ -186,13 +186,16 @@ CLI sends token + Ed25519 public key to `POST /api/v1/workspaces/provision/compl
 
 ---
 
-### One-Command Setup
+### First-Run Onboarding
 
-The `agentcordon setup <server_url>` command (`crates/cli/src/commands/setup.rs`) wraps the full onboarding sequence:
+`agentcordon register` is the canonical onboarding command. Pair it with `agentcordon init` for a first-time setup:
 
-1. Discover or start the broker daemon (default port 9876)
-2. Run `agentcordon init` (idempotent keypair generation)
-3. Run `agentcordon register` with default scopes (`credentials:discover`, `credentials:vend`, `mcp:discover`, `mcp:invoke`)
+```bash
+agentcordon init
+agentcordon register --server-url <server_url>
+```
+
+When `--server-url` (or the `AGTCRDN_SERVER_URL` environment variable) is provided and no broker is already running, `register` auto-starts a local broker pointed at that server before kicking off the device flow. If a broker is already running, `--server-url` may be omitted. The requested scopes default to `credentials:discover`, `credentials:vend`, `mcp:discover`, and `mcp:invoke`.
 
 ---
 
@@ -216,9 +219,9 @@ The `AuthenticatedOAuthWorkspace` extractor (`crates/server/src/extractors/oauth
 
 The **broker** mediates between the CLI and server. CLI-to-broker requests use Ed25519 request signatures (`crates/broker/src/auth.rs`):
 
-1. CLI signs `method | path | timestamp | body` with workspace Ed25519 key
+1. CLI signs `METHOD\nPATH_WITH_QUERY\nTIMESTAMP\nBODY` with the workspace Ed25519 key. `PATH_WITH_QUERY` is canonicalised: a single trailing `/` is stripped from the path (unless the path is `/`), the query string is appended verbatim after `?` when present, and any URL fragment is dropped. See [CLI Reference -- Authentication](cli-reference.md#authentication) for examples.
 2. Sends public key, timestamp, and signature in request headers
-3. Broker verifies Ed25519 signature and checks timestamp skew (max 30 seconds)
+3. Broker verifies the Ed25519 signature and checks timestamp skew (max 30 seconds)
 4. Broker forwards the request to the server using the stored OAuth access token
 
 ---

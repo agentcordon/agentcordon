@@ -34,6 +34,12 @@ const LOGIN_PATH: &str = "/api/v1/auth/login";
 /// the handler itself). Browser form POSTs cannot send custom headers.
 const OAUTH_AUTHORIZE_PATH: &str = "/api/v1/oauth/authorize";
 
+/// Device-flow activation page — exempt for the same reason as the OAuth
+/// authorize consent form. `POST /activate` validates its own HMAC-based
+/// CSRF token from a hidden form field; the hand-off is an HTML form
+/// submission from the browser, which cannot attach custom headers.
+const ACTIVATE_PATH: &str = "/activate";
+
 /// CSRF validation middleware.
 ///
 /// Must be applied as a layer **after** the request-id middleware and before
@@ -56,6 +62,12 @@ pub async fn csrf_protection(request: Request, next: Next) -> Response {
     // HMAC-based CSRF token from a hidden form field, since browser
     // form POSTs cannot include custom headers.
     if request.uri().path() == OAUTH_AUTHORIZE_PATH {
+        return next.run(request).await;
+    }
+
+    // The device-flow activation page is exempt for the same reason — it
+    // validates its own HMAC-based CSRF token from a hidden form field.
+    if request.uri().path() == ACTIVATE_PATH {
         return next.run(request).await;
     }
 

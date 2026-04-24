@@ -13,6 +13,7 @@ mod common;
 mod cedar_policy_routes;
 mod credential_bugs;
 mod csrf;
+mod device_flow_activate_ui;
 mod device_flow_lifecycle;
 mod device_flow_rfc8628;
 mod device_flow_robustness;

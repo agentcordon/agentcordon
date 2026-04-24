@@ -167,7 +167,22 @@ migrations/
 
 ### Migration Details (v0.3.0)
 
-**007 -- Credential name uniqueness.** Adds a `UNIQUE INDEX` on `credentials(name)`. If your database already contains duplicate credential names, this migration will fail and you must resolve duplicates manually before upgrading. The store layer already maps constraint violations to `409 Conflict`.
+**007 -- Credential name uniqueness.** Adds a `UNIQUE INDEX` on `credentials(name)`. If your database already contains duplicate credential names, this migration will fail on startup and you must resolve duplicates manually before upgrading. The store layer already maps constraint violations to `409 Conflict`.
+
+Before upgrading, run the pre-flight scanner to detect existing duplicates:
+
+```bash
+# SQLite (default path)
+scripts/migration-007-precheck.sh --db-url sqlite:///data/agent-cordon.db
+
+# PostgreSQL
+scripts/migration-007-precheck.sh --db-url "postgres://user:pass@host:5432/agentcordon"
+
+# Or pass via env var
+AGTCRDN_DB_URL=sqlite:///data/agent-cordon.db scripts/migration-007-precheck.sh
+```
+
+The script is read-only (no auto-dedup). Exit status `0` means safe to upgrade; non-zero means duplicates were found and are printed by name. Resolve them (rename or delete) in the running v0.3.x deployment before replacing the binary.
 
 **008 -- Bootstrap client mcp:discover scope.** The bootstrap client (`agentcordon-broker`) seeded by migration 006 was missing the `mcp:discover` scope. Without it, the broker's device authorization grant request was rejected with `400 invalid_scope`. This migration updates `allowed_scopes` to include `credentials:discover,credentials:vend,mcp:discover,mcp:invoke`.
 
@@ -261,6 +276,32 @@ The CLI does not enforce a version match with the server. As long as the API con
 
 ---
 
+## Breaking Changes
+
+### Signing format change (v0.4.0)
+
+The CLI-to-broker Ed25519 signed payload now includes the request's query string. The payload changed from:
+
+```
+METHOD\nPATH\nTIMESTAMP\nBODY
+```
+
+to:
+
+```
+METHOD\nPATH_WITH_QUERY\nTIMESTAMP\nBODY
+```
+
+where `PATH_WITH_QUERY` is canonicalised (trailing `/` stripped unless the path is `/`; query appended verbatim after `?` when present; fragment dropped). The CLI and broker apply byte-identical canonicalisation.
+
+**Impact:** There is no dual-accept window. A pre-v0.4.0 CLI talking to a v0.4.0+ broker (or vice versa) will receive `401 signature verification failed` on every signed request.
+
+**Action:** Upgrade the CLI binary and the broker on the same machine together. In the typical per-user-broker deployment the two are co-located, so upgrade both before running any signed command (`status`, `credentials`, `proxy`, `mcp-*`).
+
+Details and examples: [CLI Reference -- Authentication](cli-reference.md#authentication).
+
+---
+
 ## Pre-Upgrade Checklist
 
 ### Server
@@ -270,7 +311,7 @@ The CLI does not enforce a version match with the server. As long as the API con
 - [ ] Note the current version (`docker inspect` or check release tag)
 - [ ] Review the release notes for breaking changes
 - [ ] If using custom Cedar policies, verify compatibility with the new schema version
-- [ ] If upgrading to a version with migration 007, check for duplicate credential names (`SELECT name, COUNT(*) FROM credentials GROUP BY name HAVING COUNT(*) > 1`)
+- [ ] If upgrading to a version with migration 007, run `scripts/migration-007-precheck.sh` (supports SQLite and Postgres via `--db-url` or `AGTCRDN_DB_URL`) to detect duplicate credential names before the migration runs on startup
 
 ### Client
 

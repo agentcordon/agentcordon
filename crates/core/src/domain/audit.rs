@@ -501,6 +501,14 @@ impl AuditEventBuilder {
         self
     }
 
+    /// Set only the workspace_name field (when a user-facing workspace name is
+    /// known but no fully-resolved `WorkspaceId` is available yet — e.g. a
+    /// device-code row that carries `workspace_name_prefill`).
+    pub fn workspace_name_only(mut self, name: &str) -> Self {
+        self.workspace_name = Some(name.to_string());
+        self
+    }
+
     /// Set correlation ID (defaults to a new UUID if not set).
     pub fn correlation_id(mut self, corr_id: &str) -> Self {
         self.correlation_id = Some(corr_id.to_string());

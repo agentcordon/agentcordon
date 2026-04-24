@@ -2,6 +2,7 @@
 // Manages Ed25519 keypairs, signs requests to broker, never touches credentials
 
 mod broker;
+mod broker_autostart;
 mod commands;
 mod error;
 mod platform;
@@ -48,6 +49,14 @@ enum Command {
         /// Useful for headless / SSH / CI environments.
         #[arg(long = "no-browser")]
         no_browser: bool,
+
+        /// AgentCordon server URL (e.g. http://server:3140). If provided
+        /// and the broker is not already running, `register` will start
+        /// a broker daemon pointed at this server before initiating the
+        /// RFC 8628 device flow. If the broker is already running this
+        /// flag is ignored.
+        #[arg(long = "server-url", env = "AGTCRDN_SERVER_URL")]
+        server_url: Option<String>,
     },
 
     /// Check workspace and broker status
@@ -89,12 +98,6 @@ enum Command {
 
     /// List available MCP servers
     McpServers,
-
-    /// One-command setup: start broker, generate keys, register workspace
-    Setup {
-        /// AgentCordon server URL (e.g. http://server:3140)
-        server_url: String,
-    },
 
     /// List all available MCP tools
     McpTools,
@@ -163,12 +166,12 @@ fn main() -> std::process::ExitCode {
 async fn run_async(command: Command) -> Result<(), CliError> {
     match command {
         Command::Init { .. } => unreachable!(),
-        Command::Setup { server_url } => commands::setup::run(server_url).await,
         Command::Register {
             scopes,
             force,
             no_browser,
-        } => commands::register::run(scopes, force, no_browser).await,
+            server_url,
+        } => commands::register::run(scopes, force, no_browser, server_url).await,
         Command::Status => commands::status::run().await,
         Command::Credentials { action } => match action {
             None => commands::credentials::run().await,

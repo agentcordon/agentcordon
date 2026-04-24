@@ -41,6 +41,11 @@ impl DeviceCodeService {
     }
 
     /// Issue a new device code row. Emits `DeviceCodeIssued` on success.
+    ///
+    /// The `workspace_name_prefill` (if any) is surfaced on the audit event so
+    /// operators can correlate device-flow issuance with the workspace being
+    /// enrolled. `user_name` is None here because issuance is typically
+    /// triggered by a headless broker, not an interactive user.
     #[allow(clippy::too_many_arguments)]
     pub async fn issue(
         &self,
@@ -76,6 +81,8 @@ impl DeviceCodeService {
             "issue_device_code",
             AuditDecision::Permit,
             &client_id,
+            None,
+            workspace_name_prefill.as_deref(),
             correlation_id,
             serde_json::json!({
                 "client_id": client_id,
@@ -93,10 +100,17 @@ impl DeviceCodeService {
     }
 
     /// Approve by user_code. Emits `DeviceCodeApproved` on transition.
+    ///
+    /// `approving_user_name` should be the authenticated approver's username
+    /// (e.g. `auth.user.username`) so audit viewers see a human identifier
+    /// rather than just a UUID. `workspace_name` should be the device-code
+    /// row's `workspace_name_prefill` if any.
     pub async fn approve(
         &self,
         user_code: &str,
         approving_user_id: &str,
+        approving_user_name: Option<&str>,
+        workspace_name: Option<&str>,
         correlation_id: &str,
     ) -> Result<bool, StoreError> {
         let ok = self
@@ -109,6 +123,8 @@ impl DeviceCodeService {
                 "approve_device_code",
                 AuditDecision::Permit,
                 approving_user_id,
+                approving_user_name,
+                workspace_name,
                 correlation_id,
                 serde_json::json!({ "approving_user_id": approving_user_id }),
             )
@@ -118,10 +134,16 @@ impl DeviceCodeService {
     }
 
     /// Deny by user_code. Emits `DeviceCodeDenied` on transition.
+    ///
+    /// `denying_user_name` should be the authenticated denier's username;
+    /// `workspace_name` should be the device-code row's
+    /// `workspace_name_prefill` if any.
     pub async fn deny(
         &self,
         user_code: &str,
         denying_user_id: &str,
+        denying_user_name: Option<&str>,
+        workspace_name: Option<&str>,
         correlation_id: &str,
     ) -> Result<bool, StoreError> {
         let ok = self.store.deny_device_code(user_code).await?;
@@ -131,6 +153,8 @@ impl DeviceCodeService {
                 "deny_device_code",
                 AuditDecision::Forbid,
                 denying_user_id,
+                denying_user_name,
+                workspace_name,
                 correlation_id,
                 serde_json::json!({ "denying_user_id": denying_user_id }),
             )
@@ -181,6 +205,8 @@ impl DeviceCodeService {
                 "sweep_expired_device_codes",
                 AuditDecision::NotApplicable,
                 "system",
+                None,
+                None,
                 correlation_id,
                 serde_json::json!({ "expired_count": count }),
             )
@@ -189,22 +215,31 @@ impl DeviceCodeService {
         Ok(count)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn emit(
         &self,
         event_type: AuditEventType,
         action: &str,
         decision: AuditDecision,
         resource_id: &str,
+        user_name: Option<&str>,
+        workspace_name: Option<&str>,
         correlation_id: &str,
         metadata: serde_json::Value,
     ) {
-        let event = AuditEvent::builder(event_type)
+        let mut builder = AuditEvent::builder(event_type)
             .action(action)
             .resource("device_code", resource_id)
             .decision(decision, None)
             .details(metadata)
-            .correlation_id(correlation_id)
-            .build();
+            .correlation_id(correlation_id);
+        if let Some(name) = user_name {
+            builder = builder.user_name_only(name);
+        }
+        if let Some(name) = workspace_name {
+            builder = builder.workspace_name_only(name);
+        }
+        let event = builder.build();
         if let Err(e) = self.store.append_audit_event(&event).await {
             error!(error = %e, "failed to append device-code audit event");
         }

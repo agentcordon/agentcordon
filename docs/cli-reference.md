@@ -10,8 +10,7 @@ Complete reference for the `agentcordon` command-line tool -- the workspace agen
 
 ```
 agentcordon init         [--agent AGENT]
-agentcordon setup        <SERVER_URL>
-agentcordon register     [--scope SCOPE]... [--force] [--no-browser]
+agentcordon register     [--server-url URL] [--scope SCOPE]... [--force] [--no-browser]
 agentcordon status
 agentcordon credentials
 agentcordon credentials  create --name NAME --service SVC --value VAL
@@ -103,53 +102,9 @@ Workspace identity: sha256:a1b2c3d4...
 
 ---
 
-### `agentcordon setup`
-
-> One-command onboarding: start broker, generate keys, register workspace.
-
-```
-agentcordon setup <SERVER_URL>
-```
-
-| Argument | Type | Required | Description |
-|----------|------|:--------:|-------------|
-| `<SERVER_URL>` | string | Yes | AgentCordon server URL (e.g. `http://server:3140`) |
-
-**What it does:**
-
-1. Discovers or starts the broker daemon (auto-selects port, default 9876)
-2. Runs `init` (idempotent keypair generation for `claude-code`)
-3. Runs `register` with default scopes (`credentials:discover`, `credentials:vend`, `mcp:discover`, `mcp:invoke`)
-
-This is the recommended first-run command for new workspaces.
-
-**Examples:**
-
-```bash
-agentcordon setup http://localhost:3140
-agentcordon setup https://agentcordon.example.com
-```
-
-**Output:**
-```
-Setting up AgentCordon...
-
-  Broker: http://localhost:9876
-Workspace identity: sha256:a1b2c3d4...
-
-! First, copy your one-time code: ABCD-1234
-Press Enter to open https://... in your browser...
-
-  Setup complete! Try:
-    agentcordon credentials
-    agentcordon proxy <credential> GET <url>
-```
-
----
-
 ### `agentcordon register`
 
-> Register this workspace with the broker via RFC 8628 device authorization flow.
+> Register this workspace with the broker via the RFC 8628 device authorization flow. This is the canonical onboarding command.
 
 ```
 agentcordon register [OPTIONS]
@@ -157,26 +112,33 @@ agentcordon register [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--server-url <URL>` | string | `$AGTCRDN_SERVER_URL` | AgentCordon server URL (e.g. `http://server:3140`). If provided and no broker is running, `register` auto-starts a local broker pointed at this server before kicking off the device flow. |
 | `--scope <SCOPE>` | string (repeatable) | `credentials:discover credentials:vend mcp:discover mcp:invoke` | OAuth scopes to request |
-| `--force` | bool | `false` | Clear existing broker registration before re-registering (use when server-side workspace was deleted but broker holds stale state) |
+| `--force` | bool | `false` | Clear existing broker registration before re-registering (use when the server-side workspace was deleted but the broker holds stale state) |
 | `--no-browser` | bool | `false` | Do not auto-open the authorization URL in the browser (useful for headless/SSH/CI environments) |
 
 **What it does:**
 
-1. Connects to the broker
-2. If `--force`: sends a deregister request to clear stale state
-3. Posts a signed registration request with the workspace public key and requested scopes
-4. Displays a one-time code and verification URL
-5. Opens the browser (unless `--no-browser`)
-6. Polls the broker until authorization is approved or denied
+1. Locates a running broker via `AGTCRDN_BROKER_URL` or `~/.agentcordon/broker.port`. If none is running and `--server-url` (or `AGTCRDN_SERVER_URL`) is provided, auto-starts a broker pointed at that server and waits for it to report healthy.
+2. If `--force`: sends a deregister request to clear stale state.
+3. Posts a signed registration request with the workspace public key and requested scopes.
+4. Displays a short human-readable activation code and an `/activate` URL.
+5. Opens the browser (unless `--no-browser`).
+6. Polls the broker until the approval is recorded or the device code expires.
+
+If no broker is running and no server URL is available, the command exits with code `2` ("broker not running") and prints: `Start the broker first: agentcordon-broker --server-url <url>` / `Or pass --server-url to agentcordon register and it will auto-start the broker.`
 
 **Examples:**
 
 ```bash
-# Register with default scopes (opens browser)
+# Recommended first-run: init the workspace, then register (auto-starts broker)
+agentcordon init
+agentcordon register --server-url http://localhost:3140
+
+# Register against an already-running broker
 agentcordon register
 
-# Register without opening browser (headless)
+# Register without opening a browser (headless/SSH/CI)
 agentcordon register --no-browser
 
 # Re-register after server-side workspace deletion
@@ -188,8 +150,13 @@ agentcordon register --scope credentials:discover --scope credentials:vend
 
 **Output:**
 ```
-! First, copy your one-time code: ABCD-1234
-Press Enter to open https://server/device in your browser...
+To finish setting up this workspace, open:
+
+    http://localhost:3140/activate
+
+and enter the code:
+
+    tidy-zoned-zit-ramp
 
 Waiting for approval... done!
 Logged in as my-workspace. Scopes: [credentials:discover, credentials:vend, mcp:discover, mcp:invoke]
@@ -439,6 +406,8 @@ Created by `agentcordon init`. Added to `.gitignore` automatically. Directory pe
 
 Used by the broker daemon (`agentcordon-broker`). Located in the user's home directory.
 
+The CLI resolves the home directory on every platform (Unix `$HOME`, macOS `$HOME`, Windows `USERPROFILE`/`HOMEDRIVE`+`HOMEPATH`). If no home directory can be resolved, commands that need `~/.agentcordon/` (including `init`, `register`, and any signed command that reads the broker port file) exit non-zero with a clear error rather than writing to a fallback path.
+
 | File | Description |
 |------|-------------|
 | `broker.port` | Port file written by the broker, read by the CLI for auto-discovery |
@@ -492,9 +461,22 @@ The CLI uses Ed25519 request signing to authenticate with the broker. Every requ
 |--------|-------------|
 | `X-AC-PublicKey` | Hex-encoded Ed25519 public key |
 | `X-AC-Timestamp` | Unix timestamp (seconds) |
-| `X-AC-Signature` | Ed25519 signature of `METHOD\nPATH\nTIMESTAMP\nBODY` |
+| `X-AC-Signature` | Ed25519 signature of `METHOD\nPATH_WITH_QUERY\nTIMESTAMP\nBODY` |
 
 The broker verifies the signature and maps the public key to a registered workspace.
+
+### Canonical `PATH_WITH_QUERY`
+
+The signed path-and-query is canonicalised identically on the CLI and broker sides:
+
+- Strip a single trailing `/` from the path unless the path is exactly `/`.
+- If the request URL has a query string, append `?` followed by the query string verbatim -- do not re-sort or re-encode parameters.
+- If there is no query string, append nothing. A bare trailing `?` is never emitted.
+- Any URL fragment (`#...`) is stripped before signing.
+
+Examples: `/foo/bar`, `/foo/bar?a=1&b=2`, `/` (root), `/?a=1` (root with query). The shapes `/foo/bar/` and `/foo/bar?` are never signed.
+
+> **Breaking change (v0.4.0):** The signed payload previously omitted the query string (`METHOD\nPATH\nTIMESTAMP\nBODY`). A CLI and broker on different sides of this change cannot communicate; a mismatched CLI receives `401 signature verification failed`. Upgrade the CLI and broker together. See [Upgrading](upgrading.md#signing-format-change-v040).
 
 ### Broker Discovery
 

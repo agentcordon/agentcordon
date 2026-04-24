@@ -38,7 +38,10 @@ impl CliError {
     pub fn broker_not_running() -> Self {
         Self {
             code: ExitCode::BrokerNotRunning,
-            message: "broker is not running.\nStart it with: agentcordon-broker start".into(),
+            message: "broker is not running.\n\
+                      Start it first: agentcordon-broker --server-url <url>\n\
+                      Or pass: agentcordon register --server-url <url> (auto-starts the broker)."
+                .into(),
         }
     }
 
@@ -88,7 +91,7 @@ pub fn from_broker_error(http_status: u16, code: &str, message: &str) -> CliErro
     if code == "reregistration_required" {
         return CliError {
             code: ExitCode::NotRegistered,
-            message: "Workspace needs re-registration.\nRun: agentcordon setup <server_url>".into(),
+            message: "Workspace needs re-registration.\nRun: agentcordon register --force".into(),
         };
     }
 
