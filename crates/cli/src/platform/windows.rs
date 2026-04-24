@@ -37,10 +37,12 @@ pub fn spawn_broker(cmd: &mut Command) -> std::io::Result<Child> {
     unsafe { AssignProcessToJobObject(job, handle) }
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
-    // Intentionally leak the job handle: it must outlive this function so
-    // that the kill-on-close trigger is wired to process exit, not the end
-    // of this scope.
-    std::mem::forget(job);
+    // Discard the job handle without closing it: the kernel's
+    // kill-on-close trigger must fire on process exit, not when this
+    // function returns. `HANDLE` is `Copy` and has no `Drop` impl, so
+    // simply letting the local go out of scope is fine — the kernel-side
+    // handle persists for the life of the process.
+    let _ = job;
 
     Ok(child)
 }
