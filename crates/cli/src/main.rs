@@ -45,11 +45,6 @@ enum Command {
         #[arg(long)]
         force: bool,
 
-        /// Do not auto-open the authorization URL in the browser.
-        /// Useful for headless / SSH / CI environments.
-        #[arg(long = "no-browser")]
-        no_browser: bool,
-
         /// AgentCordon server URL (e.g. http://server:3140). If provided
         /// and the broker is not already running, `register` will start
         /// a broker daemon pointed at this server before initiating the
@@ -169,9 +164,8 @@ async fn run_async(command: Command) -> Result<(), CliError> {
         Command::Register {
             scopes,
             force,
-            no_browser,
             server_url,
-        } => commands::register::run(scopes, force, no_browser, server_url).await,
+        } => commands::register::run(scopes, force, server_url).await,
         Command::Status => commands::status::run().await,
         Command::Credentials { action } => match action {
             None => commands::credentials::run().await,

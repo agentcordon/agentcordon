@@ -124,11 +124,13 @@ pub async fn post_proxy(
 
     // For oauth2_client_credentials, exchange the client secret for an access
     // token via the provider's token endpoint before applying the bearer transform.
-    let credential_value = if decrypted
-        .credential_type
-        .as_deref()
-        == Some("oauth2_client_credentials")
-    {
+    //
+    // NOTE: `credential_type` lives on the outer `VendResponse` — NOT inside
+    // the ECIES envelope plaintext. The server only encrypts `{value, metadata}`
+    // in the envelope. Reading `decrypted.credential_type` here silently
+    // returned `None` and skipped the exchange, injecting the raw client_secret
+    // as a bearer token (Graph: "IDX14100: JWT is not well formed").
+    let credential_value = if vend_response.credential_type == "oauth2_client_credentials" {
         let client_id = decrypted.metadata.get("oauth2_client_id").cloned().unwrap_or_default();
         let token_endpoint = decrypted.metadata.get("oauth2_token_endpoint").cloned().unwrap_or_default();
         let scopes = decrypted.metadata.get("oauth2_scopes").cloned().unwrap_or_default();
@@ -197,9 +199,11 @@ pub async fn post_proxy(
         decrypted.value
     };
 
-    // Apply credential transform
+    // Apply credential transform.
+    // `credential_type` comes from the outer `VendResponse`, not from the
+    // envelope plaintext (see the note above the oauth2 exchange block).
     let material = CredentialMaterial {
-        credential_type: decrypted.credential_type,
+        credential_type: Some(vend_response.credential_type.clone()),
         value: credential_value,
         username: decrypted.username,
         metadata: decrypted.metadata,

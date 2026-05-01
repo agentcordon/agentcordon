@@ -1,3 +1,4 @@
+mod bindings;
 mod crud;
 mod discover;
 mod import;
@@ -54,6 +55,14 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/mcp-servers/{id}/permissions/{agent_id}/{permission}",
             axum::routing::delete(revoke_permission),
+        )
+        .route(
+            "/mcp-servers/{id}/workspaces",
+            post(bindings::add_workspace_bindings),
+        )
+        .route(
+            "/mcp-servers/{id}/workspaces/{workspace_id}",
+            axum::routing::delete(bindings::remove_workspace_binding),
         )
 }
 

@@ -176,6 +176,16 @@ pub(crate) async fn provision_from_catalog(
     };
     state.store.create_mcp_server(&server).await?;
 
+    // 7a. Bind the new MCP to its originating workspace in the junction. Without
+    // this row, post-migration-010 broker sync (which joins through
+    // `mcp_server_workspaces`) returns zero MCPs for this workspace even
+    // though the record exists. The migration only backfills pre-existing
+    // rows; new provisions must insert their own junction row.
+    state
+        .store
+        .add_mcp_server_workspace(&server.id, &workspace_id, Some(&auth.user.id))
+        .await?;
+
     // 7b. Best-effort tool discovery — call tools/list on the upstream MCP server.
     // This populates allowed_tools so that `agentcordon mcp-tools` works immediately
     // after provisioning. Failures are non-fatal (tools can be discovered later).

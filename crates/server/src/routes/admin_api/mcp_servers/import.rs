@@ -196,6 +196,15 @@ pub(super) async fn import_mcp_servers(
 
         state.store.create_mcp_server(&server).await?;
 
+        // Bind the imported MCP to its target workspace in the junction.
+        // Migration 010 only backfills pre-existing rows; newly imported MCPs
+        // need their own junction row or broker sync won't see them.
+        // See provision.rs §7a.
+        state
+            .store
+            .add_mcp_server_workspace(&server.id, &ws_id, created_by_user.as_ref())
+            .await?;
+
         // Audit event -- record the Cedar policy decision instead of a bypass marker
         let mut builder = AuditEvent::builder(AuditEventType::McpServerRegistered)
             .action("import")

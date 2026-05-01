@@ -110,7 +110,7 @@
             <table x-show="server && server.tools && server.tools.length > 0" class="tbl">
                 <thead><tr><th>Name</th><th>Description</th></tr></thead>
                 <tbody>
-                    <template x-for="tool in (server.tools || [])" :key="tool.name">
+                    <template x-for="tool in (server?.tools || [])" :key="tool.name">
                         <tr>
                             <td class="mono-id" x-text="tool.name"></td>
                             <td x-text="tool.description || '\u2014'"></td>
@@ -122,8 +122,13 @@
 
             <!-- Workspaces Tab -->
             <div class="tab-content" x-show="activeTab === 'workspaces'">
-            <h3>Workspaces with access</h3>
-            <p class="text-sm opacity-muted mcp-workspaces-desc">Workspaces owned by the same user as this MCP server automatically have access. To grant access to other users' workspaces, use Cedar policies.</p>
+            <div class="mcp-ws-header">
+                <h3>Workspaces with access</h3>
+                <button x-show="canShare()"
+                        class="btn btn-primary btn-sm"
+                        @click="openShareModal()"
+                        data-testid="share-with-workspace">Share with workspace</button>
+            </div>
             <div x-show="installedWorkspaces.length === 0" class="empty-state empty-state-sm">
                 <p>No workspaces have access to this server.</p>
             </div>
@@ -133,6 +138,7 @@
                         <th>Workspace</th>
                         <th>Status</th>
                         <th>Tags</th>
+                        <th x-show="canShare()" class="mcp-ws-actions-col"></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -149,10 +155,61 @@
                                     <span class="pill pill-sm pill-scope" x-text="tag"></span>
                                 </template>
                             </td>
+                            <td x-show="canShare()" class="mcp-ws-actions-col">
+                                <button class="btn btn-ghost btn-sm"
+                                        @click="unshareWorkspace(w)"
+                                        :aria-label="'Unshare ' + w.name"
+                                        title="Unshare this workspace">&times;</button>
+                            </td>
                         </tr>
                     </template>
                 </tbody>
             </table>
+
+            <!-- Share Modal -->
+            <div x-show="shareModalOpen"
+                 x-cloak
+                 x-transition.opacity.duration.150ms
+                 class="modal-overlay"
+                 @click.self="closeShareModal()"
+                 @keydown.escape.window="shareModalOpen && closeShareModal()"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-labelledby="share-modal-title">
+                <div class="modal mcp-share-modal">
+                    <h3 id="share-modal-title">Share MCP server with workspace</h3>
+                    <p class="text-sm opacity-muted">Pick one or more of your workspaces to bind to this MCP server.</p>
+                    <div x-show="shareLoading" class="page-loader page-loader-sm">
+                        <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+                    </div>
+                    <div x-show="!shareLoading && shareCandidates.length === 0" class="empty-state empty-state-compact">
+                        <p>No eligible workspaces. All of your workspaces already have access.</p>
+                    </div>
+                    <div x-show="!shareLoading && shareCandidates.length > 0" class="mcp-share-list" role="group" aria-label="Available workspaces">
+                        <template x-for="w in shareCandidates" :key="w.id">
+                            <label class="checkbox-label mcp-share-row">
+                                <input type="checkbox" class="checkbox-input"
+                                       :value="w.id"
+                                       :checked="shareSelection[w.id] === true"
+                                       @change="shareSelection[w.id] = $event.target.checked">
+                                <span x-text="w.name"></span>
+                            </label>
+                        </template>
+                    </div>
+                    <div x-show="shareError" x-cloak class="install-form-error" role="alert" aria-live="polite" x-text="shareError"></div>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-secondary" @click="closeShareModal()">Cancel</button>
+                        <button type="button"
+                                class="btn btn-primary"
+                                :disabled="selectedShareCount() === 0 || shareSubmitting"
+                                @click="submitShare()"
+                                data-testid="share-submit">
+                            <span x-show="shareSubmitting" class="spinner" aria-hidden="true"></span>
+                            <span x-text="shareSubmitting ? 'Sharing...' : 'Share'"></span>
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
 
             <!-- History Tab -->
@@ -227,8 +284,17 @@ details[open] .mcp-section-toggle::before { transform: rotate(90deg); }
 .mcp-workspace-link { color: inherit; text-decoration: underline; }
 
 /* Workspaces tab */
-.mcp-workspaces-desc { margin-bottom: 12px; }
+.mcp-ws-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.mcp-ws-header h3 { margin: 0; }
 .mcp-ws-table { margin-bottom: 20px; }
+.mcp-ws-actions-col { width: 40px; text-align: right; }
+
+/* Share modal */
+.mcp-share-modal { max-width: 520px; max-height: 80vh; display: flex; flex-direction: column; }
+.mcp-share-modal h3 { margin-bottom: 8px; }
+.mcp-share-list { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; max-height: 320px; overflow-y: auto; padding: 4px 2px; }
+.mcp-share-row { padding: 4px 0; }
+.install-form-error { background: var(--danger-bg); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); color: var(--danger); padding: 0.625rem 0.875rem; border-radius: var(--radius-sm, 6px); font-size: 0.85rem; margin-bottom: 0.75rem; }
 
 /* EA Modal */
 .mcp-ea-modal { max-width: 600px; max-height: 80vh; overflow-y: auto; }
@@ -269,6 +335,13 @@ function mcpServerDetailPage() {
         historyLoaded: false,
         notFound: false,
         accessDenied: false,
+        currentUserId: '{{ user.user_id }}',
+        currentUserIsAdmin: {% if user.is_admin %}true{% else %}false{% endif %},
+        shareModalOpen: false,
+        shareLoading: false,
+        shareSubmitting: false,
+        shareSelection: {},
+        shareError: '',
         async init() {
             try {
                 const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}');
@@ -495,6 +568,111 @@ function mcpServerDetailPage() {
         rsopLabel: rsopLabel,
         rsopBasis: rsopBasis,
         formatDateTime: formatDateTime,
+
+        canShare() {
+            if (!this.server) return false;
+            if (this.currentUserIsAdmin) return true;
+            return !!(this.server.created_by_user && this.server.created_by_user === this.currentUserId);
+        },
+
+        get shareCandidates() {
+            var bound = {};
+            for (var i = 0; i < this.installedWorkspaces.length; i++) {
+                bound[this.installedWorkspaces[i].id] = true;
+            }
+            return (this.workspaces || []).filter(function(w) { return !bound[w.id]; });
+        },
+
+        selectedShareCount() {
+            var n = 0;
+            for (var k in this.shareSelection) { if (this.shareSelection[k]) n++; }
+            return n;
+        },
+
+        async openShareModal() {
+            this.shareSelection = {};
+            this.shareError = '';
+            this.shareModalOpen = true;
+            if (this.workspaces.length === 0) {
+                this.shareLoading = true;
+                await this.loadWorkspaces();
+                this.shareLoading = false;
+            }
+        },
+
+        closeShareModal() {
+            this.shareModalOpen = false;
+            this.shareSelection = {};
+            this.shareError = '';
+        },
+
+        async submitShare() {
+            var ids = [];
+            for (var k in this.shareSelection) {
+                if (this.shareSelection[k]) ids.push(k);
+            }
+            if (ids.length === 0 || this.shareSubmitting) return;
+            this.shareSubmitting = true;
+            this.shareError = '';
+            try {
+                var resp = await fetch('/api/v1/mcp-servers/{{ server_id }}/workspaces', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ workspace_ids: ids })
+                });
+                var body = await resp.json().catch(function() { return {}; });
+                if (resp.ok) {
+                    var added = (body.data && body.data.added) || [];
+                    var already = (body.data && body.data.already_bound) || [];
+                    var newlyBound = added.concat(already);
+                    var self = this;
+                    newlyBound.forEach(function(wid) {
+                        if (self.installedWorkspaces.some(function(w) { return w.id === wid; })) return;
+                        var src = self.workspaces.find(function(w) { return w.id === wid; });
+                        if (src) {
+                            self.installedWorkspaces.push({
+                                id: src.id,
+                                name: src.name,
+                                enabled: src.enabled !== false,
+                                tags: src.tags || []
+                            });
+                        }
+                    });
+                    showToast(added.length > 0
+                        ? ('Shared with ' + added.length + ' workspace' + (added.length === 1 ? '' : 's'))
+                        : 'All selected workspaces were already bound',
+                        'success');
+                    this.closeShareModal();
+                } else {
+                    this.shareError = (body.error && body.error.message) || ('Failed to share (HTTP ' + resp.status + ')');
+                }
+            } catch(e) {
+                this.shareError = (e && e.message) || 'Network error';
+            }
+            this.shareSubmitting = false;
+        },
+
+        async unshareWorkspace(w) {
+            if (!w || !w.id) return;
+            if (!window.confirm('Unshare "' + w.name + '" from this MCP server?')) return;
+            try {
+                var resp = await fetch('/api/v1/mcp-servers/{{ server_id }}/workspaces/' + encodeURIComponent(w.id), {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                if (resp.status === 204) {
+                    this.installedWorkspaces = this.installedWorkspaces.filter(function(x) { return x.id !== w.id; });
+                    showToast('Unshared ' + w.name, 'success');
+                    return;
+                }
+                var body = await resp.json().catch(function() { return {}; });
+                var msg = (body.error && body.error.message) || ('Failed to unshare (HTTP ' + resp.status + ')');
+                showToast(msg, 'error');
+            } catch(e) {
+                showToast((e && e.message) || 'Network error', 'error');
+            }
+        },
+
         async confirmDelete() {
             try {
                 const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}', {

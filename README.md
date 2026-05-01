@@ -233,7 +233,7 @@ docker run -d \
 - **Cedar policy engine** -- deny-by-default, deterministic, testable authorization
 - **Encrypted vault** -- AES-256-GCM, per-credential key derivation via HKDF
 - **MCP gateway** -- proxy MCP tool calls with credential injection, policy enforcement, and response leak scanning
-- **MCP Marketplace** -- one-click installation of popular MCP servers (GitHub, Slack, Linear, etc.) with automatic credential binding
+- **MCP Marketplace** -- one-click installation of popular MCP servers (GitHub, Slack, Linear, etc.) with automatic credential binding. Install once, then share the same MCP with any of your workspaces from its detail page — one record, many bindings, same credentials everywhere.
 - **OAuth2 for MCP servers** -- authorization code flow support for MCP servers that require OAuth2 authentication
 - **Broker daemon** -- per-user service that holds OAuth tokens and proxies upstream requests; credentials never reach agents
 - **Workspace identity** -- Ed25519 keypairs, passwordless enrollment, per-project isolation

@@ -405,6 +405,13 @@ async fn oauth_callback(
             &mcp_state.user_id,
         );
         state.store.create_mcp_server(&s).await?;
+        // Bind the new MCP to its originating workspace in the junction so
+        // broker `mcp_sync` (which joins through `mcp_server_workspaces` after
+        // migration 010) can see it. See also provision.rs §7a.
+        state
+            .store
+            .add_mcp_server_workspace(&s.id, &mcp_state.workspace_id, Some(&mcp_state.user_id))
+            .await?;
         (s, false)
     };
 

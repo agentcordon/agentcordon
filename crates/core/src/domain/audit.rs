@@ -113,6 +113,8 @@ pub enum AuditEventType {
     McpToolCalled,
     McpToolDenied,
     McpServerProvisioned,
+    McpServerSharedWithWorkspace,
+    McpServerUnsharedFromWorkspace,
 
     // OAuth Provider Clients
     OAuthProviderClientCreated,

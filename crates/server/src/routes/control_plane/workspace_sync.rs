@@ -202,13 +202,15 @@ pub(super) async fn sync_mcp_servers(
         None
     };
 
-    // Cedar-filter MCP servers by `mcp_list_tools` for this workspace.
-    // Under the owner-based default policy, workspaces only see servers owned
-    // by the same user (plus any with explicit grants).
-    let all_servers = state.store.list_mcp_servers().await?;
-    let servers: Vec<_> = all_servers
+    // Join through `mcp_server_workspaces` — returns only enabled MCPs bound to
+    // this workspace via the junction. Cedar policy 3a (same-owner) is still
+    // evaluated as a defense-in-depth gate on top of the routing junction.
+    let bound_servers = state
+        .store
+        .list_mcp_servers_for_workspace(&workspace.workspace.id)
+        .await?;
+    let servers: Vec<_> = bound_servers
         .into_iter()
-        .filter(|s| s.enabled)
         .filter(|s| workspace_can_view_mcp_server(&state, &workspace, s))
         .collect();
 
@@ -426,11 +428,13 @@ pub(super) async fn sync_mcp_tools(
     State(state): State<AppState>,
     workspace: AuthenticatedWorkspace,
 ) -> Result<Json<ApiResponse<Vec<McpToolSyncEntry>>>, ApiError> {
-    let servers = state.store.list_mcp_servers().await?;
+    let servers = state
+        .store
+        .list_mcp_servers_for_workspace(&workspace.workspace.id)
+        .await?;
 
     let entries: Vec<McpToolSyncEntry> = servers
         .into_iter()
-        .filter(|s| s.enabled)
         .filter(|s| workspace_can_view_mcp_server(&state, &workspace, s))
         .flat_map(|s| {
             let server_name = s.name.clone();

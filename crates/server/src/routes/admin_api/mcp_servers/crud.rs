@@ -117,19 +117,30 @@ pub(super) async fn get_mcp_server(
     let mut resp = McpServerResponse::from_server(&server);
     enrich_mcp_server_responses(state.store.as_ref(), std::slice::from_mut(&mut resp)).await;
 
-    // Resolve installed workspace: MCP server belongs to exactly one workspace.
+    // Resolve installed workspaces from the `mcp_server_workspaces` junction.
+    // One MCP can be bound to many workspaces; filter out inactive ones so the
+    // FE only shows live bindings.
     let installed_workspaces = {
-        match state.store.get_workspace(&server.workspace_id).await {
-            Ok(Some(w))
-                if w.status == agent_cordon_core::domain::workspace::WorkspaceStatus::Active =>
-            {
-                vec![InstalledWorkspaceInfo {
-                    id: w.id.0.to_string(),
-                    name: w.name.clone(),
-                }]
+        let bindings = state
+            .store
+            .list_workspaces_for_mcp_server(&server_id)
+            .await?;
+        let mut out = Vec::with_capacity(bindings.len());
+        for (ws_id, ws_name) in bindings {
+            match state.store.get_workspace(&ws_id).await {
+                Ok(Some(w))
+                    if w.status
+                        == agent_cordon_core::domain::workspace::WorkspaceStatus::Active =>
+                {
+                    out.push(InstalledWorkspaceInfo {
+                        id: ws_id.0.to_string(),
+                        name: ws_name,
+                    });
+                }
+                _ => {}
             }
-            _ => vec![],
         }
+        out
     };
 
     // Map allowed_tools to tool entries for the FE template
