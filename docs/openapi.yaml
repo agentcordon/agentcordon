@@ -439,6 +439,20 @@ components:
         id:
           type: string
           format: uuid
+        workspace_id:
+          type: string
+          format: uuid
+          description: |
+            **Immutable audit anchor.** The workspace this MCP was first
+            provisioned for. Set once at provision time and never mutated —
+            not by share, not by unshare, not by workspace renames, not even
+            by removing the binding for this workspace. Preserved so audit
+            reports can always answer "who first provisioned this?".
+
+            This is **not** the current routing key and **not** the current
+            binding set. Current bindings live in the `mcp_server_workspaces`
+            junction table — see `McpServerDetailResponse.installed_workspaces`
+            for the live list.
         name:
           type: string
         upstream_url:
@@ -465,6 +479,77 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    InstalledWorkspaceInfo:
+      type: object
+      description: |
+        A workspace currently bound to an MCP server via the
+        mcp_server_workspaces junction. The list can contain zero or more
+        entries — it is no longer a 0-or-1-element vec derived from
+        mcp_servers.workspace_id.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+
+    McpServerDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/McpServerResponse'
+        - type: object
+          properties:
+            installed_workspaces:
+              type: array
+              description: All workspaces bound to this MCP via the junction.
+              items:
+                $ref: '#/components/schemas/InstalledWorkspaceInfo'
+            tools:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  description:
+                    type: string
+                    nullable: true
+
+    McpServerWorkspacesAddRequest:
+      type: object
+      required: [workspace_ids]
+      properties:
+        workspace_ids:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: uuid
+          description: |
+            Workspaces to bind to this MCP. All must be owned by the caller,
+            or the caller must be admin/root. Cross-user sharing is out of
+            scope and returns 404 for workspaces owned by a different user.
+
+    McpServerWorkspacesAddResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            added:
+              type: array
+              description: Workspace IDs that were newly bound by this call.
+              items:
+                type: string
+                format: uuid
+            already_bound:
+              type: array
+              description: |
+                Workspace IDs that were already bound before this call — the
+                endpoint is idempotent, so these are not an error.
+              items:
+                type: string
+                format: uuid
 
     CredentialBinding:
       type: object
@@ -2944,6 +3029,11 @@ paths:
     get:
       tags: [MCP]
       summary: Get MCP server by ID
+      description: |
+        Returns full MCP server detail including every workspace currently
+        bound via the mcp_server_workspaces junction. `installed_workspaces`
+        can contain zero or more entries; it is no longer a 0-or-1 vec
+        derived from `mcp_servers.workspace_id`.
       security:
         - SessionCookie: []
       parameters:
@@ -2956,6 +3046,15 @@ paths:
       responses:
         '200':
           description: MCP server details
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/McpServerDetailResponse'
         '404':
           description: Not found
 
@@ -3017,6 +3116,168 @@ paths:
           description: MCP server deleted
         '404':
           description: Not found
+
+  /api/v1/mcp-servers/{id}/workspaces:
+    post:
+      tags: [MCP]
+      summary: Share an MCP server with additional workspaces
+      description: |
+        Binds one or more workspaces to an existing MCP server via the
+        `mcp_server_workspaces` junction table. Owner-only: the authenticated
+        user must own the MCP (`mcp_servers.created_by_user` match) or be an
+        admin/root user. The endpoint is idempotent — any `workspace_ids`
+        already bound are returned under `already_bound` and do not cause an
+        error.
+
+        Responds with 201 Created if at least one new binding was created,
+        or 200 OK if every requested workspace was already bound. Each
+        newly-added binding emits an `McpServerSharedWithWorkspace`
+        audit event.
+
+        **Cross-user binding is rejected at the API layer with 403.** The
+        handler enforces `workspace.owner_id == mcp.created_by_user` for
+        every requested workspace before inserting any junction row. If any
+        target workspace is owned by a different user than the MCP, the
+        whole request fails with 403 and no partial writes occur. Admin and
+        root users bypass this cross-owner check (they can bind any
+        workspace to any MCP as a superset operator action — this is not a
+        tenant-isolation bypass because admins already see all MCPs).
+
+        Cross-user sharing for non-admin users is out of scope for this
+        release; a future Cedar-policy-based grant mechanism will extend
+        this endpoint.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpServerWorkspacesAddRequest'
+      responses:
+        '200':
+          description: Every requested workspace was already bound (no new rows).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerWorkspacesAddResponse'
+        '201':
+          description: At least one new binding was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerWorkspacesAddResponse'
+        '403':
+          description: |
+            Either the caller is not the owner of the MCP (and is not
+            admin/root), or at least one requested `workspace_id` is owned
+            by a different user than the MCP (and the caller is not
+            admin/root).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum: [forbidden]
+                      message:
+                        type: string
+                        example: "workspace b2ad1e3c-… is not owned by the MCP server's owner"
+        '404':
+          description: |
+            Unknown MCP id, or one of the requested workspaces does not
+            exist at all (distinct from "exists but owned by another user",
+            which is 403).
+        '422':
+          description: |
+            `workspace_ids` was empty or contained invalid UUIDs.
+
+  /api/v1/mcp-servers/{id}/workspaces/{workspace_id}:
+    delete:
+      tags: [MCP]
+      summary: Unshare an MCP server from a specific workspace
+      description: |
+        Removes a single binding from `mcp_server_workspaces`. Owner-only
+        (same rule as the share endpoint). Emits an
+        `McpServerUnsharedFromWorkspace` audit event.
+
+        **Last-binding rule.** If this call would remove the only remaining
+        row for the MCP in `mcp_server_workspaces`, the request fails with
+        409 Conflict and no row is deleted. Deleting the last binding would
+        orphan the MCP (every workspace loses access while the record stays
+        in the database). Admins and root users are subject to the same
+        rule — the invariant is about *state*, not authorization. To remove
+        the final workspace, delete the MCP itself with
+        `DELETE /api/v1/mcp-servers/{id}` (which cascades its grant/deny
+        policies and junction rows).
+
+        **Eventual consistency.** When the binding is successfully removed,
+        the target workspace's broker keeps the MCP in its local cache
+        until its next `mcp_sync` tick (~30 s). In-flight tool calls in
+        that window may complete. This is not a security boundary — Cedar
+        policy 3a (`workspace.owner == mcp.owner` + enabled) remains the
+        authorization gate, and the junction-join in `mcp_sync` is how the
+        cache converges. Do not rely on this endpoint for immediate
+        revocation; use MCP disable (`PUT /api/v1/mcp-servers/{id}` with
+        `enabled=false`) or MCP delete for that.
+
+        The `mcp_servers.workspace_id` field (original-provisioning
+        workspace) is preserved for audit history regardless of which
+        workspace the binding being removed points at. It is an immutable
+        audit anchor; unshare never updates it.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: workspace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Binding removed (empty body).
+        '403':
+          description: Caller is not the owner of the MCP and is not admin/root.
+        '404':
+          description: |
+            Unknown MCP id, or no binding exists between this MCP and
+            this workspace.
+        '409':
+          description: |
+            Request would remove the last remaining binding. Delete the MCP
+            server instead.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum: [conflict]
+                      message:
+                        type: string
+                        example: "cannot remove last workspace binding — delete the MCP server instead"
 
   /api/v1/mcp-servers/import:
     post:

@@ -9,6 +9,7 @@
 //! Feature 2: When `AGTCRDN_KDF_SALT` is unset, the salt is derived deterministically
 //! from the master secret via HKDF with info label `agentcordon:default-kdf-salt-v1`.
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 use agent_cordon_core::crypto::aes_gcm::AesGcmEncryptor;
@@ -152,6 +153,9 @@ fn test_master_secret_env_var_takes_precedence_over_file() {
 // 4. test_master_secret_file_permissions_restrictive
 // ---------------------------------------------------------------------------
 
+// Windows filesystems don't carry POSIX mode bits; the "0600" concept
+// doesn't apply. Gate the assertion to Unix targets only.
+#[cfg(unix)]
 #[test]
 #[serial]
 fn test_master_secret_file_permissions_restrictive() {

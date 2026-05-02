@@ -71,6 +71,10 @@ async fn create_mcp_server_with_creds(
         .create_mcp_server(&server)
         .await
         .expect("create MCP server");
+    store
+        .add_mcp_server_workspace(&server.id, workspace_id, None)
+        .await
+        .expect("add MCP server workspace binding");
     server.id
 }
 

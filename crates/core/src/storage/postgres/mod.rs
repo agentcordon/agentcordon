@@ -3,6 +3,7 @@ mod credentials;
 mod device_codes;
 mod mcp;
 mod mcp_oauth;
+mod mcp_server_workspaces;
 mod oauth;
 mod oauth_provider_client;
 mod oidc;

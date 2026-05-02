@@ -10,7 +10,7 @@ Complete reference for the `agentcordon` command-line tool -- the workspace agen
 
 ```
 agentcordon init         [--agent AGENT]
-agentcordon register     [--server-url URL] [--scope SCOPE]... [--force] [--no-browser]
+agentcordon register     [--server-url URL] [--scope SCOPE]... [--force]
 agentcordon status
 agentcordon credentials
 agentcordon credentials  create --name NAME --service SVC --value VAL
@@ -115,16 +115,16 @@ agentcordon register [OPTIONS]
 | `--server-url <URL>` | string | `$AGTCRDN_SERVER_URL` | AgentCordon server URL (e.g. `http://server:3140`). If provided and no broker is running, `register` auto-starts a local broker pointed at this server before kicking off the device flow. |
 | `--scope <SCOPE>` | string (repeatable) | `credentials:discover credentials:vend mcp:discover mcp:invoke` | OAuth scopes to request |
 | `--force` | bool | `false` | Clear existing broker registration before re-registering (use when the server-side workspace was deleted but the broker holds stale state) |
-| `--no-browser` | bool | `false` | Do not auto-open the authorization URL in the browser (useful for headless/SSH/CI environments) |
 
 **What it does:**
 
 1. Locates a running broker via `AGTCRDN_BROKER_URL` or `~/.agentcordon/broker.port`. If none is running and `--server-url` (or `AGTCRDN_SERVER_URL`) is provided, auto-starts a broker pointed at that server and waits for it to report healthy.
 2. If `--force`: sends a deregister request to clear stale state.
 3. Posts a signed registration request with the workspace public key and requested scopes.
-4. Displays a short human-readable activation code and an `/activate` URL.
-5. Opens the browser (unless `--no-browser`).
-6. Polls the broker until the approval is recorded or the device code expires.
+4. Displays a short human-readable activation code and an `/activate` URL (plus a prefilled one if the server returned it).
+5. Polls the broker until the approval is recorded or the device code expires.
+
+The command does NOT try to auto-open a browser. The broker frequently runs on a different host / container / SSH session than the user's browser (the point of RFC 8628 device flow), so a local `xdg-open` would open the URL on the wrong machine. Copy/paste the URL yourself on whichever device has the browser.
 
 If no broker is running and no server URL is available, the command exits with code `2` ("broker not running") and prints: `Start the broker first: agentcordon-broker --server-url <url>` / `Or pass --server-url to agentcordon register and it will auto-start the broker.`
 
@@ -137,9 +137,6 @@ agentcordon register --server-url http://localhost:3140
 
 # Register against an already-running broker
 agentcordon register
-
-# Register without opening a browser (headless/SSH/CI)
-agentcordon register --no-browser
 
 # Re-register after server-side workspace deletion
 agentcordon register --force

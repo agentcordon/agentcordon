@@ -140,13 +140,25 @@ export AGTCRDN_DB_URL="postgres://user:pass@localhost:5432/agentcordon"
 
 ### How They Work
 
-Migrations are **automatic and idempotent**. On every startup, the server:
+Migrations are **automatic, idempotent, and forward-only**. On every
+startup, the server:
 
 1. Creates the `schema_migrations` table if it does not exist
 2. Queries which migration versions have already been applied
 3. Runs any unapplied migrations in order
-4. Each migration is wrapped in a savepoint for safe rollback on failure
+4. Each migration is wrapped in a savepoint for safe rollback **on failure during application**
 5. Records the migration version and `applied_at` timestamp in `schema_migrations`
+
+> [!NOTE]
+> AgentCordon is **forward-only** — no `down` scripts ship with the
+> project. Rolling back to a previous server version after a new
+> migration has already applied is done by restoring the database
+> backup you took in the pre-upgrade checklist, not by running a
+> reverse migration. The savepoint in step 4 covers in-migration
+> failure (the migration aborts cleanly); it does not give you a
+> path to un-apply a migration that has already committed. Plan
+> upgrades around your backup, not around a down-migration that does
+> not exist.
 
 ### Migration Sequence
 
@@ -163,6 +175,7 @@ migrations/
   007_credential_name_unique.sql                # Enforce globally unique credential names (UNIQUE INDEX)
   008_bootstrap_client_mcp_discover_scope.sql   # Add mcp:discover to bootstrap client's allowed_scopes
   009_device_code_pk_hash.sql                   # Bind workspace public_key_hash at device_code issue time
+  010_mcp_server_workspaces.sql                 # M:N junction — one MCP can be bound to many workspaces owned by the same user
 ```
 
 ### Migration Details (v0.3.0)
@@ -187,6 +200,57 @@ The script is read-only (no auto-dedup). Exit status `0` means safe to upgrade; 
 **008 -- Bootstrap client mcp:discover scope.** The bootstrap client (`agentcordon-broker`) seeded by migration 006 was missing the `mcp:discover` scope. Without it, the broker's device authorization grant request was rejected with `400 invalid_scope`. This migration updates `allowed_scopes` to include `credentials:discover,credentials:vend,mcp:discover,mcp:invoke`.
 
 **009 -- Device code pk_hash binding.** Adds a `pk_hash_prefill` column to `device_codes` for defense-in-depth: the broker sends its public key hash when requesting a device code, and the approver must present a matching hash. Prevents a malicious approver from attaching a different signing identity.
+
+**010 -- `mcp_server_workspaces` junction.** Introduces an M:N
+relationship between MCP servers and workspaces so a single MCP record
+can be bound to multiple workspaces owned by the same user. The
+migration creates
+`mcp_server_workspaces(mcp_server_id, workspace_id, created_at, created_by_user)`
+with a composite primary key on `(mcp_server_id, workspace_id)` and
+`ON DELETE CASCADE` from both parent tables, and **backfills one row
+per existing MCP** using its current `mcp_servers.workspace_id`. After
+the migration runs, every previously-provisioned MCP has exactly one
+junction row that reproduces the old 1:1 binding — so broker
+`mcp_sync` output, Cedar policy evaluation, and CLI behavior are
+unchanged on upgrade. No operator action is required.
+
+`mcp_servers.workspace_id` is retained as an **immutable audit
+anchor** — the workspace the MCP was first provisioned for. It is set
+once at provision time and never mutated afterwards (not by share, not
+by unshare, not even by unsharing the original workspace while others
+remain bound). It is no longer the routing key; current bindings live
+in the junction.
+
+New endpoints manage bindings post-install:
+
+- `POST /api/v1/mcp-servers/{id}/workspaces` — add bindings (owner-
+  only; cross-user bind is rejected at the handler with 403).
+- `DELETE /api/v1/mcp-servers/{id}/workspaces/{workspace_id}` — remove
+  a binding. **Last-binding rule:** if the deletion would leave the
+  MCP with zero bindings, the call returns **409 Conflict** with
+  `{"error":{"code":"conflict","message":"cannot remove last workspace
+  binding — delete the MCP server instead"}}` and no row is removed.
+  Admins are subject to the same rule — it is a state invariant. To
+  remove the final workspace, delete the MCP record itself
+  (`DELETE /api/v1/mcp-servers/{id}`), which cascades the junction and
+  its grant/deny policies. Scripts that automate unshare should
+  anticipate the 409 and call the delete endpoint in that case.
+
+Unshare is **eventually consistent**: the target workspace's broker
+keeps the MCP in its local cache until its next `mcp_sync` tick (~30
+s). For immediate revocation, disable the MCP
+(`PUT /api/v1/mcp-servers/{id}` with `enabled=false`) or delete it;
+Cedar policy 3a's `resource.enabled` guard short-circuits disabled
+MCPs even before the broker cache refreshes.
+
+**Rollback caveat.** Per the forward-only migration policy above,
+rolling back past 010 is done by restoring a pre-upgrade database
+backup — there is no down migration. If you instead roll the binary
+back without restoring the DB, the older server will read
+`mcp_servers.workspace_id` directly and honor only that original
+binding; any additional bindings you created are silently inert (the
+junction table persists but the old binary does not query it). No data
+is lost; re-upgrading restores the full binding set.
 
 ### Backup Before Upgrading
 

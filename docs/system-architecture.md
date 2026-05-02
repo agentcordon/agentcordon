@@ -204,7 +204,7 @@ Authenticated with session cookie (from user login).
 | Credentials | CRUD at `/api/v1/credentials`, vend at `/{id}/vend`, reveal, secret-history, agent-store |
 | Workspaces | List/manage at `/api/v1/workspaces`, tags, permissions |
 | Policies | CRUD at `/api/v1/policies`, validate, test, schema, RSOP |
-| MCP Servers | CRUD at `/api/v1/mcp-servers`, import, provision, OAuth initiate/callback, generate-policies, permissions |
+| MCP Servers | CRUD at `/api/v1/mcp-servers`, import, provision, OAuth initiate/callback, generate-policies, permissions, workspace bindings (share/unshare at `/api/v1/mcp-servers/{id}/workspaces`) |
 | Users | CRUD at `/api/v1/users`, change-password |
 | Audit | List at `/api/v1/audit`, export (CSV, syslog, JSONL), detail |
 | Vaults | List at `/api/v1/vaults`, vault credentials, shares |

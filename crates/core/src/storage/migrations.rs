@@ -13,9 +13,13 @@ pub const MIGRATION_008: &str =
     include_str!("../../../../migrations/008_bootstrap_client_mcp_discover_scope.sql");
 pub const MIGRATION_009: &str =
     include_str!("../../../../migrations/009_device_code_pk_hash.sql");
+pub const MIGRATION_010: &str =
+    include_str!("../../../../migrations/010_mcp_server_workspaces.sql");
+pub const MIGRATION_011: &str =
+    include_str!("../../../../migrations/011_drop_credential_name_unique.sql");
 
 /// All migrations in order. Each entry is (version, SQL content).
-const MIGRATIONS: [(i64, &str); 9] = [
+const MIGRATIONS: [(i64, &str); 11] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
     (3, MIGRATION_003),
@@ -25,6 +29,8 @@ const MIGRATIONS: [(i64, &str); 9] = [
     (7, MIGRATION_007),
     (8, MIGRATION_008),
     (9, MIGRATION_009),
+    (10, MIGRATION_010),
+    (11, MIGRATION_011),
 ];
 
 /// Run all pending migrations, tracking applied versions in a `schema_migrations` table.
@@ -172,6 +178,7 @@ mod tests {
             "crypto_state",
             "device_codes",
             "mcp_oauth_states",
+            "mcp_server_workspaces",
             "mcp_servers",
             "oauth_access_tokens",
             "oauth_auth_codes",
@@ -221,11 +228,16 @@ mod tests {
     }
 
     #[test]
-    fn test_credential_names_globally_unique() {
+    fn test_credential_names_not_unique() {
+        // Per the v3.1.1 design (see v311_credential_name_scoping.rs), credential
+        // names are NOT unique. Vend-by-name uses Cedar-filtered matching: list
+        // candidates, evaluate authorization, return the authorized one (or 300
+        // Multiple Choices if ambiguous). Migration 011 drops the global UNIQUE
+        // index that migration 007 added — that index was a regression that
+        // leaked the existence of other tenants' credentials via 409 Conflict.
         let conn = open_memory_db();
         run_migrations(&conn).expect("run migrations");
 
-        // Create two workspaces
         conn.execute(
             "INSERT INTO workspaces (id, name, status, tags, created_at, updated_at) VALUES ('ws1', 'a', 'active', '[]', '2026-01-01', '2026-01-01')",
             [],
@@ -235,44 +247,25 @@ mod tests {
             [],
         ).expect("insert ws2");
 
-        // First credential — should succeed.
         conn.execute(
             "INSERT INTO credentials (id, name, service, encrypted_value, nonce, created_by, created_at, updated_at)
              VALUES ('c1', 'api-key', 'github', X'00', X'00', 'ws1', '2026-01-01', '2026-01-01')",
             [],
         ).expect("insert cred for ws1");
 
-        // Same name under a different workspace — should FAIL (migration 007
-        // enforces a global UNIQUE INDEX on credentials(name) so vend-by-name
-        // and discovery-by-name have a single unambiguous target).
-        let err_diff_workspace = conn.execute(
+        // Same name under a different workspace — must succeed.
+        conn.execute(
             "INSERT INTO credentials (id, name, service, encrypted_value, nonce, created_by, created_at, updated_at)
              VALUES ('c2', 'api-key', 'github', X'00', X'00', 'ws2', '2026-01-01', '2026-01-01')",
             [],
-        ).unwrap_err();
-        assert!(
-            matches!(
-                err_diff_workspace,
-                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error { extended_code, .. }, _)
-                    if extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-            ),
-            "duplicate name across workspaces must violate UNIQUE, got: {err_diff_workspace:?}"
-        );
+        ).expect("duplicate name across workspaces must be allowed");
 
-        // Same name under the same workspace — also FAIL.
-        let err_same_workspace = conn.execute(
+        // Same name under the same workspace — also must succeed.
+        conn.execute(
             "INSERT INTO credentials (id, name, service, encrypted_value, nonce, created_by, created_at, updated_at)
              VALUES ('c3', 'api-key', 'github', X'00', X'00', 'ws1', '2026-01-01', '2026-01-01')",
             [],
-        ).unwrap_err();
-        assert!(
-            matches!(
-                err_same_workspace,
-                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error { extended_code, .. }, _)
-                    if extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-            ),
-            "duplicate name in same workspace must violate UNIQUE, got: {err_same_workspace:?}"
-        );
+        ).expect("duplicate name in same workspace must be allowed");
     }
 
     #[test]

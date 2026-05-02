@@ -46,6 +46,10 @@ async fn create_mcp_server_for_workspace(
         .create_mcp_server(&server)
         .await
         .expect("create MCP server");
+    store
+        .add_mcp_server_workspace(&server.id, workspace_id, None)
+        .await
+        .expect("add MCP server workspace binding");
     server.id
 }
 
@@ -174,16 +178,20 @@ async fn test_workspace_mcp_sync_does_not_leak_other_workspaces() {
         .map(|s| s["name"].as_str().unwrap())
         .collect();
 
-    // WS-A is the admin agent (admin tag → blanket permit 1a). It sees all
-    // servers regardless of owner. This is intentional and consistent with the
-    // admin override on credentials.
+    // Post-M:N (migration 010): broker sync is a routing query against the
+    // mcp_server_workspaces junction, NOT a Cedar-evaluated list. The admin
+    // blanket permit (policy 1a) governs authorization actions (list/update/
+    // delete credentials etc.), not routing — an admin workspace only has
+    // MCP servers in its sync output if it is explicitly bound via the
+    // junction. WS-A (admin agent) was bound to ws-a-server at creation and
+    // NOT to ws-b-server, so its sync sees only its own.
     assert!(
         names.contains(&"ws-a-server"),
-        "admin workspace should see all servers via blanket permit 1a"
+        "ws-a should see its own server via junction binding"
     );
     assert!(
-        names.contains(&"ws-b-server"),
-        "admin workspace should see all servers via blanket permit 1a"
+        !names.contains(&"ws-b-server"),
+        "ws-a should NOT see ws-b's server — admin bypass applies to authz, not routing"
     );
 
     // WS-B fetches its MCP servers

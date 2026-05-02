@@ -106,6 +106,8 @@ mod v300_security;
 mod v310_mcp_marketplace;
 mod v311_credential_name_scoping;
 mod v312_mcp_config_sync;
+mod v313_mcp_server_workspaces;
+mod v313_mcp_sharing_migration;
 mod v330_oauth_dcr;
 mod vaults;
 mod workspace_delete;

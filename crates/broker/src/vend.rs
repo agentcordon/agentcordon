@@ -16,10 +16,13 @@ use agent_cordon_core::crypto::ecies::{
 use crate::server_client::VendEnvelope;
 
 /// Decrypted credential material.
+///
+/// NOTE: `credential_type` is NOT in the envelope plaintext — it's a field on
+/// the outer `VendResponse` (server_client::VendResponse). The envelope only
+/// carries the secret `value` + `metadata`. Callers should read the type from
+/// the vend response, not from here.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VendedCredential {
-    #[serde(rename = "type")]
-    pub credential_type: Option<String>,
     pub value: String,
     pub username: Option<String>,
     #[serde(default)]

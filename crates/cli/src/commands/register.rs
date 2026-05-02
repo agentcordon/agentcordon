@@ -1,11 +1,14 @@
 //! `agentcordon register` — initiate RFC 8628 device flow.
 //!
-//! UX mirrors `gh auth login`: print the one-time code, pause for Enter,
-//! open the activation URL in the user's browser, then poll the broker's
+//! Print the one-time code and the activation URL; poll the broker's
 //! `/status` endpoint until the background device-code poll task inside
-//! the broker reports the workspace as registered (or errored).
+//! the broker reports the workspace as registered (or errored). We do
+//! NOT attempt to auto-open the user's browser: the broker often runs
+//! on a different host/container than the user's browser (the whole
+//! point of RFC 8628), so a local `xdg-open` would not do what the user
+//! wants. They open the URL themselves on whichever machine they like.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::time::Duration;
 
 use ed25519_dalek::Signer;
@@ -63,7 +66,6 @@ struct StatusData {
 pub async fn run(
     scopes: Vec<String>,
     force: bool,
-    no_browser: bool,
     server_url: Option<String>,
 ) -> Result<(), CliError> {
     // If --server-url was supplied, give the broker a chance to come up
@@ -141,44 +143,14 @@ pub async fn run(
     // even when stdout is captured.
     eprintln!();
     eprintln!("! First, copy your one-time code: {}", resp.data.user_code);
-
-    if !no_browser {
-        // Interactive path: pause so the user can copy the code, then open
-        // the default browser to the activation URL.
+    eprintln!();
+    eprintln!("Then open this URL in your browser:");
+    eprintln!("  {}", resp.data.verification_uri);
+    if resp.data.verification_uri_complete.is_some() {
         eprintln!();
-        eprintln!("Then open this URL in your browser:");
-        eprintln!("  {}", resp.data.verification_uri);
-        if resp.data.verification_uri_complete.is_some() {
-            eprintln!();
-            eprintln!("Or use this link to skip typing the code:");
-            eprintln!("  {activation_url}");
-        }
-        eprintln!();
-        eprint!("Press Enter to open the browser for you...");
-        let _ = io::stderr().flush();
-        let stdin = io::stdin();
-        let mut line = String::new();
-        let _ = stdin.lock().read_line(&mut line);
-
-        if open_browser(&activation_url).is_err() {
-            eprintln!("Could not open browser automatically. Open this URL manually:");
-            eprintln!("  {activation_url}");
-        }
-    } else {
-        // Headless / scripted path: skip the stdin pause. The caller
-        // explicitly opted into opening the URL themselves, so blocking
-        // on Enter would hang the process.
-        eprintln!();
-        eprintln!("Then open this URL in your browser:");
-        eprintln!("  {}", resp.data.verification_uri);
-        if resp.data.verification_uri_complete.is_some() {
-            eprintln!();
-            eprintln!("Or use this link to skip typing the code:");
-            eprintln!("  {activation_url}");
-        }
-        let _ = io::stderr().flush();
+        eprintln!("Or use this link to skip typing the code:");
+        eprintln!("  {activation_url}");
     }
-
     eprintln!();
     eprint!("Waiting for approval... ");
     let _ = io::stderr().flush();
@@ -266,30 +238,4 @@ async fn is_already_registered(client: &BrokerClient) -> bool {
     serde_json::from_str::<StatusResponse>(&body)
         .map(|r| r.data.registered)
         .unwrap_or(false)
-}
-
-/// Attempt to open URL in default browser.
-fn open_browser(url: &str) -> Result<(), CliError> {
-    #[cfg(target_os = "linux")]
-    let cmd = "xdg-open";
-    #[cfg(target_os = "macos")]
-    let cmd = "open";
-    #[cfg(target_os = "windows")]
-    let cmd = "cmd";
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    return Err(CliError::general("cannot detect browser command"));
-
-    #[cfg(target_os = "windows")]
-    let args: Vec<&str> = vec!["/C", "start", "", url];
-    #[cfg(not(target_os = "windows"))]
-    let args: Vec<&str> = vec![url];
-
-    std::process::Command::new(cmd)
-        .args(&args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| CliError::general(format!("failed to open browser: {e}")))?;
-
-    Ok(())
 }

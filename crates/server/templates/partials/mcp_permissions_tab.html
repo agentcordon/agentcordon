@@ -3,7 +3,7 @@
     <!-- Section 1: Effective Access -->
     <div class="mcp-perm-section">
         <h3 class="mcp-section-header">Effective Access</h3>
-        <p class="text-sm opacity-muted mcp-section-desc">Default policies allow all enabled workspaces to access enabled MCP servers. Add forbid rules to restrict access.</p>
+        <p class="text-sm opacity-muted mcp-section-desc">By default, workspaces owned by the same user as this MCP server &mdash; and currently bound to it &mdash; can call its tools. Manage bindings in the Workspaces tab. Add Cedar forbid rules to restrict further, or permit rules to extend access to other users' workspaces.</p>
         <div x-show="rsop.loading" class="page-loader page-loader-sm">
             <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
         </div>

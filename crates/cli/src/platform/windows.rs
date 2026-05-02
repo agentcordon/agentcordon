@@ -14,7 +14,7 @@ use windows::Win32::System::JobObjects::{
 pub fn spawn_broker(cmd: &mut Command) -> std::io::Result<Child> {
     // Create an unnamed Job Object.
     let job = unsafe { CreateJobObjectW(None, None) }
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     // Configure kill-on-close.
     let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
@@ -27,15 +27,15 @@ pub fn spawn_broker(cmd: &mut Command) -> std::io::Result<Child> {
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         )
     }
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     // Spawn the child.
     let child = cmd.spawn()?;
 
     // Assign the child's process handle to the job.
-    let handle = HANDLE(child.as_raw_handle() as *mut core::ffi::c_void);
+    let handle = HANDLE(child.as_raw_handle());
     unsafe { AssignProcessToJobObject(job, handle) }
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     // Discard the job handle without closing it: the kernel's
     // kill-on-close trigger must fire on process exit, not when this

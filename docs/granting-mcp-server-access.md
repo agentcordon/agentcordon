@@ -55,6 +55,36 @@ curl -X POST http://localhost:3140/api/v1/mcp-servers/provision \
 
 This creates the MCP server record from a catalog template, optionally creates or links a credential, and runs best-effort tool discovery automatically. Requires the `manage_mcp_servers` Cedar permission.
 
+> **Sharing with additional workspaces.** Provisioning binds the MCP to
+> exactly one workspace (the "original" workspace, recorded as an
+> immutable audit anchor). To make the same MCP available to more
+> workspaces you own, open the MCP's detail page and click **Share with
+> workspace** (API: `POST /api/v1/mcp-servers/{id}/workspaces`). The
+> same record, credentials, and policies apply everywhere it is bound;
+> removing a binding
+> (`DELETE /api/v1/mcp-servers/{id}/workspaces/{workspace_id}`) stops
+> sync for that workspace without deleting the MCP itself.
+>
+> Two rules to know about:
+>
+> - **No cross-user binding.** Every workspace you bind must have the
+>   same owner as the MCP. Attempting to bind a workspace owned by a
+>   different user returns 403; admin/root accounts can override this
+>   as a superset operator action.
+> - **Can't remove the last binding.** An MCP with zero bindings is
+>   an orphaned record — to remove the final workspace, delete the
+>   MCP itself (`DELETE /api/v1/mcp-servers/{id}`). The unshare
+>   endpoint returns 409 if you try to drop the last binding, with a
+>   message directing you to the delete endpoint. This applies to
+>   admins too.
+>
+> Unshare is also **eventually consistent**: the target workspace's
+> broker keeps the MCP in its local cache until the next sync tick
+> (~30 seconds). For immediate revocation, disable the MCP
+> (`PUT /api/v1/mcp-servers/{id}` with `enabled=false`) or delete it
+> — Cedar policy 3a short-circuits disabled MCPs even before the
+> broker cache refreshes.
+
 **Option B: Import via API**
 
 ```bash
@@ -408,9 +438,11 @@ agentcordon mcp-call data-pipeline run_etl \
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/v1/mcp-servers` | List MCP servers |
-| `GET` | `/api/v1/mcp-servers/{id}` | Get MCP server detail (with installed workspaces and tools) |
+| `GET` | `/api/v1/mcp-servers/{id}` | Get MCP server detail (lists every bound workspace via the junction) |
 | `PUT` | `/api/v1/mcp-servers/{id}` | Update MCP server (name only) |
 | `DELETE` | `/api/v1/mcp-servers/{id}` | Delete MCP server (cascades grant/deny policies) |
+| `POST` | `/api/v1/mcp-servers/{id}/workspaces` | Share an MCP with more workspaces owned by the caller |
+| `DELETE` | `/api/v1/mcp-servers/{id}/workspaces/{workspace_id}` | Unshare an MCP from a specific workspace |
 | `POST` | `/api/v1/mcp-servers/import` | Bulk import MCP servers (workspace JWT auth) |
 | `POST` | `/api/v1/mcp-servers/provision` | Provision from catalog template (session auth) |
 | `POST` | `/api/v1/mcp-servers/oauth/initiate` | Start OAuth2 provisioning flow |

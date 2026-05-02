@@ -18,7 +18,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
             "type": "object",
             "required": ["servers"],
             "properties": {
-                "device_id": { "type": "string", "format": "uuid", "description": "Device ID (injected by device proxy, optional from direct calls)" },
+                "workspace_id": { "type": "string", "format": "uuid", "description": "Workspace ID the imported servers are bound to (originating workspace for each entry)" },
                 "servers": {
                     "type": "array",
                     "items": {
@@ -58,7 +58,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "GET".to_string(),
         path: "/api/v1/mcp-servers".to_string(),
-        description: "List all registered MCP servers. Optionally filter by device_id. Requires admin role.".to_string(),
+        description: "List registered MCP servers. When filtered by `workspace_id`, results join through the `mcp_server_workspaces` junction so an MCP bound to multiple workspaces appears in each of their lists. Unfiltered, admins see all servers; non-admin users see servers whose owner is the caller. Requires admin role or a workspace actor. `device_id` is accepted as a legacy alias for `workspace_id`.".to_string(),
         auth_required: true,
         request_body: None,
         response_body: Some(json!({
@@ -67,7 +67,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                 "type": "object",
                 "properties": {
                     "id": { "type": "string", "format": "uuid" },
-                    "device_id": { "type": "string", "format": "uuid", "description": "Device this MCP server is scoped to" },
+                    "workspace_id": { "type": "string", "format": "uuid", "description": "Immutable audit anchor — the workspace the MCP was first provisioned for. NOT the current binding set. Live bindings live in `mcp_server_workspaces` (see GET /api/v1/mcp-servers/{id}.installed_workspaces)." },
                     "name": { "type": "string" },
                     "upstream_url": { "type": "string" },
                     "transport": { "type": "string" },
@@ -81,7 +81,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
             }
         })),
         query_params: Some(vec![
-            string_param("device_id", "Filter MCP servers by device UUID", false),
+            string_param("workspace_id", "Filter MCP servers bound to this workspace (via the junction). `device_id` accepted as a legacy alias.", false),
         ]),
         path_params: None,
         error_codes: vec!["unauthorized".to_string(), "forbidden".to_string()],
@@ -90,14 +90,14 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "GET".to_string(),
         path: "/api/v1/mcp-servers/{id}".to_string(),
-        description: "Get details of a registered MCP server. Requires admin role.".to_string(),
+        description: "Get details of a registered MCP server. Includes all workspaces the MCP is currently bound to via the `mcp_server_workspaces` junction. `installed_workspaces` can contain zero or more entries; it is no longer a derived 0-or-1 vec from `workspace_id`. Requires admin role.".to_string(),
         auth_required: true,
         request_body: None,
         response_body: Some(json!({
             "type": "object",
             "properties": {
                 "id": { "type": "string", "format": "uuid" },
-                "device_id": { "type": "string", "format": "uuid", "description": "Device this MCP server is scoped to" },
+                "workspace_id": { "type": "string", "format": "uuid", "description": "Immutable audit anchor: the workspace the MCP was first provisioned for. Set once at provision time and never mutated — not by share, not by unshare, not by removing the original workspace's binding. NOT the current routing key. Current bindings live in `installed_workspaces` (populated from the `mcp_server_workspaces` junction)." },
                 "name": { "type": "string" },
                 "upstream_url": { "type": "string" },
                 "transport": { "type": "string" },
@@ -106,12 +106,95 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                 "created_by": { "type": "string" },
                 "created_at": { "type": "string", "format": "date-time" },
                 "updated_at": { "type": "string", "format": "date-time" },
-                "tags": { "type": "array", "items": { "type": "string" } }
+                "tags": { "type": "array", "items": { "type": "string" } },
+                "installed_workspaces": {
+                    "type": "array",
+                    "description": "All workspaces bound to this MCP via the junction. Reflects live bindings, not just the original workspace.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "format": "uuid" },
+                            "name": { "type": "string" }
+                        }
+                    }
+                },
+                "tools": { "type": "array" }
             }
         })),
         query_params: None,
         path_params: Some(vec![uuid_param("id", "MCP server UUID")]),
         error_codes: vec!["unauthorized".to_string(), "forbidden".to_string(), "not_found".to_string()],
+    });
+
+    // -----------------------------------------------------------------------
+    // MCP Server Workspace Bindings (M:N sharing)
+    // -----------------------------------------------------------------------
+
+    endpoints.push(EndpointDoc {
+        method: "POST".to_string(),
+        path: "/api/v1/mcp-servers/{id}/workspaces".to_string(),
+        description: "Bind one or more workspaces to an existing MCP server. Owner-only (the authenticated user must own the MCP — `created_by_user` match — or be admin/root). Idempotent: workspaces already bound are returned under `already_bound` and do not cause an error. Returns 201 when at least one new binding was created, 200 when every requested workspace was already bound. Each newly-added binding emits an `McpServerSharedWithWorkspace` audit event. Cross-user binding is rejected at the handler with 403 — the request validator checks `workspace.owner_id == mcp.created_by_user` for every requested workspace before inserting any junction row, so no partial writes occur on rejection. Admin/root bypass the cross-owner check.".to_string(),
+        auth_required: true,
+        request_body: Some(json!({
+            "type": "object",
+            "required": ["workspace_ids"],
+            "properties": {
+                "workspace_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "format": "uuid" },
+                    "description": "Workspaces to bind to this MCP. Every entry must be owned by the same user as the MCP (created_by_user), unless the caller is admin/root."
+                }
+            }
+        })),
+        response_body: Some(json!({
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "properties": {
+                        "added": {
+                            "type": "array",
+                            "items": { "type": "string", "format": "uuid" },
+                            "description": "Workspace IDs that were newly bound by this call."
+                        },
+                        "already_bound": {
+                            "type": "array",
+                            "items": { "type": "string", "format": "uuid" },
+                            "description": "Workspace IDs that were already bound before this call (idempotent no-op)."
+                        }
+                    }
+                }
+            }
+        })),
+        query_params: None,
+        path_params: Some(vec![uuid_param("id", "MCP server UUID")]),
+        error_codes: vec![
+            "unauthorized".to_string(),
+            "forbidden (403: caller is not the owner of the MCP and not admin/root, OR any requested workspace is owned by a different user than the MCP and the caller is not admin/root)".to_string(),
+            "not_found (404: unknown MCP id, or a requested workspace does not exist at all — owned-by-another-user is 403, not 404)".to_string(),
+            "unprocessable_entity (422: workspace_ids is empty or contains invalid UUIDs)".to_string(),
+        ],
+    });
+
+    endpoints.push(EndpointDoc {
+        method: "DELETE".to_string(),
+        path: "/api/v1/mcp-servers/{id}/workspaces/{workspace_id}".to_string(),
+        description: "Remove a single workspace binding from an MCP server. Owner-only. Returns 204 on success with an empty body. Emits an `McpServerUnsharedFromWorkspace` audit event. **Last-binding rule:** removing the only remaining binding for the MCP returns 409 — delete the MCP record itself (`DELETE /api/v1/mcp-servers/{id}`) to remove the final workspace. Admins are subject to the same last-binding rule (it is a state invariant, not an authz check). **Eventual consistency:** the unshared workspace's broker keeps the MCP in its cache until its next `mcp_sync` tick (~30 s); in-flight calls in that window may complete. This is not a security boundary — Cedar policy 3a remains the gate. `mcp_servers.workspace_id` (the original-provisioning workspace) is an immutable audit anchor and is never mutated by unshare, even when unsharing the original workspace while others remain bound.".to_string(),
+        auth_required: true,
+        request_body: None,
+        response_body: None,
+        query_params: None,
+        path_params: Some(vec![
+            uuid_param("id", "MCP server UUID"),
+            uuid_param("workspace_id", "Workspace UUID to unbind"),
+        ]),
+        error_codes: vec![
+            "unauthorized".to_string(),
+            "forbidden (403: caller is not the owner of the MCP and not admin/root)".to_string(),
+            "not_found (404: unknown MCP id, or no binding exists between this MCP and this workspace)".to_string(),
+            "conflict (409: request would remove the last remaining binding — delete the MCP server instead)".to_string(),
+        ],
     });
 
     endpoints.push(EndpointDoc {
