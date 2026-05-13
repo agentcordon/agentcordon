@@ -350,7 +350,8 @@ mod tests {
         // the server's token response and persist it on the workspace, so
         // subsequent refresh_token grants don't get rejected with
         // `invalid_grant: client_id mismatch`.
-        let ws = build_workspace_state("ws".to_string(), make_token_response(Some("ws-client-xyz")));
+        let ws =
+            build_workspace_state("ws".to_string(), make_token_response(Some("ws-client-xyz")));
         assert_eq!(ws.client_id, "ws-client-xyz");
     }
 

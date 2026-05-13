@@ -74,8 +74,8 @@ async fn device_code_grant_returns_per_workspace_client_id() {
         "client_id={BOOTSTRAP_CLIENT_ID}&scope=credentials:discover&\
          workspace_name={workspace_name}&public_key_hash={TEST_PK_HASH}"
     );
-    let (s, body) = post_form_with_cookie(&ctx.app, "/api/v1/oauth/device/code", &issue_body, None)
-        .await;
+    let (s, body) =
+        post_form_with_cookie(&ctx.app, "/api/v1/oauth/device/code", &issue_body, None).await;
     assert_eq!(s, StatusCode::OK, "device_code issue: {body}");
     let device_code = body["device_code"].as_str().unwrap().to_string();
     let user_code = body["user_code"].as_str().unwrap().to_string();
@@ -111,8 +111,7 @@ async fn device_code_grant_returns_per_workspace_client_id() {
     let token_body = format!(
         "grant_type={DEVICE_GRANT_TYPE}&client_id={BOOTSTRAP_CLIENT_ID}&device_code={device_code}"
     );
-    let (s, body) =
-        post_form_with_cookie(&ctx.app, "/api/v1/oauth/token", &token_body, None).await;
+    let (s, body) = post_form_with_cookie(&ctx.app, "/api/v1/oauth/token", &token_body, None).await;
     assert_eq!(s, StatusCode::OK, "token exchange: {body}");
 
     let returned_client_id = body

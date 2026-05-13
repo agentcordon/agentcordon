@@ -251,8 +251,9 @@ mod tests {
         // The refresh token is dead — re-register is the only path.
         let err = ServerClientError::ServerError {
             status: 400,
-            body: r#"{"error":"invalid_grant","error_description":"refresh token has been revoked"}"#
-                .to_string(),
+            body:
+                r#"{"error":"invalid_grant","error_description":"refresh token has been revoked"}"#
+                    .to_string(),
         };
         assert!(matches!(
             classify_refresh_error(&err),
@@ -278,8 +279,7 @@ mod tests {
         // re-registration is the recovery path, retrying won't help.
         let err = ServerClientError::ServerError {
             status: 401,
-            body: r#"{"error":"invalid_client","error_description":"unknown client"}"#
-                .to_string(),
+            body: r#"{"error":"invalid_client","error_description":"unknown client"}"#.to_string(),
         };
         assert!(matches!(
             classify_refresh_error(&err),
