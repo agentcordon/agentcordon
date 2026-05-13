@@ -238,14 +238,6 @@ async fn install_approved_workspace(
     pk_hash: &str,
     token_resp: crate::server_client::TokenResponse,
 ) {
-    let scopes: Vec<String> = token_resp
-        .scope
-        .as_deref()
-        .unwrap_or("")
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect();
-
     // Pull workspace_name from the pending entry, then remove it.
     let workspace_name = {
         let mut pending = state.pending.write().await;
@@ -255,15 +247,7 @@ async fn install_approved_workspace(
             .unwrap_or_else(|| "workspace".to_string())
     };
 
-    let ws_state = WorkspaceState {
-        client_id: BROKER_CLIENT_ID.to_string(),
-        access_token: token_resp.access_token,
-        refresh_token: token_resp.refresh_token.unwrap_or_default(),
-        scopes,
-        token_expires_at: Utc::now() + chrono::Duration::seconds(token_resp.expires_in as i64),
-        workspace_name: workspace_name.clone(),
-        token_status: TokenStatus::Valid,
-    };
+    let ws_state = build_workspace_state(workspace_name.clone(), token_resp);
 
     {
         let mut workspaces = state.workspaces.write().await;
@@ -298,6 +282,43 @@ async fn record_registration_failure(state: &SharedState, pk_hash: &str, message
     warn!(pk_hash = %pk_hash, reason = %message, "device flow registration failed");
 }
 
+/// Build a `WorkspaceState` from the server's `TokenResponse`, picking the
+/// per-workspace `client_id` returned by the server. Falls back to the
+/// bootstrap `BROKER_CLIENT_ID` only if the server omits the field — which
+/// happens against a pre-fix server and produces refresh failures
+/// (`invalid_grant: client_id mismatch`) until the server is upgraded.
+fn build_workspace_state(
+    workspace_name: String,
+    token_resp: crate::server_client::TokenResponse,
+) -> WorkspaceState {
+    let scopes: Vec<String> = token_resp
+        .scope
+        .as_deref()
+        .unwrap_or("")
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+
+    let client_id = token_resp.client_id.unwrap_or_else(|| {
+        warn!(
+            workspace = %workspace_name,
+            "server did not return client_id in token response — falling back to bootstrap; \
+             refresh will fail with invalid_grant until server is upgraded"
+        );
+        BROKER_CLIENT_ID.to_string()
+    });
+
+    WorkspaceState {
+        client_id,
+        access_token: token_resp.access_token,
+        refresh_token: token_resp.refresh_token.unwrap_or_default(),
+        scopes,
+        token_expires_at: Utc::now() + chrono::Duration::seconds(token_resp.expires_in as i64),
+        workspace_name,
+        token_status: TokenStatus::Valid,
+    }
+}
+
 fn bad_request(message: &str) -> (StatusCode, axum::Json<serde_json::Value>) {
     (
         StatusCode::BAD_REQUEST,
@@ -305,4 +326,40 @@ fn bad_request(message: &str) -> (StatusCode, axum::Json<serde_json::Value>) {
             "error": { "code": "bad_request", "message": message }
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server_client::TokenResponse;
+
+    fn make_token_response(client_id: Option<&str>) -> TokenResponse {
+        TokenResponse {
+            access_token: "at".to_string(),
+            token_type: "Bearer".to_string(),
+            expires_in: 900,
+            refresh_token: Some("rt".to_string()),
+            scope: Some("credentials:discover".to_string()),
+            client_id: client_id.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn build_workspace_state_uses_per_workspace_client_id_when_present() {
+        // The bug fix: the broker MUST take the per-workspace client_id from
+        // the server's token response and persist it on the workspace, so
+        // subsequent refresh_token grants don't get rejected with
+        // `invalid_grant: client_id mismatch`.
+        let ws = build_workspace_state("ws".to_string(), make_token_response(Some("ws-client-xyz")));
+        assert_eq!(ws.client_id, "ws-client-xyz");
+    }
+
+    #[test]
+    fn build_workspace_state_falls_back_to_bootstrap_when_client_id_absent() {
+        // Back-compat with a pre-fix server that doesn't return client_id:
+        // we keep the old behaviour (bootstrap client_id) so registration
+        // still completes — refresh will fail, but that's no worse than today.
+        let ws = build_workspace_state("ws".to_string(), make_token_response(None));
+        assert_eq!(ws.client_id, BROKER_CLIENT_ID);
+    }
 }
