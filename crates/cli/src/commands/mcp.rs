@@ -1,8 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
 use crate::broker::BrokerClient;
+use crate::commands::mcp_args::{
+    build_arguments, build_error_envelope, classify_cli_error, filter_tools, resolve_args_json,
+    ErrorKind,
+};
 use crate::error::CliError;
 
 // --- MCP Servers ---
@@ -73,49 +77,78 @@ pub async fn list_servers() -> Result<(), CliError> {
 // --- MCP Tools ---
 
 #[derive(Deserialize)]
-struct McpToolsResponse {
-    data: Vec<McpTool>,
-}
-
-#[derive(Deserialize)]
-struct McpTool {
-    server: String,
-    tool: String,
-    description: Option<String>,
+struct McpToolsResponseRaw {
+    data: Vec<serde_json::Value>,
 }
 
 /// List all available MCP tools.
-pub async fn list_tools() -> Result<(), CliError> {
+///
+/// When `schema` is set, emits the raw JSON-RPC `tools/list` response shape
+/// (one object per tool, including `input_schema`) so an agent can introspect
+/// before calling. Otherwise prints the existing human-readable table.
+pub async fn list_tools(
+    schema: bool,
+    server: Option<String>,
+    tool: Option<String>,
+) -> Result<(), CliError> {
     let client = BrokerClient::connect().await?;
-    let resp: McpToolsResponse = client
+    let resp: McpToolsResponseRaw = client
         .post("/mcp/list-tools", &serde_json::json!({}))
         .await?;
+
+    if schema {
+        let filtered = filter_tools(&resp.data, server.as_deref(), tool.as_deref());
+        let pretty = serde_json::to_string_pretty(&filtered)
+            .map_err(|e| CliError::general(format!("failed to serialize schema: {e}")))?;
+        println!("{pretty}");
+        return Ok(());
+    }
 
     if resp.data.is_empty() {
         println!("No MCP tools available.");
         return Ok(());
     }
 
-    let server_w = resp
+    let entries: Vec<(String, String, String)> = resp
         .data
         .iter()
-        .map(|t| t.server.len())
+        .map(|t| {
+            let s = t
+                .get("server")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+            let n = t
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+            let d = t
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-")
+                .to_string();
+            (s, n, d)
+        })
+        .collect();
+
+    let server_w = entries
+        .iter()
+        .map(|(s, _, _)| s.len())
         .max()
         .unwrap_or(6)
         .max(6);
-    let tool_w = resp
-        .data
+    let tool_w = entries
         .iter()
-        .map(|t| t.tool.len())
+        .map(|(_, n, _)| n.len())
         .max()
         .unwrap_or(4)
         .max(4);
 
     println!("{:<server_w$}  {:<tool_w$}  DESCRIPTION", "SERVER", "TOOL");
 
-    for tool in &resp.data {
-        let desc = tool.description.as_deref().unwrap_or("-");
-        println!("{:<server_w$}  {:<tool_w$}  {desc}", tool.server, tool.tool);
+    for (s, n, d) in &entries {
+        println!("{:<server_w$}  {:<tool_w$}  {d}", s, n);
     }
 
     Ok(())
@@ -127,7 +160,7 @@ pub async fn list_tools() -> Result<(), CliError> {
 struct McpCallRequest {
     server: String,
     tool: String,
-    arguments: HashMap<String, serde_json::Value>,
+    arguments: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -147,33 +180,63 @@ struct McpContent {
     text: Option<String>,
 }
 
+/// Failure of an `mcp-call` invocation, separated so the caller can distinguish
+/// "the MCP tool itself returned an error" (tool_error) from everything else
+/// (validation/transport/unauthorized) without string-matching.
+enum CallFailure {
+    Pre(CliError),
+    Tool(String),
+}
+
+impl From<CliError> for CallFailure {
+    fn from(e: CliError) -> Self {
+        CallFailure::Pre(e)
+    }
+}
+
 /// Call an MCP tool.
-pub async fn call(server: String, tool: String, args: Vec<String>) -> Result<(), CliError> {
+///
+/// On any failure, prints the agent-facing JSON error envelope (issue #26) to
+/// stdout before returning. The exit code is still non-zero; main() also writes
+/// a human-readable `Error: ...` to stderr for interactive use.
+pub async fn call(
+    server: String,
+    tool: String,
+    args: Vec<String>,
+    args_json: Option<String>,
+) -> Result<(), CliError> {
+    let tool_name = tool.clone();
+    match call_inner(server, tool, args, args_json).await {
+        Ok(()) => Ok(()),
+        Err(CallFailure::Pre(e)) => {
+            emit_envelope(classify_cli_error(&e), &tool_name, &e.message);
+            Err(e)
+        }
+        Err(CallFailure::Tool(msg)) => {
+            emit_envelope(ErrorKind::ToolError, &tool_name, &msg);
+            Err(CliError::upstream_error(msg))
+        }
+    }
+}
+
+fn emit_envelope(kind: ErrorKind, tool: &str, message: &str) {
+    let env = build_error_envelope(kind, Some(tool), message, None);
+    println!("{}", serde_json::to_string_pretty(&env).unwrap());
+}
+
+async fn call_inner(
+    server: String,
+    tool: String,
+    args: Vec<String>,
+    args_json: Option<String>,
+) -> Result<(), CallFailure> {
     let client = BrokerClient::connect().await?;
 
-    // Parse --arg KEY=VALUE pairs with auto-detection of value types
-    let mut arguments = HashMap::new();
-    for arg in &args {
-        let (key, value) = arg.split_once('=').ok_or_else(|| {
-            CliError::general(format!(
-                "invalid argument format: {arg} (expected KEY=VALUE)"
-            ))
-        })?;
-        let json_value = if let Ok(n) = value.parse::<i64>() {
-            serde_json::Value::Number(n.into())
-        } else if let Ok(n) = value.parse::<f64>() {
-            serde_json::Number::from_f64(n)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::String(value.to_string()))
-        } else if value == "true" {
-            serde_json::Value::Bool(true)
-        } else if value == "false" {
-            serde_json::Value::Bool(false)
-        } else {
-            serde_json::Value::String(value.to_string())
-        };
-        arguments.insert(key.to_string(), json_value);
-    }
+    let args_json_value = match args_json.as_deref() {
+        Some(spec) => Some(resolve_args_json(spec, &mut std::io::stdin().lock())?),
+        None => None,
+    };
+    let arguments = build_arguments(args_json_value, &args)?;
 
     let req = McpCallRequest {
         server,
@@ -181,21 +244,30 @@ pub async fn call(server: String, tool: String, args: Vec<String>) -> Result<(),
         arguments,
     };
 
-    let resp: McpCallResponse = client.post("/mcp/call", &req).await?;
+    let resp: McpCallResponse = client
+        .post("/mcp/call", &req)
+        .await
+        .map_err(CallFailure::Pre)?;
+
+    let body = resp
+        .data
+        .content
+        .iter()
+        .filter_map(|c| c.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
 
     if resp.data.is_error {
-        eprintln!("MCP tool returned an error:");
+        let detail = if body.is_empty() {
+            "MCP tool returned an error result".to_string()
+        } else {
+            body
+        };
+        return Err(CallFailure::Tool(detail));
     }
 
-    for content in &resp.data.content {
-        if let Some(text) = &content.text {
-            println!("{text}");
-        }
+    if !body.is_empty() {
+        println!("{body}");
     }
-
-    if resp.data.is_error {
-        return Err(CliError::upstream_error("MCP tool returned an error"));
-    }
-
     Ok(())
 }

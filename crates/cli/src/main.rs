@@ -95,7 +95,20 @@ enum Command {
     McpServers,
 
     /// List all available MCP tools
-    McpTools,
+    McpTools {
+        /// Emit the raw JSON list (including each tool's input_schema) instead
+        /// of the human-friendly text table. Designed for agent consumption.
+        #[arg(long)]
+        schema: bool,
+
+        /// When --schema is set, restrict output to one server.
+        #[arg(long)]
+        server: Option<String>,
+
+        /// When --schema is set, restrict output to one tool.
+        #[arg(long)]
+        tool: Option<String>,
+    },
 
     /// Call an MCP tool
     McpCall {
@@ -105,9 +118,16 @@ enum Command {
         /// Tool name
         tool: String,
 
-        /// Tool arguments (KEY=VALUE, repeatable)
+        /// Tool arguments (KEY=VALUE, repeatable). Convenience layer.
+        /// For structured input (nested objects, arrays), prefer --args-json.
         #[arg(long = "arg", num_args = 1)]
         args: Vec<String>,
+
+        /// Pass the full MCP tools/call.arguments object as JSON.
+        /// SRC may be @<path> to read a file, or - to read stdin.
+        /// On conflict, individual --arg values override fields from this object.
+        #[arg(long = "args-json", value_name = "SRC")]
+        args_json: Option<String>,
     },
 }
 
@@ -185,7 +205,16 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             raw,
         } => commands::proxy::run(credential, method, url, headers, body, json, raw).await,
         Command::McpServers => commands::mcp::list_servers().await,
-        Command::McpTools => commands::mcp::list_tools().await,
-        Command::McpCall { server, tool, args } => commands::mcp::call(server, tool, args).await,
+        Command::McpTools {
+            schema,
+            server,
+            tool,
+        } => commands::mcp::list_tools(schema, server, tool).await,
+        Command::McpCall {
+            server,
+            tool,
+            args,
+            args_json,
+        } => commands::mcp::call(server, tool, args, args_json).await,
     }
 }
