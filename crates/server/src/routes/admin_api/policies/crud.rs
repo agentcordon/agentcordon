@@ -164,6 +164,10 @@ pub(super) async fn get_schema_reference(
             "Add or remove tags on agents, devices, or system",
         ),
         (actions::UNPROTECT, "Reveal a credential's raw secret value"),
+        (
+            actions::MANAGE_CONSENTS,
+            "View or revoke OAuth consent grants on a workspace",
+        ),
     ]
     .into_iter()
     .collect();

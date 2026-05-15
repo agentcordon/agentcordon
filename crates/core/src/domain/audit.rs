@@ -102,6 +102,10 @@ pub enum AuditEventType {
     DeviceCodeDenied,
     DeviceCodeExpired,
 
+    // OAuth2 consent management (issue #10)
+    /// Admin or self revoked an OAuth consent grant; cascades to token revocation.
+    ConsentRevoked,
+
     // MCP
     McpServerRegistered,
     McpServerUpdated,

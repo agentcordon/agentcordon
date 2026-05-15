@@ -34,6 +34,9 @@
         "shape": {
           "type": "Record",
           "attributes": {
+            "id": {
+              "type": "String"
+            },
             "name": {
               "type": "String"
             },
@@ -294,6 +297,23 @@
           "context": {
             "type": "Record",
             "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
+      "manage_consents": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "consent_user_id": {
+                "type": "String"
+              },
               "timestamp": {
                 "type": "String"
               }

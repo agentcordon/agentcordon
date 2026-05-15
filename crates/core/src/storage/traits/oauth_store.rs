@@ -63,4 +63,32 @@ pub trait OAuthStore: Send + Sync {
         user_id: &UserId,
     ) -> Result<Option<OAuthConsent>, StoreError>;
     async fn upsert_oauth_consent(&self, consent: &OAuthConsent) -> Result<(), StoreError>;
+
+    /// List every consent granted to the given OAuth client. Issue #10.
+    ///
+    /// Returned in any order; callers that need a stable order should sort
+    /// at the boundary (UI / API).
+    async fn list_oauth_consents_for_client(
+        &self,
+        client_id: &str,
+    ) -> Result<Vec<OAuthConsent>, StoreError>;
+
+    /// Delete the consent row and revoke every access and refresh token issued
+    /// to the given `(client_id, user_id)` pair, atomically. Issue #10.
+    ///
+    /// Returns `None` if no consent existed (handlers map this to HTTP 404);
+    /// otherwise `Some(counts)` with the number of access and refresh tokens
+    /// revoked, which the audit event payload records.
+    async fn delete_consent_and_revoke_tokens(
+        &self,
+        client_id: &str,
+        user_id: &UserId,
+    ) -> Result<Option<ConsentRevocationCounts>, StoreError>;
+}
+
+/// Counts of tokens revoked by [`OAuthStore::delete_consent_and_revoke_tokens`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConsentRevocationCounts {
+    pub access_tokens: u32,
+    pub refresh_tokens: u32,
 }

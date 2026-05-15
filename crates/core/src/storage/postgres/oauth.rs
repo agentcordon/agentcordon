@@ -138,4 +138,21 @@ impl OAuthStore for PostgresStore {
             "oauth: postgres not yet implemented".into(),
         ))
     }
+    async fn list_oauth_consents_for_client(
+        &self,
+        _client_id: &str,
+    ) -> Result<Vec<OAuthConsent>, StoreError> {
+        Err(StoreError::Database(
+            "oauth: postgres not yet implemented".into(),
+        ))
+    }
+    async fn delete_consent_and_revoke_tokens(
+        &self,
+        _client_id: &str,
+        _user_id: &UserId,
+    ) -> Result<Option<crate::storage::traits::ConsentRevocationCounts>, StoreError> {
+        Err(StoreError::Database(
+            "oauth: postgres not yet implemented".into(),
+        ))
+    }
 }

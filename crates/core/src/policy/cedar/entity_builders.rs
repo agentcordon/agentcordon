@@ -99,6 +99,10 @@ impl CedarPolicyEngine {
 
         let attrs: HashMap<String, RestrictedExpression> = HashMap::from([
             (
+                "id".to_string(),
+                RestrictedExpression::new_string(user.id.0.to_string()),
+            ),
+            (
                 "name".to_string(),
                 RestrictedExpression::new_string(user.username.clone()),
             ),
@@ -379,6 +383,14 @@ impl CedarPolicyEngine {
             .map_err(|e| PolicyError::Evaluation(format!("context: {e}"))),
             actions::MANAGE_TAGS => Context::from_pairs(vec![
                 ("tag_value".to_string(), string_expr(claim_keys::TAG_VALUE)),
+                ("timestamp".to_string(), timestamp_expr),
+            ])
+            .map_err(|e| PolicyError::Evaluation(format!("context: {e}"))),
+            actions::MANAGE_CONSENTS => Context::from_pairs(vec![
+                (
+                    "consent_user_id".to_string(),
+                    string_expr(claim_keys::CONSENT_USER_ID),
+                ),
                 ("timestamp".to_string(), timestamp_expr),
             ])
             .map_err(|e| PolicyError::Evaluation(format!("context: {e}"))),

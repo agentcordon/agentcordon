@@ -723,4 +723,77 @@ impl OAuthStore for SqliteStore {
             .await
             .map_err(|e| StoreError::Database(e.to_string()))
     }
+
+    async fn delete_consent_and_revoke_tokens(
+        &self,
+        client_id: &str,
+        user_id: &UserId,
+    ) -> Result<Option<crate::storage::traits::ConsentRevocationCounts>, StoreError> {
+        let client_id = client_id.to_string();
+        let user_id_str = user_id.0.hyphenated().to_string();
+        let revoked_at = chrono::Utc::now().to_rfc3339();
+        self.conn()
+            .call(move |conn| {
+                let tx = conn
+                    .transaction()
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                let consent_deleted = tx
+                    .execute(
+                        "DELETE FROM oauth_consents WHERE client_id = ?1 AND user_id = ?2",
+                        rusqlite::params![client_id, user_id_str],
+                    )
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                if consent_deleted == 0 {
+                    tx.commit().map_err(tokio_rusqlite::Error::Rusqlite)?;
+                    return Ok(None);
+                }
+                let access_revoked = tx
+                    .execute(
+                        "UPDATE oauth_access_tokens SET revoked_at = ?3 \
+                         WHERE client_id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
+                        rusqlite::params![client_id, user_id_str, revoked_at],
+                    )
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                let refresh_revoked = tx
+                    .execute(
+                        "UPDATE oauth_refresh_tokens SET revoked_at = ?3 \
+                         WHERE client_id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
+                        rusqlite::params![client_id, user_id_str, revoked_at],
+                    )
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.commit().map_err(tokio_rusqlite::Error::Rusqlite)?;
+                Ok(Some(crate::storage::traits::ConsentRevocationCounts {
+                    access_tokens: access_revoked as u32,
+                    refresh_tokens: refresh_revoked as u32,
+                }))
+            })
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))
+    }
+
+    async fn list_oauth_consents_for_client(
+        &self,
+        client_id: &str,
+    ) -> Result<Vec<OAuthConsent>, StoreError> {
+        let client_id = client_id.to_string();
+        self.conn()
+            .call(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT client_id, user_id, scopes, granted_at \
+                         FROM oauth_consents WHERE client_id = ?1",
+                    )
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                let rows = stmt
+                    .query_map(rusqlite::params![client_id], row_to_consent)
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r.map_err(tokio_rusqlite::Error::Rusqlite)?);
+                }
+                Ok(out)
+            })
+            .await
+            .map_err(|e| StoreError::Database(e.to_string()))
+    }
 }
