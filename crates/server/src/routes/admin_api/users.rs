@@ -88,11 +88,11 @@ use agent_cordon_core::policy::PolicyResource;
 use super::check_cedar_permission;
 
 /// Check Cedar policy for `manage_users` on `System` resource.
-fn check_manage_users(
+async fn check_manage_users(
     state: &AppState,
     auth: &AuthenticatedUser,
 ) -> Result<agent_cordon_core::domain::policy::PolicyDecision, ApiError> {
-    check_cedar_permission(state, auth, actions::MANAGE_USERS, PolicyResource::System)
+    check_cedar_permission(state, auth, actions::MANAGE_USERS, PolicyResource::System).await
 }
 
 // --- Handlers ---
@@ -102,7 +102,7 @@ async fn list_users(
     auth: AuthenticatedUser,
 ) -> Result<Json<ApiResponse<Vec<UserResponse>>>, ApiError> {
     // Policy check: manage_users on System
-    check_manage_users(&state, &auth)?;
+    check_manage_users(&state, &auth).await?;
 
     // Tenant scoping: non-admin users only see themselves
     let is_admin = auth.user.role == UserRole::Admin || auth.is_root;
@@ -128,7 +128,7 @@ async fn get_user(
     // Self-view is always allowed; otherwise check Cedar manage_users policy
     let is_self = auth.user.id == target_id;
     if !is_self {
-        check_manage_users(&state, &auth)?;
+        check_manage_users(&state, &auth).await?;
     }
 
     let user = state
@@ -147,7 +147,7 @@ async fn create_user(
     Json(req): Json<CreateUserRequest>,
 ) -> Result<Json<ApiResponse<UserResponse>>, ApiError> {
     // Policy check: manage_users on System
-    let policy_decision = check_manage_users(&state, &auth)?;
+    let policy_decision = check_manage_users(&state, &auth).await?;
 
     // Validate username
     let username = req.username.trim().to_string();
@@ -226,7 +226,7 @@ async fn update_user(
     Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<ApiResponse<UserResponse>>, ApiError> {
     // Policy check: manage_users on System
-    let policy_decision = check_manage_users(&state, &auth)?;
+    let policy_decision = check_manage_users(&state, &auth).await?;
 
     // Reject password updates on this endpoint — they have a dedicated route
     // that enforces current-password verification and session invalidation.
@@ -318,7 +318,7 @@ async fn delete_user(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
     // Policy check: manage_users on System
-    let policy_decision = check_manage_users(&state, &auth)?;
+    let policy_decision = check_manage_users(&state, &auth).await?;
 
     let target_id = UserId(id);
 
@@ -388,7 +388,7 @@ async fn change_password(
 
     // Self-service password change is always allowed; otherwise check Cedar manage_users policy
     if !is_self {
-        check_manage_users(&state, &auth)?;
+        check_manage_users(&state, &auth).await?;
     }
 
     // Validate new password length.

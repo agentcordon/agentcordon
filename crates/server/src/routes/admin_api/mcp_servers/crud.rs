@@ -7,10 +7,7 @@ use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::mcp::McpServerId;
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{
-    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
-};
+use agent_cordon_core::policy::{actions, PolicyPrincipal, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::extractors::{AuthenticatedActor, AuthenticatedUser};
@@ -45,20 +42,23 @@ pub(super) async fn list_mcp_servers(
                 user: user.clone(),
                 is_root,
             };
-            check_manage_mcp_servers(&state, &auth)?;
+            check_manage_mcp_servers(&state, &auth).await?;
             Some(user.clone())
         }
         AuthenticatedActor::Workspace { workspace, .. } => {
             // Workspaces must pass Cedar check for list on System resource
-            let decision = state.policy_engine.evaluate(
-                &PolicyPrincipal::Workspace(workspace),
-                actions::LIST,
-                &PolicyResource::System,
-                &PolicyContext::default(),
-            )?;
-            if decision.decision == PolicyDecisionResult::Forbid {
-                return Err(ApiError::Forbidden("access denied by policy".to_string()));
-            }
+            state
+                .authz
+                .request(
+                    crate::authz::PolicyCaller::Principal {
+                        principal: PolicyPrincipal::Workspace(workspace),
+                        oauth_claims: None,
+                    },
+                    &uuid::Uuid::new_v4().to_string(),
+                )
+                .check(actions::LIST, &PolicyResource::System)
+                .await?;
+
             None
         }
     };
@@ -105,7 +105,7 @@ pub(super) async fn get_mcp_server(
     auth: AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<McpServerDetailResponse>>, ApiError> {
-    check_manage_mcp_servers(&state, &auth)?;
+    check_manage_mcp_servers(&state, &auth).await?;
 
     let server_id = McpServerId(id);
     let server = state
@@ -169,7 +169,7 @@ pub(super) async fn update_mcp_server(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateMcpServerRequest>,
 ) -> Result<Json<ApiResponse<McpServerResponse>>, ApiError> {
-    let policy_decision = check_manage_mcp_servers(&state, &auth)?;
+    let policy_decision = check_manage_mcp_servers(&state, &auth).await?;
 
     let server_id = McpServerId(id);
     let mut server = state
@@ -228,7 +228,7 @@ pub(super) async fn delete_mcp_server(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let policy_decision = check_manage_mcp_servers(&state, &auth)?;
+    let policy_decision = check_manage_mcp_servers(&state, &auth).await?;
 
     let server_id = McpServerId(id);
 

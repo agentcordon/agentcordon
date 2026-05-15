@@ -9,9 +9,8 @@ use uuid::Uuid;
 use agent_cordon_core::crypto::SecretEncryptor;
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::{CredentialId, CredentialSummary, CredentialUpdate};
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::policy::actions;
-use agent_cordon_core::policy::{PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::PolicyResource;
 use agent_cordon_core::transform::MAX_TRANSFORM_SCRIPT_SIZE;
 
 use crate::events::UiEvent;
@@ -57,18 +56,16 @@ pub(crate) async fn update_credential(
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
     // Policy check: can this actor update this credential?
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::UPDATE,
-        &PolicyResource::Credential {
-            credential: cred.clone(),
-        },
-        &actor.policy_context(Some(corr.0.clone())),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(&actor, &corr.0)
+        .check(
+            actions::UPDATE,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+        )
+        .await?;
 
     // Validate transform_script size
     if let Some(ref script) = req.transform_script {
@@ -174,7 +171,7 @@ pub(crate) async fn update_credential(
         .actor_fields(ws_id, ws_name, u_id, u_name)
         .resource("credential", &id.to_string())
         .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some(&decision.reasons.join(", ")))
+        .decision(AuditDecision::Permit, None)
         .details(audit_metadata)
         .build();
     if let Err(e) = state.store.append_audit_event(&event).await {
@@ -214,18 +211,16 @@ pub(crate) async fn get_credential(
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
     // Policy check
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::LIST,
-        &PolicyResource::Credential {
-            credential: cred.clone(),
-        },
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(&actor, &uuid::Uuid::new_v4().to_string())
+        .check(
+            actions::LIST,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+        )
+        .await?;
 
     let mut summary: CredentialSummary = cred.into();
     enrich_owner_usernames(state.store.as_ref(), std::slice::from_mut(&mut summary)).await;
@@ -245,20 +240,16 @@ pub(crate) async fn get_credential_by_name(
 ) -> Result<Json<ApiResponse<CredentialSummary>>, ApiError> {
     let name_matches = state.store.list_stored_credentials_by_name(&name).await?;
 
-    let mut authorized: Vec<agent_cordon_core::domain::credential::StoredCredential> = Vec::new();
-    for cred in &name_matches {
-        let decision = state.policy_engine.evaluate(
-            &actor.policy_principal(),
-            actions::LIST,
-            &PolicyResource::Credential {
-                credential: cred.clone(),
-            },
-            &actor.policy_context(None),
-        )?;
-        if decision.decision != PolicyDecisionResult::Forbid {
-            authorized.push(cred.clone());
-        }
-    }
+    // Filter via the Authz seam (denied items silently dropped, audit per item).
+    let authorized: Vec<agent_cordon_core::domain::credential::StoredCredential> = state
+        .authz
+        .request(&actor, &uuid::Uuid::new_v4().to_string())
+        .filter(actions::LIST, name_matches.clone(), |c| {
+            PolicyResource::Credential {
+                credential: c.clone(),
+            }
+        })
+        .await?;
 
     let cred = match authorized.len() {
         0 => {
@@ -311,18 +302,16 @@ pub(crate) async fn delete_credential(
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
     // Policy check
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::DELETE,
-        &PolicyResource::Credential {
-            credential: cred.clone(),
-        },
-        &actor.policy_context(Some(corr.0.clone())),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(&actor, &corr.0)
+        .check(
+            actions::DELETE,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+        )
+        .await?;
 
     // Evict any cached OAuth2 token for this credential before deletion
     state.oauth2_token_manager.evict(&cred_id).await;
@@ -351,7 +340,7 @@ pub(crate) async fn delete_credential(
         .actor_fields(ws_id, ws_name, u_id, u_name)
         .resource("credential", &id.to_string())
         .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some(&decision.reasons.join(", ")))
+        .decision(AuditDecision::Permit, None)
         .details(serde_json::json!({
             "credential_name": cred.name,
             "service": cred.service,

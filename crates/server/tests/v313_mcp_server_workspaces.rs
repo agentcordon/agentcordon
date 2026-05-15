@@ -30,18 +30,29 @@ use uuid::Uuid;
 /// Create an operator-level user whose role is permitted by the default policy
 /// to `manage_mcp_servers` on `System`.
 async fn make_operator(ctx: &TestContext, username: &str) -> User {
-    common::create_test_user(&*ctx.store, username, common::TEST_PASSWORD, UserRole::Operator).await
+    common::create_test_user(
+        &*ctx.store,
+        username,
+        common::TEST_PASSWORD,
+        UserRole::Operator,
+    )
+    .await
 }
 
 /// Create an admin user (broader Cedar permissions).
 async fn make_admin(ctx: &TestContext, username: &str) -> User {
-    common::create_test_user(&*ctx.store, username, common::TEST_PASSWORD, UserRole::Admin).await
+    common::create_test_user(
+        &*ctx.store,
+        username,
+        common::TEST_PASSWORD,
+        UserRole::Admin,
+    )
+    .await
 }
 
 /// Login a user and return (combined_cookie, csrf).
 async fn login(ctx: &TestContext, username: &str) -> (String, String) {
-    let (session, csrf) =
-        common::login_user(&ctx.app, username, common::TEST_PASSWORD).await;
+    let (session, csrf) = common::login_user(&ctx.app, username, common::TEST_PASSWORD).await;
     (common::combined_cookie(&session, &csrf), csrf)
 }
 
@@ -135,10 +146,7 @@ async fn delete_binding(
     mcp_id: &McpServerId,
     ws_id: &WorkspaceId,
 ) -> (StatusCode, serde_json::Value) {
-    let uri = format!(
-        "/api/v1/mcp-servers/{}/workspaces/{}",
-        mcp_id.0, ws_id.0
-    );
+    let uri = format!("/api/v1/mcp-servers/{}/workspaces/{}", mcp_id.0, ws_id.0);
     common::send_json(
         &ctx.app,
         Method::DELETE,
@@ -225,8 +233,7 @@ struct OwnerFixture {
 async fn owner_fixture(ctx: &TestContext, suffix: &str) -> OwnerFixture {
     let owner = make_operator(ctx, &format!("owner-{}", suffix)).await;
     let (owner_cookie, owner_csrf) = login(ctx, &format!("owner-{}", suffix)).await;
-    let original_ws =
-        make_owned_workspace(ctx, &format!("ws-orig-{}", suffix), &owner).await;
+    let original_ws = make_owned_workspace(ctx, &format!("ws-orig-{}", suffix), &owner).await;
     let mcp = make_mcp_server(ctx, &format!("mcp-{}", suffix), &original_ws, &owner, true).await;
     OwnerFixture {
         owner,
@@ -262,10 +269,7 @@ async fn case_1_1_owner_binds_one_workspace_they_own() {
     // Per openapi: 201 when at least one new row is created.
     assert_eq!(status, StatusCode::CREATED, "body: {}", body);
     assert_eq!(
-        body["data"]["added"]
-            .as_array()
-            .expect("added array")
-            .len(),
+        body["data"]["added"].as_array().expect("added array").len(),
         1,
         "one new binding should be returned"
     );
@@ -542,9 +546,7 @@ async fn case_1_6_cross_user_bind_forbidden_and_mentions_ws_id() {
 
     // Error message references the offending ws UUID (for debuggability)
     // but must NOT leak the ws name.
-    let msg = body["error"]["message"]
-        .as_str()
-        .expect("message string");
+    let msg = body["error"]["message"].as_str().expect("message string");
     assert!(
         msg.contains(&ws_bob.id.0.to_string()),
         "error must reference offending ws id: {}",
@@ -1053,8 +1055,7 @@ async fn case_2_5_admin_unshares_non_last() {
     // Admin removes ws_b.
     let _admin = make_admin(&ctx, "admin-t").await;
     let (admin_cookie, admin_csrf) = login(&ctx, "admin-t").await;
-    let (status, _) =
-        delete_binding(&ctx, &admin_cookie, &admin_csrf, &fx.mcp.id, &ws_b.id).await;
+    let (status, _) = delete_binding(&ctx, &admin_cookie, &admin_csrf, &fx.mcp.id, &ws_b.id).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
 

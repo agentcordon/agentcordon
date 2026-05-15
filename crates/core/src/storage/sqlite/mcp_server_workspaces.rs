@@ -90,13 +90,11 @@ impl McpServerWorkspaceStore for SqliteStore {
                 for row in rows {
                     let (id_str, name) = row.map_err(tokio_rusqlite::Error::Rusqlite)?;
                     let uuid = uuid::Uuid::parse_str(&id_str).map_err(|e| {
-                        tokio_rusqlite::Error::Rusqlite(
-                            rusqlite::Error::FromSqlConversionFailure(
-                                0,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            ),
-                        )
+                        tokio_rusqlite::Error::Rusqlite(rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        ))
                     })?;
                     out.push((WorkspaceId(uuid), name));
                 }
@@ -287,7 +285,10 @@ mod tests {
         assert!(!re_added, "second add returns false — row already existed");
 
         assert_eq!(
-            store.count_workspaces_for_mcp_server(&mcp.id).await.unwrap(),
+            store
+                .count_workspaces_for_mcp_server(&mcp.id)
+                .await
+                .unwrap(),
             2
         );
     }
@@ -358,14 +359,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            store.count_workspaces_for_mcp_server(&mcp.id).await.unwrap(),
+            store
+                .count_workspaces_for_mcp_server(&mcp.id)
+                .await
+                .unwrap(),
             2
         );
 
         store.delete_mcp_server(&mcp.id).await.unwrap();
 
         assert_eq!(
-            store.count_workspaces_for_mcp_server(&mcp.id).await.unwrap(),
+            store
+                .count_workspaces_for_mcp_server(&mcp.id)
+                .await
+                .unwrap(),
             0,
             "FK ON DELETE CASCADE drops junction rows"
         );
@@ -391,10 +398,7 @@ mod tests {
 
         store.delete_workspace(&ws2.id).await.unwrap();
 
-        let bound = store
-            .list_workspaces_for_mcp_server(&mcp.id)
-            .await
-            .unwrap();
+        let bound = store.list_workspaces_for_mcp_server(&mcp.id).await.unwrap();
         assert_eq!(bound.len(), 1, "only original workspace's row remains");
         assert_eq!(bound[0].0, ws.id);
     }

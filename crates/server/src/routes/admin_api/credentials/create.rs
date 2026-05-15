@@ -4,9 +4,8 @@ use serde::Deserialize;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::CredentialSummary;
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::policy::actions;
-use agent_cordon_core::policy::{PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::PolicyResource;
 use agent_cordon_core::transform::MAX_TRANSFORM_SCRIPT_SIZE;
 
 use crate::credential_service::{self, NewCredentialParams};
@@ -71,18 +70,17 @@ pub(crate) async fn store_credential(
     Json(req): Json<StoreCredentialRequest>,
 ) -> Result<Json<ApiResponse<CredentialSummary>>, ApiError> {
     // Policy check: can this actor create credentials?
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::CREATE,
-        &PolicyResource::System,
-        &actor.policy_context(Some(corr.0.clone())),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
-
-    // Validate transform_script size
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: actor.policy_principal(),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check(actions::CREATE, &PolicyResource::System)
+        .await?; // Validate transform_script size
     if let Some(ref script) = req.transform_script {
         if script.len() > MAX_TRANSFORM_SCRIPT_SIZE {
             return Err(ApiError::BadRequest(format!(
@@ -305,7 +303,7 @@ pub(crate) async fn store_credential(
         .actor_fields(ws_id, ws_name, u_id, u_name)
         .resource("credential", &cred.id.0.to_string())
         .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some(&decision.reasons.join(", ")))
+        .decision(AuditDecision::Permit, None)
         .details(serde_json::json!({
             "credential_name": req.name,
             "service": req.service,

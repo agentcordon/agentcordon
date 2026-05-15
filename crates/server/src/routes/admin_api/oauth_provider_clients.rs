@@ -124,7 +124,7 @@ impl From<&OAuthProviderClient> for ClientResponse {
 
 // --- Helpers ---
 
-fn check_manage(
+async fn check_manage(
     state: &AppState,
     auth: &AuthenticatedUser,
 ) -> Result<agent_cordon_core::domain::policy::PolicyDecision, ApiError> {
@@ -134,6 +134,7 @@ fn check_manage(
         actions::MANAGE_MCP_SERVERS,
         agent_cordon_core::policy::PolicyResource::System,
     )
+    .await
 }
 
 fn validate_url(url: &str, field_name: &str) -> Result<(), ApiError> {
@@ -160,7 +161,7 @@ async fn create_client(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<CreateClientRequest>,
 ) -> Result<Json<ApiResponse<ClientResponse>>, ApiError> {
-    let policy_decision = check_manage(&state, &auth)?;
+    let policy_decision = check_manage(&state, &auth).await?;
 
     if req.label.trim().is_empty() {
         return Err(ApiError::BadRequest("label is required".to_string()));
@@ -255,7 +256,7 @@ async fn list_clients(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
 ) -> Result<Json<ApiResponse<Vec<ClientResponse>>>, ApiError> {
-    if check_manage(&state, &auth).is_err() {
+    if check_manage(&state, &auth).await.is_err() {
         return Ok(Json(ApiResponse::ok(vec![])));
     }
 
@@ -269,7 +270,7 @@ async fn get_client(
     auth: AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<ClientResponse>>, ApiError> {
-    check_manage(&state, &auth)?;
+    check_manage(&state, &auth).await?;
 
     let client_id = OAuthProviderClientId(id);
     let client = state
@@ -289,7 +290,7 @@ async fn update_client(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateClientRequest>,
 ) -> Result<Json<ApiResponse<ClientResponse>>, ApiError> {
-    let policy_decision = check_manage(&state, &auth)?;
+    let policy_decision = check_manage(&state, &auth).await?;
 
     let client_id = OAuthProviderClientId(id);
     let mut client = state
@@ -379,7 +380,7 @@ async fn delete_client(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let policy_decision = check_manage(&state, &auth)?;
+    let policy_decision = check_manage(&state, &auth).await?;
 
     let client_id = OAuthProviderClientId(id);
 
@@ -428,7 +429,7 @@ async fn reregister_client(
 ) -> Result<Json<ApiResponse<ClientResponse>>, ApiError> {
     use agent_cordon_core::crypto::SecretEncryptor;
 
-    let policy_decision = check_manage(&state, &auth)?;
+    let policy_decision = check_manage(&state, &auth).await?;
 
     let client_id = OAuthProviderClientId(id);
     let existing = state

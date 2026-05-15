@@ -8,7 +8,7 @@ use agent_cordon_core::domain::credential::CredentialId;
 use agent_cordon_core::domain::mcp::McpServerId;
 use agent_cordon_core::domain::policy::{PolicyDecisionResult, StoredPolicy};
 use agent_cordon_core::policy::{
-    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
+    actions, claim_keys, PolicyContext, PolicyPrincipal, PolicyResource,
 };
 
 use crate::extractors::AuthenticatedUser;
@@ -163,7 +163,7 @@ async fn rsop(
     Json(req): Json<RsopRequest>,
 ) -> Result<Json<ApiResponse<RsopResponse>>, ApiError> {
     // Allow admin (manage_policies) OR resource owner to view RSoP
-    let is_admin = check_manage_policies(&state, &auth).is_ok();
+    let is_admin = check_manage_policies(&state, &auth).await.is_ok();
     if !is_admin {
         // Check resource ownership as fallback
         let is_owner = match req.resource_type.as_str() {
@@ -191,7 +191,7 @@ async fn rsop(
         all_policies.iter().map(|p| (p.id.0, p.clone())).collect();
 
     // Load target resource and determine actions + resource repr for evaluation
-    let (resource_meta, _actions, build_resource, default_context) =
+    let (resource_meta, _actions, build_resource, _default_context) =
         match req.resource_type.as_str() {
             "Credential" => {
                 let cred = state
@@ -208,11 +208,17 @@ async fn rsop(
                 };
 
                 let context = PolicyContext {
-                    requested_scopes: cred.scopes.clone(),
-                    credential_name: Some(cred.name.clone()),
                     correlation_id: Some(corr.0.clone()),
                     ..Default::default()
-                };
+                }
+                .with_claim(
+                    claim_keys::REQUESTED_SCOPES,
+                    serde_json::json!(cred.scopes.clone()),
+                )
+                .with_claim(
+                    claim_keys::CREDENTIAL_NAME,
+                    serde_json::json!(Some(cred.name.clone())),
+                );
 
                 let resource = PolicyResource::Credential { credential: cred };
 
@@ -288,13 +294,17 @@ async fn rsop(
     for workspace in workspaces.iter().take(limit) {
         let mut results = HashMap::new();
         for &action in workspace_actions {
-            let decision = state.policy_engine.evaluate(
-                &PolicyPrincipal::Workspace(workspace),
-                action,
-                &build_resource,
-                &default_context,
-            )?;
-
+            let decision = state
+                .authz
+                .request(
+                    crate::authz::PolicyCaller::Principal {
+                        principal: PolicyPrincipal::Workspace(workspace),
+                        oauth_claims: None,
+                    },
+                    &uuid::Uuid::new_v4().to_string(),
+                )
+                .check_with_reasons(action, &build_resource)
+                .await?;
             results.insert(
                 action.to_string(),
                 ActionResult {
@@ -325,7 +335,7 @@ async fn rsop(
     // Detect conditional policies
     let conditional_policies = detect_conditional_policies(&all_policies);
 
-    // Policy decision audit is emitted automatically by AuditingPolicyEngine
+    // Policy decision audit is emitted automatically by the Authz seam
     // for each evaluate() call in the matrix loop above.
 
     Ok(Json(ApiResponse::ok(RsopResponse {

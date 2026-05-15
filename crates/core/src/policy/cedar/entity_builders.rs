@@ -312,72 +312,76 @@ impl CedarPolicyEngine {
         EntityUid::from_type_name_and_id(type_name, eid)
     }
 
-    /// Build the Cedar `Context` from a `PolicyContext`.
+    /// Build the Cedar `Context` from a `PolicyContext` claim bag.
+    ///
+    /// The shape of the produced context is action-specific and matches the
+    /// fields the embedded Cedar policy templates expect (e.g.
+    /// `context.tool_name`, `context.requested_scopes`). Values are read by
+    /// canonical claim-bag keys; absent values resolve to empty strings or
+    /// empty sets so policies can still reference them safely.
     pub(super) fn build_context(action: &str, ctx: &PolicyContext) -> Result<Context, PolicyError> {
+        use super::super::claim_keys;
+
         let timestamp_expr = RestrictedExpression::new_string(
             chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         );
 
+        let string_expr = |key: &str| RestrictedExpression::new_string(ctx.string_claim(key));
+        let scopes_expr = |key: &str| {
+            RestrictedExpression::new_set(
+                ctx.string_array_claim(key)
+                    .into_iter()
+                    .map(RestrictedExpression::new_string),
+            )
+        };
+
         match action {
-            actions::ACCESS => {
-                let scopes_expr = RestrictedExpression::new_set(
-                    ctx.requested_scopes
-                        .iter()
-                        .map(|s| RestrictedExpression::new_string(s.clone())),
-                );
-                Context::from_pairs(vec![
-                    ("requested_scopes".to_string(), scopes_expr),
-                    ("timestamp".to_string(), timestamp_expr),
-                ])
-                .map_err(|e| PolicyError::Evaluation(format!("context: {e}")))
-            }
-            actions::MCP_TOOL_CALL => {
-                let tool_name_expr =
-                    RestrictedExpression::new_string(ctx.tool_name.clone().unwrap_or_default());
-                let credential_name_expr = RestrictedExpression::new_string(
-                    ctx.credential_name.clone().unwrap_or_default(),
-                );
-                let justification_expr =
-                    RestrictedExpression::new_string(ctx.justification.clone().unwrap_or_default());
-                Context::from_pairs(vec![
-                    ("tool_name".to_string(), tool_name_expr),
-                    ("credential_name".to_string(), credential_name_expr),
-                    ("justification".to_string(), justification_expr),
-                    ("timestamp".to_string(), timestamp_expr),
-                ])
-                .map_err(|e| PolicyError::Evaluation(format!("context: {e}")))
-            }
+            actions::ACCESS => Context::from_pairs(vec![
+                (
+                    "requested_scopes".to_string(),
+                    scopes_expr(claim_keys::REQUESTED_SCOPES),
+                ),
+                ("timestamp".to_string(), timestamp_expr),
+            ])
+            .map_err(|e| PolicyError::Evaluation(format!("context: {e}"))),
+            actions::MCP_TOOL_CALL => Context::from_pairs(vec![
+                ("tool_name".to_string(), string_expr(claim_keys::TOOL_NAME)),
+                (
+                    "credential_name".to_string(),
+                    string_expr(claim_keys::CREDENTIAL_NAME),
+                ),
+                (
+                    "justification".to_string(),
+                    string_expr(claim_keys::JUSTIFICATION),
+                ),
+                ("timestamp".to_string(), timestamp_expr),
+            ])
+            .map_err(|e| PolicyError::Evaluation(format!("context: {e}"))),
             actions::MCP_LIST_TOOLS => {
                 Context::from_pairs(vec![("timestamp".to_string(), timestamp_expr)])
                     .map_err(|e| PolicyError::Evaluation(format!("context: {e}")))
             }
-            actions::VEND_CREDENTIAL => {
-                let scopes_expr = RestrictedExpression::new_set(
-                    ctx.requested_scopes
-                        .iter()
-                        .map(|s| RestrictedExpression::new_string(s.clone())),
-                );
-                let target_url_expr =
-                    RestrictedExpression::new_string(ctx.target_url.clone().unwrap_or_default());
-                let justification_expr =
-                    RestrictedExpression::new_string(ctx.justification.clone().unwrap_or_default());
-                Context::from_pairs(vec![
-                    ("requested_scopes".to_string(), scopes_expr),
-                    ("target_url".to_string(), target_url_expr),
-                    ("justification".to_string(), justification_expr),
-                    ("timestamp".to_string(), timestamp_expr),
-                ])
-                .map_err(|e| PolicyError::Evaluation(format!("context: {e}")))
-            }
-            actions::MANAGE_TAGS => {
-                let tag_value_expr =
-                    RestrictedExpression::new_string(ctx.tag_value.clone().unwrap_or_default());
-                Context::from_pairs(vec![
-                    ("tag_value".to_string(), tag_value_expr),
-                    ("timestamp".to_string(), timestamp_expr),
-                ])
-                .map_err(|e| PolicyError::Evaluation(format!("context: {e}")))
-            }
+            actions::VEND_CREDENTIAL => Context::from_pairs(vec![
+                (
+                    "requested_scopes".to_string(),
+                    scopes_expr(claim_keys::REQUESTED_SCOPES),
+                ),
+                (
+                    "target_url".to_string(),
+                    string_expr(claim_keys::TARGET_URL),
+                ),
+                (
+                    "justification".to_string(),
+                    string_expr(claim_keys::JUSTIFICATION),
+                ),
+                ("timestamp".to_string(), timestamp_expr),
+            ])
+            .map_err(|e| PolicyError::Evaluation(format!("context: {e}"))),
+            actions::MANAGE_TAGS => Context::from_pairs(vec![
+                ("tag_value".to_string(), string_expr(claim_keys::TAG_VALUE)),
+                ("timestamp".to_string(), timestamp_expr),
+            ])
+            .map_err(|e| PolicyError::Evaluation(format!("context: {e}"))),
             _ => Context::from_pairs(vec![("timestamp".to_string(), timestamp_expr)])
                 .map_err(|e| PolicyError::Evaluation(format!("context: {e}"))),
         }

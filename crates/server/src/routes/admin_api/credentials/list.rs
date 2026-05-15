@@ -1,8 +1,7 @@
 use axum::{extract::State, Json};
 
 use agent_cordon_core::domain::credential::{CredentialId, CredentialSummary, StoredCredential};
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyResource};
 
 use crate::extractors::AuthenticatedActor;
 use crate::response::{ApiError, ApiResponse};
@@ -32,37 +31,23 @@ pub(crate) async fn list_credentials(
     let cred_map: std::collections::HashMap<CredentialId, StoredCredential> =
         all_stored.into_iter().map(|c| (c.id.clone(), c)).collect();
 
-    let mut allowed_creds = Vec::new();
-    let principal = actor.policy_principal();
-    let context = actor.policy_context(None);
-
-    for summary in all_summaries {
-        let cred = match cred_map.get(&summary.id) {
-            Some(c) => c.clone(),
-            None => continue,
-        };
-
-        match state.policy_engine.evaluate(
-            &principal,
-            actions::LIST,
-            &PolicyResource::Credential { credential: cred },
-            &context,
-        ) {
-            Ok(decision) if decision.decision != PolicyDecisionResult::Forbid => {
-                allowed_creds.push(summary);
+    // Pair summaries with full credentials and run them through the Authz
+    // filter terminal — denied items are silently dropped, each Cedar
+    // evaluation auto-emits a PolicyEvaluated audit event.
+    let pairs: Vec<(CredentialSummary, StoredCredential)> = all_summaries
+        .into_iter()
+        .filter_map(|s| cred_map.get(&s.id).map(|c| (s, c.clone())))
+        .collect();
+    let kept = state
+        .authz
+        .request(&actor, &uuid::Uuid::new_v4().to_string())
+        .filter(actions::LIST, pairs, |(_, cred)| {
+            PolicyResource::Credential {
+                credential: cred.clone(),
             }
-            Ok(_) => {
-                // Cedar denied — skip this credential
-            }
-            Err(e) => {
-                tracing::warn!(
-                    credential_id = %summary.id.0,
-                    error = %e,
-                    "Cedar evaluation failed for credential, skipping (deny-by-default)"
-                );
-            }
-        }
-    }
+        })
+        .await?;
+    let mut allowed_creds: Vec<CredentialSummary> = kept.into_iter().map(|(s, _)| s).collect();
 
     enrich_owner_usernames(state.store.as_ref(), &mut allowed_creds).await;
     Ok(Json(ApiResponse::ok(allowed_creds)))

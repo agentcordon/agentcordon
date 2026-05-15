@@ -131,9 +131,21 @@ pub async fn post_proxy(
     // returned `None` and skipped the exchange, injecting the raw client_secret
     // as a bearer token (Graph: "IDX14100: JWT is not well formed").
     let credential_value = if vend_response.credential_type == "oauth2_client_credentials" {
-        let client_id = decrypted.metadata.get("oauth2_client_id").cloned().unwrap_or_default();
-        let token_endpoint = decrypted.metadata.get("oauth2_token_endpoint").cloned().unwrap_or_default();
-        let scopes = decrypted.metadata.get("oauth2_scopes").cloned().unwrap_or_default();
+        let client_id = decrypted
+            .metadata
+            .get("oauth2_client_id")
+            .cloned()
+            .unwrap_or_default();
+        let token_endpoint = decrypted
+            .metadata
+            .get("oauth2_token_endpoint")
+            .cloned()
+            .unwrap_or_default();
+        let scopes = decrypted
+            .metadata
+            .get("oauth2_scopes")
+            .cloned()
+            .unwrap_or_default();
 
         if client_id.is_empty() || token_endpoint.is_empty() {
             return error_response(
@@ -146,7 +158,7 @@ pub async fn post_proxy(
         // Build a minimal StoredCredential for the token manager's cache key.
         // Derive a deterministic UUID from the credential name via SHA-256 so
         // repeated proxy calls for the same credential reuse the cached token.
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let hash = Sha256::digest(proxy_req.credential.as_bytes());
         let cache_id = uuid::Uuid::from_bytes(hash[..16].try_into().unwrap());
         let cache_cred = agent_cordon_core::domain::credential::StoredCredential {
@@ -177,7 +189,11 @@ pub async fn post_proxy(
             key_version: 0,
         };
 
-        match state.oauth2_cc.get_token(&cache_cred, &decrypted.value).await {
+        match state
+            .oauth2_cc
+            .get_token(&cache_cred, &decrypted.value)
+            .await
+        {
             Ok(result) => {
                 tracing::debug!(
                     credential = %proxy_req.credential,

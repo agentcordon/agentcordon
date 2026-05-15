@@ -11,8 +11,7 @@ pub const MIGRATION_007: &str =
     include_str!("../../../../migrations/007_credential_name_unique.sql");
 pub const MIGRATION_008: &str =
     include_str!("../../../../migrations/008_bootstrap_client_mcp_discover_scope.sql");
-pub const MIGRATION_009: &str =
-    include_str!("../../../../migrations/009_device_code_pk_hash.sql");
+pub const MIGRATION_009: &str = include_str!("../../../../migrations/009_device_code_pk_hash.sql");
 pub const MIGRATION_010: &str =
     include_str!("../../../../migrations/010_mcp_server_workspaces.sql");
 pub const MIGRATION_011: &str =
@@ -281,7 +280,12 @@ mod tests {
             )
             .expect("bootstrap client row");
 
-        for required in ["credentials:discover", "credentials:vend", "mcp:discover", "mcp:invoke"] {
+        for required in [
+            "credentials:discover",
+            "credentials:vend",
+            "mcp:discover",
+            "mcp:invoke",
+        ] {
             assert!(
                 scopes.split(',').any(|s| s.trim() == required),
                 "bootstrap client must allow scope {required:?}, got: {scopes:?}"

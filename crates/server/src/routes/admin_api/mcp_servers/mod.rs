@@ -175,7 +175,7 @@ pub(crate) struct InstalledWorkspaceInfo {
 // --- Helpers ---
 
 /// Check Cedar policy for `manage_mcp_servers` on `System` resource.
-pub(crate) fn check_manage_mcp_servers(
+pub(crate) async fn check_manage_mcp_servers(
     state: &AppState,
     auth: &AuthenticatedUser,
 ) -> Result<agent_cordon_core::domain::policy::PolicyDecision, ApiError> {
@@ -185,6 +185,7 @@ pub(crate) fn check_manage_mcp_servers(
         actions::MANAGE_MCP_SERVERS,
         agent_cordon_core::policy::PolicyResource::System,
     )
+    .await
 }
 
 /// Validate that a string is safe for use as a Cedar policy identifier.

@@ -6,8 +6,7 @@ use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::mcp::{McpServer, McpServerId, McpTransport};
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::middleware::request_id::CorrelationId;
@@ -81,18 +80,18 @@ pub(super) async fn import_mcp_servers(
     }
 
     // Cedar policy check: actor must be authorized to create resources.
-    let policy_context = actor.policy_context(Some(corr.0.clone()));
-    let policy_decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::CREATE,
-        &PolicyResource::System,
-        &policy_context,
-    )?;
-    if policy_decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden(
-            "access denied by policy: workspace not authorized to import MCP servers".to_string(),
-        ));
-    }
+    let _policy_context = actor.policy_context(Some(corr.0.clone()));
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: actor.policy_principal(),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check(actions::CREATE, &PolicyResource::System)
+        .await?;
 
     let ws_id = agent_cordon_core::domain::workspace::WorkspaceId(req.workspace_id);
     let now = chrono::Utc::now();
@@ -210,10 +209,7 @@ pub(super) async fn import_mcp_servers(
             .action("import")
             .resource("mcp_server", &server.id.0.to_string())
             .correlation_id(&corr.0)
-            .decision(
-                AuditDecision::Permit,
-                Some(&policy_decision.reasons.join(", ")),
-            )
+            .decision(AuditDecision::Permit, None)
             .details(serde_json::json!({
                 "server_name": name,
                 "device_id": req.workspace_id.to_string(),

@@ -939,7 +939,9 @@ async fn handle_device_code(
             // or missing/revoked client is an inconsistent state and MUST
             // fail with invalid_grant rather than issuing a token against
             // the bootstrap client.
-            let token_client_id = if let Some(workspace_name) = row.workspace_name_prefill.as_deref() {
+            let token_client_id = if let Some(workspace_name) =
+                row.workspace_name_prefill.as_deref()
+            {
                 let ws = match state.store.get_workspace_by_name(workspace_name).await {
                     Ok(Some(ws)) => ws,
                     _ => {
@@ -962,7 +964,11 @@ async fn handle_device_code(
                     );
                     return (s, b).into_response();
                 }
-                let client = match state.store.get_oauth_client_by_public_key_hash(pk_hash).await {
+                let client = match state
+                    .store
+                    .get_oauth_client_by_public_key_hash(pk_hash)
+                    .await
+                {
                     Ok(Some(c)) if c.revoked_at.is_none() => c,
                     _ => {
                         tracing::error!(%pk_hash, "workspace missing OAuth client");

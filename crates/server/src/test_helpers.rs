@@ -35,7 +35,7 @@ use agent_cordon_core::policy::cedar::CedarPolicyEngine;
 use agent_cordon_core::storage::sqlite::SqliteStore;
 use agent_cordon_core::storage::Store;
 
-use crate::auditing_policy_engine::AuditingPolicyEngine;
+use crate::authz::Authz;
 use crate::build_router;
 use crate::config::AppConfig;
 use crate::rate_limit::LoginRateLimiter;
@@ -265,10 +265,7 @@ impl TestAppBuilder {
             .collect();
         let cedar_engine =
             CedarPolicyEngine::new(policy_sources).expect("init policy engine from DB");
-        let policy_engine = Arc::new(AuditingPolicyEngine::new(
-            Arc::new(cedar_engine),
-            store.clone(),
-        ));
+        let authz = Arc::new(Authz::new(Arc::new(cedar_engine), store.clone()));
 
         // ---- Config ----
         let mut config = AppConfig::test_default();
@@ -297,7 +294,7 @@ impl TestAppBuilder {
         let app_state = AppState {
             store: store.clone(),
             jwt_issuer: jwt_issuer.clone(),
-            policy_engine,
+            authz,
             encryptor: encryptor.clone(),
             config,
             login_rate_limiter,

@@ -413,11 +413,23 @@ async fn test_policy_test_unknown_action_returns_meaningful_response() {
         })),
     )
     .await;
-    // Either a 400 error or a deny result — both are acceptable
+    // A meaningful response for an unknown action is any of:
+    //   - 400 BadRequest (fail-fast on the schema mismatch)
+    //   - 200 OK with decision="deny" (Forbid + no reasons)
+    //   - 200 OK with decision="forbid" + non-empty diagnostics — the Authz
+    //     seam routes Cedar evaluation errors through the diagnostics list
+    //     rather than erroring out, so the caller still gets a meaningful
+    //     surface with the schema error visible.
+    let ok_deny = status == StatusCode::OK && body["data"]["decision"] == "deny";
+    let ok_forbid_diag = status == StatusCode::OK
+        && body["data"]["decision"] == "forbid"
+        && body["data"]["diagnostics"]
+            .as_array()
+            .map(|d| !d.is_empty())
+            .unwrap_or(false);
     assert!(
-        status == StatusCode::BAD_REQUEST
-            || (status == StatusCode::OK && body["data"]["decision"] == "deny"),
-        "unknown action should return 400 or deny: status={}, body={}",
+        status == StatusCode::BAD_REQUEST || ok_deny || ok_forbid_diag,
+        "unknown action should return 400, deny, or forbid+diagnostics: status={}, body={}",
         status,
         body
     );

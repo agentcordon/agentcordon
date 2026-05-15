@@ -22,7 +22,9 @@ use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::user::{User, UserId, UserRole};
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
 use agent_cordon_core::policy::cedar::CedarPolicyEngine;
-use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource};
+use agent_cordon_core::policy::{
+    claim_keys, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
+};
 use agent_cordon_core::storage::Store;
 
 use crate::common::*;
@@ -657,10 +659,12 @@ async fn disabled_forbid_disabled_user_denied_by_cedar() {
             "list",
             &PolicyResource::System,
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate should not error");
 
@@ -703,10 +707,12 @@ async fn disabled_forbid_disabled_admin_user_denied() {
                 action,
                 &PolicyResource::System,
                 &PolicyContext {
-                    target_url: None,
-                    requested_scopes: vec![],
                     ..Default::default()
-                },
+                }
+                .with_claim(
+                    claim_keys::REQUESTED_SCOPES,
+                    serde_json::json!(Vec::<String>::new()),
+                ),
             )
             .expect("evaluate should not error");
 
@@ -726,10 +732,12 @@ async fn disabled_forbid_disabled_admin_user_denied() {
             "manage_policies",
             &PolicyResource::PolicyAdmin,
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate should not error");
 
@@ -858,10 +866,12 @@ async fn disabled_forbid_reenable_user_restores_access() {
             "list",
             &PolicyResource::System,
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate");
 
@@ -890,10 +900,12 @@ async fn disabled_forbid_reenable_user_restores_access() {
             "list",
             &PolicyResource::System,
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate");
 
@@ -938,10 +950,12 @@ async fn disabled_forbid_disabled_admin_agent_denied_by_cedar() {
             "list",
             &PolicyResource::System,
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate");
 
@@ -977,10 +991,12 @@ async fn disabled_forbid_disabled_viewer_user_denied() {
             "list",
             &PolicyResource::System,
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate");
 
@@ -1020,10 +1036,12 @@ async fn disabled_forbid_non_admin_agent_denied_manage_policies() {
             "manage_policies",
             &PolicyResource::PolicyAdmin,
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate");
 

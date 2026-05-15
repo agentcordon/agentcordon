@@ -87,8 +87,14 @@ fn mk_mcp(workspace_id: &WorkspaceId, name: &str, enabled: bool) -> McpServer {
 async fn migration_run_migrations_is_idempotent() {
     let store = SqliteStore::new_in_memory().await.expect("open sqlite");
     store.run_migrations().await.expect("first migrate");
-    store.run_migrations().await.expect("second migrate must be a no-op");
-    store.run_migrations().await.expect("third migrate still safe");
+    store
+        .run_migrations()
+        .await
+        .expect("second migrate must be a no-op");
+    store
+        .run_migrations()
+        .await
+        .expect("third migrate still safe");
 
     // Add a binding and confirm the junction table survives the replays.
     let ws = mk_workspace("ws");

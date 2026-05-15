@@ -8,7 +8,6 @@ use uuid::Uuid;
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::mcp::{McpServer, McpServerId, McpTool};
 use agent_cordon_core::domain::policy::{PolicyId, StoredPolicy};
-use agent_cordon_core::policy::PolicyEngine;
 use agent_cordon_core::proxy::url_safety::validate_proxy_target;
 
 use crate::extractors::AuthenticatedUser;
@@ -316,7 +315,7 @@ pub(super) async fn generate_policies(
     Path(id): Path<Uuid>,
     Json(req): Json<GeneratePoliciesRequest>,
 ) -> Result<Json<ApiResponse<GeneratePoliciesResponse>>, ApiError> {
-    let policy_decision = check_manage_mcp_servers(&state, &auth)?;
+    let policy_decision = check_manage_mcp_servers(&state, &auth).await?;
 
     // Validate input
     if req.tools.is_empty() {
@@ -391,15 +390,12 @@ pub(super) async fn generate_policies(
             let cedar_text = generate_cedar_policy(tag, tool_name, &server_id_str)?;
 
             // Validate the generated Cedar policy before storing
-            state
-                .policy_engine
-                .validate_policy_text(&cedar_text)
-                .map_err(|e| {
-                    ApiError::Internal(format!(
-                        "generated policy failed validation for tool '{}', tag '{}': {}",
-                        tool_name, tag, e
-                    ))
-                })?;
+            state.authz.validate_policy_text(&cedar_text).map_err(|e| {
+                ApiError::Internal(format!(
+                    "generated policy failed validation for tool '{}', tag '{}': {}",
+                    tool_name, tag, e
+                ))
+            })?;
 
             let now = chrono::Utc::now();
 

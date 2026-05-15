@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::AuditEvent;
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyResource};
 use agent_cordon_core::storage::AuditFilter;
 
 use crate::extractors::AuthenticatedActor;
@@ -55,14 +55,23 @@ async fn list_audit(
     actor: AuthenticatedActor,
     Query(q): Query<AuditQuery>,
 ) -> Result<Json<ApiResponse<Vec<AuditEvent>>>, ApiError> {
-    // Policy check: can this actor view audit logs?
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::VIEW_AUDIT,
-        &PolicyResource::System,
-        &actor.policy_context(None),
-    )?;
-
+    // Policy check: can this actor view audit logs? Use check_with_reasons
+    // because we want the decision (this handler chooses to fall back to a
+    // narrower owner-scoped query on Forbid rather than 403).
+    let corr = uuid::Uuid::new_v4().to_string();
+    let decision = match state
+        .authz
+        .request(&actor, &corr)
+        .check_with_reasons(actions::VIEW_AUDIT, &PolicyResource::System)
+        .await
+    {
+        Ok(d) => d,
+        Err(_) => agent_cordon_core::domain::policy::PolicyDecision {
+            decision: PolicyDecisionResult::Forbid,
+            reasons: vec![],
+            errors: vec![],
+        },
+    };
     let has_audit_access = decision.decision == PolicyDecisionResult::Permit;
 
     // If filtering by a specific credential, allow the credential owner to see its events
@@ -164,16 +173,11 @@ async fn get_audit_event(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<AuditEvent>>, ApiError> {
     // Policy check: can this actor view audit logs?
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::VIEW_AUDIT,
-        &PolicyResource::System,
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision != PolicyDecisionResult::Permit {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(&actor, &uuid::Uuid::new_v4().to_string())
+        .check(actions::VIEW_AUDIT, &PolicyResource::System)
+        .await?;
 
     let event = state
         .store

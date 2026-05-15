@@ -8,10 +8,9 @@ use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::CredentialSummary;
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::user::UserId;
 use agent_cordon_core::domain::vault::VaultShare;
-use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyResource};
 
 use crate::extractors::AuthenticatedActor;
 use crate::middleware::request_id::CorrelationId;
@@ -38,16 +37,17 @@ async fn list_vaults(
     actor: AuthenticatedActor,
 ) -> Result<Json<ApiResponse<Vec<String>>>, ApiError> {
     // Policy check
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::LIST,
-        &PolicyResource::System,
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: actor.policy_principal(),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check(actions::LIST, &PolicyResource::System)
+        .await?;
 
     let vaults = match &actor {
         AuthenticatedActor::User(user) if user.is_root => state.store.list_vaults().await?,
@@ -67,16 +67,17 @@ async fn list_vault_credentials(
     Path(name): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<CredentialSummary>>>, ApiError> {
     // Policy check
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::LIST,
-        &PolicyResource::System,
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: actor.policy_principal(),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check(actions::LIST, &PolicyResource::System)
+        .await?;
 
     let creds = match &actor {
         AuthenticatedActor::User(user) if user.is_root => {
@@ -92,51 +93,27 @@ async fn list_vault_credentials(
                 .await?
         }
         AuthenticatedActor::Workspace { .. } => {
-            // Fetch all credentials in the vault, then filter each through Cedar
-            // policy evaluation to enforce tag-based and other Cedar policies.
+            // Fetch all credentials in the vault, then filter each through
+            // the Authz seam to enforce tag-based and other Cedar policies.
+            // The seam silently drops denied items and emits a
+            // PolicyEvaluated audit event per item.
             let all_creds = state.store.list_credentials_by_vault(&name).await?;
-            let mut allowed_creds = Vec::new();
-            let principal = actor.policy_principal();
-            let context = actor.policy_context(None);
-
+            let mut full_creds = Vec::new();
             for summary in all_creds {
-                // Load the full credential for Cedar evaluation
-                let cred = match state.store.get_credential(&summary.id).await {
-                    Ok(Some(c)) => c,
-                    Ok(None) => continue,
-                    Err(e) => {
-                        tracing::warn!(
-                            credential_id = %summary.id.0,
-                            error = %e,
-                            "failed to load credential for policy evaluation, skipping (deny-by-default)"
-                        );
-                        continue;
-                    }
-                };
-
-                match state.policy_engine.evaluate(
-                    &principal,
-                    actions::LIST,
-                    &PolicyResource::Credential { credential: cred },
-                    &context,
-                ) {
-                    Ok(decision) if decision.decision != PolicyDecisionResult::Forbid => {
-                        allowed_creds.push(summary);
-                    }
-                    Ok(_) => {
-                        // Cedar denied — skip this credential
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            credential_id = %summary.id.0,
-                            error = %e,
-                            "Cedar evaluation failed for credential, skipping (deny-by-default)"
-                        );
-                    }
+                if let Ok(Some(c)) = state.store.get_credential(&summary.id).await {
+                    full_creds.push((summary, c));
                 }
             }
-
-            allowed_creds
+            let kept = state
+                .authz
+                .request(&actor, &uuid::Uuid::new_v4().to_string())
+                .filter(actions::LIST, full_creds, |(_, cred)| {
+                    PolicyResource::Credential {
+                        credential: cred.clone(),
+                    }
+                })
+                .await?;
+            kept.into_iter().map(|(s, _)| s).collect()
         }
     };
     Ok(Json(ApiResponse::ok(creds)))
@@ -167,16 +144,17 @@ async fn share_vault(
     };
 
     // Policy check: manage_vaults on System
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::MANAGE_VAULTS,
-        &PolicyResource::System,
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: actor.policy_principal(),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check(actions::MANAGE_VAULTS, &PolicyResource::System)
+        .await?;
 
     let target_user_id = Uuid::parse_str(&req.user_id)
         .map_err(|_| ApiError::BadRequest("invalid user_id format".to_string()))?;
@@ -252,16 +230,17 @@ async fn unshare_vault(
     };
 
     // Policy check: manage_vaults on System
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::MANAGE_VAULTS,
-        &PolicyResource::System,
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: actor.policy_principal(),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check(actions::MANAGE_VAULTS, &PolicyResource::System)
+        .await?;
 
     let target_user_id = Uuid::parse_str(&user_id_str)
         .map_err(|_| ApiError::BadRequest("invalid user_id format".to_string()))?;
@@ -303,16 +282,17 @@ async fn list_shares(
     Path(name): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<VaultShare>>>, ApiError> {
     // Policy check — require list permission
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::LIST,
-        &PolicyResource::System,
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: actor.policy_principal(),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check(actions::LIST, &PolicyResource::System)
+        .await?;
 
     let shares = state.store.list_vault_shares(&name).await?;
     Ok(Json(ApiResponse::ok(shares)))

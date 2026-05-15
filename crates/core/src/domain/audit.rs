@@ -150,6 +150,33 @@ pub enum AuditDecision {
 // Policy reasoning helpers
 // ---------------------------------------------------------------------------
 
+/// Project a [`PolicyContext`](crate::policy::PolicyContext) claim bag into
+/// the `evaluated_context` JSON object historically emitted as part of policy
+/// audit metadata. Only the canonical Cedar context keys (target_url,
+/// tool_name, credential_name, tag_value, justification) are surfaced; other
+/// claims are intentionally not echoed into audit so callers cannot dump
+/// arbitrary blobs by polluting the bag.
+fn build_evaluated_context_from_claims(
+    claims: &std::collections::HashMap<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    use crate::policy::claim_keys;
+    let mut eval_ctx = serde_json::Map::new();
+    for key in [
+        claim_keys::TARGET_URL,
+        claim_keys::TOOL_NAME,
+        claim_keys::CREDENTIAL_NAME,
+        claim_keys::TAG_VALUE,
+        claim_keys::JUSTIFICATION,
+    ] {
+        if let Some(v) = claims.get(key).and_then(|v| v.as_str()) {
+            if !v.is_empty() {
+                eval_ctx.insert(key.to_string(), serde_json::Value::String(v.to_string()));
+            }
+        }
+    }
+    eval_ctx
+}
+
 /// Enrich an audit metadata JSON value with policy reasoning fields.
 pub fn enrich_metadata_with_policy_reasoning(
     metadata: &mut serde_json::Value,
@@ -197,47 +224,7 @@ pub fn enrich_metadata_with_policy_reasoning(
     );
 
     if let Some(ctx) = context {
-        let mut eval_ctx = serde_json::Map::new();
-        if let Some(ref url) = ctx.target_url {
-            if !url.is_empty() {
-                eval_ctx.insert(
-                    "target_url".to_string(),
-                    serde_json::Value::String(url.clone()),
-                );
-            }
-        }
-        if let Some(ref tool) = ctx.tool_name {
-            if !tool.is_empty() {
-                eval_ctx.insert(
-                    "tool_name".to_string(),
-                    serde_json::Value::String(tool.clone()),
-                );
-            }
-        }
-        if let Some(ref cred) = ctx.credential_name {
-            if !cred.is_empty() {
-                eval_ctx.insert(
-                    "credential_name".to_string(),
-                    serde_json::Value::String(cred.clone()),
-                );
-            }
-        }
-        if let Some(ref tag) = ctx.tag_value {
-            if !tag.is_empty() {
-                eval_ctx.insert(
-                    "tag_value".to_string(),
-                    serde_json::Value::String(tag.clone()),
-                );
-            }
-        }
-        if let Some(ref j) = ctx.justification {
-            if !j.is_empty() {
-                eval_ctx.insert(
-                    "justification".to_string(),
-                    serde_json::Value::String(j.clone()),
-                );
-            }
-        }
+        let eval_ctx = build_evaluated_context_from_claims(&ctx.claims);
         if !eval_ctx.is_empty() {
             map.insert(
                 "evaluated_context".to_string(),
@@ -386,47 +373,7 @@ impl AuditEventBuilder {
             })
             .collect();
 
-        let mut eval_ctx = serde_json::Map::new();
-        if let Some(ref url) = context.target_url {
-            if !url.is_empty() {
-                eval_ctx.insert(
-                    "target_url".to_string(),
-                    serde_json::Value::String(url.clone()),
-                );
-            }
-        }
-        if let Some(ref tool) = context.tool_name {
-            if !tool.is_empty() {
-                eval_ctx.insert(
-                    "tool_name".to_string(),
-                    serde_json::Value::String(tool.clone()),
-                );
-            }
-        }
-        if let Some(ref mcp) = context.credential_name {
-            if !mcp.is_empty() {
-                eval_ctx.insert(
-                    "credential_name".to_string(),
-                    serde_json::Value::String(mcp.clone()),
-                );
-            }
-        }
-        if let Some(ref tag) = context.tag_value {
-            if !tag.is_empty() {
-                eval_ctx.insert(
-                    "tag_value".to_string(),
-                    serde_json::Value::String(tag.clone()),
-                );
-            }
-        }
-        if let Some(ref j) = context.justification {
-            if !j.is_empty() {
-                eval_ctx.insert(
-                    "justification".to_string(),
-                    serde_json::Value::String(j.clone()),
-                );
-            }
-        }
+        let eval_ctx = build_evaluated_context_from_claims(&context.claims);
 
         let meta = match self.metadata {
             serde_json::Value::Object(ref mut map) => {

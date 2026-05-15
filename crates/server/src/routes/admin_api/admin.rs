@@ -2,10 +2,7 @@ use axum::{extract::State, routing::post, Json, Router};
 
 use agent_cordon_core::crypto::SecretEncryptor;
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{
-    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
-};
+use agent_cordon_core::policy::{actions, claim_keys, PolicyPrincipal, PolicyResource};
 
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
@@ -29,22 +26,21 @@ async fn rotate_encryption_key(
     axum::Extension(corr): axum::Extension<CorrelationId>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
     // Cedar policy check: rotate_encryption_key on System resource
-    let decision = state.policy_engine.evaluate(
-        &PolicyPrincipal::User(&auth.user),
-        actions::ROTATE_ENCRYPTION_KEY,
-        &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
-
-    // List all credentials
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::User(&auth.user),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .with_claim(
+            claim_keys::REQUESTED_SCOPES,
+            serde_json::json!(Vec::<String>::new()),
+        )
+        .check(actions::ROTATE_ENCRYPTION_KEY, &PolicyResource::System)
+        .await?; // List all credentials
     let credentials = state.store.list_credentials().await?;
     let mut re_encrypted_count = 0u32;
     let mut errors = Vec::new();
@@ -111,7 +107,7 @@ async fn rotate_encryption_key(
         .user_actor(&auth.user)
         .resource_type("system")
         .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some(&decision.reasons.join(", ")))
+        .decision(AuditDecision::Permit, None)
         .details(serde_json::json!({
             "re_encrypted_count": re_encrypted_count,
             "error_count": errors.len(),

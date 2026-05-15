@@ -71,7 +71,7 @@ pub(crate) async fn initiate_oauth(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<InitiateRequest>,
 ) -> Result<Json<ApiResponse<InitiateResponse>>, ApiError> {
-    check_manage_mcp_servers(&state, &auth)?;
+    check_manage_mcp_servers(&state, &auth).await?;
 
     let template = state
         .mcp_templates

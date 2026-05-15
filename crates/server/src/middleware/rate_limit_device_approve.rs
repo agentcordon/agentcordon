@@ -89,13 +89,10 @@ impl DeviceApproveRateLimiter {
     fn record_failure(&self, key: &str) {
         let now = Instant::now();
         let window = Duration::from_secs(WINDOW_SECS);
-        let mut entry = self
-            .buckets
-            .entry(key.to_string())
-            .or_insert(Bucket {
-                count: 0,
-                window_start: now,
-            });
+        let mut entry = self.buckets.entry(key.to_string()).or_insert(Bucket {
+            count: 0,
+            window_start: now,
+        });
         if now.duration_since(entry.window_start) >= window {
             entry.count = 1;
             entry.window_start = now;

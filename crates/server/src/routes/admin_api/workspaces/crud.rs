@@ -21,7 +21,7 @@ pub(super) async fn list_workspaces(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
 ) -> Result<Json<ApiResponse<Vec<WorkspaceResponse>>>, ApiError> {
-    check_manage_workspaces(&state, &auth)?;
+    check_manage_workspaces(&state, &auth).await?;
     // Tenant scoping: admins see all, non-admins see only their owned workspaces
     let is_admin =
         auth.user.role == agent_cordon_core::domain::user::UserRole::Admin || auth.is_root;
@@ -43,7 +43,7 @@ pub(super) async fn get_workspace(
     auth: AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<WorkspaceResponse>>, ApiError> {
-    check_manage_workspaces(&state, &auth)?;
+    check_manage_workspaces(&state, &auth).await?;
     let workspace = state
         .store
         .get_workspace(&WorkspaceId(id))
@@ -69,7 +69,7 @@ pub(super) async fn update_workspace(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateWorkspaceRequest>,
 ) -> Result<Json<ApiResponse<WorkspaceResponse>>, ApiError> {
-    let policy_decision = check_manage_workspaces(&state, &auth)?;
+    let policy_decision = check_manage_workspaces(&state, &auth).await?;
 
     let target_id = WorkspaceId(id);
 
@@ -144,7 +144,7 @@ pub(super) async fn delete_workspace(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let policy_decision = check_manage_workspaces(&state, &auth)?;
+    let policy_decision = check_manage_workspaces(&state, &auth).await?;
 
     let target_id = WorkspaceId(id);
 

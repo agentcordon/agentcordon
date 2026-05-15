@@ -14,7 +14,7 @@ use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::workspace::Workspace;
 use agent_cordon_core::policy::{
-    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
+    actions, claim_keys, PolicyContext, PolicyPrincipal, PolicyResource,
 };
 
 use crate::extractors::authenticated_workspace;
@@ -107,22 +107,26 @@ async fn vend_inner(
         return Err(ApiError::Forbidden("credential has expired".to_string()));
     }
 
-    // Cedar policy evaluation with workspace principal
-    let decision = state.policy_engine.evaluate(
-        &PolicyPrincipal::Workspace(workspace),
-        actions::VEND_CREDENTIAL,
-        &PolicyResource::Credential {
-            credential: cred.clone(),
-        },
-        &PolicyContext {
-            correlation_id: Some(corr_id.clone()),
-            oauth_claims,
-            ..Default::default()
-        },
-    )?;
+    // Cedar policy evaluation via the Authz seam.
+    let decision = state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(workspace),
+                oauth_claims: oauth_claims.clone(),
+            },
+            &corr_id,
+        )
+        .check_with_reasons(
+            actions::VEND_CREDENTIAL,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+        )
+        .await?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
-        // Audit event emitted automatically by AuditingPolicyEngine.
+        // Authz auto-emitted PolicyEvaluated/Forbid.
         return Err(ApiError::Forbidden("access denied by policy".to_string()));
     }
 
@@ -164,11 +168,7 @@ async fn vend_inner(
     let (envelope, vend_id) = if cred.credential_type == "oauth2_client_credentials" {
         let mut meta = std::collections::HashMap::new();
         if let Some(obj) = cred.metadata.as_object() {
-            for key in &[
-                "oauth2_client_id",
-                "oauth2_token_endpoint",
-                "oauth2_scopes",
-            ] {
+            for key in &["oauth2_client_id", "oauth2_token_endpoint", "oauth2_scopes"] {
                 if let Some(val) = obj.get(*key).and_then(|v| v.as_str()) {
                     meta.insert(key.to_string(), val.to_string());
                 }
@@ -255,23 +255,29 @@ pub(crate) async fn reveal_credential(
 
     // Cedar policy check BEFORE decryption (deny-first).
     // Root users bypass Cedar entirely (handled in evaluate).
-    let principal = PolicyPrincipal::User(&auth_user.user);
-    let decision = state.policy_engine.evaluate(
-        &principal,
-        actions::UNPROTECT,
-        &PolicyResource::Credential {
-            credential: cred.clone(),
-        },
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            correlation_id: Some(corr.0.clone()),
-            ..Default::default()
-        },
-    )?;
+    let decision = state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::User(&auth_user.user),
+                oauth_claims: None,
+            },
+            &corr.0,
+        )
+        .with_claim(
+            claim_keys::REQUESTED_SCOPES,
+            serde_json::json!(Vec::<String>::new()),
+        )
+        .check_with_reasons(
+            actions::UNPROTECT,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+        )
+        .await?;
 
     if decision.decision == PolicyDecisionResult::Forbid {
-        // Policy deny audit is emitted by AuditingPolicyEngine.
+        // Authz auto-emitted PolicyEvaluated/Forbid.
         // Return 404 to avoid leaking credential existence to unauthorized users.
         return Err(ApiError::NotFound("credential not found".to_string()));
     }
@@ -401,26 +407,23 @@ pub(crate) async fn vend_credential_to_device(
     // Resolve credential by name: load only credentials matching this name,
     // then evaluate Cedar authorization on each match.
     let name_matches = state.store.list_stored_credentials_by_name(&name).await?;
-    let mut authorized_matches: Vec<StoredCredential> = Vec::new();
 
-    for cred in &name_matches {
-        // Cedar check: can this workspace vend this credential?
-        let decision = state.policy_engine.evaluate(
-            &PolicyPrincipal::Workspace(&auth.workspace),
-            actions::VEND_CREDENTIAL,
-            &PolicyResource::Credential {
-                credential: cred.clone(),
-            },
-            &PolicyContext {
-                correlation_id: Some(corr.0.clone()),
+    // Cedar check: filter via Authz seam (each item audited).
+    let authorized_matches: Vec<StoredCredential> = state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(&auth.workspace),
                 oauth_claims: auth.oauth_claims.clone(),
-                ..Default::default()
             },
-        )?;
-        if decision.decision != PolicyDecisionResult::Forbid {
-            authorized_matches.push(cred.clone());
-        }
-    }
+            &corr.0,
+        )
+        .filter(actions::VEND_CREDENTIAL, name_matches.clone(), |c| {
+            PolicyResource::Credential {
+                credential: c.clone(),
+            }
+        })
+        .await?;
 
     let cred = match authorized_matches.len() {
         0 => {
@@ -436,30 +439,32 @@ pub(crate) async fn vend_credential_to_device(
                 .unwrap_or_default();
             let prefix = name.as_str();
             let mut prefix_candidates: Vec<serde_json::Value> = Vec::new();
-            for cred in &all {
-                if !cred.name.starts_with(prefix) || cred.name == *prefix {
-                    continue;
-                }
-                let decision = state.policy_engine.evaluate(
-                    &PolicyPrincipal::Workspace(&auth.workspace),
-                    actions::VEND_CREDENTIAL,
-                    &PolicyResource::Credential {
-                        credential: cred.clone(),
-                    },
-                    &PolicyContext {
-                        correlation_id: Some(corr.0.clone()),
+            let candidate_creds: Vec<StoredCredential> = all
+                .into_iter()
+                .filter(|c| c.name.starts_with(prefix) && c.name != *prefix)
+                .collect();
+            let allowed_prefix_creds: Vec<StoredCredential> = state
+                .authz
+                .request(
+                    crate::authz::PolicyCaller::Principal {
+                        principal: PolicyPrincipal::Workspace(&auth.workspace),
                         oauth_claims: auth.oauth_claims.clone(),
-                        ..Default::default()
                     },
-                )?;
-                if decision.decision != PolicyDecisionResult::Forbid {
-                    prefix_candidates.push(serde_json::json!({
-                        "id": cred.id.0.to_string(),
-                        "name": cred.name,
-                        "service": cred.service,
-                        "description": cred.description,
-                    }));
-                }
+                    &corr.0,
+                )
+                .filter(actions::VEND_CREDENTIAL, candidate_creds, |c| {
+                    PolicyResource::Credential {
+                        credential: c.clone(),
+                    }
+                })
+                .await?;
+            for cred in allowed_prefix_creds {
+                prefix_candidates.push(serde_json::json!({
+                    "id": cred.id.0.to_string(),
+                    "name": cred.name,
+                    "service": cred.service,
+                    "description": cred.description,
+                }));
             }
             if !prefix_candidates.is_empty() {
                 return Err(ApiError::NotFoundWithCandidates {

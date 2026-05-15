@@ -11,7 +11,7 @@ use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::workspace::WorkspaceStatus;
 use agent_cordon_core::policy::{
-    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
+    actions, claim_keys, PolicyContext, PolicyPrincipal, PolicyResource,
 };
 use agent_cordon_core::storage::AuditFilter;
 
@@ -82,12 +82,13 @@ pub async fn dashboard_page(State(state): State<AppState>, request: Request) -> 
         .unwrap_or_default();
     let cred_map: std::collections::HashMap<CredentialId, StoredCredential> =
         all_stored.into_iter().map(|c| (c.id.clone(), c)).collect();
-    let principal = PolicyPrincipal::User(&user);
-    let ctx = PolicyContext {
-        target_url: None,
-        requested_scopes: vec![],
+    let _ = PolicyContext {
         ..Default::default()
-    };
+    }
+    .with_claim(
+        claim_keys::REQUESTED_SCOPES,
+        serde_json::json!(Vec::<String>::new()),
+    );
     let credentials: Vec<_> = all_summaries
         .into_iter()
         .filter(|summary| {
@@ -95,33 +96,51 @@ pub async fn dashboard_page(State(state): State<AppState>, request: Request) -> 
                 Some(c) => c.clone(),
                 None => return false,
             };
-            // 1. Check Cedar with User principal
+            // 1. Check Cedar with User principal via the Authz seam (sync).
             if state
-                .policy_engine
-                .evaluate(
-                    &principal,
+                .authz
+                .request(
+                    crate::authz::PolicyCaller::Principal {
+                        principal: PolicyPrincipal::User(&user),
+                        oauth_claims: None,
+                    },
+                    &uuid::Uuid::new_v4().to_string(),
+                )
+                .with_claim(
+                    claim_keys::REQUESTED_SCOPES,
+                    serde_json::json!(Vec::<String>::new()),
+                )
+                .check_with_reasons_blocking(
                     actions::LIST,
                     &PolicyResource::Credential {
                         credential: cred.clone(),
                     },
-                    &ctx,
                 )
                 .ok()
                 .is_some_and(|d| d.decision != PolicyDecisionResult::Forbid)
             {
                 return true;
             }
-            // 2. Check Cedar with each owned Workspace principal
+            // 2. Check Cedar with each owned Workspace principal (sync).
             for ws in &workspaces {
                 if state
-                    .policy_engine
-                    .evaluate(
-                        &PolicyPrincipal::Workspace(ws),
+                    .authz
+                    .request(
+                        crate::authz::PolicyCaller::Principal {
+                            principal: PolicyPrincipal::Workspace(ws),
+                            oauth_claims: None,
+                        },
+                        &uuid::Uuid::new_v4().to_string(),
+                    )
+                    .with_claim(
+                        claim_keys::REQUESTED_SCOPES,
+                        serde_json::json!(Vec::<String>::new()),
+                    )
+                    .check_with_reasons_blocking(
                         actions::LIST,
                         &PolicyResource::Credential {
                             credential: cred.clone(),
                         },
-                        &ctx,
                     )
                     .ok()
                     .is_some_and(|d| d.decision != PolicyDecisionResult::Forbid)

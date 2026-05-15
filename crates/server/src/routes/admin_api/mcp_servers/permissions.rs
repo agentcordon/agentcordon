@@ -93,7 +93,7 @@ pub(super) async fn get_permissions(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<McpPermissionsResponse>>, ApiError> {
-    check_manage_mcp_servers(&state, &auth)?;
+    check_manage_mcp_servers(&state, &auth).await?;
 
     let server_id = McpServerId(id);
     let server = state
@@ -184,7 +184,7 @@ pub(super) async fn grant_permission(
     ApiError,
 > {
     validate_mcp_permission(&req.permission)?;
-    check_manage_mcp_servers(&state, &auth)?;
+    check_manage_mcp_servers(&state, &auth).await?;
 
     let server_id = McpServerId(id);
     let server = state
@@ -271,7 +271,7 @@ pub(super) async fn revoke_permission(
     Path((id, agent_id, permission)): Path<(Uuid, Uuid, String)>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
     validate_mcp_permission(&permission)?;
-    check_manage_mcp_servers(&state, &auth)?;
+    check_manage_mcp_servers(&state, &auth).await?;
 
     let server_id = McpServerId(id);
     let server = state

@@ -34,7 +34,7 @@ use axum::{
 };
 
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource};
+use agent_cordon_core::policy::{claim_keys, PolicyPrincipal, PolicyResource};
 
 use crate::extractors::AuthenticatedUser;
 use crate::response::ApiError;
@@ -147,22 +147,29 @@ pub async fn evaluate_policy(
         .get::<crate::middleware::request_id::CorrelationId>()
         .map(|c| c.0.clone());
 
-    // Evaluate Cedar policy
-    let result = state.policy_engine.evaluate(
-        &PolicyPrincipal::User(&auth.user),
-        &policy_req.action,
-        &resource,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            correlation_id: corr_id,
-            ..Default::default()
-        },
-    );
+    // Evaluate Cedar policy via the Authz seam.
+    let corr = corr_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let result = state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::User(&auth.user),
+                oauth_claims: None,
+            },
+            &corr,
+        )
+        .with_claim(
+            claim_keys::REQUESTED_SCOPES,
+            serde_json::json!(Vec::<String>::new()),
+        )
+        .check_with_reasons(&policy_req.action, &resource)
+        .await;
 
     match result {
         Ok(decision) if decision.decision == PolicyDecisionResult::Forbid => {
-            // Audit event is emitted automatically by AuditingPolicyEngine.
+            // Authz auto-emits the PolicyEvaluated audit event.
             ApiError::Forbidden("access denied by policy".to_string()).into_response()
         }
         Ok(decision) => {
@@ -173,7 +180,7 @@ pub async fn evaluate_policy(
             next.run(request).await
         }
         Err(e) => {
-            tracing::error!(error = %e, action = %policy_req.action, "policy evaluation error in middleware");
+            tracing::error!(error = ?e, action = %policy_req.action, "policy evaluation error in middleware");
             ApiError::Forbidden("policy evaluation failed".to_string()).into_response()
         }
     }

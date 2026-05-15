@@ -10,8 +10,8 @@ use uuid::Uuid;
 use agent_cordon_core::domain::credential::CredentialId;
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::workspace::WorkspaceId;
+use agent_cordon_core::policy::PolicyResource;
 use agent_cordon_core::policy::{actions, templates};
-use agent_cordon_core::policy::{PolicyEngine, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::extractors::AuthenticatedActor;
@@ -189,18 +189,23 @@ async fn load_and_authorize(
         .await?
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
-    // Try Cedar manage_permissions first (admin path)
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::MANAGE_PERMISSIONS,
-        &PolicyResource::Credential {
-            credential: cred.clone(),
-        },
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision != PolicyDecisionResult::Forbid {
-        return Ok(());
+    // Try Cedar manage_permissions first (admin path). Use
+    // check_with_reasons because we want to fall back to ownership rather
+    // than raise on Forbid here.
+    if let Ok(decision) = state
+        .authz
+        .request(actor, &uuid::Uuid::new_v4().to_string())
+        .check_with_reasons(
+            actions::MANAGE_PERMISSIONS,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+        )
+        .await
+    {
+        if decision.decision != PolicyDecisionResult::Forbid {
+            return Ok(());
+        }
     }
 
     // Fallback: allow if the actor owns the credential
@@ -238,18 +243,23 @@ async fn authorize_read(
         .await?
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
-    // Try Cedar manage_permissions first (admin path)
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::MANAGE_PERMISSIONS,
-        &PolicyResource::Credential {
-            credential: cred.clone(),
-        },
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision != PolicyDecisionResult::Forbid {
-        return Ok(());
+    // Try Cedar manage_permissions first (admin path). Use
+    // check_with_reasons because we want to fall back to ownership rather
+    // than raise on Forbid here.
+    if let Ok(decision) = state
+        .authz
+        .request(actor, &uuid::Uuid::new_v4().to_string())
+        .check_with_reasons(
+            actions::MANAGE_PERMISSIONS,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+        )
+        .await
+    {
+        if decision.decision != PolicyDecisionResult::Forbid {
+            return Ok(());
+        }
     }
 
     // Fallback: allow if the actor owns the credential
@@ -323,7 +333,7 @@ async fn get_permissions(
     }
     enrich_permission_names(state.store.as_ref(), &mut entries).await;
 
-    // Policy decision audit is emitted automatically by AuditingPolicyEngine
+    // Policy decision audit is emitted automatically by the Authz seam
     // (via the evaluate() calls in authorize_read above).
 
     let response = CredentialPermissionsResponse {

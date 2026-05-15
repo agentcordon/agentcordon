@@ -11,7 +11,7 @@
 //! 2. Audit events need the request `correlation_id`, which lives on the
 //!    HTTP boundary — threading it through the raw `Store` trait would
 //!    pollute the storage layer with HTTP concerns.
-//! 3. Parallels the existing `auditing_policy_engine` pattern.
+//! 3. Parallels the Authz audit-emission pattern.
 //!
 //! Audit writes are best-effort: failures are logged via `tracing::error!`
 //! but never fail the underlying state change (we don't want to refuse a

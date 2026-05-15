@@ -247,10 +247,7 @@ async fn test_migration_cedar_policies_still_resolve() {
         .into_iter()
         .map(|p| (p.id.0.to_string(), p.cedar_policy))
         .collect();
-    ctx.state
-        .policy_engine
-        .reload_policies(sources)
-        .expect("reload");
+    ctx.state.authz.reload_policies(sources).expect("reload");
 
     // The MCP with original ID should still exist
     let mcp = ctx.store.get_mcp_server(&m1.id).await.unwrap();

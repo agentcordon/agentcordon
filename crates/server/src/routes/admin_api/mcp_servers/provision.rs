@@ -47,7 +47,7 @@ pub(crate) async fn provision_from_catalog(
     Json(req): Json<ProvisionRequest>,
 ) -> Result<Json<ApiResponse<McpServerResponse>>, ApiError> {
     // 1. Cedar policy check: manage_mcp_servers.
-    let policy_decision = check_manage_mcp_servers(&state, &auth)?;
+    let policy_decision = check_manage_mcp_servers(&state, &auth).await?;
 
     // 2. Look up template
     let template = state
