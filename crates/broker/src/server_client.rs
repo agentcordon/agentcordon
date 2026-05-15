@@ -68,6 +68,14 @@ pub struct TokenResponse {
     pub expires_in: u64,
     pub refresh_token: Option<String>,
     pub scope: Option<String>,
+    /// Per-workspace client_id the issued tokens are bound to. The broker
+    /// MUST persist this and echo it on subsequent refresh calls — using the
+    /// bootstrap `BROKER_CLIENT_ID` instead causes server-side
+    /// `invalid_grant: client_id mismatch`. `Option` for back-compat with
+    /// pre-fix servers; absent means fall back to `BROKER_CLIENT_ID` and
+    /// log so the misconfiguration is visible.
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 /// Credential vend response from the server.
@@ -643,5 +651,39 @@ impl ServerClient {
             self.http.get(&url).timeout(std::time::Duration::from_secs(5)).send().await,
             Ok(resp) if resp.status().is_success()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_response_deserializes_client_id_when_present() {
+        let json = r#"{
+            "access_token": "at",
+            "token_type": "Bearer",
+            "expires_in": 900,
+            "refresh_token": "rt",
+            "scope": "credentials:discover",
+            "client_id": "ws-client-abc"
+        }"#;
+        let resp: TokenResponse = serde_json::from_str(json).expect("parse");
+        assert_eq!(resp.client_id.as_deref(), Some("ws-client-abc"));
+    }
+
+    #[test]
+    fn token_response_deserializes_to_none_when_client_id_absent() {
+        // Back-compat: pre-fix server omits the field; broker must parse OK
+        // and surface `None` so the install path can decide what to do.
+        let json = r#"{
+            "access_token": "at",
+            "token_type": "Bearer",
+            "expires_in": 900,
+            "refresh_token": "rt",
+            "scope": "credentials:discover"
+        }"#;
+        let resp: TokenResponse = serde_json::from_str(json).expect("parse");
+        assert_eq!(resp.client_id, None);
     }
 }

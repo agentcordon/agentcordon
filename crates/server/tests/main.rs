@@ -17,6 +17,7 @@ mod device_flow_activate_ui;
 mod device_flow_lifecycle;
 mod device_flow_rfc8628;
 mod device_flow_robustness;
+mod device_flow_token_client_id;
 mod docs;
 mod e2e_two_minute_setup;
 mod lifecycle_cross_principal;

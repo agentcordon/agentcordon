@@ -55,6 +55,12 @@ struct TokenResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     refresh_token: Option<String>,
     scope: String,
+    // The client_id the issued tokens are bound to. For workspace-bound
+    // device_code grants this is the per-workspace client_id minted at
+    // consent, NOT the bootstrap client_id the broker authenticated with —
+    // the broker MUST echo this value on subsequent /oauth/token refresh
+    // calls or refresh fails with `invalid_grant: client_id mismatch`.
+    client_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +338,7 @@ async fn handle_authorization_code(
         expires_in: ACCESS_TOKEN_TTL_SECS,
         refresh_token: Some(refresh_token_raw),
         scope: scope_string,
+        client_id: client_id.to_string(),
     };
 
     (StatusCode::OK, Json(response)).into_response()
@@ -541,6 +548,7 @@ async fn handle_refresh_token(
         expires_in: ACCESS_TOKEN_TTL_SECS,
         refresh_token: Some(new_refresh_raw),
         scope: scope_string,
+        client_id: client_id.to_string(),
     };
 
     (StatusCode::OK, Json(response)).into_response()
@@ -683,6 +691,7 @@ async fn handle_client_credentials(
         expires_in: ACCESS_TOKEN_TTL_SECS,
         refresh_token: None,
         scope: scope_string,
+        client_id: client_id.to_string(),
     };
 
     (StatusCode::OK, Json(response)).into_response()
@@ -999,7 +1008,7 @@ async fn handle_device_code(
             };
             let refresh_token = OAuthRefreshToken {
                 token_hash: refresh_hash,
-                client_id: token_client_id,
+                client_id: token_client_id.clone(),
                 user_id,
                 scopes: row.scopes.clone(),
                 access_token_hash: access_hash,
@@ -1048,6 +1057,7 @@ async fn handle_device_code(
                 expires_in: ACCESS_TOKEN_TTL_SECS,
                 refresh_token: Some(refresh_raw),
                 scope: scope_string,
+                client_id: token_client_id,
             };
             (StatusCode::OK, Json(response)).into_response()
         }

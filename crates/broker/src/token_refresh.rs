@@ -8,9 +8,40 @@ use std::time::Instant;
 use chrono::Utc;
 use tracing::{info, warn};
 
-use crate::server_client::ServerClient;
+use crate::server_client::{ServerClient, ServerClientError};
 use crate::state::{SharedState, TokenStatus};
 use crate::token_store;
+
+/// Classification of a refresh failure used to decide whether to flip the
+/// workspace to `Revoked` (terminal) or leave it `Valid` so the next tick
+/// retries (transient).
+#[derive(Debug, PartialEq, Eq)]
+enum RefreshErrorKind {
+    /// Server definitively rejected the refresh token (RFC 6749 §5.2 OAuth
+    /// error envelope on a 4xx response). Re-registration is required.
+    Terminal,
+    /// Network failure, server 5xx, or unparseable response. The refresh
+    /// token may still be valid; retry on the next tick.
+    Transient,
+}
+
+/// Classify a refresh failure. Terminal iff the response is a 4xx with a
+/// JSON body containing an `"error"` field — which is the RFC 6749 OAuth
+/// error envelope. Anything else (5xx, network, malformed body) is treated
+/// as transient so a brief outage cannot permanently brick a workspace.
+fn classify_refresh_error(err: &ServerClientError) -> RefreshErrorKind {
+    match err {
+        ServerClientError::ServerError { status, body } if (400..500).contains(status) => {
+            match serde_json::from_str::<serde_json::Value>(body) {
+                Ok(v) if v.get("error").and_then(|e| e.as_str()).is_some() => {
+                    RefreshErrorKind::Terminal
+                }
+                _ => RefreshErrorKind::Transient,
+            }
+        }
+        _ => RefreshErrorKind::Transient,
+    }
+}
 
 /// Spawn the background token refresh loop.
 ///
@@ -113,17 +144,26 @@ async fn refresh_expiring_tokens(state: &SharedState) {
                     token_store::save_recovery_store(state).await;
                 }
             }
-            Err(e) => {
-                warn!(
-                    pk_hash = pk_hash,
-                    error = %e,
-                    "token refresh failed — marking workspace as revoked"
-                );
-                let mut workspaces = state.workspaces.write().await;
-                if let Some(ws) = workspaces.get_mut(&pk_hash) {
-                    ws.token_status = TokenStatus::Revoked;
+            Err(e) => match classify_refresh_error(&e) {
+                RefreshErrorKind::Terminal => {
+                    warn!(
+                        pk_hash = pk_hash,
+                        error = %e,
+                        "token refresh terminally rejected by server — marking workspace as revoked"
+                    );
+                    let mut workspaces = state.workspaces.write().await;
+                    if let Some(ws) = workspaces.get_mut(&pk_hash) {
+                        ws.token_status = TokenStatus::Revoked;
+                    }
                 }
-            }
+                RefreshErrorKind::Transient => {
+                    info!(
+                        pk_hash = pk_hash,
+                        error = %e,
+                        "token refresh failed transiently — leaving workspace valid for retry"
+                    );
+                }
+            },
         }
     }
 }
@@ -183,12 +223,107 @@ pub async fn try_reactive_refresh(state: &SharedState, pk_hash: &str) -> bool {
             true
         }
         Err(e) => {
-            warn!(error = %e, "reactive token refresh failed — marking as revoked");
-            let mut workspaces = state.workspaces.write().await;
-            if let Some(ws) = workspaces.get_mut(pk_hash) {
-                ws.token_status = TokenStatus::Revoked;
+            match classify_refresh_error(&e) {
+                RefreshErrorKind::Terminal => {
+                    warn!(error = %e, "reactive token refresh terminally rejected — marking as revoked");
+                    let mut workspaces = state.workspaces.write().await;
+                    if let Some(ws) = workspaces.get_mut(pk_hash) {
+                        ws.token_status = TokenStatus::Revoked;
+                    }
+                }
+                RefreshErrorKind::Transient => {
+                    info!(error = %e, "reactive token refresh failed transiently — leaving workspace valid");
+                }
             }
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server_client::ServerClientError;
+
+    #[test]
+    fn classifies_invalid_grant_as_terminal() {
+        // Server explicitly rejected the refresh token (RFC 6749 §5.2).
+        // The refresh token is dead — re-register is the only path.
+        let err = ServerClientError::ServerError {
+            status: 400,
+            body:
+                r#"{"error":"invalid_grant","error_description":"refresh token has been revoked"}"#
+                    .to_string(),
+        };
+        assert!(matches!(
+            classify_refresh_error(&err),
+            RefreshErrorKind::Terminal
+        ));
+    }
+
+    #[test]
+    fn classifies_request_failed_as_transient() {
+        // Network error: DNS, TCP reset, broker briefly offline. The refresh
+        // token is fine; we just couldn't reach the server. Must NOT brick
+        // the workspace — the next tick should retry.
+        let err = ServerClientError::RequestFailed("connection refused".to_string());
+        assert!(matches!(
+            classify_refresh_error(&err),
+            RefreshErrorKind::Transient
+        ));
+    }
+
+    #[test]
+    fn classifies_invalid_client_as_terminal() {
+        // 401 invalid_client also means the broker's identity is wrong —
+        // re-registration is the recovery path, retrying won't help.
+        let err = ServerClientError::ServerError {
+            status: 401,
+            body: r#"{"error":"invalid_client","error_description":"unknown client"}"#.to_string(),
+        };
+        assert!(matches!(
+            classify_refresh_error(&err),
+            RefreshErrorKind::Terminal
+        ));
+    }
+
+    #[test]
+    fn classifies_5xx_as_transient() {
+        // Server temporarily down (deploy, restart, overload). Refresh token
+        // is intact; the next tick will succeed once the server is back.
+        let err = ServerClientError::ServerError {
+            status: 503,
+            body: "service unavailable".to_string(),
+        };
+        assert!(matches!(
+            classify_refresh_error(&err),
+            RefreshErrorKind::Transient
+        ));
+    }
+
+    #[test]
+    fn classifies_4xx_with_unparseable_body_as_transient() {
+        // 4xx but the body isn't an OAuth error envelope — could be a
+        // proxy/CDN injecting an HTML error page. Be lenient: retry rather
+        // than nuke a workspace on ambiguous evidence.
+        let err = ServerClientError::ServerError {
+            status: 400,
+            body: "<html>bad gateway</html>".to_string(),
+        };
+        assert!(matches!(
+            classify_refresh_error(&err),
+            RefreshErrorKind::Transient
+        ));
+    }
+
+    #[test]
+    fn classifies_invalid_response_as_transient() {
+        // We got *something* back but couldn't deserialize. Server is
+        // misbehaving but the refresh token isn't necessarily dead.
+        let err = ServerClientError::InvalidResponse("missing field".to_string());
+        assert!(matches!(
+            classify_refresh_error(&err),
+            RefreshErrorKind::Transient
+        ));
     }
 }
