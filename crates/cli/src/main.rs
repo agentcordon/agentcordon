@@ -124,7 +124,7 @@ enum Command {
         args: Vec<String>,
 
         /// Pass the full MCP tools/call.arguments object as JSON.
-        /// SRC may be @<path> to read a file, or - to read stdin.
+        /// SRC may be `@<path>` to read a file, or `-` to read stdin.
         /// On conflict, individual --arg values override fields from this object.
         #[arg(long = "args-json", value_name = "SRC")]
         args_json: Option<String>,

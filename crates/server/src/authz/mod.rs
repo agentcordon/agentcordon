@@ -26,7 +26,7 @@
 //! - [`AuthzRequest::filter`] — per-item evaluation that silently drops
 //!   denied items. For list endpoints.
 //!
-//! All three terminals auto-emit a [`PolicyEvaluated`] audit event,
+//! All three terminals auto-emit a `PolicyEvaluated` audit event,
 //! including OAuth claims pulled off the actor, the correlation ID, and
 //! the contributing policy reasons. They short-circuit on missing OAuth
 //! scopes for workspace actors before invoking Cedar; user actors bypass
