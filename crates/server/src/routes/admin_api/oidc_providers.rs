@@ -94,7 +94,7 @@ impl From<&OidcProviderSummary> for ProviderResponse {
 // --- Helpers ---
 
 /// Check Cedar policy for `manage_oidc_providers` on `System` resource.
-fn check_manage_oidc_providers(
+async fn check_manage_oidc_providers(
     state: &AppState,
     auth: &AuthenticatedUser,
 ) -> Result<agent_cordon_core::domain::policy::PolicyDecision, ApiError> {
@@ -104,6 +104,7 @@ fn check_manage_oidc_providers(
         actions::MANAGE_OIDC_PROVIDERS,
         agent_cordon_core::policy::PolicyResource::System,
     )
+    .await
 }
 
 /// Validate an issuer URL: must be HTTPS except for localhost (dev).
@@ -131,7 +132,7 @@ async fn create_provider(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<CreateProviderRequest>,
 ) -> Result<Json<ApiResponse<ProviderResponse>>, ApiError> {
-    let policy_decision = check_manage_oidc_providers(&state, &auth)?;
+    let policy_decision = check_manage_oidc_providers(&state, &auth).await?;
 
     // Validate input
     if req.name.trim().is_empty() {
@@ -212,7 +213,7 @@ async fn list_providers(
 ) -> Result<Json<ApiResponse<Vec<ProviderResponse>>>, ApiError> {
     // OIDC management is admin-only. Non-admin users get an empty list
     // instead of a 403 so the settings page renders without error.
-    if check_manage_oidc_providers(&state, &auth).is_err() {
+    if check_manage_oidc_providers(&state, &auth).await.is_err() {
         return Ok(Json(ApiResponse::ok(vec![])));
     }
 
@@ -226,7 +227,7 @@ async fn get_provider(
     auth: AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<ProviderResponse>>, ApiError> {
-    check_manage_oidc_providers(&state, &auth)?;
+    check_manage_oidc_providers(&state, &auth).await?;
 
     let provider_id = OidcProviderId(id);
     let provider = state
@@ -246,7 +247,7 @@ async fn update_provider(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateProviderRequest>,
 ) -> Result<Json<ApiResponse<ProviderResponse>>, ApiError> {
-    let policy_decision = check_manage_oidc_providers(&state, &auth)?;
+    let policy_decision = check_manage_oidc_providers(&state, &auth).await?;
 
     let provider_id = OidcProviderId(id);
     let mut provider = state
@@ -336,7 +337,7 @@ async fn delete_provider(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let policy_decision = check_manage_oidc_providers(&state, &auth)?;
+    let policy_decision = check_manage_oidc_providers(&state, &auth).await?;
 
     let provider_id = OidcProviderId(id);
 

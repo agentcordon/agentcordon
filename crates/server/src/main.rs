@@ -12,7 +12,7 @@ use agent_cordon_core::domain::user::{User, UserId, UserRole};
 use agent_cordon_core::policy::cedar::CedarPolicyEngine;
 use agent_cordon_core::storage::Store;
 
-use agent_cordon_server::auditing_policy_engine::AuditingPolicyEngine;
+use agent_cordon_server::authz::Authz;
 
 use agent_cordon_server::build_router;
 use agent_cordon_server::config::AppConfig;
@@ -44,7 +44,7 @@ async fn main() {
     seed_default_policy(&*store).await;
     agent_cordon_server::migrations::migrate_mcp_policy_names_to_ids(&*store).await;
     let cedar_engine = load_policy_engine(&*store).await;
-    let policy_engine = Arc::new(AuditingPolicyEngine::new(cedar_engine, store.clone()));
+    let authz = Arc::new(Authz::new(cedar_engine, store.clone()));
     bootstrap_root_user(&*store, &config).await;
 
     let login_rate_limiter = Arc::new(LoginRateLimiter::new(
@@ -77,7 +77,7 @@ async fn main() {
     let app_state = AppState {
         store,
         jwt_issuer: crypto.jwt_issuer,
-        policy_engine,
+        authz,
         encryptor: crypto.encryptor,
         config: config.clone(),
         login_rate_limiter,

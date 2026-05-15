@@ -7,9 +7,8 @@ use serde::Deserialize;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::CredentialSummary;
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::policy::actions;
-use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource};
+use agent_cordon_core::policy::{PolicyPrincipal, PolicyResource};
 
 use crate::credential_service::{self, NewCredentialParams};
 use crate::extractors::AuthenticatedWorkspace;
@@ -72,43 +71,21 @@ pub(crate) async fn agent_store_credential(
     let credential_type = req.credential_type.unwrap_or_else(|| "generic".to_string());
     credential_service::validate_credential_type(&credential_type)?;
 
-    // Cedar policy evaluation — workspace must be authorized to create credentials
-    let policy_decision = state.policy_engine.evaluate(
-        &PolicyPrincipal::Workspace(workspace),
-        actions::CREATE,
-        &PolicyResource::System,
-        &PolicyContext {
-            correlation_id: Some(corr.0.clone()),
-            oauth_claims: auth.oauth_claims.clone(),
-            ..Default::default()
-        },
-    )?;
-
-    if policy_decision.decision == PolicyDecisionResult::Forbid {
-        // Audit the denial
-        let event = AuditEvent::builder(AuditEventType::CredentialCreated)
-            .action("create")
-            .workspace_actor(&workspace_id, &workspace_name)
-            .resource_type("credential")
-            .correlation_id(&corr.0)
-            .decision(
-                AuditDecision::Forbid,
-                Some(&format!(
-                    "workspace_policy: [{}]",
-                    policy_decision.reasons.join(", "),
-                )),
-            )
-            .details(serde_json::json!({
-                "credential_name": req.name,
-                "source": "workspace_store",
-            }))
-            .build();
-        if let Err(e) = state.store.append_audit_event(&event).await {
-            tracing::warn!(error = %e, "Failed to write audit event");
-        }
-
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    // Cedar policy evaluation — workspace must be authorized to create
+    // credentials. The Authz seam auto-emits a PolicyEvaluated audit
+    // event on both permit and deny, so we no longer need a separate
+    // CredentialCreated/Forbid event here.
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(workspace),
+                oauth_claims: auth.oauth_claims.clone(),
+            },
+            &corr.0,
+        )
+        .check(actions::CREATE, &PolicyResource::System)
+        .await?;
 
     // Auto-add llm_exposed tag
     let mut tags = req.tags.unwrap_or_default();

@@ -6,8 +6,7 @@ use axum::{
 use serde::Deserialize;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent};
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyResource};
 use agent_cordon_core::storage::AuditFilter;
 
 use crate::extractors::AuthenticatedActor;
@@ -87,16 +86,11 @@ pub(super) async fn export_audit_csv(
     Query(q): Query<AuditExportQuery>,
 ) -> Result<Response, ApiError> {
     // Policy check: require view_audit permission (same as list_audit)
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::VIEW_AUDIT,
-        &PolicyResource::System,
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision != PolicyDecisionResult::Permit {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(&actor, &uuid::Uuid::new_v4().to_string())
+        .check(actions::VIEW_AUDIT, &PolicyResource::System)
+        .await?;
 
     // Fetch up to CSV_EXPORT_MAX_ROWS + 1 to detect truncation
     let events = state
@@ -245,16 +239,11 @@ pub(super) async fn export_audit_syslog(
     Query(q): Query<AuditExportQuery>,
 ) -> Result<Response, ApiError> {
     // Policy check: require view_audit permission
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::VIEW_AUDIT,
-        &PolicyResource::System,
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision != PolicyDecisionResult::Permit {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(&actor, &uuid::Uuid::new_v4().to_string())
+        .check(actions::VIEW_AUDIT, &PolicyResource::System)
+        .await?;
 
     let events = state
         .store
@@ -306,16 +295,11 @@ pub(super) async fn export_audit_jsonl(
     Query(q): Query<AuditExportQuery>,
 ) -> Result<Response, ApiError> {
     // Policy check: require view_audit permission
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::VIEW_AUDIT,
-        &PolicyResource::System,
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision != PolicyDecisionResult::Permit {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(&actor, &uuid::Uuid::new_v4().to_string())
+        .check(actions::VIEW_AUDIT, &PolicyResource::System)
+        .await?;
 
     let events = state
         .store

@@ -78,7 +78,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Check Cedar policy for `manage_workspaces` on `System` resource.
-pub(crate) fn check_manage_workspaces(
+pub(crate) async fn check_manage_workspaces(
     state: &AppState,
     auth: &AuthenticatedUser,
 ) -> Result<agent_cordon_core::domain::policy::PolicyDecision, ApiError> {
@@ -88,4 +88,5 @@ pub(crate) fn check_manage_workspaces(
         actions::MANAGE_WORKSPACES,
         PolicyResource::System,
     )
+    .await
 }

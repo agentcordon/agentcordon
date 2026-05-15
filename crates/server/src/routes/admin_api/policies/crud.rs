@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::policy::{PolicyId, StoredPolicy};
-use agent_cordon_core::policy::{actions, PolicyEngine};
+use agent_cordon_core::policy::actions;
 
 use crate::events::UiEvent;
 use crate::extractors::AuthenticatedUser;
@@ -55,16 +55,13 @@ pub(super) async fn validate_policy(
     auth: AuthenticatedUser,
     Json(req): Json<ValidatePolicyRequest>,
 ) -> Result<Json<ApiResponse<ValidateResult>>, ApiError> {
-    check_manage_policies(&state, &auth)?;
+    check_manage_policies(&state, &auth).await?;
 
     if req.cedar_policy.is_empty() {
         return Err(ApiError::BadRequest("cedar_policy is required".to_string()));
     }
 
-    match state
-        .policy_engine
-        .validate_policy_text_detailed(&req.cedar_policy)
-    {
+    match state.authz.validate_policy_text_detailed(&req.cedar_policy) {
         Ok(()) => Ok(Json(ApiResponse::ok(ValidateResult {
             valid: true,
             errors: vec![],
@@ -81,7 +78,7 @@ pub(super) async fn get_schema(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    check_manage_policies(&state, &auth)?;
+    check_manage_policies(&state, &auth).await?;
     let schema_text = agent_cordon_core::policy::schema::CEDAR_SCHEMA_JSON.to_string();
     Ok(Json(ApiResponse::ok(schema_text)))
 }
@@ -258,11 +255,11 @@ pub(super) async fn create_policy(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<CreatePolicyRequest>,
 ) -> Result<Json<ApiResponse<StoredPolicy>>, ApiError> {
-    let policy_decision = check_manage_policies(&state, &auth)?;
+    let policy_decision = check_manage_policies(&state, &auth).await?;
 
     // Validate the Cedar policy text: syntax parse + schema validation (structured errors)
     state
-        .policy_engine
+        .authz
         .validate_policy_text_detailed(&req.cedar_policy)
         .map_err(|errors| ApiError::PolicyValidation { errors })?;
 
@@ -318,7 +315,7 @@ pub(super) async fn list_policies(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
 ) -> Result<Json<ApiResponse<Vec<StoredPolicy>>>, ApiError> {
-    check_manage_policies(&state, &auth)?;
+    check_manage_policies(&state, &auth).await?;
 
     let all_policies = state.store.list_policies().await?;
 
@@ -346,7 +343,7 @@ pub(super) async fn get_policy(
     auth: AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<StoredPolicy>>, ApiError> {
-    check_manage_policies(&state, &auth)?;
+    check_manage_policies(&state, &auth).await?;
     let policy = state
         .store
         .get_policy(&PolicyId(id))
@@ -362,7 +359,7 @@ pub(super) async fn update_policy(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdatePolicyRequest>,
 ) -> Result<Json<ApiResponse<StoredPolicy>>, ApiError> {
-    let policy_decision = check_manage_policies(&state, &auth)?;
+    let policy_decision = check_manage_policies(&state, &auth).await?;
 
     let mut policy = state
         .store
@@ -379,7 +376,7 @@ pub(super) async fn update_policy(
     if let Some(cedar) = req.cedar_policy {
         // Validate updated Cedar policy text: syntax parse + schema validation (structured errors)
         state
-            .policy_engine
+            .authz
             .validate_policy_text_detailed(&cedar)
             .map_err(|errors| ApiError::PolicyValidation { errors })?;
         policy.cedar_policy = cedar;
@@ -431,7 +428,7 @@ pub(super) async fn delete_policy(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let policy_decision = check_manage_policies(&state, &auth)?;
+    let policy_decision = check_manage_policies(&state, &auth).await?;
 
     let policy = state
         .store

@@ -9,10 +9,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
-use agent_cordon_core::domain::policy::{PolicyDecisionResult, PolicyId};
-use agent_cordon_core::policy::{
-    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
-};
+use agent_cordon_core::domain::policy::PolicyDecisionResult;
+use agent_cordon_core::policy::{actions, claim_keys, PolicyPrincipal, PolicyResource};
 
 use crate::extractors::AuthenticatedWorkspace;
 use crate::response::{ApiError, ApiResponse};
@@ -25,27 +23,25 @@ pub struct McpAuthorizeRequest {
     tool_name: String,
 }
 
-/// A single reason entry in the authorization response.
-#[derive(Serialize)]
-pub struct AuthorizeReasonEntry {
-    reason: String,
-    policy_id: Option<String>,
-    policy_name: Option<String>,
-    statement_index: Option<usize>,
-}
-
 /// Response for MCP tool-call authorization.
+///
+/// Reasons (`policy_id`, `policy_name`, `statement_index`) are
+/// intentionally absent: this is an untrusted-caller-facing endpoint and
+/// the reasons would let workspaces enumerate the policy graph. The full
+/// reasons are still recorded in the `PolicyEvaluated` audit event,
+/// retrievable by admins via the correlation ID through the audit query
+/// path. Privileged channel for privileged consumers; opaque response
+/// for untrusted callers.
 #[derive(Serialize)]
 pub struct McpAuthorizeResponse {
     decision: String,
-    reasons: Vec<AuthorizeReasonEntry>,
     correlation_id: String,
 }
 
 /// POST /api/v1/workspaces/mcp-authorize — evaluate Cedar policy for an MCP tool call.
 ///
 /// Auth: workspace identity JWT (Authorization: Bearer).
-/// Returns the permit/forbid decision with contributing policy reasons.
+/// Returns the permit/forbid decision (no reasons).
 pub(super) async fn authorize(
     State(state): State<AppState>,
     workspace: AuthenticatedWorkspace,
@@ -119,25 +115,12 @@ pub(super) async fn authorize(
 
             return Ok(Json(ApiResponse::ok(McpAuthorizeResponse {
                 decision: "forbid".to_string(),
-                reasons: vec![AuthorizeReasonEntry {
-                    reason: "unknown_server".to_string(),
-                    policy_id: None,
-                    policy_name: None,
-                    statement_index: None,
-                }],
                 correlation_id,
             })));
         }
     };
 
-    // Evaluate Cedar policy.
-    let policy_ctx = PolicyContext {
-        tool_name: Some(tool_name.clone()),
-        correlation_id: Some(correlation_id.clone()),
-        oauth_claims: workspace.oauth_claims.clone(),
-        ..Default::default()
-    };
-
+    // Evaluate Cedar policy via the Authz seam.
     let resource = PolicyResource::McpServer {
         id: mcp_server.id.0.to_string(),
         name: mcp_server.name.clone(),
@@ -146,64 +129,33 @@ pub(super) async fn authorize(
         owner: mcp_server.created_by_user.clone(),
     };
 
-    let decision = state.policy_engine.evaluate(
-        &PolicyPrincipal::Workspace(&workspace.workspace),
-        actions::MCP_TOOL_CALL,
-        &resource,
-        &policy_ctx,
-    )?;
+    let decision = state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(&workspace.workspace),
+                oauth_claims: workspace.oauth_claims.clone(),
+            },
+            &correlation_id,
+        )
+        .with_claim(claim_keys::TOOL_NAME, serde_json::json!(tool_name.clone()))
+        .check_with_reasons(actions::MCP_TOOL_CALL, &resource)
+        .await?;
 
     let is_permit = decision.decision == PolicyDecisionResult::Permit;
     let decision_str = if is_permit { "permit" } else { "forbid" };
 
-    // Resolve reasons: parse `{uuid}_{index}` format, look up policy names.
-    let mut reasons = Vec::new();
-    for reason_str in &decision.reasons {
-        let (policy_id_str, statement_index) = match reason_str.rfind('_') {
-            Some(pos) => {
-                let suffix = &reason_str[pos + 1..];
-                match suffix.parse::<usize>() {
-                    Ok(idx) => (&reason_str[..pos], Some(idx)),
-                    Err(_) => (reason_str.as_str(), None),
-                }
-            }
-            None => (reason_str.as_str(), None),
-        };
-
-        let policy_name = if let Ok(uuid) = Uuid::parse_str(policy_id_str) {
-            match state.store.get_policy(&PolicyId(uuid)).await {
-                Ok(Some(p)) => Some(p.name),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        reasons.push(AuthorizeReasonEntry {
-            reason: decision_str.to_string(),
-            policy_id: Some(policy_id_str.to_string()),
-            policy_name,
-            statement_index,
-        });
-    }
-
-    // Policy decision audit is emitted automatically by AuditingPolicyEngine.
-    // Emit domain-specific McpToolCalled event on permit for observability.
+    // Authz auto-emits the PolicyEvaluated audit event with full reasons.
+    // Emit a domain-specific McpToolCalled event on permit for observability.
+    // Reasons are deliberately NOT serialised into the HTTP response — they
+    // remain in the audit log only (retrievable by admins via correlation_id).
     if is_permit {
-        let reason_str = decision.reasons.join(", ");
         let event = AuditEvent::builder(AuditEventType::McpToolCalled)
             .action("mcp_tool_call")
             .workspace_actor(&workspace.workspace.id, &workspace.workspace.name)
             .resource("mcp_server", &mcp_server.id.0.to_string())
             .correlation_id(&correlation_id)
-            .decision(
-                AuditDecision::Permit,
-                if reason_str.is_empty() {
-                    None
-                } else {
-                    Some(&reason_str)
-                },
-            )
+            .decision(AuditDecision::Permit, None)
             .details(serde_json::json!({
                 "server_name": server_name,
                 "tool_name": tool_name,
@@ -216,7 +168,6 @@ pub(super) async fn authorize(
 
     Ok(Json(ApiResponse::ok(McpAuthorizeResponse {
         decision: decision_str.to_string(),
-        reasons,
         correlation_id,
     })))
 }

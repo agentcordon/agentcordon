@@ -91,11 +91,13 @@ async fn test_mcp_authorize_permit_with_policy() {
         "should include correlation_id"
     );
 
-    // Reasons should reference at least one policy
-    let reasons = data["reasons"].as_array().unwrap();
+    // Per #20, reasons/policy_id/policy_name/statement_index are no longer
+    // serialized into the mcp-authorize HTTP response. Reasons remain in the
+    // PolicyEvaluated audit event, retrievable by admins via correlation ID.
     assert!(
-        !reasons.is_empty(),
-        "permit decision should include policy reasons"
+        data.get("reasons").is_none(),
+        "mcp-authorize response must not leak policy reasons: {}",
+        body
     );
 }
 
@@ -181,14 +183,13 @@ async fn test_mcp_authorize_unknown_server() {
         "should forbid for unknown server"
     );
 
-    let reasons = data["reasons"].as_array().unwrap();
-    let has_unknown_server = reasons
-        .iter()
-        .any(|r| r["reason"].as_str() == Some("unknown_server"));
+    // Per #20, the public response no longer carries reasons. The
+    // "unknown_server" reason is still emitted into the PolicyEvaluated
+    // audit event, where admins can retrieve it via correlation ID.
     assert!(
-        has_unknown_server,
-        "reasons should include 'unknown_server': {:?}",
-        reasons
+        data.get("reasons").is_none(),
+        "mcp-authorize response must not leak policy reasons: {}",
+        body
     );
 }
 

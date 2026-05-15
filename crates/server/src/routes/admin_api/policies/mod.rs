@@ -6,7 +6,7 @@ use axum::{
     Router,
 };
 
-use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyResource};
 
 use crate::extractors::AuthenticatedUser;
 use crate::response::ApiError;
@@ -32,7 +32,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Check Cedar policy for `manage_policies` on `PolicyAdmin` resource.
-pub(crate) fn check_manage_policies(
+pub(crate) async fn check_manage_policies(
     state: &AppState,
     auth: &AuthenticatedUser,
 ) -> Result<agent_cordon_core::domain::policy::PolicyDecision, ApiError> {
@@ -42,6 +42,7 @@ pub(crate) fn check_manage_policies(
         actions::MANAGE_POLICIES,
         PolicyResource::PolicyAdmin,
     )
+    .await
 }
 
 /// Reload all enabled policies from DB into the policy engine.
@@ -60,7 +61,7 @@ pub async fn reload_engine(state: &AppState) -> Result<(), ApiError> {
     }
 
     state
-        .policy_engine
+        .authz
         .reload_policies(sources)
         .map_err(|e| ApiError::Internal(format!("failed to reload policies: {e}")))?;
     Ok(())

@@ -23,33 +23,44 @@ pub(crate) mod workspaces;
 
 use axum::Router;
 
-use agent_cordon_core::domain::policy::{PolicyDecision, PolicyDecisionResult};
-use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyResource};
+use agent_cordon_core::domain::policy::PolicyDecision;
+use agent_cordon_core::policy::{PolicyPrincipal, PolicyResource};
 
+use crate::authz::PolicyCaller;
 use crate::extractors::AuthenticatedUser;
 use crate::response::ApiError;
 use crate::state::AppState;
 
 /// Generic Cedar permission check: evaluate an action on a resource for the
 /// authenticated user. Returns the decision on success, or `Forbidden` if denied.
-pub(crate) fn check_cedar_permission(
+///
+/// Synchronous wrapper that drives `Authz` in a blocking fashion for the
+/// many existing call sites that don't have a correlation ID handy. New
+/// code should prefer `state.authz.request(...).check(...).await`.
+pub(crate) async fn check_cedar_permission(
     state: &AppState,
     auth: &AuthenticatedUser,
-    action: &str,
+    action: &'static str,
     resource: PolicyResource,
 ) -> Result<PolicyDecision, ApiError> {
-    let decision = state.policy_engine.evaluate(
-        &agent_cordon_core::policy::PolicyPrincipal::User(&auth.user),
-        action,
-        &resource,
-        &PolicyContext::default(),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
-
-    Ok(decision)
+    let corr = uuid::Uuid::new_v4().to_string();
+    state
+        .authz
+        .request(
+            PolicyCaller::Principal {
+                principal: PolicyPrincipal::User(&auth.user),
+                oauth_claims: None,
+            },
+            &corr,
+        )
+        .check_with_reasons(action, &resource)
+        .await
+        .and_then(|decision| match decision.decision {
+            agent_cordon_core::domain::policy::PolicyDecisionResult::Permit => Ok(decision),
+            agent_cordon_core::domain::policy::PolicyDecisionResult::Forbid => {
+                Err(ApiError::Forbidden("access denied by policy".to_string()))
+            }
+        })
 }
 
 /// API routes for the admin REST API (nested under `/api/v1`).

@@ -65,7 +65,10 @@ impl McpServerWorkspaceStore for PostgresStore {
         .fetch_all(&self.pool)
         .await
         .map_err(db_err)?;
-        Ok(rows.into_iter().map(|(id, name)| (WorkspaceId(id), name)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(id, name)| (WorkspaceId(id), name))
+            .collect())
     }
 
     async fn list_mcp_servers_for_workspace(

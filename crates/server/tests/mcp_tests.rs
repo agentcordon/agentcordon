@@ -18,7 +18,7 @@ use agent_cordon_core::crypto::password::hash_password;
 use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::user::{User, UserId, UserRole};
-use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource};
+use agent_cordon_core::policy::{claim_keys, PolicyPrincipal, PolicyResource};
 use agent_cordon_core::storage::Store;
 
 use agent_cordon_server::test_helpers::TestAppBuilder;
@@ -525,9 +525,19 @@ async fn test_cedar_mcp_tool_call_admin_allowed() {
 
     let result = ctx
         .state
-        .policy_engine
-        .evaluate(
-            &PolicyPrincipal::Workspace(&admin),
+        .authz
+        .request(
+            agent_cordon_server::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(&admin),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .with_claim(
+            claim_keys::TOOL_NAME,
+            serde_json::json!(Some("create_issue".to_string())),
+        )
+        .check_with_reasons_blocking(
             "mcp_tool_call",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
@@ -535,11 +545,6 @@ async fn test_cedar_mcp_tool_call_admin_allowed() {
                 enabled: true,
                 tags: vec![],
                 owner: None,
-            },
-            &PolicyContext {
-                tool_name: Some("create_issue".to_string()),
-                credential_name: None,
-                ..Default::default()
             },
         )
         .expect("policy evaluation should succeed");
@@ -568,9 +573,19 @@ async fn test_cedar_mcp_tool_call_non_admin_allowed() {
 
     let result = ctx
         .state
-        .policy_engine
-        .evaluate(
-            &PolicyPrincipal::Workspace(&viewer),
+        .authz
+        .request(
+            agent_cordon_server::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(&viewer),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .with_claim(
+            claim_keys::TOOL_NAME,
+            serde_json::json!(Some("create_issue".to_string())),
+        )
+        .check_with_reasons_blocking(
             "mcp_tool_call",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
@@ -578,11 +593,6 @@ async fn test_cedar_mcp_tool_call_non_admin_allowed() {
                 enabled: true,
                 tags: vec![],
                 owner: Some(owner_id),
-            },
-            &PolicyContext {
-                tool_name: Some("create_issue".to_string()),
-                credential_name: None,
-                ..Default::default()
             },
         )
         .expect("policy evaluation should succeed");
@@ -615,9 +625,15 @@ async fn test_cedar_mcp_list_tools_enabled_agent_allowed() {
 
     let result = ctx
         .state
-        .policy_engine
-        .evaluate(
-            &PolicyPrincipal::Workspace(&agent),
+        .authz
+        .request(
+            agent_cordon_server::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(&agent),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check_with_reasons_blocking(
             "mcp_list_tools",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
@@ -626,7 +642,6 @@ async fn test_cedar_mcp_list_tools_enabled_agent_allowed() {
                 tags: vec![],
                 owner: Some(owner_id),
             },
-            &PolicyContext::default(),
         )
         .expect("policy evaluation should succeed");
 
@@ -714,9 +729,19 @@ async fn test_cedar_mcp_tool_call_disabled_server_forbidden() {
     // Even admin agents should be forbidden on disabled servers
     let result = ctx
         .state
-        .policy_engine
-        .evaluate(
-            &PolicyPrincipal::Workspace(&admin),
+        .authz
+        .request(
+            agent_cordon_server::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(&admin),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .with_claim(
+            claim_keys::TOOL_NAME,
+            serde_json::json!(Some("create_issue".to_string())),
+        )
+        .check_with_reasons_blocking(
             "mcp_tool_call",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
@@ -724,10 +749,6 @@ async fn test_cedar_mcp_tool_call_disabled_server_forbidden() {
                 enabled: false,
                 tags: vec![],
                 owner: None,
-            },
-            &PolicyContext {
-                tool_name: Some("create_issue".to_string()),
-                ..Default::default()
             },
         )
         .expect("policy evaluation should succeed");
@@ -753,9 +774,15 @@ async fn test_cedar_mcp_list_tools_disabled_server_forbidden() {
 
     let result = ctx
         .state
-        .policy_engine
-        .evaluate(
-            &PolicyPrincipal::Workspace(agent),
+        .authz
+        .request(
+            agent_cordon_server::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(agent),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check_with_reasons_blocking(
             "mcp_list_tools",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
@@ -764,7 +791,6 @@ async fn test_cedar_mcp_list_tools_disabled_server_forbidden() {
                 tags: vec![],
                 owner: None,
             },
-            &PolicyContext::default(),
         )
         .expect("policy evaluation should succeed");
 

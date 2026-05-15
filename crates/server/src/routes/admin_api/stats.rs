@@ -4,9 +4,7 @@ use serde::Serialize;
 use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::workspace::WorkspaceStatus;
-use agent_cordon_core::policy::{
-    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
-};
+use agent_cordon_core::policy::{actions, claim_keys, PolicyPrincipal, PolicyResource};
 
 use crate::extractors::AuthenticatedUser;
 use crate::response::{ApiError, ApiResponse};
@@ -53,22 +51,21 @@ async fn get_stats(
     auth: AuthenticatedUser,
 ) -> Result<Json<ApiResponse<StatsResponse>>, ApiError> {
     // Cedar policy check: view_audit on System resource
-    let decision = state.policy_engine.evaluate(
-        &PolicyPrincipal::User(&auth.user),
-        actions::VIEW_AUDIT,
-        &PolicyResource::System,
-        &PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        },
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
-
-    // Tenant scoping: admins see all data, non-admins see only their own
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::User(&auth.user),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .with_claim(
+            claim_keys::REQUESTED_SCOPES,
+            serde_json::json!(Vec::<String>::new()),
+        )
+        .check(actions::VIEW_AUDIT, &PolicyResource::System)
+        .await?; // Tenant scoping: admins see all data, non-admins see only their own
     let is_admin =
         auth.user.role == agent_cordon_core::domain::user::UserRole::Admin || auth.is_root;
     let workspaces = if is_admin {
@@ -87,43 +84,55 @@ async fn get_stats(
         let cred_map: std::collections::HashMap<CredentialId, StoredCredential> =
             all_stored.into_iter().map(|c| (c.id.clone(), c)).collect();
 
-        let principal = PolicyPrincipal::User(&auth.user);
-        let ctx = PolicyContext {
-            target_url: None,
-            requested_scopes: vec![],
-            ..Default::default()
-        };
         all_summaries
             .into_iter()
             .filter(|summary| {
                 if let Some(cred) = cred_map.get(&summary.id) {
-                    // 1. Check Cedar with User principal
+                    // 1. Check Cedar with User principal (sync via Authz seam)
                     if state
-                        .policy_engine
-                        .evaluate(
-                            &principal,
+                        .authz
+                        .request(
+                            crate::authz::PolicyCaller::Principal {
+                                principal: PolicyPrincipal::User(&auth.user),
+                                oauth_claims: None,
+                            },
+                            &uuid::Uuid::new_v4().to_string(),
+                        )
+                        .with_claim(
+                            claim_keys::REQUESTED_SCOPES,
+                            serde_json::json!(Vec::<String>::new()),
+                        )
+                        .check_with_reasons_blocking(
                             actions::LIST,
                             &PolicyResource::Credential {
                                 credential: cred.clone(),
                             },
-                            &ctx,
                         )
                         .ok()
                         .is_some_and(|d| d.decision != PolicyDecisionResult::Forbid)
                     {
                         return true;
                     }
-                    // 2. Check Cedar with each owned Workspace principal
+                    // 2. Check Cedar with each owned Workspace principal (sync)
                     for ws in &workspaces {
                         if state
-                            .policy_engine
-                            .evaluate(
-                                &PolicyPrincipal::Workspace(ws),
+                            .authz
+                            .request(
+                                crate::authz::PolicyCaller::Principal {
+                                    principal: PolicyPrincipal::Workspace(ws),
+                                    oauth_claims: None,
+                                },
+                                &uuid::Uuid::new_v4().to_string(),
+                            )
+                            .with_claim(
+                                claim_keys::REQUESTED_SCOPES,
+                                serde_json::json!(Vec::<String>::new()),
+                            )
+                            .check_with_reasons_blocking(
                                 actions::LIST,
                                 &PolicyResource::Credential {
                                     credential: cred.clone(),
                                 },
-                                &ctx,
                             )
                             .ok()
                             .is_some_and(|d| d.decision != PolicyDecisionResult::Forbid)

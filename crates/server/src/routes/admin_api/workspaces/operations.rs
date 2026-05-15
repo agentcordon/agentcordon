@@ -8,9 +8,7 @@ use uuid::Uuid;
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::workspace::WorkspaceId;
-use agent_cordon_core::policy::{
-    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
-};
+use agent_cordon_core::policy::{actions, claim_keys, PolicyPrincipal, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::extractors::{AuthenticatedUser, AuthenticatedWorkspace};
@@ -60,40 +58,26 @@ pub(super) async fn add_workspace_tag(
         .await?
         .ok_or_else(|| ApiError::NotFound("workspace not found".to_string()))?;
 
-    // Evaluate Cedar manage_tags policy
-    let decision = state.policy_engine.evaluate(
-        &PolicyPrincipal::User(&auth.user),
-        actions::MANAGE_TAGS,
-        &PolicyResource::WorkspaceResource {
-            workspace: workspace.clone(),
-        },
-        &PolicyContext {
-            tag_value: Some(tag.clone()),
-            correlation_id: Some(corr.0.clone()),
-            ..Default::default()
-        },
-    )?;
+    // Evaluate Cedar manage_tags policy via the Authz seam.
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::User(&auth.user),
+                oauth_claims: None,
+            },
+            &corr.0,
+        )
+        .with_claim(claim_keys::TAG_VALUE, serde_json::json!(tag.clone()))
+        .check(
+            actions::MANAGE_TAGS,
+            &PolicyResource::WorkspaceResource {
+                workspace: workspace.clone(),
+            },
+        )
+        .await?;
 
     let now = chrono::Utc::now();
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        // Audit: denied
-        let event = AuditEvent::builder(AuditEventType::WorkspaceUpdated)
-            .action("add_tag")
-            .user_actor(&auth.user)
-            .resource("workspace", &workspace.id.0.to_string())
-            .correlation_id(&corr.0)
-            .decision(AuditDecision::Forbid, Some(&decision.reasons.join(", ")))
-            .details(serde_json::json!({
-                "tag": tag,
-                "workspace_name": workspace.name,
-            }))
-            .build();
-        if let Err(e) = state.store.append_audit_event(&event).await {
-            tracing::warn!(error = %e, "Failed to write audit event");
-        }
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
 
     // Add tag if not already present
     let mut updated_workspace = workspace.clone();
@@ -109,7 +93,7 @@ pub(super) async fn add_workspace_tag(
         .user_actor(&auth.user)
         .resource("workspace", &updated_workspace.id.0.to_string())
         .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some(&decision.reasons.join(", ")))
+        .decision(AuditDecision::Permit, None)
         .details(serde_json::json!({
             "tag": tag,
             "workspace_name": updated_workspace.name,
@@ -144,39 +128,26 @@ pub(super) async fn remove_workspace_tag(
         .await?
         .ok_or_else(|| ApiError::NotFound("workspace not found".to_string()))?;
 
-    // Evaluate Cedar manage_tags policy
-    let decision = state.policy_engine.evaluate(
-        &PolicyPrincipal::User(&auth.user),
-        actions::MANAGE_TAGS,
-        &PolicyResource::WorkspaceResource {
-            workspace: workspace.clone(),
-        },
-        &PolicyContext {
-            tag_value: Some(tag.clone()),
-            correlation_id: Some(corr.0.clone()),
-            ..Default::default()
-        },
-    )?;
+    // Evaluate Cedar manage_tags policy via the Authz seam.
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::User(&auth.user),
+                oauth_claims: None,
+            },
+            &corr.0,
+        )
+        .with_claim(claim_keys::TAG_VALUE, serde_json::json!(tag.clone()))
+        .check(
+            actions::MANAGE_TAGS,
+            &PolicyResource::WorkspaceResource {
+                workspace: workspace.clone(),
+            },
+        )
+        .await?;
 
     let now = chrono::Utc::now();
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        let event = AuditEvent::builder(AuditEventType::WorkspaceUpdated)
-            .action("remove_tag")
-            .user_actor(&auth.user)
-            .resource("workspace", &workspace.id.0.to_string())
-            .correlation_id(&corr.0)
-            .decision(AuditDecision::Forbid, Some(&decision.reasons.join(", ")))
-            .details(serde_json::json!({
-                "tag": tag,
-                "workspace_name": workspace.name,
-            }))
-            .build();
-        if let Err(e) = state.store.append_audit_event(&event).await {
-            tracing::warn!(error = %e, "Failed to write audit event");
-        }
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
 
     // Remove tag
     let mut updated_workspace = workspace.clone();
@@ -190,7 +161,7 @@ pub(super) async fn remove_workspace_tag(
         .user_actor(&auth.user)
         .resource("workspace", &updated_workspace.id.0.to_string())
         .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some(&decision.reasons.join(", ")))
+        .decision(AuditDecision::Permit, None)
         .details(serde_json::json!({
             "tag": tag,
             "workspace_name": updated_workspace.name,
@@ -250,22 +221,26 @@ pub(super) async fn get_workspace_permissions(
         }
 
         // Evaluate Cedar policy for mcp_tool_call action.
-        let result = state.policy_engine.evaluate(
-            &PolicyPrincipal::Workspace(&workspace),
-            actions::MCP_TOOL_CALL,
-            &PolicyResource::McpServer {
-                id: server.name.clone(),
-                name: server.name.clone(),
-                enabled: server.enabled,
-                tags: server.tags.clone(),
-                owner: server.created_by_user.clone(),
-            },
-            &PolicyContext {
-                correlation_id: Some(corr.0.clone()),
-                oauth_claims: oauth_claims.clone(),
-                ..Default::default()
-            },
-        );
+        let result = state
+            .authz
+            .request(
+                crate::authz::PolicyCaller::Principal {
+                    principal: PolicyPrincipal::Workspace(&workspace),
+                    oauth_claims: oauth_claims.clone(),
+                },
+                &corr.0,
+            )
+            .check_with_reasons(
+                actions::MCP_TOOL_CALL,
+                &PolicyResource::McpServer {
+                    id: server.name.clone(),
+                    name: server.name.clone(),
+                    enabled: server.enabled,
+                    tags: server.tags.clone(),
+                    owner: server.created_by_user.clone(),
+                },
+            )
+            .await;
 
         if let Ok(decision) = result {
             if decision.decision == PolicyDecisionResult::Permit {
@@ -276,16 +251,17 @@ pub(super) async fn get_workspace_permissions(
     }
 
     // 4. Evaluate credential scopes
-    let broad_cred = state.policy_engine.evaluate(
-        &PolicyPrincipal::Workspace(&workspace),
-        actions::VEND_CREDENTIAL,
-        &PolicyResource::System,
-        &PolicyContext {
-            correlation_id: Some(corr.0.clone()),
-            oauth_claims: oauth_claims.clone(),
-            ..Default::default()
-        },
-    );
+    let broad_cred = state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(&workspace),
+                oauth_claims: oauth_claims.clone(),
+            },
+            &corr.0,
+        )
+        .check_with_reasons(actions::VEND_CREDENTIAL, &PolicyResource::System)
+        .await;
 
     let has_broad_access = matches!(
         broad_cred,
@@ -302,17 +278,24 @@ pub(super) async fn get_workspace_permissions(
                 Ok(Some(c)) => c,
                 _ => continue,
             };
-            let cred_decision = state.policy_engine.evaluate(
-                &PolicyPrincipal::Workspace(&workspace),
-                actions::VEND_CREDENTIAL,
-                &PolicyResource::Credential { credential: cred },
-                &PolicyContext {
-                    credential_name: Some(summary.name.clone()),
-                    correlation_id: Some(corr.0.clone()),
-                    oauth_claims: oauth_claims.clone(),
-                    ..Default::default()
-                },
-            );
+            let cred_decision = state
+                .authz
+                .request(
+                    crate::authz::PolicyCaller::Principal {
+                        principal: PolicyPrincipal::Workspace(&workspace),
+                        oauth_claims: oauth_claims.clone(),
+                    },
+                    &corr.0,
+                )
+                .with_claim(
+                    claim_keys::CREDENTIAL_NAME,
+                    serde_json::json!(summary.name.clone()),
+                )
+                .check_with_reasons(
+                    actions::VEND_CREDENTIAL,
+                    &PolicyResource::Credential { credential: cred },
+                )
+                .await;
 
             if let Ok(d) = cred_decision {
                 if d.decision == PolicyDecisionResult::Permit {

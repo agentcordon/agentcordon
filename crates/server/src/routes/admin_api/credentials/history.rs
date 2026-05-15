@@ -8,8 +8,7 @@ use uuid::Uuid;
 
 use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::{CredentialId, CredentialUpdate, SecretHistoryEntry};
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyEngine, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::extractors::AuthenticatedActor;
@@ -58,16 +57,20 @@ pub(crate) async fn list_secret_history(
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
     // Policy check: use "update" action on the credential resource
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::UPDATE,
-        &PolicyResource::Credential { credential: cred },
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: actor.policy_principal(),
+                oauth_claims: None,
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check(
+            actions::UPDATE,
+            &PolicyResource::Credential { credential: cred },
+        )
+        .await?;
 
     let entries = state.store.list_secret_history(&cred_id).await?;
     let response: Vec<SecretHistoryResponse> = entries.into_iter().map(Into::into).collect();
@@ -94,18 +97,16 @@ pub(crate) async fn restore_secret_history(
         .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
 
     // Policy check: require "update" action (delegated_use-level access is checked via policy)
-    let decision = state.policy_engine.evaluate(
-        &actor.policy_principal(),
-        actions::UPDATE,
-        &PolicyResource::Credential {
-            credential: cred.clone(),
-        },
-        &actor.policy_context(None),
-    )?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
+    state
+        .authz
+        .request(&actor, &uuid::Uuid::new_v4().to_string())
+        .check(
+            actions::UPDATE,
+            &PolicyResource::Credential {
+                credential: cred.clone(),
+            },
+        )
+        .await?;
 
     // Get the historical encrypted value + nonce
     let (historical_encrypted, historical_nonce) = state
@@ -155,7 +156,7 @@ pub(crate) async fn restore_secret_history(
         .actor_fields(ws_id, ws_name, u_id, u_name)
         .resource("credential", &id.to_string())
         .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some(&decision.reasons.join(", ")))
+        .decision(AuditDecision::Permit, None)
         .details(serde_json::json!({
             "credential_name": cred.name,
             "service": cred.service,

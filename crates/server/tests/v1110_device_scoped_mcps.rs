@@ -431,10 +431,7 @@ async fn test_cross_device_mcp_authorization_works() {
         .into_iter()
         .map(|p| (p.id.0.to_string(), p.cedar_policy))
         .collect();
-    ctx.state
-        .policy_engine
-        .reload_policies(sources)
-        .expect("reload");
+    ctx.state.authz.reload_policies(sources).expect("reload");
 
     // Verify the policy was created and references the MCP
     let policies = ctx.store.get_all_enabled_policies().await.unwrap();

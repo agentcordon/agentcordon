@@ -541,7 +541,10 @@ mod tests {
             ("POST", "/api/v1/mcp-servers/{id}/generate-policies"),
             // MCP Workspace Bindings (M:N junction)
             ("POST", "/api/v1/mcp-servers/{id}/workspaces"),
-            ("DELETE", "/api/v1/mcp-servers/{id}/workspaces/{workspace_id}"),
+            (
+                "DELETE",
+                "/api/v1/mcp-servers/{id}/workspaces/{workspace_id}",
+            ),
             // MCP Proxy
             ("POST", "/api/v1/mcp/proxy"),
             // Device SSE Events

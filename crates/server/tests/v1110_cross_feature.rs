@@ -155,10 +155,7 @@ async fn test_rsop_reflects_device_scoped_mcp_permissions() {
         .into_iter()
         .map(|p| (p.id.0.to_string(), p.cedar_policy))
         .collect();
-    ctx.state
-        .policy_engine
-        .reload_policies(sources)
-        .expect("reload");
+    ctx.state.authz.reload_policies(sources).expect("reload");
 
     // Verify the policy exists via policies API
     let (policies_status, policies_body) = send_json(
@@ -190,10 +187,7 @@ async fn test_rsop_reflects_device_scoped_mcp_permissions() {
         .into_iter()
         .map(|p| (p.id.0.to_string(), p.cedar_policy))
         .collect();
-    ctx.state
-        .policy_engine
-        .reload_policies(sources)
-        .expect("reload");
+    ctx.state.authz.reload_policies(sources).expect("reload");
 
     // Verify policy is gone
     let (policies2_status, policies2_body) = send_json(

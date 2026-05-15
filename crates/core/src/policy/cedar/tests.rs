@@ -4,7 +4,7 @@ use crate::domain::policy::PolicyDecisionResult;
 use crate::domain::user::{User, UserId, UserRole};
 use crate::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
 use crate::error::PolicyError;
-use crate::policy::{PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource};
+use crate::policy::{claim_keys, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource};
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -162,11 +162,7 @@ fn default_policies() -> Vec<(String, String)> {
 
 /// Convenience: empty policy context.
 fn empty_ctx() -> PolicyContext {
-    PolicyContext {
-        target_url: None,
-        requested_scopes: vec![],
-        ..Default::default()
-    }
+    PolicyContext::default()
 }
 
 // -----------------------------------------------------------------------
@@ -185,10 +181,12 @@ fn admin_agent_is_allowed_to_access_credential() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec!["chat:write".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["chat:write".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -209,10 +207,12 @@ fn non_admin_agent_denied_access_credentials_by_default() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec!["chat:write".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["chat:write".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -365,10 +365,12 @@ fn reload_with_invalid_policy_leaves_existing_set() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec!["chat:write".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["chat:write".to_string()]),
+            ),
         )
         .expect("evaluate after failed reload");
     assert_eq!(decision.decision, PolicyDecisionResult::Permit);
@@ -408,10 +410,12 @@ fn owner_can_access_own_credential() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec!["chat:write".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["chat:write".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -488,10 +492,12 @@ fn reader_grant_does_not_allow_access_credential() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec!["chat:write".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["chat:write".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -530,10 +536,12 @@ fn delegated_use_grant_allows_access_credential() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec!["chat:write".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["chat:write".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -652,10 +660,12 @@ fn admin_overrides_permissions() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate");
 
@@ -713,10 +723,16 @@ fn admin_can_vend_credential_any_credential() {
             "vend_credential",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: Some("https://api.github.com/repos/foo".to_string()),
-                requested_scopes: vec!["repo".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TARGET_URL,
+                serde_json::json!(Some("https://api.github.com/repos/foo".to_string())),
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["repo".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -736,10 +752,16 @@ fn delegated_use_grant_allows_vend_credential() {
             "vend_credential",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: Some("https://api.github.com/repos/foo".to_string()),
-                requested_scopes: vec!["repo".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TARGET_URL,
+                serde_json::json!(Some("https://api.github.com/repos/foo".to_string())),
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["repo".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -761,10 +783,16 @@ fn enabled_agent_allowed_vend_own_credential_via_default_policy() {
             "vend_credential",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: Some("https://api.github.com/repos/foo".to_string()),
-                requested_scopes: vec!["repo".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TARGET_URL,
+                serde_json::json!(Some("https://api.github.com/repos/foo".to_string())),
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["repo".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -788,10 +816,16 @@ fn enabled_agent_denied_vend_other_users_credential() {
             "vend_credential",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: Some("https://api.github.com/repos/foo".to_string()),
-                requested_scopes: vec!["repo".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TARGET_URL,
+                serde_json::json!(Some("https://api.github.com/repos/foo".to_string())),
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["repo".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -813,10 +847,16 @@ fn ownerless_agent_denied_vend_via_default_policy() {
             "vend_credential",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: Some("https://api.github.com/repos/foo".to_string()),
-                requested_scopes: vec!["repo".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TARGET_URL,
+                serde_json::json!(Some("https://api.github.com/repos/foo".to_string())),
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["repo".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -838,10 +878,16 @@ fn list_grant_does_not_allow_access() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: Some("https://api.github.com/repos/foo".to_string()),
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TARGET_URL,
+                serde_json::json!(Some("https://api.github.com/repos/foo".to_string())),
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate");
 
@@ -861,10 +907,16 @@ fn owner_can_vend_credential_own_credential() {
             "vend_credential",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: Some("https://api.github.com/repos/foo".to_string()),
-                requested_scopes: vec!["repo".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TARGET_URL,
+                serde_json::json!(Some("https://api.github.com/repos/foo".to_string())),
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["repo".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -885,10 +937,18 @@ fn vend_credential_context_includes_target_url() {
             "vend_credential",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: Some("https://api.example.com/v1/data?query=test".to_string()),
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TARGET_URL,
+                serde_json::json!(Some(
+                    "https://api.example.com/v1/data?query=test".to_string()
+                )),
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate");
 
@@ -1819,10 +1879,12 @@ fn disabled_admin_agent_is_denied() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec!["chat:write".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["chat:write".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -1912,10 +1974,12 @@ fn disabled_owner_agent_cannot_access_own_credential() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate");
 
@@ -1961,10 +2025,12 @@ fn disabled_non_admin_agent_is_denied() {
             "access",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: None,
-                requested_scopes: vec![],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            ),
         )
         .expect("evaluate");
 
@@ -2108,10 +2174,16 @@ fn enabled_device_allowed_vend_own_credential_via_default_policy() {
             "vend_credential",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: Some("https://api.github.com/repos/foo".to_string()),
-                requested_scopes: vec!["repo".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TARGET_URL,
+                serde_json::json!(Some("https://api.github.com/repos/foo".to_string())),
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["repo".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -2134,10 +2206,16 @@ fn disabled_device_denied_vend_credential() {
             "vend_credential",
             &PolicyResource::Credential { credential: cred },
             &PolicyContext {
-                target_url: Some("https://api.github.com/repos/foo".to_string()),
-                requested_scopes: vec!["repo".to_string()],
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TARGET_URL,
+                serde_json::json!(Some("https://api.github.com/repos/foo".to_string())),
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["repo".to_string()]),
+            ),
         )
         .expect("evaluate");
 
@@ -2166,9 +2244,12 @@ fn enabled_device_allowed_mcp_tool_call() {
                 owner: Some(owner.id.clone()),
             },
             &PolicyContext {
-                tool_name: Some("my_tool".to_string()),
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TOOL_NAME,
+                serde_json::json!(Some("my_tool".to_string())),
+            ),
         )
         .expect("evaluate");
 
@@ -2197,9 +2278,12 @@ fn disabled_device_denied_mcp_tool_call() {
                 owner: Some(owner.id.clone()),
             },
             &PolicyContext {
-                tool_name: Some("my_tool".to_string()),
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TOOL_NAME,
+                serde_json::json!(Some("my_tool".to_string())),
+            ),
         )
         .expect("evaluate");
 
@@ -2229,9 +2313,12 @@ fn workspace_denied_mcp_tool_call_different_owner() {
                 owner: Some(user_b.id.clone()),
             },
             &PolicyContext {
-                tool_name: Some("my_tool".to_string()),
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TOOL_NAME,
+                serde_json::json!(Some("my_tool".to_string())),
+            ),
         )
         .expect("evaluate");
 
@@ -2261,9 +2348,12 @@ fn workspace_denied_mcp_tool_call_no_owner() {
                 owner: Some(mcp_owner.id.clone()),
             },
             &PolicyContext {
-                tool_name: Some("my_tool".to_string()),
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TOOL_NAME,
+                serde_json::json!(Some("my_tool".to_string())),
+            ),
         )
         .expect("evaluate");
 
@@ -2295,9 +2385,12 @@ fn owned_workspace_denied_ownerless_mcp_server() {
                 owner: None, // legacy NULL row
             },
             &PolicyContext {
-                tool_name: Some("my_tool".to_string()),
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TOOL_NAME,
+                serde_json::json!(Some("my_tool".to_string())),
+            ),
         )
         .expect("evaluate");
 
@@ -2328,9 +2421,12 @@ fn admin_workspace_forbidden_disabled_mcp_server() {
                 owner: None,
             },
             &PolicyContext {
-                tool_name: Some("my_tool".to_string()),
                 ..Default::default()
-            },
+            }
+            .with_claim(
+                claim_keys::TOOL_NAME,
+                serde_json::json!(Some("my_tool".to_string())),
+            ),
         )
         .expect("evaluate");
 

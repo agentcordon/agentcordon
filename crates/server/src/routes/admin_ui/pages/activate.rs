@@ -175,7 +175,7 @@ pub async fn post(
     // registration of a prefilled workspace_name — become `owner_id` of the
     // resulting workspace row. Both approve AND deny are gated so a viewer
     // can't cancel another operator's pending enrollment either. The
-    // underlying `AuditingPolicyEngine::evaluate` emits a `PolicyEvaluated`
+    // underlying `the Authz seam` emits a `PolicyEvaluated`
     // audit event on both permit and deny, so we do NOT hand-build one here.
     let auth = AuthenticatedUser {
         is_root: user.is_root,
@@ -186,7 +186,9 @@ pub async fn post(
         &auth,
         agent_cordon_core::policy::actions::MANAGE_WORKSPACES,
         agent_cordon_core::policy::PolicyResource::System,
-    ) {
+    )
+    .await
+    {
         return match e {
             // HTML-first UX: re-render the activate page with a user-friendly
             // message instead of the raw 403 JSON payload the API sibling
@@ -349,10 +351,7 @@ pub async fn expired_page() -> Response {
 /// server-side CSRF state is needed.
 fn compute_expected_csrf(state: &AppState, headers: &HeaderMap) -> Option<String> {
     let session_token = extract_session_token(headers)?;
-    Some(compute_csrf_token(
-        &session_token,
-        &state.session_hash_key,
-    ))
+    Some(compute_csrf_token(&session_token, &state.session_hash_key))
 }
 
 /// Same as `compute_expected_csrf` but returns an empty string when the

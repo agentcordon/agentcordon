@@ -97,7 +97,10 @@ async fn ui_activate_approve_provisions_workspace_and_tokenizes() {
     );
     let (s, body, _) = post_form(&ctx.app, "/api/v1/oauth/device/code", &issue_body).await;
     assert_eq!(s, StatusCode::OK, "device_code issue: {body}");
-    let device_code = body["device_code"].as_str().expect("device_code").to_string();
+    let device_code = body["device_code"]
+        .as_str()
+        .expect("device_code")
+        .to_string();
     let user_code = body["user_code"].as_str().expect("user_code").to_string();
 
     // 2. Approve via the UI POST /activate path (what the browser does
@@ -370,7 +373,7 @@ async fn ui_activate_approve_denied_for_viewer() {
     );
 
     // A new `PolicyEvaluated` Forbid audit event for manage_workspaces must
-    // have been emitted by the AuditingPolicyEngine.
+    // have been emitted by the Authz seam.
     let forbid_after = count_policy_forbid_evals(&ctx, "manage_workspaces").await;
     assert!(
         forbid_after > forbid_before,
@@ -551,7 +554,10 @@ async fn ui_activate_get_renders_workspace_name() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri(format!("/activate?user_code={}", urlencoding::encode(&user_code)))
+        .uri(format!(
+            "/activate?user_code={}",
+            urlencoding::encode(&user_code)
+        ))
         .header(header::COOKIE, &session_cookie)
         .body(Body::empty())
         .unwrap();

@@ -284,13 +284,14 @@ pub(crate) async fn device_approve_endpoint(
 ) -> Result<Json<ApiResponse<DeviceDecisionResponse>>, ApiError> {
     // #2 — Policy gate. MUST be the first statement: any authenticated user
     // could otherwise assume ownership of a prefilled workspace on approval.
-    // AuditingPolicyEngine emits audit on both permit and deny.
+    // Authz auto-emits PolicyEvaluated on both permit and deny.
     crate::routes::admin_api::check_cedar_permission(
         &state,
         &auth,
         agent_cordon_core::policy::actions::MANAGE_WORKSPACES,
         agent_cordon_core::policy::PolicyResource::System,
-    )?;
+    )
+    .await?;
 
     let user_code = normalize_user_code(req.user_code.trim());
     if user_code.is_empty() {
@@ -300,16 +301,20 @@ pub(crate) async fn device_approve_endpoint(
 
     // Lookup to apply the pk_hash binding check; provisioning (if any) runs
     // AFTER CAS approval so a stale or double-approve short-circuits first.
-    let row = service.get_by_user_code(&user_code).await?.ok_or_else(|| {
-        ApiError::BadRequest("user_code is unknown or expired".to_string())
-    })?;
+    let row = service
+        .get_by_user_code(&user_code)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("user_code is unknown or expired".to_string()))?;
 
     // #3 — pk_hash match check. If the device code was issued with a bound
     // pk_hash, the approver MUST re-present the same hash. Shared helper so
     // the deny endpoint enforces identical binding (without it, any
     // authenticated user who learns a user_code could cancel another
     // workspace's enrollment).
-    verify_pk_hash_binding(row.pk_hash_prefill.as_deref(), req.public_key_hash.as_deref())?;
+    verify_pk_hash_binding(
+        row.pk_hash_prefill.as_deref(),
+        req.public_key_hash.as_deref(),
+    )?;
 
     // #4 — CAS-first: flip the row to approved BEFORE provisioning. On a
     // double-approve or stale row, CAS returns false and we short-circuit.
@@ -375,8 +380,7 @@ pub(crate) async fn provision_workspace_for_approved_device_code(
             provisioning_failed(
                 workspace_name,
                 ApiError::Internal(
-                    "device_code row has workspace_name_prefill but no pk_hash_prefill"
-                        .to_string(),
+                    "device_code row has workspace_name_prefill but no pk_hash_prefill".to_string(),
                 ),
             )
         })?;
@@ -384,9 +388,13 @@ pub(crate) async fn provision_workspace_for_approved_device_code(
 
     crate::routes::oauth::authorize::validate_new_workspace_params(pk_hash, workspace_name)
         .map_err(|e| provisioning_failed(workspace_name, e))?;
-    if let Err(e) =
-        crate::routes::oauth::consent::create_or_reuse_workspace(state, auth, workspace_name, pk_hash)
-            .await
+    if let Err(e) = crate::routes::oauth::consent::create_or_reuse_workspace(
+        state,
+        auth,
+        workspace_name,
+        pk_hash,
+    )
+    .await
     {
         return Err(provisioning_failed(workspace_name, e));
     }
@@ -434,9 +442,7 @@ fn provisioning_failed(workspace_name: &str, e: ApiError) -> ApiError {
         workspace_name,
         "device_code approved but workspace provisioning failed"
     );
-    ApiError::Internal(
-        "approved but workspace provisioning failed — retry device flow".to_string(),
-    )
+    ApiError::Internal("approved but workspace provisioning failed — retry device flow".to_string())
 }
 
 /// `POST /oauth/device/deny` — deny a pending device authorization request
@@ -453,7 +459,8 @@ pub(crate) async fn device_deny_endpoint(
         &auth,
         agent_cordon_core::policy::actions::MANAGE_WORKSPACES,
         agent_cordon_core::policy::PolicyResource::System,
-    )?;
+    )
+    .await?;
 
     let user_code = normalize_user_code(req.user_code.trim());
     if user_code.is_empty() {
@@ -465,10 +472,14 @@ pub(crate) async fn device_deny_endpoint(
     // with approve — without this check any authenticated user who learns
     // a user_code could cancel another workspace's enrollment — and
     // (b) populate `workspace_name` on the audit event.
-    let row = service.get_by_user_code(&user_code).await?.ok_or_else(|| {
-        ApiError::BadRequest("user_code is unknown or expired".to_string())
-    })?;
-    verify_pk_hash_binding(row.pk_hash_prefill.as_deref(), req.public_key_hash.as_deref())?;
+    let row = service
+        .get_by_user_code(&user_code)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("user_code is unknown or expired".to_string()))?;
+    verify_pk_hash_binding(
+        row.pk_hash_prefill.as_deref(),
+        req.public_key_hash.as_deref(),
+    )?;
 
     let denied = service
         .deny(
@@ -497,10 +508,7 @@ pub(crate) async fn device_deny_endpoint(
 /// If the row was issued without a bound pk_hash, no check is performed.
 /// Otherwise the presented hash MUST match (normalized: trimmed, `sha256:`
 /// prefix stripped).
-fn verify_pk_hash_binding(
-    bound: Option<&str>,
-    presented: Option<&str>,
-) -> Result<(), ApiError> {
+fn verify_pk_hash_binding(bound: Option<&str>, presented: Option<&str>) -> Result<(), ApiError> {
     let Some(bound) = bound else { return Ok(()) };
     let presented = presented
         .map(str::trim)
@@ -515,8 +523,7 @@ fn verify_pk_hash_binding(
     let bound = bound.strip_prefix("sha256:").unwrap_or(bound);
     if presented != bound {
         return Err(ApiError::BadRequest(
-            "public_key_hash does not match the hash bound at device_code issue time"
-                .to_string(),
+            "public_key_hash does not match the hash bound at device_code issue time".to_string(),
         ));
     }
     Ok(())

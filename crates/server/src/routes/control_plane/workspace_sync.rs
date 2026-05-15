@@ -10,10 +10,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use agent_cordon_core::crypto::SecretEncryptor;
-use agent_cordon_core::policy::PolicyEngine;
 
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyContext, PolicyPrincipal, PolicyResource};
+use agent_cordon_core::policy::{actions, PolicyPrincipal, PolicyResource};
 
 use crate::events::UiEvent;
 use crate::extractors::AuthenticatedWorkspace;
@@ -153,23 +152,31 @@ use crate::crypto_helpers::parse_broker_public_key;
 /// Evaluates `mcp_list_tools` against the McpServer entity (with owner) for the
 /// authenticated workspace. Used to filter MCP server and tool listings before
 /// returning them to the broker.
-fn workspace_can_view_mcp_server(
+async fn workspace_can_view_mcp_server(
     state: &AppState,
     workspace: &AuthenticatedWorkspace,
     server: &agent_cordon_core::domain::mcp::McpServer,
 ) -> bool {
-    let decision = state.policy_engine.evaluate(
-        &PolicyPrincipal::Workspace(&workspace.workspace),
-        actions::MCP_LIST_TOOLS,
-        &PolicyResource::McpServer {
-            id: server.id.0.to_string(),
-            name: server.name.clone(),
-            enabled: server.enabled,
-            tags: server.tags.clone(),
-            owner: server.created_by_user.clone(),
-        },
-        &PolicyContext::default(),
-    );
+    let decision = state
+        .authz
+        .request(
+            crate::authz::PolicyCaller::Principal {
+                principal: PolicyPrincipal::Workspace(&workspace.workspace),
+                oauth_claims: workspace.oauth_claims.clone(),
+            },
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .check_with_reasons(
+            actions::MCP_LIST_TOOLS,
+            &PolicyResource::McpServer {
+                id: server.id.0.to_string(),
+                name: server.name.clone(),
+                enabled: server.enabled,
+                tags: server.tags.clone(),
+                owner: server.created_by_user.clone(),
+            },
+        )
+        .await;
     matches!(
         decision,
         Ok(d) if d.decision == PolicyDecisionResult::Permit
@@ -209,10 +216,12 @@ pub(super) async fn sync_mcp_servers(
         .store
         .list_mcp_servers_for_workspace(&workspace.workspace.id)
         .await?;
-    let servers: Vec<_> = bound_servers
-        .into_iter()
-        .filter(|s| workspace_can_view_mcp_server(&state, &workspace, s))
-        .collect();
+    let mut servers: Vec<_> = Vec::new();
+    for s in bound_servers.into_iter() {
+        if workspace_can_view_mcp_server(&state, &workspace, &s).await {
+            servers.push(s);
+        }
+    }
 
     let mut entries = Vec::new();
     for s in servers {
@@ -287,14 +296,22 @@ async fn encrypt_server_credentials(
         }
 
         // Cedar policy check: can this workspace vend this credential?
-        let decision = state.policy_engine.evaluate(
-            &PolicyPrincipal::Workspace(&workspace.workspace),
-            actions::VEND_CREDENTIAL,
-            &PolicyResource::Credential {
-                credential: cred.clone(),
-            },
-            &PolicyContext::default(),
-        )?;
+        let decision = state
+            .authz
+            .request(
+                crate::authz::PolicyCaller::Principal {
+                    principal: PolicyPrincipal::Workspace(&workspace.workspace),
+                    oauth_claims: workspace.oauth_claims.clone(),
+                },
+                &uuid::Uuid::new_v4().to_string(),
+            )
+            .check_with_reasons(
+                actions::VEND_CREDENTIAL,
+                &PolicyResource::Credential {
+                    credential: cred.clone(),
+                },
+            )
+            .await?;
 
         if decision.decision == PolicyDecisionResult::Forbid {
             tracing::debug!(credential_id = %cred_id.0, server = %server.name, "credential not authorized for workspace, skipping");
@@ -428,14 +445,18 @@ pub(super) async fn sync_mcp_tools(
     State(state): State<AppState>,
     workspace: AuthenticatedWorkspace,
 ) -> Result<Json<ApiResponse<Vec<McpToolSyncEntry>>>, ApiError> {
-    let servers = state
+    let bound_servers = state
         .store
         .list_mcp_servers_for_workspace(&workspace.workspace.id)
         .await?;
-
-    let entries: Vec<McpToolSyncEntry> = servers
+    let mut filtered = Vec::new();
+    for s in bound_servers.into_iter() {
+        if workspace_can_view_mcp_server(&state, &workspace, &s).await {
+            filtered.push(s);
+        }
+    }
+    let entries: Vec<McpToolSyncEntry> = filtered
         .into_iter()
-        .filter(|s| workspace_can_view_mcp_server(&state, &workspace, s))
         .flat_map(|s| {
             let server_name = s.name.clone();
             // Prefer discovered_tools (has descriptions) over allowed_tools (names only)

@@ -6,7 +6,7 @@ use agent_cordon_core::oauth2::OAuth2TokenManager;
 use agent_cordon_core::storage::Store;
 use metrics_exporter_prometheus::PrometheusHandle;
 
-use crate::auditing_policy_engine::AuditingPolicyEngine;
+use crate::authz::Authz;
 use crate::config::AppConfig;
 use crate::events::{EventBus, SseConnectionTracker, UiEventBus};
 use crate::middleware::rate_limit_device_approve::DeviceApproveRateLimiter;
@@ -21,7 +21,7 @@ pub type SharedStore = Arc<dyn Store + Send + Sync>;
 pub struct AppState {
     pub store: SharedStore,
     pub jwt_issuer: Arc<JwtIssuer>,
-    pub policy_engine: Arc<AuditingPolicyEngine>,
+    pub authz: Arc<Authz>,
     pub encryptor: Arc<AesGcmEncryptor>,
     pub config: AppConfig,
     pub login_rate_limiter: Arc<LoginRateLimiter>,

@@ -44,7 +44,7 @@ pub(super) async fn add_workspace_bindings(
         ));
     }
 
-    let policy_decision = check_manage_mcp_servers(&state, &auth)?;
+    let policy_decision = check_manage_mcp_servers(&state, &auth).await?;
 
     let server_id = McpServerId(id);
     let server = state
@@ -147,7 +147,7 @@ pub(super) async fn remove_workspace_binding(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path((id, workspace_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
-    let policy_decision = check_manage_mcp_servers(&state, &auth)?;
+    let policy_decision = check_manage_mcp_servers(&state, &auth).await?;
 
     let server_id = McpServerId(id);
     let server = state

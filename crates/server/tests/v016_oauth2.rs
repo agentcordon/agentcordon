@@ -850,8 +850,7 @@ async fn ws3_audit_event_no_credential_stored() {
 // The BE rejects unresolved `{...}` braces as a safety net; we lock that in.
 // ===========================================================================
 
-const ENTRA_TEMPLATE_URL: &str =
-    "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token";
+const ENTRA_TEMPLATE_URL: &str = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token";
 const ENTRA_RESOLVED_URL: &str =
     "https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token";
 
@@ -1029,9 +1028,12 @@ async fn credential_templates_entra_exposes_tenant_id_field() {
         .find(|t| t["key"].as_str() == Some("entra-id"))
         .unwrap_or_else(|| panic!("entra-id template must be present: {:?}", templates));
 
-    let fields = entra["fields"]
-        .as_array()
-        .unwrap_or_else(|| panic!("entra-id template must expose a `fields` array: {:?}", entra));
+    let fields = entra["fields"].as_array().unwrap_or_else(|| {
+        panic!(
+            "entra-id template must expose a `fields` array: {:?}",
+            entra
+        )
+    });
     let field_names: Vec<&str> = fields.iter().filter_map(|v| v.as_str()).collect();
     assert!(
         field_names.contains(&"tenant_id"),
@@ -1198,13 +1200,8 @@ async fn device_approve_requires_manage_workspaces_policy() {
     // Issue a workspace-bound device code. The endpoint is public form-POST;
     // no caller auth is needed.
     let pk_hash = "a".repeat(64);
-    let (_device_code, user_code) = issue_workspace_device_code(
-        &app,
-        "policy-gate-ws",
-        &pk_hash,
-        "credentials:discover",
-    )
-    .await;
+    let (_device_code, user_code) =
+        issue_workspace_device_code(&app, "policy-gate-ws", &pk_hash, "credentials:discover").await;
 
     // The Viewer logs in and tries to approve. They present valid
     // user_code + matching pk_hash, so everything downstream of the policy
@@ -1523,13 +1520,8 @@ async fn device_token_exchange_no_silent_bootstrap_fallback() {
     .await;
 
     let pk_hash = "e".repeat(64);
-    let (device_code_plain, user_code) = issue_workspace_device_code(
-        &app,
-        "fallback-ws",
-        &pk_hash,
-        "credentials:discover",
-    )
-    .await;
+    let (device_code_plain, user_code) =
+        issue_workspace_device_code(&app, "fallback-ws", &pk_hash, "credentials:discover").await;
 
     let admin_cookie = login_user(&app, "admin-fallback", TEST_PASSWORD).await;
     let (status, body) = send_json(
@@ -1588,7 +1580,9 @@ async fn device_token_exchange_no_silent_bootstrap_fallback() {
         .to_lowercase();
     assert!(
         desc.contains("workspace")
-            && (desc.contains("missing") || desc.contains("revoked") || desc.contains("incomplete")),
+            && (desc.contains("missing")
+                || desc.contains("revoked")
+                || desc.contains("incomplete")),
         "expected workspace-integrity failure message, got: {:?}",
         json
     );

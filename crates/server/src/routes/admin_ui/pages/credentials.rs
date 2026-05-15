@@ -11,9 +11,7 @@ use crate::state::AppState;
 use agent_cordon_core::domain::credential::{CredentialId, CredentialSummary, StoredCredential};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::user::User;
-use agent_cordon_core::policy::{
-    actions, PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource,
-};
+use agent_cordon_core::policy::{actions, claim_keys, PolicyPrincipal, PolicyResource};
 
 use super::{render_template, CsrfToken, NotFoundPage, UserContext};
 
@@ -36,13 +34,6 @@ async fn list_credentials_for_user(state: &AppState, user: &User) -> Vec<Credent
     let cred_map: std::collections::HashMap<CredentialId, StoredCredential> =
         all_stored.into_iter().map(|c| (c.id.clone(), c)).collect();
 
-    let principal = PolicyPrincipal::User(user);
-    let context = PolicyContext {
-        target_url: None,
-        requested_scopes: vec![],
-        ..Default::default()
-    };
-
     // Load workspaces owned by this user for workspace-principal Cedar checks
     let owned_workspaces = state
         .store
@@ -57,53 +48,60 @@ async fn list_credentials_for_user(state: &AppState, user: &User) -> Vec<Credent
             None => continue,
         };
 
-        // 1. Check Cedar with User principal
-        match state.policy_engine.evaluate(
-            &principal,
-            actions::LIST,
-            &PolicyResource::Credential {
-                credential: cred.clone(),
-            },
-            &context,
-        ) {
-            Ok(decision) if decision.decision != PolicyDecisionResult::Forbid => {
-                allowed.push(summary);
-                continue;
-            }
-            Ok(_) => {} // Cedar denied with user principal — try workspace principals
-            Err(e) => {
-                tracing::warn!(
-                    credential_id = %summary.id.0,
-                    error = %e,
-                    "Cedar evaluation failed for credential in UI (user principal), trying workspace principals"
-                );
-            }
+        // 1. Check Cedar with User principal via the Authz seam.
+        let user_ok = matches!(
+            state
+                .authz
+                .request(
+                    crate::authz::PolicyCaller::Principal {
+                        principal: PolicyPrincipal::User(user),
+                        oauth_claims: None,
+                    },
+                    &uuid::Uuid::new_v4().to_string(),
+                )
+                .with_claim(
+                    claim_keys::REQUESTED_SCOPES,
+                    serde_json::json!(Vec::<String>::new()),
+                )
+                .check_with_reasons(
+                    actions::LIST,
+                    &PolicyResource::Credential { credential: cred.clone() },
+                )
+                .await,
+            Ok(d) if d.decision != PolicyDecisionResult::Forbid
+        );
+        if user_ok {
+            allowed.push(summary);
+            continue;
         }
 
-        // 2. Check Cedar with each owned Workspace principal
+        // 2. Check Cedar with each owned Workspace principal.
         let mut ws_allowed = false;
         for ws in &owned_workspaces {
-            match state.policy_engine.evaluate(
-                &PolicyPrincipal::Workspace(ws),
-                actions::LIST,
-                &PolicyResource::Credential {
-                    credential: cred.clone(),
-                },
-                &context,
-            ) {
-                Ok(decision) if decision.decision != PolicyDecisionResult::Forbid => {
-                    ws_allowed = true;
-                    break;
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        credential_id = %summary.id.0,
-                        workspace_id = %ws.id.0,
-                        error = %e,
-                        "Cedar evaluation failed for credential in UI (workspace principal), skipping"
-                    );
-                }
+            let ok = matches!(
+                state
+                    .authz
+                    .request(
+                        crate::authz::PolicyCaller::Principal {
+                            principal: PolicyPrincipal::Workspace(ws),
+                            oauth_claims: None,
+                        },
+                        &uuid::Uuid::new_v4().to_string(),
+                    )
+                    .with_claim(
+                        claim_keys::REQUESTED_SCOPES,
+                        serde_json::json!(Vec::<String>::new()),
+                    )
+                    .check_with_reasons(
+                        actions::LIST,
+                        &PolicyResource::Credential { credential: cred.clone() },
+                    )
+                    .await,
+                Ok(d) if d.decision != PolicyDecisionResult::Forbid
+            );
+            if ok {
+                ws_allowed = true;
+                break;
             }
         }
         if ws_allowed {

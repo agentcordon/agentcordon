@@ -7,7 +7,7 @@ use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::user::{User, UserId, UserRole};
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
-use agent_cordon_core::policy::{PolicyContext, PolicyEngine, PolicyPrincipal, PolicyResource};
+use agent_cordon_core::policy::{claim_keys, PolicyContext, PolicyPrincipal, PolicyResource};
 
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
@@ -186,7 +186,7 @@ pub(super) async fn test_policy(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<TestPolicyRequest>,
 ) -> Result<Json<ApiResponse<TestPolicyResponse>>, ApiError> {
-    let policy_decision = check_manage_policies(&state, &auth)?;
+    let policy_decision = check_manage_policies(&state, &auth).await?;
 
     // Validate required fields
     let principal_req = req
@@ -202,13 +202,28 @@ pub(super) async fn test_policy(
 
     // Build PolicyContext
     let policy_context = PolicyContext {
-        target_url: context_req.target_url,
-        requested_scopes: context_req.requested_scopes.unwrap_or_default(),
-        tool_name: context_req.tool_name,
-        credential_name: context_req.credential_name,
-        tag_value: context_req.tag_value,
         ..Default::default()
-    };
+    }
+    .with_claim(
+        claim_keys::TARGET_URL,
+        serde_json::json!(context_req.target_url),
+    )
+    .with_claim(
+        claim_keys::REQUESTED_SCOPES,
+        serde_json::json!(context_req.requested_scopes.unwrap_or_default()),
+    )
+    .with_claim(
+        claim_keys::TOOL_NAME,
+        serde_json::json!(context_req.tool_name),
+    )
+    .with_claim(
+        claim_keys::CREDENTIAL_NAME,
+        serde_json::json!(context_req.credential_name),
+    )
+    .with_claim(
+        claim_keys::TAG_VALUE,
+        serde_json::json!(context_req.tag_value),
+    );
 
     // Build resource
     let resource_id = id_to_uuid(resource_req.id.as_deref().unwrap_or("system"));
@@ -238,15 +253,21 @@ pub(super) async fn test_policy(
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             };
-            state
-                .policy_engine
-                .evaluate(
-                    &PolicyPrincipal::Workspace(&workspace),
-                    &action,
-                    &resource,
-                    &policy_context,
-                )
-                .map_err(|e| ApiError::BadRequest(format!("policy evaluation error: {e}")))?
+            // Use the Authz seam's blocking variant — test_policy is an admin
+            // tool, so the auto-emitted PolicyEvaluated audit event correctly
+            // records that an admin probed a policy decision.
+            let mut req = state.authz.request(
+                crate::authz::PolicyCaller::Principal {
+                    principal: PolicyPrincipal::Workspace(&workspace),
+                    oauth_claims: None,
+                },
+                &corr.0,
+            );
+            for (k, v) in policy_context.claims.iter() {
+                req = req.claim(k.clone(), v.clone());
+            }
+            req.check_with_reasons_blocking(&action, &resource)
+                .map_err(|e| ApiError::BadRequest(format!("policy evaluation error: {e:?}")))?
         }
         "User" => {
             let user = User {
@@ -264,15 +285,18 @@ pub(super) async fn test_policy(
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             };
-            state
-                .policy_engine
-                .evaluate(
-                    &PolicyPrincipal::User(&user),
-                    &action,
-                    &resource,
-                    &policy_context,
-                )
-                .map_err(|e| ApiError::BadRequest(format!("policy evaluation error: {e}")))?
+            let mut req = state.authz.request(
+                crate::authz::PolicyCaller::Principal {
+                    principal: PolicyPrincipal::User(&user),
+                    oauth_claims: None,
+                },
+                &corr.0,
+            );
+            for (k, v) in policy_context.claims.iter() {
+                req = req.claim(k.clone(), v.clone());
+            }
+            req.check_with_reasons_blocking(&action, &resource)
+                .map_err(|e| ApiError::BadRequest(format!("policy evaluation error: {e:?}")))?
         }
         other => {
             return Err(ApiError::BadRequest(format!(

@@ -1162,7 +1162,7 @@ pub async fn grant_cedar_permission(
         .map(|p| (p.id.0.to_string(), p.cedar_policy))
         .collect();
     state
-        .policy_engine
+        .authz
         .reload_policies(sources)
         .expect("reload policy engine");
 }
@@ -1256,7 +1256,7 @@ pub async fn revoke_cedar_permission(
         .map(|p| (p.id.0.to_string(), p.cedar_policy))
         .collect();
     state
-        .policy_engine
+        .authz
         .reload_policies(sources)
         .expect("reload policy engine");
 }
