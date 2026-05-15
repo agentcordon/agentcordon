@@ -160,6 +160,10 @@ pub mod claim_keys {
     /// Optional justification (String) provided by the workspace for
     /// audit/compliance.
     pub const JUSTIFICATION: &str = "justification";
+    /// User ID (String, hyphenated UUID) of a consent grant's owner. Set on
+    /// `manage_consents` requests so policies can self-permit the granter.
+    /// Issue #10.
+    pub const CONSENT_USER_ID: &str = "consent_user_id";
 }
 
 /// Trait for policy engines that evaluate authorization decisions.

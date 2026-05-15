@@ -41,6 +41,10 @@
                             :class="{ 'tab-active': activeTab === 'mcp' }"
                             :aria-selected="activeTab === 'mcp'"
                             @click="activeTab = 'mcp'; loadMcpServers()">MCP Servers</button>
+                    <button class="tab-btn" role="tab"
+                            :class="{ 'tab-active': activeTab === 'consents' }"
+                            :aria-selected="activeTab === 'consents'"
+                            @click="activeTab = 'consents'; loadConsents()">Consents</button>
                 </nav>
 
                 <!-- Details tab -->
@@ -182,6 +186,43 @@
                         </tbody>
                     </table>
                 </div>
+
+                <!-- Consents tab (issue #10) -->
+                <div class="tab-content" role="tabpanel" x-show="activeTab === 'consents'">
+                    <div x-show="consentsLoading" class="page-loader page-loader-sm">
+                        <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+                    </div>
+                    <div x-show="!consentsLoading && consents.length === 0" class="empty-state empty-state-compact">
+                        <p>No consent grants for this workspace.</p>
+                    </div>
+                    <table x-show="!consentsLoading && consents.length > 0" class="tbl tbl-flush">
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Scopes</th>
+                                <th>Granted</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="c in consents" :key="c.user_id">
+                                <tr>
+                                    <td x-text="c.username"></td>
+                                    <td>
+                                        <template x-for="s in (c.scopes || [])" :key="s">
+                                            <span class="tag" x-text="s"></span>
+                                        </template>
+                                    </td>
+                                    <td class="timestamp" x-text="formatDateTime(c.granted_at)"></td>
+                                    <td>
+                                        <button class="btn btn-danger btn-sm"
+                                                @click="revokeConsent(c)">Revoke</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
         </template>
@@ -223,6 +264,9 @@ function workspaceDetailPane() {
         mcpServers: [],
         mcpLoading: false,
         mcpLoaded: false,
+        consents: [],
+        consentsLoading: false,
+        consentsLoaded: false,
         deleteModal: false,
         deleteTargetName: '',
 
@@ -292,6 +336,43 @@ function workspaceDetailPane() {
             } catch(e) { showToast('Failed to load MCP servers', 'error'); }
             this.mcpLoading = false;
             this.mcpLoaded = true;
+        },
+
+        async loadConsents() {
+            if (this.consentsLoaded) return;
+            this.consentsLoading = true;
+            try {
+                var id = '{{ workspace_id }}';
+                var resp = await fetch('/api/v1/workspaces/' + id + '/consents');
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.consents = (data.data || []).slice().sort(function(a, b) {
+                        return (b.granted_at || '').localeCompare(a.granted_at || '');
+                    });
+                }
+            } catch(e) { showToast('Failed to load consents', 'error'); }
+            this.consentsLoading = false;
+            this.consentsLoaded = true;
+        },
+
+        async revokeConsent(c) {
+            if (!confirm('Revoke ' + (c.username || c.user_id) + "'s consent? This deletes the grant and revokes all of their tokens for this workspace.")) {
+                return;
+            }
+            try {
+                var id = '{{ workspace_id }}';
+                var resp = await fetch('/api/v1/workspaces/' + id + '/consents/' + encodeURIComponent(c.user_id), {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                if (resp.ok) {
+                    this.consents = this.consents.filter(function(x) { return x.user_id !== c.user_id; });
+                    showToast('Consent revoked', 'success');
+                } else {
+                    var err = await resp.json().catch(function() { return {}; });
+                    showToast((err.error && err.error.message) || 'Failed to revoke consent', 'error');
+                }
+            } catch(e) { showToast('Failed to revoke consent', 'error'); }
         },
 
         async toggleEnabled() {

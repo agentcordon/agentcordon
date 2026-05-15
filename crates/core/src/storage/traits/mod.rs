@@ -21,7 +21,7 @@ pub use mcp_oauth_store::McpOAuthStore;
 pub use mcp_server_workspace_store::McpServerWorkspaceStore;
 pub use mcp_store::McpStore;
 pub use oauth_provider_client_store::OAuthProviderClientStore;
-pub use oauth_store::OAuthStore;
+pub use oauth_store::{ConsentRevocationCounts, OAuthStore};
 pub use oidc_store::OidcStore;
 pub use policy_store::PolicyStore;
 pub use secret_history_store::SecretHistoryStore;

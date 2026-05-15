@@ -1,3 +1,4 @@
+mod consents;
 mod crud;
 mod operations;
 
@@ -74,6 +75,11 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/workspaces/{id}/tags/{tag}",
             axum::routing::delete(remove_workspace_tag),
+        )
+        .route("/workspaces/{id}/consents", get(consents::list_consents))
+        .route(
+            "/workspaces/{id}/consents/{user_id}",
+            axum::routing::delete(consents::delete_consent),
         )
 }
 

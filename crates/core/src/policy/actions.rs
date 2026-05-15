@@ -24,6 +24,8 @@ pub const MCP_TOOL_CALL: &str = "mcp_tool_call";
 pub const MCP_LIST_TOOLS: &str = "mcp_list_tools";
 pub const REGISTER_WORKSPACE: &str = "register_workspace";
 pub const MANAGE_TAGS: &str = "manage_tags";
+/// Issue #10 — manage OAuth consent grants (view/delete).
+pub const MANAGE_CONSENTS: &str = "manage_consents";
 
 // Backward-compat aliases (removed in later phases)
 pub const MANAGE_AGENTS: &str = MANAGE_WORKSPACES;

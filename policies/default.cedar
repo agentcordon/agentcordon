@@ -252,3 +252,27 @@ forbid(
 ) when {
   !resource.enabled
 };
+
+// ---------------------------------------------------------------------------
+// SECTION 5: CONSENT GRANTS (issue #10)
+// ---------------------------------------------------------------------------
+
+// 5a. Admins can manage any OAuth consent grant (view/delete).
+permit(
+  principal is AgentCordon::User,
+  action == AgentCordon::Action::"manage_consents",
+  resource
+) when {
+  principal.enabled && principal.role == "admin"
+};
+
+// 5b. Self-serve: any user can manage their *own* consent grant. The
+// handler sets `context.consent_user_id` to the consent's owning user.id;
+// Cedar permits when that matches the calling principal.
+permit(
+  principal is AgentCordon::User,
+  action == AgentCordon::Action::"manage_consents",
+  resource
+) when {
+  principal.enabled && principal.id == context.consent_user_id
+};

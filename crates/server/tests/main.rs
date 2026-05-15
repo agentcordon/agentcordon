@@ -11,6 +11,7 @@
 mod common;
 
 mod cedar_policy_routes;
+mod consent_grants;
 mod credential_bugs;
 mod csrf;
 mod device_flow_activate_ui;
