@@ -80,7 +80,7 @@ pub enum PolicyResource {
 /// Additional context for policy evaluation.
 ///
 /// AWS-style open property bag. Per-action context (tool name, target URL,
-/// requested scopes, etc.) is carried in the [`claims`] HashMap; new
+/// requested scopes, etc.) is carried in the `claims` HashMap; new
 /// conditional-access knobs (region, MFA age, source IP, device posture,
 /// ...) can be added by handlers without changing this struct.
 ///
@@ -88,7 +88,7 @@ pub enum PolicyResource {
 /// (`context.tool_name`, `context.target_url`, `context.requested_scopes`,
 /// `context.credential_name`, `context.tag_value`, `context.justification`)
 /// continue to evaluate correctly — `build_context` reads them out of the
-/// bag using the same keys. Use [`ClaimKey`] constants to avoid typos.
+/// bag using the same keys. Use the [`claim_keys`] module constants to avoid typos.
 #[derive(Default, Debug, Clone)]
 pub struct PolicyContext {
     /// Correlation ID from the HTTP request, threaded into audit events.
@@ -147,7 +147,7 @@ impl PolicyContext {
 /// fields referenced by existing policy templates so that
 /// `context.<key>` continues to resolve.
 pub mod claim_keys {
-    /// Scopes (Vec<String>) the workspace is requesting for this access.
+    /// Scopes (`Vec<String>`) the workspace is requesting for this access.
     pub const REQUESTED_SCOPES: &str = "requested_scopes";
     /// Target URL (String) for `vend_credential` requests.
     pub const TARGET_URL: &str = "target_url";
