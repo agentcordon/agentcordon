@@ -12,7 +12,6 @@ use axum::{
 use uuid::Uuid;
 
 use agent_cordon_core::domain::credential::CredentialId;
-use agent_cordon_core::domain::mcp::McpServerId;
 use agent_cordon_core::domain::policy::PolicyId;
 use agent_cordon_core::domain::workspace::WorkspaceId;
 
@@ -172,68 +171,5 @@ pub async fn policy_partial(State(state): State<AppState>, Path(id): Path<String
         is_system: policy.is_system,
         cedar_policy: policy.cedar_policy,
         updated_at: policy.updated_at.format("%Y-%m-%d %H:%M").to_string(),
-    })
-}
-
-// ---------------------------------------------------------------------------
-// MCP Server Panel
-// ---------------------------------------------------------------------------
-
-#[derive(Template)]
-#[template(path = "partials/panels/mcp_server.html")]
-struct McpServerPanel {
-    server_id: String,
-    server_name: String,
-    transport: String,
-    upstream_url: String,
-    enabled: bool,
-    workspace_name: String,
-    #[allow(dead_code)] // Used by askama template (mcp_server.html)
-    workspace_id: String,
-    #[allow(dead_code)] // Used by askama template (mcp_server.html)
-    tools: Vec<String>,
-    tools_count: usize,
-    created_at: String,
-}
-
-/// GET /mcp-servers/{id}/partial — HTML fragment for MCP server slide-in panel.
-pub async fn mcp_server_partial(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let uuid = match Uuid::parse_str(&id) {
-        Ok(u) => u,
-        Err(_) => return not_found(),
-    };
-
-    let server = match state.store.get_mcp_server(&McpServerId(uuid)).await {
-        Ok(Some(s)) => s,
-        _ => return not_found(),
-    };
-
-    let workspace_name = state
-        .store
-        .get_workspace(&server.workspace_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|w| w.name)
-        .unwrap_or_else(|| server.workspace_id.0.to_string());
-
-    let tools = server.allowed_tools.as_ref().cloned().unwrap_or_default();
-    let tools_count = tools.len();
-
-    render_partial(&McpServerPanel {
-        server_id: uuid.to_string(),
-        server_name: server.name,
-        transport: server.transport.to_string(),
-        upstream_url: if server.upstream_url.is_empty() {
-            "\u{2014}".to_string()
-        } else {
-            server.upstream_url
-        },
-        enabled: server.enabled,
-        workspace_name,
-        workspace_id: server.workspace_id.0.to_string(),
-        tools,
-        tools_count,
-        created_at: server.created_at.format("%Y-%m-%d %H:%M").to_string(),
     })
 }

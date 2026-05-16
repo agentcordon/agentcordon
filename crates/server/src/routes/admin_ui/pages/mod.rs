@@ -286,7 +286,6 @@ pub fn page_routes(app_state: AppState) -> Router<AppState> {
         .route("/workspaces/{id}/partial", get(panels::workspace_partial))
         .route("/credentials/{id}/partial", get(panels::credential_partial))
         .route("/security/{id}/partial", get(panels::policy_partial))
-        .route("/mcp-servers/{id}/partial", get(panels::mcp_server_partial))
         .route("/register", get(special::agent_registration_page))
         // RFC 8628 device-flow activation page. `GET` renders the consent
         // form; `POST` records the approve/deny decision via
