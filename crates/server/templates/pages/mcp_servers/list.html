@@ -70,9 +70,9 @@
                     tabindex="0"
                     role="link"
                     :aria-label="'View details for ' + server.name"
-                    @click="openServerPanel(server)"
-                    @keydown.enter="openServerPanel(server)"
-                    @keydown.space.prevent="openServerPanel(server)">
+                    @click="window.location.href = '/mcp-servers/' + server.id"
+                    @keydown.enter="window.location.href = '/mcp-servers/' + server.id"
+                    @keydown.space.prevent="window.location.href = '/mcp-servers/' + server.id">
                     <td>
                         <div class="mcp-server-name-cell">
                             <span x-show="mcpLogoUrl(server)" class="mcp-server-logo">
@@ -309,15 +309,6 @@ function mcpServersPage() {
                 if (name.indexOf(key) >= 0) return logoDarkClass(key);
             }
             return '';
-        },
-        openServerPanel(server) {
-            window.dispatchEvent(new CustomEvent('slide-panel-open', {
-                detail: {
-                    url: '/mcp-servers/' + server.id + '/partial',
-                    title: server.name,
-                    fullUrl: '/mcp-servers/' + server.id
-                }
-            }));
         },
         async loadServers() {
             try {

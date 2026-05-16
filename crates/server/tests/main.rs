@@ -22,6 +22,7 @@ mod device_flow_token_client_id;
 mod docs;
 mod e2e_two_minute_setup;
 mod lifecycle_cross_principal;
+mod mcp_servers_ui_31;
 mod mcp_tests;
 mod metrics;
 mod oauth2_refresh_rotation;
