@@ -84,9 +84,13 @@ pub async fn mcp_server_list_page(State(state): State<AppState>, request: Reques
     let server_views: Vec<McpServerView> = servers
         .iter()
         .map(|s| {
-            let workspace_name = workspace_map
-                .get(&s.workspace_id.0.to_string())
-                .cloned()
+            // #37: the legacy `workspace_id` column is being phased out; for
+            // display purposes fall back to "—" when the new junction is the
+            // sole source of binding info.
+            let ws_id_str = s.workspace_id.as_ref().map(|w| w.0.to_string());
+            let workspace_name = ws_id_str
+                .as_ref()
+                .and_then(|id| workspace_map.get(id).cloned())
                 .unwrap_or_default();
             McpServerView {
                 id: s.id.0.to_string(),
@@ -99,7 +103,7 @@ pub async fn mcp_server_list_page(State(state): State<AppState>, request: Reques
                 transport: s.transport.to_string(),
                 enabled: s.enabled,
                 tools_count: s.allowed_tools.as_ref().map(|t| t.len()).unwrap_or(0),
-                workspace_id: s.workspace_id.0.to_string(),
+                workspace_id: ws_id_str.unwrap_or_default(),
                 workspace_name,
                 auth_method: s.auth_method.to_string(),
                 template_key: s.template_key.clone().unwrap_or_default(),

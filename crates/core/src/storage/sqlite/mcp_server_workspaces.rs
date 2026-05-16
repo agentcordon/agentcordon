@@ -193,7 +193,7 @@ mod tests {
         let now = Utc::now();
         McpServer {
             id: McpServerId(Uuid::new_v4()),
-            workspace_id,
+            workspace_id: Some(workspace_id),
             name: name.to_string(),
             upstream_url: "https://example.test".to_string(),
             transport: McpTransport::Http,
@@ -213,13 +213,32 @@ mod tests {
 
     #[tokio::test]
     async fn migration_backfills_junction_from_existing_mcp_servers() {
-        // Reproduce the pre-010 state: insert an MCP server without a junction
-        // row, then re-run the backfill SQL and assert exactly one row lands.
+        // Reproduce the pre-010 state: a legacy row with mcp_servers.workspace_id
+        // set but no junction row, then re-run the backfill SQL and assert
+        // exactly one row lands. Post-#37 the regular `create_mcp_server`
+        // path no longer writes the column, so we INSERT directly to mirror
+        // the historical pre-010 shape.
         let store = setup().await;
         let ws = make_workspace("ws-a");
         store.create_workspace(&ws).await.expect("ws");
-        let mcp = make_mcp(ws.id.clone(), "mcp-a", true);
-        store.create_mcp_server(&mcp).await.expect("mcp");
+        let mcp_id = McpServerId(Uuid::new_v4());
+        let ws_id_str = ws.id.0.to_string();
+        let mcp_id_str = mcp_id.0.to_string();
+        store
+            .conn()
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO mcp_servers \
+                     (id, workspace_id, name, upstream_url, transport, credential_bindings, \
+                      allowed_tools, enabled, created_at, updated_at) \
+                     VALUES (?1, ?2, 'mcp-a', 'https://example.test', 'http', '[]', NULL, 1, \
+                             '2026-01-01', '2026-01-01')",
+                    rusqlite::params![mcp_id_str, ws_id_str],
+                )
+                .map_err(tokio_rusqlite::Error::Rusqlite)
+            })
+            .await
+            .expect("seed legacy mcp row");
 
         // Start from a clean junction — simulates pre-010 baseline.
         store
@@ -248,7 +267,7 @@ mod tests {
             .expect("run backfill");
 
         let bound = store
-            .list_workspaces_for_mcp_server(&mcp.id)
+            .list_workspaces_for_mcp_server(&mcp_id)
             .await
             .expect("list");
         assert_eq!(bound.len(), 1, "backfill inserts one row per MCP");

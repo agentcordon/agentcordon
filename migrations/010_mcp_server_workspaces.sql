@@ -1,10 +1,15 @@
 -- MCP <-> Workspace M:N junction.
 --
 -- Moves the MCP-to-workspace relationship from 1:1 to M:N so one MCP record
--- can be bound to multiple workspaces owned by the same user. The old
--- `mcp_servers.workspace_id` column is retained as an immutable audit
--- anchor — the workspace the MCP was originally provisioned for — and is
--- never mutated by bind/unbind. Current routing reads from this table.
+-- can be bound to multiple workspaces. This junction table is the **single
+-- source of truth** for workspace↔MCP routing — every read path (admin
+-- list, workspace permissions, broker sync, report-tools) goes through it.
+--
+-- The old `mcp_servers.workspace_id` column is being phased out per issue
+-- #37. Migration 012 makes it nullable, and the application no longer
+-- writes it on create/update. Existing rows keep their value as a
+-- write-once audit anchor (the workspace the MCP was originally
+-- provisioned for) until a future migration drops the column entirely.
 --
 -- Forward-only per project convention. Rolling back is done by restoring a
 -- pre-upgrade database backup; see docs/upgrading.md.

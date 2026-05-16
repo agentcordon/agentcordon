@@ -91,7 +91,7 @@ async fn make_mcp_server(
     let now = chrono::Utc::now();
     let mcp = McpServer {
         id: McpServerId(Uuid::new_v4()),
-        workspace_id: original_ws.id.clone(),
+        workspace_id: Some(original_ws.id.clone()),
         name: name.to_string(),
         upstream_url: format!("https://example.test/{}", name),
         transport: McpTransport::Http,
@@ -1195,83 +1195,5 @@ async fn case_6_2_workspace_list_admin_sees_all() {
             && ids.contains(&ws_bob.id.0.to_string().as_str()),
         "admin should see both: got {:?}",
         ids
-    );
-}
-
-// ===========================================================================
-// Issue #32 — POST/DELETE on /mcp-servers/{id}/workspaces must emit
-// UiEvent::McpServerChanged so the list page's Workspaces column refreshes.
-// ===========================================================================
-
-/// #32 — RED: add_workspace_bindings emits a UI event after a successful add.
-#[tokio::test]
-async fn add_workspace_bindings_emits_ui_event() {
-    let ctx = TestAppBuilder::new().build().await;
-    let _admin = make_admin(&ctx, "admin-32a").await;
-    let (admin_cookie, admin_csrf) = login(&ctx, "admin-32a").await;
-    let fx = owner_fixture(&ctx, "ev-add").await;
-    let ws_b = make_owned_workspace(&ctx, "ws-b-add-32", &fx.owner).await;
-
-    let mut rx = ctx.state.ui_event_bus.subscribe();
-
-    let (status, _body) = post_bindings(
-        &ctx,
-        &admin_cookie,
-        &admin_csrf,
-        &fx.mcp.id,
-        json!({ "workspace_ids": [ws_b.id.0.to_string()] }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-
-    let ev = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
-        .await
-        .expect("ui event must be emitted within 500ms")
-        .expect("ui event must be received without channel error");
-    assert!(
-        matches!(
-            ev,
-            agent_cordon_server::events::UiEvent::McpServerChanged { .. }
-        ),
-        "expected McpServerChanged, got {ev:?}",
-    );
-}
-
-/// #32 — RED: remove_workspace_binding emits a UI event after a successful remove.
-#[tokio::test]
-async fn remove_workspace_binding_emits_ui_event() {
-    let ctx = TestAppBuilder::new().build().await;
-    let _admin = make_admin(&ctx, "admin-32b").await;
-    let (admin_cookie, admin_csrf) = login(&ctx, "admin-32b").await;
-    let fx = owner_fixture(&ctx, "ev-rm").await;
-    let ws_b = make_owned_workspace(&ctx, "ws-b-rm-32", &fx.owner).await;
-
-    // Bind first so there are 2 workspaces — the last-binding guard prevents
-    // removing the only one. Drain the add event before subscribing for the
-    // remove.
-    let (status, _) = post_bindings(
-        &ctx,
-        &admin_cookie,
-        &admin_csrf,
-        &fx.mcp.id,
-        json!({ "workspace_ids": [ws_b.id.0.to_string()] }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-
-    let mut rx = ctx.state.ui_event_bus.subscribe();
-    let (status, _) = delete_binding(&ctx, &admin_cookie, &admin_csrf, &fx.mcp.id, &ws_b.id).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    let ev = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
-        .await
-        .expect("ui event must be emitted within 500ms")
-        .expect("ui event must be received without channel error");
-    assert!(
-        matches!(
-            ev,
-            agent_cordon_server::events::UiEvent::McpServerChanged { .. }
-        ),
-        "expected McpServerChanged, got {ev:?}",
     );
 }

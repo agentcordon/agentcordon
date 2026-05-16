@@ -16,9 +16,11 @@ pub const MIGRATION_010: &str =
     include_str!("../../../../migrations/010_mcp_server_workspaces.sql");
 pub const MIGRATION_011: &str =
     include_str!("../../../../migrations/011_drop_credential_name_unique.sql");
+pub const MIGRATION_012: &str =
+    include_str!("../../../../migrations/012_relax_mcp_servers_workspace_id.sql");
 
 /// All migrations in order. Each entry is (version, SQL content).
-const MIGRATIONS: [(i64, &str); 11] = [
+const MIGRATIONS: [(i64, &str); 12] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
     (3, MIGRATION_003),
@@ -30,6 +32,7 @@ const MIGRATIONS: [(i64, &str); 11] = [
     (9, MIGRATION_009),
     (10, MIGRATION_010),
     (11, MIGRATION_011),
+    (12, MIGRATION_012),
 ];
 
 /// Run all pending migrations, tracking applied versions in a `schema_migrations` table.
@@ -291,6 +294,47 @@ mod tests {
                 "bootstrap client must allow scope {required:?}, got: {scopes:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_mcp_servers_workspace_id_is_nullable_after_migrations() {
+        // Issue #37: `mcp_server_workspaces` is the single source of truth for
+        // workspace↔MCP routing. Migration 012 relaxes the legacy
+        // `mcp_servers.workspace_id NOT NULL` constraint so new rows can be
+        // written without a denormalized owner column.
+        let conn = open_memory_db();
+        run_migrations(&conn).expect("run migrations");
+
+        conn.execute(
+            "INSERT INTO workspaces (id, name, status, tags, created_at, updated_at) \
+             VALUES ('ws_anchor', 'anchor', 'active', '[]', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .expect("seed anchor workspace");
+
+        // INSERT with workspace_id = NULL must succeed.
+        conn.execute(
+            "INSERT INTO mcp_servers \
+             (id, workspace_id, name, upstream_url, transport, credential_bindings, \
+              allowed_tools, enabled, created_at, updated_at) \
+             VALUES ('mcp_no_owner', NULL, 'orphan-mcp', 'http://x', 'http', '[]', \
+                     NULL, 1, '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .expect("INSERT with workspace_id=NULL must succeed after migration 012");
+
+        let stored_workspace_id: Option<String> = conn
+            .query_row(
+                "SELECT workspace_id FROM mcp_servers WHERE id = 'mcp_no_owner'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("row exists");
+        assert!(
+            stored_workspace_id.is_none(),
+            "row should keep workspace_id = NULL, got {:?}",
+            stored_workspace_id
+        );
     }
 
     #[test]

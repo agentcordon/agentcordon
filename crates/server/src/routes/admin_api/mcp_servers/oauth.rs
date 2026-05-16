@@ -515,7 +515,9 @@ fn create_oauth_credential(
 /// Create an MCP server record for an OAuth2-provisioned template.
 fn create_mcp_server(
     template: &crate::routes::admin_api::mcp_templates::McpServerTemplate,
-    workspace_id: &WorkspaceId,
+    // #37: legacy parameter retained for caller signature compatibility; the
+    // workspace binding is now created via the junction by the caller.
+    _workspace_id: &WorkspaceId,
     credential_id: &agent_cordon_core::domain::credential::CredentialId,
     user_id: &agent_cordon_core::domain::user::UserId,
 ) -> McpServer {
@@ -523,7 +525,8 @@ fn create_mcp_server(
     let transport = McpTransport::from_str_opt(&template.transport).unwrap_or_default();
     McpServer {
         id: McpServerId(Uuid::new_v4()),
-        workspace_id: workspace_id.clone(),
+        // #37: workspace ownership lives in `mcp_server_workspaces`.
+        workspace_id: None,
         name: template.key.clone(),
         upstream_url: template.upstream_url.clone(),
         transport,

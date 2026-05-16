@@ -78,8 +78,12 @@ impl McpTransport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServer {
     pub id: McpServerId,
-    /// The workspace this MCP server belongs to. Required — every MCP server is workspace-scoped.
-    pub workspace_id: WorkspaceId,
+    /// Legacy: the workspace this MCP was originally provisioned for. Per
+    /// issue #37 this field is being phased out — the
+    /// `mcp_server_workspaces` junction table is now the single source of
+    /// truth for routing. New records leave this `None`; old rows keep
+    /// their value as a write-once audit anchor until removal.
+    pub workspace_id: Option<WorkspaceId>,
     pub name: String,
     pub upstream_url: String,
     pub transport: McpTransport,

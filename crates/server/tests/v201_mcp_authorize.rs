@@ -27,7 +27,7 @@ async fn create_mcp_server_for_workspace(
     let now = chrono::Utc::now();
     let server = McpServer {
         id: McpServerId(Uuid::new_v4()),
-        workspace_id: workspace_id.clone(),
+        workspace_id: Some(workspace_id.clone()),
         name: name.to_string(),
         upstream_url: format!("http://localhost:9999/{}", name),
         transport: McpTransport::Http,

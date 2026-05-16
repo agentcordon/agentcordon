@@ -58,7 +58,7 @@ fn mk_mcp(workspace_id: &WorkspaceId, name: &str, enabled: bool) -> McpServer {
     let now = Utc::now();
     McpServer {
         id: McpServerId(Uuid::new_v4()),
-        workspace_id: workspace_id.clone(),
+        workspace_id: Some(workspace_id.clone()),
         name: name.to_string(),
         upstream_url: "https://example.test".to_string(),
         transport: McpTransport::Http,

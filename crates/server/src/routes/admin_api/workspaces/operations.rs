@@ -211,8 +211,13 @@ pub(super) async fn get_workspace_permissions(
         return Err(ApiError::Forbidden("workspace is disabled".to_string()));
     }
 
-    // 3. List all MCP servers and evaluate Cedar policies
-    let mcp_servers = state.store.list_mcp_servers().await?;
+    // 3. List MCPs bound to this workspace via the junction, then evaluate
+    //    Cedar policies for each. The junction is the single source of truth
+    //    for workspace↔MCP routing (#37); Cedar still gates per-MCP access.
+    let mcp_servers = state
+        .store
+        .list_mcp_servers_for_workspace(&workspace_id)
+        .await?;
     let mut scopes = Vec::new();
 
     for server in &mcp_servers {

@@ -285,7 +285,7 @@ async fn test_rsop_mcpserver_returns_matrix() {
     let now = chrono::Utc::now();
     let mcp = agent_cordon_core::domain::mcp::McpServer {
         id: agent_cordon_core::domain::mcp::McpServerId(uuid::Uuid::new_v4()),
-        workspace_id: d_uuid,
+        workspace_id: Some(d_uuid),
         name: "rsop-test-mcp".to_string(),
         upstream_url: "http://localhost:9999".to_string(),
         transport: agent_cordon_core::domain::mcp::McpTransport::Http,
@@ -337,7 +337,7 @@ async fn test_rsop_mcpserver_includes_mcp_actions() {
     let now = chrono::Utc::now();
     let mcp = agent_cordon_core::domain::mcp::McpServer {
         id: agent_cordon_core::domain::mcp::McpServerId(uuid::Uuid::new_v4()),
-        workspace_id: d_uuid,
+        workspace_id: Some(d_uuid),
         name: "rsop-mcp-actions".to_string(),
         upstream_url: "http://localhost:9999".to_string(),
         transport: agent_cordon_core::domain::mcp::McpTransport::Http,
@@ -1215,7 +1215,7 @@ async fn test_rsop_detects_tool_specific_conditional_policy() {
     let now = chrono::Utc::now();
     let mcp = agent_cordon_core::domain::mcp::McpServer {
         id: agent_cordon_core::domain::mcp::McpServerId(uuid::Uuid::new_v4()),
-        workspace_id: d_uuid,
+        workspace_id: Some(d_uuid),
         name: "conditional-mcp".to_string(),
         upstream_url: "http://localhost:9999".to_string(),
         transport: agent_cordon_core::domain::mcp::McpTransport::Http,

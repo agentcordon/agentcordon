@@ -158,7 +158,8 @@ pub(crate) async fn provision_from_catalog(
     let transport = McpTransport::from_str_opt(&template.transport).unwrap_or_default();
     let server = McpServer {
         id: McpServerId(Uuid::new_v4()),
-        workspace_id: workspace_id.clone(),
+        // #37: workspace ownership lives in `mcp_server_workspaces`.
+        workspace_id: None,
         name: template.key.clone(),
         upstream_url: template.upstream_url.clone(),
         transport,

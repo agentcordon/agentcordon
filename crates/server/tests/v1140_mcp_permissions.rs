@@ -32,7 +32,9 @@ async fn create_mcp_server_in_store(
     let device_uuid = uuid::Uuid::parse_str(device_id).expect("valid device_id uuid");
     let server = agent_cordon_core::domain::mcp::McpServer {
         id: agent_cordon_core::domain::mcp::McpServerId(Uuid::new_v4()),
-        workspace_id: agent_cordon_core::domain::workspace::WorkspaceId(device_uuid),
+        workspace_id: Some(agent_cordon_core::domain::workspace::WorkspaceId(
+            device_uuid,
+        )),
         name: name.to_string(),
         upstream_url: "http://localhost:9999".to_string(),
         transport: agent_cordon_core::domain::mcp::McpTransport::Http,
