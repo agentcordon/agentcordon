@@ -84,6 +84,12 @@
                         <span class="audit-timestamp" :title="formatDateTime(ev.timestamp)" x-text="timeAgo(ev.timestamp)"></span>
                     </td>
                     <td class="audit-col-type">
+                        <svg x-show="ev.icon === 'credential'"
+                             class="audit-evt-icon audit-evt-icon-credential"
+                             width="14" height="14" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="1.75"
+                             stroke-linecap="round" stroke-linejoin="round"
+                             aria-hidden="true"><circle cx="8" cy="15" r="4"/><line x1="10.85" y1="12.15" x2="19" y2="4"/><line x1="18" y1="5" x2="20" y2="7"/><line x1="15" y1="8" x2="17" y2="10"/></svg>
                         <span class="pill pill-type" x-text="humanEventType(ev.event_type)"></span>
                     </td>
                     <td class="audit-col-principal" x-text="ev.principal"></td>
@@ -92,7 +98,9 @@
                         <span x-show="ev.resource_id_short"
                               class="mono-sm audit-resource-id"
                               x-text="ev.resource_id_short"></span>
-                        <span x-show="ev.summary" class="audit-summary-pill" x-text="ev.summary"></span>
+                        <span x-show="ev.summary"
+                              :class="ev.icon === 'credential' ? 'audit-cred-name' : 'audit-summary-pill'"
+                              x-text="ev.summary"></span>
                     </td>
                     <td class="audit-col-decision">
                         <span class="pill" :class="ev.decision_class" x-text="ev.decision"></span>
@@ -465,6 +473,13 @@ function auditListPage() {
 
 /* Resource ID */
 .audit-resource-id { color: var(--ink-faint); margin-left: 4px; }
+
+/* Event-type icon (e.g. credential glyph for credential lifecycle events) */
+.audit-evt-icon { color: var(--ink-soft); vertical-align: -2px; margin-right: 4px; }
+
+/* Credential name on credential-lifecycle rows — more prominent than the
+   faint audit-summary-pill used for other metadata previews. */
+.audit-cred-name { font-family: var(--font-mono); font-size: 12px; color: var(--ink); margin-left: 6px; }
 
 /* Chevron toggle */
 .audit-chevron { transition: transform 0.15s ease; color: var(--ink-faint); }
