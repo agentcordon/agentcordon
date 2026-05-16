@@ -11,6 +11,7 @@ use agent_cordon_core::domain::mcp::McpServerId;
 use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId};
 
+use crate::events::UiEvent;
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
@@ -131,6 +132,14 @@ pub(super) async fn add_workspace_bindings(
         StatusCode::CREATED
     };
 
+    // Issue #32 — notify the MCP servers list page so its Workspaces column
+    // refreshes after a binding mutation.
+    if !added.is_empty() {
+        state.ui_event_bus.emit(UiEvent::McpServerChanged {
+            server_name: server.name.clone(),
+        });
+    }
+
     Ok((
         status,
         Json(ApiResponse::ok(AddWorkspaceBindingsData {
@@ -227,6 +236,12 @@ pub(super) async fn remove_workspace_binding(
     if let Err(e) = state.store.append_audit_event(&event).await {
         tracing::warn!(error = %e, "Failed to write audit event");
     }
+
+    // Issue #32 — notify the MCP servers list page so its Workspaces column
+    // refreshes after a binding mutation.
+    state.ui_event_bus.emit(UiEvent::McpServerChanged {
+        server_name: server.name.clone(),
+    });
 
     Ok(StatusCode::NO_CONTENT)
 }
