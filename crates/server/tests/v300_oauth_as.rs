@@ -17,6 +17,7 @@ use tower::ServiceExt;
 
 use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::oauth2::types::{OAuthAccessToken, OAuthScope};
+use agent_cordon_core::storage::traits::AuditFilter;
 use agent_cordon_core::storage::Store;
 
 use agent_cordon_server::test_helpers::TestAppBuilder;
@@ -2070,4 +2071,57 @@ async fn test_consent_existing_client_still_works() {
     let (status, body) = send_form(&app, "/api/v1/oauth/token", &token_form).await;
     assert_eq!(status, StatusCode::OK, "token exchange: {}", body);
     assert!(body["access_token"].is_string());
+}
+
+// ===========================================================================
+// Issue #28 — Emit ConsentGranted audit event when a consent is recorded
+// ===========================================================================
+
+/// Issue #28 — RED: POSTing consent emits a dedicated `ConsentGranted` audit
+/// event so the lifecycle pairs symmetrically with `ConsentRevoked` (#10).
+#[tokio::test]
+async fn consent_post_emits_consent_granted_audit_event() {
+    let (app, store, state) = setup().await;
+
+    // Register a client and POST consent. Existing helpers do the full setup;
+    // we only need to assert on the audit log afterwards.
+    let scopes = "credentials:discover";
+    let (_client_id, _client_secret, _at, _rt, _cookie) =
+        full_oauth_flow(&app, &*store, &state, scopes).await;
+
+    let events = store
+        .list_audit_events_filtered(&AuditFilter {
+            limit: 50,
+            event_type: Some("consent_granted".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("list audit events");
+
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one ConsentGranted event, got {}",
+        events.len()
+    );
+    let ev = &events[0];
+    assert_eq!(
+        ev.resource_type, "oauth_consent",
+        "resource_type should match ConsentRevoked's shape"
+    );
+    // resource_id should be the granting user's id (the admin in this flow).
+    assert!(
+        ev.resource_id.is_some(),
+        "resource_id (user_id) should be set"
+    );
+    // scopes payload should reflect what was requested.
+    let payload_scopes = ev
+        .metadata
+        .get("scopes")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        payload_scopes.contains("credentials:discover"),
+        "details.scopes should contain the requested scope, got {payload_scopes:?}"
+    );
 }

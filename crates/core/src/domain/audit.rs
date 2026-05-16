@@ -102,7 +102,12 @@ pub enum AuditEventType {
     DeviceCodeDenied,
     DeviceCodeExpired,
 
-    // OAuth2 consent management (issue #10)
+    // OAuth2 consent management (issue #10 / #28)
+    /// User approved an OAuth consent grant for a workspace's client.
+    /// Pairs with `ConsentRevoked`; a re-grant emits a fresh event rather
+    /// than an Updated variant — consent is semantically a new approval,
+    /// not a patch.
+    ConsentGranted,
     /// Admin or self revoked an OAuth consent grant; cascades to token revocation.
     ConsentRevoked,
 
