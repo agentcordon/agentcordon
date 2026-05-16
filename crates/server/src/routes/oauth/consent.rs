@@ -238,15 +238,18 @@ pub(crate) async fn authorize_post(
     };
     state.store.upsert_oauth_consent(&consent).await?;
 
-    // Audit: consent granted
-    let event = AuditEvent::builder(AuditEventType::Oauth2TokenAcquired)
-        .action("oauth_consent_granted")
+    // Audit: consent granted (issue #28). Resource shape matches
+    // ConsentRevoked's so admins can correlate grant/revoke pairs by
+    // (resource_type, resource_id).
+    let event = AuditEvent::builder(AuditEventType::ConsentGranted)
+        .action("grant")
         .user_actor(&auth.user)
-        .resource("oauth_client", &client_uuid.to_string())
+        .resource("oauth_consent", &auth.user.id.0.to_string())
         .correlation_id(&corr.0)
         .decision(AuditDecision::Permit, Some("user approved consent"))
         .details(serde_json::json!({
             "client_id": client_id,
+            "client_uuid": client_uuid.to_string(),
             "scopes": OAuthScope::to_scope_string(&scopes),
             "is_new_workspace": is_new,
         }))
