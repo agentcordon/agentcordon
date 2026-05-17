@@ -301,7 +301,7 @@ impl From<VaultShareRow> for VaultShare {
 #[derive(sqlx::FromRow)]
 pub(crate) struct McpServerRow {
     pub id: Uuid,
-    pub workspace_id: Uuid,
+    pub workspace_id: Option<Uuid>,
     pub name: String,
     pub upstream_url: String,
     pub transport: String,
@@ -342,7 +342,7 @@ impl From<McpServerRow> for McpServer {
             .and_then(|v| serde_json::from_value(v).ok());
         McpServer {
             id: McpServerId(r.id),
-            workspace_id: WorkspaceId(r.workspace_id),
+            workspace_id: r.workspace_id.map(WorkspaceId),
             name: r.name,
             upstream_url: r.upstream_url,
             transport: McpTransport::from_str_opt(&r.transport).unwrap_or_default(),

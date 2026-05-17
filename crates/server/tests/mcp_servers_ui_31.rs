@@ -108,7 +108,7 @@ async fn mcp_servers_partial_route_is_gone() {
     ctx.store.create_workspace(&ws).await.expect("ws");
     let mcp = McpServer {
         id: McpServerId(uuid::Uuid::new_v4()),
-        workspace_id: ws.id.clone(),
+        workspace_id: Some(ws.id.clone()),
         name: "mcp-31".to_string(),
         upstream_url: "https://example.test/mcp-31".to_string(),
         transport: McpTransport::Http,

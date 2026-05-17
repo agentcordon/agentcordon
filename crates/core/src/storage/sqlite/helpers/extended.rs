@@ -182,18 +182,9 @@ pub(crate) fn row_to_mcp_server(row: &rusqlite::Row<'_>) -> Result<McpServer, ru
                     Box::new(e),
                 )
             })?;
-            WorkspaceId(uuid)
+            Some(WorkspaceId(uuid))
         }
-        None => {
-            return Err(rusqlite::Error::FromSqlConversionFailure(
-                1,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "workspace_id is required on MCP server",
-                )),
-            ));
-        }
+        None => None,
     };
     let allowed_tools: Option<Vec<String>> = match allowed_tools_json {
         Some(json) => Some(serde_json::from_str(&json).map_err(|e| {

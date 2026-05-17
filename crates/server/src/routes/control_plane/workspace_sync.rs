@@ -518,13 +518,12 @@ pub(super) async fn report_tools(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
     let ws_id = &workspace.workspace.id;
 
-    // Look up by name, scoped to the requesting workspace's own servers.
-    let all_servers = state.store.list_mcp_servers().await?;
-    let server = all_servers
+    // Look up by name, scoped to MCPs bound to the requesting workspace via
+    // the junction (#37: junction is the single source of truth).
+    let bound_servers = state.store.list_mcp_servers_for_workspace(ws_id).await?;
+    let server = bound_servers
         .into_iter()
-        .find(|s| {
-            s.name == req.server_name && s.enabled && s.workspace_id == workspace.workspace.id
-        })
+        .find(|s| s.name == req.server_name)
         .ok_or_else(|| ApiError::NotFound(format!("MCP server '{}' not found", req.server_name)))?;
 
     let tool_names: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();

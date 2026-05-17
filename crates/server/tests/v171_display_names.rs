@@ -102,7 +102,7 @@ async fn test_mcp_server_response_includes_name() {
     let now = chrono::Utc::now();
     let mcp = agent_cordon_core::domain::mcp::McpServer {
         id: agent_cordon_core::domain::mcp::McpServerId(uuid::Uuid::new_v4()),
-        workspace_id: device_id,
+        workspace_id: Some(device_id),
         name: "github-mcp".to_string(),
         upstream_url: "https://mcp.example.com".to_string(),
         transport: agent_cordon_core::domain::mcp::McpTransport::Http,

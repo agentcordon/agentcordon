@@ -67,13 +67,13 @@ pub(super) async fn list_mcp_servers(
         let workspace_id = agent_cordon_core::domain::workspace::WorkspaceId(ws_uuid);
         state
             .store
-            .list_mcp_servers_by_workspace(&workspace_id)
+            .list_mcp_servers_for_workspace(&workspace_id)
             .await?
     } else if let AuthenticatedActor::Workspace { workspace, .. } = &actor {
-        // Workspace actors are auto-scoped to their own servers
+        // Workspace actors are auto-scoped to their own servers via the junction.
         state
             .store
-            .list_mcp_servers_by_workspace(&workspace.id)
+            .list_mcp_servers_for_workspace(&workspace.id)
             .await?
     } else if let Some(ref user) = calling_user {
         let is_admin =
@@ -82,14 +82,19 @@ pub(super) async fn list_mcp_servers(
             // Admin users with no filter see all servers
             state.store.list_mcp_servers().await?
         } else {
-            // Tenant scoping: non-admin users only see servers for their owned workspaces
+            // Tenant scoping: non-admin users see MCPs junction-bound to any
+            // workspace they own (#37 — junction is the single source of truth).
             let owned = state.store.get_workspaces_by_owner(&user.id).await?;
-            let owned_ids: std::collections::HashSet<String> =
-                owned.iter().map(|w| w.id.0.to_string()).collect();
-            let all = state.store.list_mcp_servers().await?;
-            all.into_iter()
-                .filter(|s| owned_ids.contains(&s.workspace_id.0.to_string()))
-                .collect()
+            let mut by_id: std::collections::HashMap<
+                String,
+                agent_cordon_core::domain::mcp::McpServer,
+            > = std::collections::HashMap::new();
+            for ws in &owned {
+                for s in state.store.list_mcp_servers_for_workspace(&ws.id).await? {
+                    by_id.insert(s.id.0.to_string(), s);
+                }
+            }
+            by_id.into_values().collect()
         }
     } else {
         state.store.list_mcp_servers().await?

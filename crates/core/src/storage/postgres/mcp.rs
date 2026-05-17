@@ -36,7 +36,8 @@ impl McpStore for PostgresStore {
             ),
         )
         .bind(server.id.0)
-        .bind(server.workspace_id.0)
+        // #37: workspace_id no longer written on create — junction is sole source of truth.
+        .bind(Option::<Uuid>::None)
         .bind(&server.name)
         .bind(&server.upstream_url)
         .bind(server.transport.to_string())
@@ -156,11 +157,11 @@ impl McpStore for PostgresStore {
             .map(|dt| serde_json::to_value(dt).unwrap_or_default());
 
         let created_by_user_str = server.created_by_user.as_ref().map(|u| u.0.to_string());
+        // #37: workspace_id is no longer updated — junction is sole source of truth.
         sqlx::query(
-            "UPDATE mcp_servers SET workspace_id = $1, name = $2, upstream_url = $3, transport = $4, credential_bindings = $5, \
-             allowed_tools = $6, enabled = $7, updated_at = $8, tags = $9, required_credentials = $10, auth_method = $11, template_key = $12, discovered_tools = $13, created_by_user = $14 WHERE id = $15",
+            "UPDATE mcp_servers SET name = $1, upstream_url = $2, transport = $3, credential_bindings = $4, \
+             allowed_tools = $5, enabled = $6, updated_at = $7, tags = $8, required_credentials = $9, auth_method = $10, template_key = $11, discovered_tools = $12, created_by_user = $13 WHERE id = $14",
         )
-        .bind(server.workspace_id.0)
         .bind(&server.name)
         .bind(&server.upstream_url)
         .bind(server.transport.to_string())

@@ -77,7 +77,10 @@ pub(crate) struct UpdateMcpServerRequest {
 #[derive(Serialize)]
 pub(crate) struct McpServerResponse {
     pub id: String,
-    pub workspace_id: String,
+    /// Legacy provisioner workspace. `None` for MCPs created after #37
+    /// consolidation; the authoritative binding set is now exposed via the
+    /// `installed_workspaces` field on the detail endpoint.
+    pub workspace_id: Option<String>,
     pub workspace_name: Option<String>,
     pub name: String,
     pub upstream_url: String,
@@ -99,7 +102,7 @@ impl McpServerResponse {
     pub(crate) fn from_server(s: &McpServer) -> Self {
         Self {
             id: s.id.0.to_string(),
-            workspace_id: s.workspace_id.0.to_string(),
+            workspace_id: s.workspace_id.as_ref().map(|w| w.0.to_string()),
             workspace_name: None,
             name: s.name.clone(),
             upstream_url: s.upstream_url.clone(),
@@ -138,13 +141,15 @@ pub(crate) async fn enrich_mcp_server_responses(
                 }
             }
         }
-        // Resolve workspace_name from workspace_id
-        if let Ok(ws_uuid) = uuid::Uuid::parse_str(&resp.workspace_id) {
-            if let Ok(Some(ws)) = store
-                .get_workspace(&agent_cordon_core::domain::workspace::WorkspaceId(ws_uuid))
-                .await
-            {
-                resp.workspace_name = Some(ws.name);
+        // Resolve workspace_name from legacy workspace_id if present.
+        if let Some(workspace_id) = resp.workspace_id.as_deref() {
+            if let Ok(ws_uuid) = uuid::Uuid::parse_str(workspace_id) {
+                if let Ok(Some(ws)) = store
+                    .get_workspace(&agent_cordon_core::domain::workspace::WorkspaceId(ws_uuid))
+                    .await
+                {
+                    resp.workspace_name = Some(ws.name);
+                }
             }
         }
     }

@@ -198,7 +198,7 @@ async fn test_mcp_grant_emits_policy_changed() {
     let now = chrono::Utc::now();
     let mcp = agent_cordon_core::domain::mcp::McpServer {
         id: agent_cordon_core::domain::mcp::McpServerId(Uuid::new_v4()),
-        workspace_id: device_id,
+        workspace_id: Some(device_id),
         name: "sse-test-mcp".to_string(),
         upstream_url: "http://localhost:9999".to_string(),
         transport: agent_cordon_core::domain::mcp::McpTransport::Http,
@@ -368,7 +368,7 @@ async fn test_rapid_grants_emit_individual_events() {
         let now = chrono::Utc::now();
         let mcp = agent_cordon_core::domain::mcp::McpServer {
             id: agent_cordon_core::domain::mcp::McpServerId(Uuid::new_v4()),
-            workspace_id: device_id.clone(),
+            workspace_id: Some(device_id.clone()),
             name: format!("rapid-server-{}", i),
             upstream_url: "http://localhost:9999".to_string(),
             transport: agent_cordon_core::domain::mcp::McpTransport::Http,

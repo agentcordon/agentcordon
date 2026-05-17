@@ -165,7 +165,9 @@ pub(super) async fn import_mcp_servers(
 
         let server = McpServer {
             id: McpServerId(Uuid::new_v4()),
-            workspace_id: ws_id.clone(),
+            // #37: junction is the source of truth — legacy column stays None
+            // and the binding is created below via add_mcp_server_workspace.
+            workspace_id: None,
             name: name.clone(),
             upstream_url,
             transport,

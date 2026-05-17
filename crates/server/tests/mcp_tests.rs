@@ -224,7 +224,7 @@ async fn register_mcp_server_in_store(
     let now = chrono::Utc::now();
     let server = McpServer {
         id: McpServerId(Uuid::new_v4()),
-        workspace_id: workspace.id,
+        workspace_id: Some(workspace.id),
         name: name.to_string(),
         upstream_url: upstream_url.to_string(),
         transport: McpTransport::Http,
