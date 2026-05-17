@@ -261,3 +261,113 @@ async fn list_mcp_servers_filtered_by_workspace_reads_junction_not_legacy_column
         ids
     );
 }
+
+/// Parity test (#41): for a workspace bound to N MCPs via the junction, the
+/// three independent consumer paths must all see the same set —
+///   * admin filter   `GET /api/v1/mcp-servers?workspace_id=W`
+///   * broker sync    `GET /api/v1/workspaces/mcp-servers` (workspace JWT)
+///   * token scopes   `GET /api/v1/workspaces/W/permissions` (workspace JWT)
+/// This pins the "single source of truth" invariant from #37.
+#[tokio::test]
+async fn admin_filter_broker_sync_and_token_scopes_agree_on_junction_bound_mcps() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let admin = make_admin(&ctx, "parity-admin").await;
+    let (session, csrf) =
+        common::login_user(&ctx.app, "parity-admin", common::TEST_PASSWORD).await;
+    let cookie = common::combined_cookie(&session, &csrf);
+
+    let ws = make_workspace(&ctx, "parity-ws", &admin).await;
+    let other = make_workspace(&ctx, "parity-other", &admin).await;
+
+    // Bind two MCPs to ws via the junction. A *third* MCP is junction-bound
+    // only to `other` — none of the three paths should return it for `ws`.
+    let mcp_a = make_mcp_bound_to(&ctx, "parity-a", &ws, &ws, &admin).await;
+    let mcp_b = make_mcp_bound_to(&ctx, "parity-b", &ws, &ws, &admin).await;
+    let _mcp_other = make_mcp_bound_to(&ctx, "parity-other-only", &other, &other, &admin).await;
+
+    let expected: std::collections::HashSet<String> =
+        [mcp_a.name.clone(), mcp_b.name.clone()].into_iter().collect();
+
+    // Path 1: admin filter
+    let (status, body) = common::send_json(
+        &ctx.app,
+        Method::GET,
+        &format!("/api/v1/mcp-servers?workspace_id={}", ws.id.0),
+        None,
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "admin filter: {}", body);
+    let admin_names: std::collections::HashSet<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v["name"].as_str().map(|s| s.to_string()))
+        .collect();
+    assert_eq!(
+        admin_names, expected,
+        "admin filter set diverges from junction bindings"
+    );
+
+    // Path 2: broker sync (workspace JWT)
+    let jwt = common::issue_agent_jwt(&ctx.state, &ws).await;
+    let (status, body) = common::send_json(
+        &ctx.app,
+        Method::GET,
+        "/api/v1/workspaces/mcp-servers",
+        Some(&jwt),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "broker sync: {}", body);
+    let broker_names: std::collections::HashSet<String> = body["data"]["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v["name"].as_str().map(|s| s.to_string()))
+        .collect();
+    assert_eq!(
+        broker_names, expected,
+        "broker sync set diverges from junction bindings"
+    );
+
+    // Path 3: token scopes
+    let (status, body) = common::send_json(
+        &ctx.app,
+        Method::GET,
+        &format!("/api/v1/workspaces/{}/permissions", ws.id.0),
+        Some(&jwt),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "permissions: {}", body);
+    let token = body["data"]["token"].as_str().unwrap();
+    let payload = decode_jwt_payload(token);
+    let scope_strs: Vec<String> = payload["scopes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    // Each MCP yields `<workspace_name>.<mcp_name>.*` and `<workspace_name>.<mcp_name>.tools/list`.
+    let scoped_mcp_names: std::collections::HashSet<String> = scope_strs
+        .iter()
+        .filter_map(|s| {
+            let prefix = format!("{}.", ws.name);
+            s.strip_prefix(&prefix)
+                .and_then(|rest| rest.split('.').next())
+                .map(|n| n.to_string())
+        })
+        .collect();
+    assert_eq!(
+        scoped_mcp_names, expected,
+        "token scope MCP set diverges from junction bindings; got scopes {:?}",
+        scope_strs
+    );
+}

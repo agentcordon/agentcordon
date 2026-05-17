@@ -9,6 +9,15 @@ use crate::error::StoreError;
 /// migration 010. Encodes the M:N relationship between MCP servers and the
 /// workspaces they are bound to. Methods are pure DAO: business rules
 /// (last-binding guard, cross-user authz) live at the handler layer.
+///
+/// **Invariant (#37):** this junction is the *single source of truth* for
+/// "which workspaces does this MCP belong to" — admin filtering, broker
+/// `mcp_sync`, workspace permission JWT scopes, and `report-tools` all read
+/// through here. The legacy `mcp_servers.workspace_id` column was once
+/// authoritative; migration 012 relaxed it to nullable, the application
+/// stopped writing it, and a future migration will drop it entirely.
+/// Any new read path that needs "MCPs for workspace W" should hit this
+/// trait, never `mcp_servers.workspace_id`.
 #[async_trait]
 pub trait McpServerWorkspaceStore: Send + Sync {
     /// Insert a binding. Idempotent via PK conflict — returns `Ok(true)` if the

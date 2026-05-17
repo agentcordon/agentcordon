@@ -291,45 +291,6 @@ async fn test_dashboard_shows_mcp_activity_after_device_proxy() {
     );
 }
 
-#[ignore = "#37: tests legacy mcp_servers.workspace_id column behavior phased out by consolidation; rewrite to use junction or remove"]
-#[tokio::test]
-async fn test_policy_tester_matches_real_device_scoped_authorization() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .with_agent("tagged-agent", &["devops"])
-        .build()
-        .await;
-    let _admin = create_test_user(&*ctx.store, "admin1", TEST_PASSWORD, UserRole::Admin).await;
-    let cookie = login_user_combined(&ctx.app, "admin1", TEST_PASSWORD).await;
-
-    let dev1 = ctx.device_for("tagged-agent");
-
-    let d1_uuid = WorkspaceId(Uuid::parse_str(&dev1.device_id).unwrap());
-    let mcp = create_mcp_in_store(&*ctx.store, "github", d1_uuid).await;
-    let mcp_id = mcp.id.0.to_string();
-
-    // Verify MCP was created by fetching it via admin API
-    let mcp_uri = format!("/api/v1/mcp-servers/{}", mcp_id);
-    let (mcp_status, mcp_body) = send_json(
-        &ctx.app,
-        Method::GET,
-        &mcp_uri,
-        None,
-        Some(&cookie),
-        None,
-        None,
-    )
-    .await;
-    assert_eq!(
-        mcp_status,
-        StatusCode::OK,
-        "device-scoped MCP should be queryable"
-    );
-    assert_eq!(
-        mcp_body["data"]["workspace_id"].as_str().unwrap(),
-        dev1.device_id
-    );
-}
 
 #[tokio::test]
 async fn test_migration_then_upload_then_sync() {
