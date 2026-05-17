@@ -86,9 +86,19 @@ impl McpStore for PostgresStore {
         workspace_id: &WorkspaceId,
         name: &str,
     ) -> Result<Option<McpServer>, StoreError> {
+        // #37/#41: resolve via the junction (single source of truth);
+        // the legacy `mcp_servers.workspace_id` column is no longer
+        // written, so a column-based query would never match new rows.
+        let cols = MCP_SERVER_COLUMNS
+            .split(", ")
+            .map(|c| format!("m.{}", c))
+            .collect::<Vec<_>>()
+            .join(", ");
         let row = sqlx::query_as::<_, McpServerRow>(&format!(
-            "SELECT {} FROM mcp_servers WHERE workspace_id = $1 AND name = $2",
-            MCP_SERVER_COLUMNS
+            "SELECT {} FROM mcp_servers m \
+             JOIN mcp_server_workspaces j ON j.mcp_server_id = m.id \
+             WHERE j.workspace_id = $1 AND m.name = $2",
+            cols
         ))
         .bind(workspace_id.0)
         .bind(name)
@@ -103,21 +113,6 @@ impl McpStore for PostgresStore {
             "SELECT {} FROM mcp_servers ORDER BY name ASC",
             MCP_SERVER_COLUMNS
         ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
-        Ok(rows.into_iter().map(Into::into).collect())
-    }
-
-    async fn list_mcp_servers_by_workspace(
-        &self,
-        workspace_id: &WorkspaceId,
-    ) -> Result<Vec<McpServer>, StoreError> {
-        let rows = sqlx::query_as::<_, McpServerRow>(&format!(
-            "SELECT {} FROM mcp_servers WHERE workspace_id = $1 ORDER BY name ASC",
-            MCP_SERVER_COLUMNS
-        ))
-        .bind(workspace_id.0)
         .fetch_all(&self.pool)
         .await
         .map_err(db_err)?;

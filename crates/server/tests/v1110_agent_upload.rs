@@ -66,7 +66,6 @@ async fn test_import_new_mcp_servers() {
     }
 }
 
-#[ignore = "#37: tests legacy mcp_servers.workspace_id column behavior phased out by consolidation; rewrite to use junction or remove"]
 #[tokio::test]
 async fn test_import_existing_mcp_no_change() {
     // Import "github" twice with same config → status="existing" on second call.
@@ -115,7 +114,6 @@ async fn test_import_existing_mcp_no_change() {
     assert_eq!(results[0]["status"].as_str().unwrap(), "existing");
 }
 
-#[ignore = "#37: tests legacy mcp_servers.workspace_id column behavior phased out by consolidation; rewrite to use junction or remove"]
 #[tokio::test]
 async fn test_import_existing_mcp_config_changed() {
     // Import "github" with command="/usr/bin/github". Import again with "/opt/github".
@@ -300,7 +298,6 @@ async fn test_import_empty_servers_array() {
 
 // 10B. Retry/Idempotency
 
-#[ignore = "#37: tests legacy mcp_servers.workspace_id column behavior phased out by consolidation; rewrite to use junction or remove"]
 #[tokio::test]
 async fn test_import_same_batch_twice_idempotent() {
     let ctx = TestAppBuilder::new()
@@ -394,7 +391,6 @@ async fn test_import_after_server_restart() {
     );
 }
 
-#[ignore = "#37: tests legacy mcp_servers.workspace_id column behavior phased out by consolidation; rewrite to use junction or remove"]
 #[tokio::test]
 async fn test_import_partial_overlap() {
     // Import [github, slack]. Import [slack, jira]. slack=existing, jira=created. Total=3.
@@ -937,7 +933,6 @@ async fn test_init_flow_with_mcp_upload() {
     assert_eq!(status, StatusCode::OK, "init import: {}", body);
 }
 
-#[ignore = "#37: tests legacy mcp_servers.workspace_id column behavior phased out by consolidation; rewrite to use junction or remove"]
 #[tokio::test]
 async fn test_init_called_twice_mcps_not_duplicated() {
     // Run init flow twice. Assert MCPs not duplicated.

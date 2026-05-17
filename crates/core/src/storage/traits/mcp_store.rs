@@ -16,11 +16,6 @@ pub trait McpStore: Send + Sync {
         name: &str,
     ) -> Result<Option<McpServer>, StoreError>;
     async fn list_mcp_servers(&self) -> Result<Vec<McpServer>, StoreError>;
-    /// List MCP servers belonging to a specific workspace.
-    async fn list_mcp_servers_by_workspace(
-        &self,
-        workspace_id: &WorkspaceId,
-    ) -> Result<Vec<McpServer>, StoreError>;
     /// List MCP servers created/owned by a specific user.
     async fn list_mcp_servers_by_user(
         &self,

@@ -110,11 +110,22 @@ impl SqliteStore {
         workspace_id: &WorkspaceId,
         name: &str,
     ) -> Result<Option<McpServer>, StoreError> {
+        // #37/#41: resolve "MCP with this name bound to this workspace" via
+        // the junction (single source of truth for workspace↔MCP routing).
+        // The legacy `mcp_servers.workspace_id` column is no longer written
+        // on create, so a column-based query would never match new rows.
         let workspace_id_str = workspace_id.0.to_string();
         let name = name.to_string();
+        let cols = MCP_COLS
+            .split(", ")
+            .map(|c| format!("m.{}", c))
+            .collect::<Vec<_>>()
+            .join(", ");
         let sql = format!(
-            "SELECT {} FROM mcp_servers WHERE workspace_id = ?1 AND name = ?2",
-            MCP_COLS
+            "SELECT {} FROM mcp_servers m \
+             JOIN mcp_server_workspaces j ON j.mcp_server_id = m.id \
+             WHERE j.workspace_id = ?1 AND m.name = ?2",
+            cols
         );
         self.conn()
             .call(move |conn| {
@@ -142,33 +153,6 @@ impl SqliteStore {
                     .map_err(tokio_rusqlite::Error::Rusqlite)?;
                 let rows = stmt
                     .query_map([], row_to_mcp_server)
-                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                let mut servers = Vec::new();
-                for row in rows {
-                    servers.push(row.map_err(tokio_rusqlite::Error::Rusqlite)?);
-                }
-                Ok(servers)
-            })
-            .await
-            .map_err(|e| StoreError::Database(e.to_string()))
-    }
-
-    pub(crate) async fn list_mcp_servers_by_workspace(
-        &self,
-        workspace_id: &WorkspaceId,
-    ) -> Result<Vec<McpServer>, StoreError> {
-        let workspace_id_str = workspace_id.0.to_string();
-        let sql = format!(
-            "SELECT {} FROM mcp_servers WHERE workspace_id = ?1 ORDER BY name ASC",
-            MCP_COLS
-        );
-        self.conn()
-            .call(move |conn| {
-                let mut stmt = conn
-                    .prepare(&sql)
-                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                let rows = stmt
-                    .query_map(rusqlite::params![workspace_id_str], row_to_mcp_server)
                     .map_err(tokio_rusqlite::Error::Rusqlite)?;
                 let mut servers = Vec::new();
                 for row in rows {
@@ -292,12 +276,6 @@ impl McpStore for SqliteStore {
     }
     async fn list_mcp_servers(&self) -> Result<Vec<McpServer>, StoreError> {
         self.list_mcp_servers().await
-    }
-    async fn list_mcp_servers_by_workspace(
-        &self,
-        workspace_id: &WorkspaceId,
-    ) -> Result<Vec<McpServer>, StoreError> {
-        self.list_mcp_servers_by_workspace(workspace_id).await
     }
     async fn list_mcp_servers_by_user(
         &self,
