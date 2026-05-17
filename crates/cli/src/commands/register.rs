@@ -57,6 +57,23 @@ struct StatusData {
     scopes: Vec<String>,
 }
 
+/// Resolve the workspace name for a registration call.
+///
+/// If the user supplied `--name`, that wins. Otherwise fall back to the
+/// current working directory's basename (the historical behavior), and
+/// finally to the literal `"workspace"` if even that can't be determined.
+fn resolve_workspace_name(provided: Option<&str>, cwd_basename: Option<&str>) -> String {
+    if let Some(name) = provided {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    cwd_basename
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "workspace".to_string())
+}
+
 /// Register this workspace with the broker via device flow.
 ///
 /// If `server_url` is provided (via `--server-url` or `AGTCRDN_SERVER_URL`)
@@ -67,6 +84,7 @@ pub async fn run(
     scopes: Vec<String>,
     force: bool,
     server_url: Option<String>,
+    name: Option<String>,
 ) -> Result<(), CliError> {
     // If --server-url was supplied, give the broker a chance to come up
     // before we attempt discovery. `ensure_broker_running` itself tries
@@ -112,10 +130,10 @@ pub async fn run(
         scopes
     };
 
-    let workspace_name = std::env::current_dir()
+    let cwd_basename = std::env::current_dir()
         .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "workspace".to_string());
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+    let workspace_name = resolve_workspace_name(name.as_deref(), cwd_basename.as_deref());
 
     let public_key = client.keypair().public_key_hex();
 
@@ -238,4 +256,33 @@ async fn is_already_registered(client: &BrokerClient) -> bool {
     serde_json::from_str::<StatusResponse>(&body)
         .map(|r| r.data.registered)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_workspace_name;
+
+    #[test]
+    fn provided_name_wins_over_cwd() {
+        let resolved = resolve_workspace_name(Some("my-laptop-dev"), Some("some-dir"));
+        assert_eq!(resolved, "my-laptop-dev");
+    }
+
+    #[test]
+    fn falls_back_to_cwd_basename_when_no_name_provided() {
+        let resolved = resolve_workspace_name(None, Some("project-root"));
+        assert_eq!(resolved, "project-root");
+    }
+
+    #[test]
+    fn blank_provided_name_falls_back_to_cwd() {
+        let resolved = resolve_workspace_name(Some("   "), Some("project-root"));
+        assert_eq!(resolved, "project-root");
+    }
+
+    #[test]
+    fn final_fallback_is_literal_workspace() {
+        let resolved = resolve_workspace_name(None, None);
+        assert_eq!(resolved, "workspace");
+    }
 }

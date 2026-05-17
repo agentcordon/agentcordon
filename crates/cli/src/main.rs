@@ -52,6 +52,13 @@ enum Command {
         /// flag is ignored.
         #[arg(long = "server-url", env = "AGTCRDN_SERVER_URL")]
         server_url: Option<String>,
+
+        /// Workspace display name. If omitted, defaults to the current
+        /// working directory's basename. Names are not unique — two
+        /// workspaces can share the same name as long as they're
+        /// registered with different keypairs.
+        #[arg(long = "name")]
+        name: Option<String>,
     },
 
     /// Check workspace and broker status
@@ -185,7 +192,8 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             scopes,
             force,
             server_url,
-        } => commands::register::run(scopes, force, server_url).await,
+            name,
+        } => commands::register::run(scopes, force, server_url, name).await,
         Command::Status => commands::status::run().await,
         Command::Credentials { action } => match action {
             None => commands::credentials::run().await,

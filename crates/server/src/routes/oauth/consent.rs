@@ -407,41 +407,39 @@ async fn create_client_on_consent(
 
 /// Reuse an existing workspace on re-registration or create a new one.
 ///
-/// When a workspace with the same name already exists:
-/// - Same `pk_hash` -- reuse it (update pk_hash to ensure consistency)
-/// - Different `pk_hash` -- reject with a conflict error
-/// - No existing workspace -- create a new one
+/// Identity is the `pk_hash`, not the display name (#39):
+/// - Same `pk_hash` (regardless of name match) -- reuse the existing row
+/// - No matching `pk_hash` -- create a new workspace, even if another
+///   identity already owns a workspace with the same name
 pub(super) async fn create_or_reuse_workspace(
     state: &AppState,
     auth: &AuthenticatedUser,
     workspace_name: &str,
     pk_hash: &str,
 ) -> Result<(), ApiError> {
-    if let Some(existing) = state.store.get_workspace_by_name(workspace_name).await? {
-        let existing_pk = existing.pk_hash.as_deref().unwrap_or("");
-        if existing_pk == pk_hash {
-            // Same key -- re-registration. Re-enable the workspace if it was disabled.
-            let mut updated = existing;
-            updated.pk_hash = Some(pk_hash.to_string());
-            updated.enabled = true;
-            updated.status = WorkspaceStatus::Active;
-            updated.updated_at = Utc::now();
-            state.store.update_workspace(&updated).await?;
-            tracing::info!(
-                workspace_id = %updated.id.0,
-                workspace_name = %workspace_name,
-                "reused existing workspace on re-registration"
-            );
-            return Ok(());
-        }
-        // Different key -- this name is taken by another identity
-        return Err(ApiError::Conflict(format!(
-            "workspace name '{}' is already registered with a different key",
-            workspace_name,
-        )));
+    // #39: identity is the `pk_hash` (DB-unique), not the display name.
+    // Same-key re-registration reuses the existing row and accepts a
+    // possibly-different display name as a rename. Names are free to
+    // collide across identities; the lookup by pk_hash is what
+    // disambiguates.
+    if let Some(existing) = state.store.get_workspace_by_pk_hash(pk_hash).await? {
+        let mut updated = existing;
+        updated.name = workspace_name.to_string();
+        updated.pk_hash = Some(pk_hash.to_string());
+        updated.enabled = true;
+        updated.status = WorkspaceStatus::Active;
+        updated.updated_at = Utc::now();
+        state.store.update_workspace(&updated).await?;
+        tracing::info!(
+            workspace_id = %updated.id.0,
+            workspace_name = %workspace_name,
+            "reused existing workspace on re-registration"
+        );
+        return Ok(());
     }
 
-    // No existing workspace -- create a fresh one
+    // No workspace yet for this identity — create a fresh one. The name may
+    // collide with another tenant's workspace; that's allowed.
     let now = Utc::now();
     let workspace = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
@@ -459,4 +457,150 @@ pub(super) async fn create_or_reuse_workspace(
     };
     state.store.create_workspace(&workspace).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_cordon_core::crypto::password::hash_password;
+    use agent_cordon_core::domain::user::{User, UserId, UserRole};
+    use agent_cordon_core::storage::Store;
+
+    use crate::test_helpers::TestAppBuilder;
+
+    async fn make_admin_auth(store: &dyn Store, username: &str) -> AuthenticatedUser {
+        let password_hash = hash_password("test-pass-123!").expect("hash");
+        let now = chrono::Utc::now();
+        let user = User {
+            id: UserId(Uuid::new_v4()),
+            username: username.to_string(),
+            display_name: Some(username.to_string()),
+            password_hash,
+            role: UserRole::Admin,
+            is_root: false,
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        };
+        store.create_user(&user).await.expect("create user");
+        AuthenticatedUser {
+            user,
+            is_root: false,
+        }
+    }
+
+    /// Issue #39: two distinct identities registering a workspace with the
+    /// same name should both succeed — workspace names are not unique.
+    #[tokio::test]
+    async fn create_or_reuse_workspace_allows_duplicate_names_under_different_keys() {
+        let ctx = TestAppBuilder::new().with_admin().build().await;
+        let auth_a = make_admin_auth(&*ctx.store, "alice").await;
+        let auth_b = make_admin_auth(&*ctx.store, "bob").await;
+
+        create_or_reuse_workspace(&ctx.state, &auth_a, "dev", "pk_hash_alice")
+            .await
+            .expect("first registration succeeds");
+
+        create_or_reuse_workspace(&ctx.state, &auth_b, "dev", "pk_hash_bob")
+            .await
+            .expect("second registration with same name but different key must also succeed");
+
+        let workspaces = ctx.store.list_workspaces().await.expect("list");
+        let named_dev: Vec<_> = workspaces.iter().filter(|w| w.name == "dev").collect();
+        assert_eq!(
+            named_dev.len(),
+            2,
+            "two distinct workspaces named 'dev' should coexist; got {}",
+            named_dev.len()
+        );
+    }
+
+    /// Idempotent re-registration must survive even when *another tenant*
+    /// is squatting on the same display name. Reproduces the bug where the
+    /// implementation looked up by name (not by pk_hash), so Alice's second
+    /// `register --name dev` after Bob also registered `dev` ended up
+    /// creating a duplicate Alice row.
+    #[tokio::test]
+    async fn create_or_reuse_workspace_is_idempotent_even_when_name_collides_with_other_tenant() {
+        let ctx = TestAppBuilder::new().with_admin().build().await;
+        let auth_alice = make_admin_auth(&*ctx.store, "alice").await;
+        let auth_bob = make_admin_auth(&*ctx.store, "bob").await;
+
+        create_or_reuse_workspace(&ctx.state, &auth_alice, "dev", "pk_hash_alice")
+            .await
+            .expect("alice initial register");
+        create_or_reuse_workspace(&ctx.state, &auth_bob, "dev", "pk_hash_bob")
+            .await
+            .expect("bob register with same name, different key");
+
+        // Alice re-registers. Identity is the key, not the name.
+        create_or_reuse_workspace(&ctx.state, &auth_alice, "dev", "pk_hash_alice")
+            .await
+            .expect("alice re-register should reuse her existing workspace");
+
+        let workspaces = ctx.store.list_workspaces().await.expect("list");
+        let alice_dev: Vec<_> = workspaces
+            .iter()
+            .filter(|w| {
+                w.name == "dev" && w.pk_hash.as_deref() == Some("pk_hash_alice")
+            })
+            .collect();
+        assert_eq!(
+            alice_dev.len(),
+            1,
+            "alice must end up with exactly one 'dev' workspace; got {}",
+            alice_dev.len()
+        );
+        let total_dev = workspaces.iter().filter(|w| w.name == "dev").count();
+        assert_eq!(total_dev, 2, "alice's + bob's = 2 'dev' workspaces total");
+    }
+
+    /// Re-registration with a different name should rename the workspace —
+    /// otherwise `register --name new-label` is a no-op after the first run.
+    #[tokio::test]
+    async fn create_or_reuse_workspace_renames_on_same_key_with_different_name() {
+        let ctx = TestAppBuilder::new().with_admin().build().await;
+        let auth = make_admin_auth(&*ctx.store, "alice").await;
+
+        create_or_reuse_workspace(&ctx.state, &auth, "old-name", "pk_hash_alice")
+            .await
+            .expect("first register");
+        create_or_reuse_workspace(&ctx.state, &auth, "new-name", "pk_hash_alice")
+            .await
+            .expect("rename via re-register");
+
+        let workspaces = ctx.store.list_workspaces().await.expect("list");
+        let alice_owned: Vec<_> = workspaces
+            .iter()
+            .filter(|w| w.pk_hash.as_deref() == Some("pk_hash_alice"))
+            .collect();
+        assert_eq!(alice_owned.len(), 1, "still one workspace for alice");
+        assert_eq!(
+            alice_owned[0].name, "new-name",
+            "renamed to the value supplied at re-registration"
+        );
+    }
+
+    /// Same-key re-registration must stay idempotent: a single row, possibly
+    /// re-enabled, with the same identity.
+    #[tokio::test]
+    async fn create_or_reuse_workspace_is_idempotent_for_same_key() {
+        let ctx = TestAppBuilder::new().with_admin().build().await;
+        let auth = make_admin_auth(&*ctx.store, "alice").await;
+
+        create_or_reuse_workspace(&ctx.state, &auth, "dev", "pk_hash_alice")
+            .await
+            .expect("first registration");
+        create_or_reuse_workspace(&ctx.state, &auth, "dev", "pk_hash_alice")
+            .await
+            .expect("second registration with same key reuses the existing workspace");
+
+        let workspaces = ctx.store.list_workspaces().await.expect("list");
+        let named_dev: Vec<_> = workspaces.iter().filter(|w| w.name == "dev").collect();
+        assert_eq!(
+            named_dev.len(),
+            1,
+            "same-key re-registration must not create a duplicate row"
+        );
+    }
 }
