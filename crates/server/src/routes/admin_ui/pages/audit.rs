@@ -34,6 +34,107 @@ pub struct AuditEventView {
     pub decision_reason: String,
     pub metadata_json: String,
     pub summary: String,
+    /// Icon hint for the unexpanded row (e.g. "credential" for credential
+    /// lifecycle events). Empty when no icon should be shown.
+    pub icon: String,
+}
+
+impl AuditEventView {
+    pub fn from_event(ev: &agent_cordon_core::domain::audit::AuditEvent) -> Self {
+        use agent_cordon_core::domain::audit::AuditEventType;
+
+        let decision_str = match &ev.decision {
+            AuditDecision::Permit => "permit",
+            AuditDecision::Forbid => "forbid",
+            AuditDecision::Error => "error",
+            AuditDecision::NotApplicable => "n/a",
+        };
+        let decision_class = match &ev.decision {
+            AuditDecision::Permit => "pill-ok",
+            AuditDecision::Forbid => "pill-bad",
+            _ => "pill-warn",
+        };
+        let principal = ev
+            .workspace_name
+            .as_deref()
+            .or(ev.user_name.as_deref())
+            .unwrap_or("\u{2014}")
+            .to_string();
+        let resource_id_short = ev
+            .resource_id
+            .as_ref()
+            .map(|rid| {
+                if rid.len() > 8 {
+                    format!("{}...", &rid[..8])
+                } else {
+                    rid.clone()
+                }
+            })
+            .unwrap_or_default();
+        let event_type_str = serde_json::to_string(&ev.event_type)
+            .unwrap_or_else(|_| format!("{:?}", ev.event_type))
+            .trim_matches('"')
+            .to_string();
+
+        let icon = if matches!(
+            ev.event_type,
+            AuditEventType::CredentialCreated
+                | AuditEventType::CredentialUpdated
+                | AuditEventType::CredentialDeleted
+                | AuditEventType::CredentialAccessRequested
+                | AuditEventType::CredentialAccessGranted
+                | AuditEventType::CredentialAccessDenied
+                | AuditEventType::CredentialExpired
+                | AuditEventType::CredentialLeakDetected
+                | AuditEventType::CredentialSecretViewed
+                | AuditEventType::CredentialSecretRotated
+                | AuditEventType::CredentialSecretRestored
+                | AuditEventType::CredentialVended
+                | AuditEventType::CredentialVendDenied
+                | AuditEventType::CredentialStored
+                | AuditEventType::CredentialScopeCheck
+                | AuditEventType::CredentialProxyAuth
+        ) {
+            "credential".to_string()
+        } else {
+            String::new()
+        };
+
+        Self {
+            id: ev.id.to_string(),
+            timestamp: ev.timestamp.to_rfc3339(),
+            event_type: event_type_str,
+            principal,
+            action: ev.action.clone(),
+            resource_type: ev.resource_type.clone(),
+            resource_id: ev.resource_id.clone().unwrap_or_default(),
+            resource_id_short,
+            decision: decision_str.to_string(),
+            decision_class: decision_class.to_string(),
+            correlation_id: ev.correlation_id.clone(),
+            decision_reason: ev.decision_reason.clone().unwrap_or_default(),
+            metadata_json: serde_json::to_string_pretty(&ev.metadata)
+                .unwrap_or_else(|_| "{}".to_string()),
+            summary: extract_audit_summary(&ev.metadata),
+            icon,
+        }
+    }
+}
+
+/// Extract the most important detail from audit event metadata for inline display.
+fn extract_audit_summary(metadata: &serde_json::Value) -> String {
+    for key in [
+        "credential_name",
+        "tool",
+        "tool_name",
+        "name",
+        "resource_name",
+    ] {
+        if let Some(v) = metadata.get(key).and_then(|v| v.as_str()) {
+            return v.to_string();
+        }
+    }
+    String::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -123,85 +224,7 @@ pub async fn audit_page(State(state): State<AppState>, request: Request) -> Resp
         events
     };
 
-    let event_views: Vec<AuditEventView> = events
-        .iter()
-        .map(|ev| {
-            let decision_str = match &ev.decision {
-                AuditDecision::Permit => "permit",
-                AuditDecision::Forbid => "forbid",
-                AuditDecision::Error => "error",
-                AuditDecision::NotApplicable => "n/a",
-            };
-            let decision_class = match &ev.decision {
-                AuditDecision::Permit => "pill-ok",
-                AuditDecision::Forbid => "pill-bad",
-                _ => "pill-warn",
-            };
-            let principal = ev
-                .workspace_name
-                .as_deref()
-                .or(ev.user_name.as_deref())
-                .unwrap_or("\u{2014}")
-                .to_string();
-            let resource_id_short = ev
-                .resource_id
-                .as_ref()
-                .map(|rid| {
-                    if rid.len() > 8 {
-                        format!("{}...", &rid[..8])
-                    } else {
-                        rid.clone()
-                    }
-                })
-                .unwrap_or_default();
-
-            let summary = extract_audit_summary(&ev.metadata);
-
-            // Use serde snake_case for event_type to match the API format
-            let event_type_str = serde_json::to_string(&ev.event_type)
-                .unwrap_or_else(|_| format!("{:?}", ev.event_type))
-                .trim_matches('"')
-                .to_string();
-
-            AuditEventView {
-                id: ev.id.to_string(),
-                timestamp: ev.timestamp.to_rfc3339(),
-                event_type: event_type_str,
-                principal,
-                action: ev.action.clone(),
-                resource_type: ev.resource_type.clone(),
-                resource_id: ev.resource_id.clone().unwrap_or_default(),
-                resource_id_short,
-                decision: decision_str.to_string(),
-                decision_class: decision_class.to_string(),
-                correlation_id: ev.correlation_id.clone(),
-                decision_reason: ev.decision_reason.clone().unwrap_or_default(),
-                metadata_json: serde_json::to_string_pretty(&ev.metadata)
-                    .unwrap_or_else(|_| "{}".to_string()),
-                summary,
-            }
-        })
-        .collect();
-
-    /// Extract the most important detail from audit event metadata for inline display.
-    fn extract_audit_summary(metadata: &serde_json::Value) -> String {
-        if let Some(v) = metadata.get("credential_name").and_then(|v| v.as_str()) {
-            return v.to_string();
-        }
-        if let Some(v) = metadata.get("tool").and_then(|v| v.as_str()) {
-            return v.to_string();
-        }
-        if let Some(v) = metadata.get("tool_name").and_then(|v| v.as_str()) {
-            return v.to_string();
-        }
-        if let Some(v) = metadata.get("name").and_then(|v| v.as_str()) {
-            return v.to_string();
-        }
-        if let Some(v) = metadata.get("resource_name").and_then(|v| v.as_str()) {
-            return v.to_string();
-        }
-        String::new()
-    }
+    let event_views: Vec<AuditEventView> = events.iter().map(AuditEventView::from_event).collect();
 
     let events_json = serde_json::to_string(&event_views)
         .unwrap_or_else(|_| "[]".to_string())
@@ -215,6 +238,41 @@ pub async fn audit_page(State(state): State<AppState>, request: Request) -> Resp
         events: event_views,
         events_json,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_cordon_core::domain::audit::{AuditEvent, AuditEventType};
+    use agent_cordon_core::domain::workspace::WorkspaceId;
+
+    #[test]
+    fn credential_vended_event_view_has_credential_icon_and_name_and_workspace() {
+        let event = AuditEvent::builder(AuditEventType::CredentialVended)
+            .action("vend")
+            .resource("credential", "cred-1")
+            .workspace_actor(&WorkspaceId(Uuid::new_v4()), "ws-a")
+            .details(serde_json::json!({ "credential_name": "cred-1" }))
+            .build();
+
+        let view = AuditEventView::from_event(&event);
+
+        assert_eq!(view.icon, "credential");
+        assert_eq!(view.summary, "cred-1");
+        assert_eq!(view.principal, "ws-a");
+    }
+
+    #[test]
+    fn non_credential_event_view_has_no_icon() {
+        let event = AuditEvent::builder(AuditEventType::PolicyEvaluated)
+            .action("evaluate")
+            .resource_type("policy")
+            .build();
+
+        let view = AuditEventView::from_event(&event);
+
+        assert_eq!(view.icon, "");
+    }
 }
 
 // ---------------------------------------------------------------------------

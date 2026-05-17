@@ -62,6 +62,7 @@ mod v1150_credential_history_ui;
 mod v1150_migration_consolidation;
 mod v1150_nonce_tracking;
 mod v1150_workspace_identity_tag;
+mod v1160_audit_credential_icon;
 mod v153_openapi;
 mod v153_server_defaults;
 mod v154_e2e;
