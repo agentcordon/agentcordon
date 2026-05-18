@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "PRIVATE-TOKEN",
   "allowed_url_pattern": "https://gitlab.com/api/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "Personal Access Token",
+      "placeholder": "glpat-...",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "GitLab personal or project access token. Injected as PRIVATE-TOKEN header.",
-  "tags": ["gitlab", "scm"],
+  "tags": [
+    "gitlab",
+    "scm"
+  ],
   "sort_order": 110
 }

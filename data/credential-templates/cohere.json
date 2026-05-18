@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "Authorization: Bearer",
   "allowed_url_pattern": "https://api.cohere.com/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "API Key",
+      "placeholder": "Paste your Cohere API key",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Cohere API key. Injected as Authorization: Bearer header.",
-  "tags": ["ai", "cohere"],
+  "tags": [
+    "ai",
+    "cohere"
+  ],
   "sort_order": 80
 }

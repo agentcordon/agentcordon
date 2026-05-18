@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "Authorization: Bearer",
   "allowed_url_pattern": "https://api.cloudflare.com/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "API Token",
+      "placeholder": "Paste your Cloudflare API token",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Cloudflare API token. Injected as Authorization: Bearer header.",
-  "tags": ["infrastructure", "cloudflare"],
+  "tags": [
+    "infrastructure",
+    "cloudflare"
+  ],
   "sort_order": 180
 }

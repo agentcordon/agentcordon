@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "Authorization: Bearer",
   "allowed_url_pattern": "https://sentry.io/api/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "Auth Token",
+      "placeholder": "Paste your Sentry auth token",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Sentry auth token. Injected as Authorization: Bearer header.",
-  "tags": ["monitoring", "sentry"],
+  "tags": [
+    "monitoring",
+    "sentry"
+  ],
   "sort_order": 220
 }

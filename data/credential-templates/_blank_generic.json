@@ -1,0 +1,21 @@
+{
+  "key": "_blank_generic",
+  "name": "Custom (API Key)",
+  "service": "",
+  "credential_type": "generic",
+  "auth_type": "api_key",
+  "header": "Authorization: Bearer",
+  "allowed_url_pattern": "",
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "Secret value",
+      "placeholder": "API key or token",
+      "required": true,
+      "secret": true
+    }
+  ],
+  "description": "Default fields for a generic API-key credential created from a blank template.",
+  "tags": [],
+  "sort_order": 9999
+}

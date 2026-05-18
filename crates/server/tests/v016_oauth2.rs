@@ -1034,11 +1034,12 @@ async fn credential_templates_entra_exposes_tenant_id_field() {
             entra
         )
     });
-    let field_names: Vec<&str> = fields.iter().filter_map(|v| v.as_str()).collect();
+    // `fields` is now an array of FieldSpec objects ({key, label, ...}).
+    let field_keys: Vec<&str> = fields.iter().filter_map(|v| v["key"].as_str()).collect();
     assert!(
-        field_names.contains(&"tenant_id"),
-        "entra-id template `fields` must include 'tenant_id' so FE renders the input; got: {:?}",
-        field_names
+        field_keys.contains(&"tenant_id"),
+        "entra-id template `fields` must include a {{key:'tenant_id'}} spec so FE renders the input; got: {:?}",
+        field_keys
     );
 }
 

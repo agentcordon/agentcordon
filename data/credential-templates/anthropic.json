@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "x-api-key",
   "allowed_url_pattern": "https://api.anthropic.com/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "API Key",
+      "placeholder": "sk-ant-...",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Anthropic Claude API key. Injected as x-api-key header.",
-  "tags": ["ai", "anthropic"],
+  "tags": [
+    "ai",
+    "anthropic"
+  ],
   "sort_order": 10
 }
