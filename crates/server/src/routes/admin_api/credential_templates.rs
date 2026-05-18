@@ -21,6 +21,58 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/credential-templates", get(list_templates))
 }
 
+/// One input field rendered on the credential creation form.
+///
+/// All template-specific UI knowledge (label, validation, placeholder) lives
+/// here so the page renderer can stay generic. Adding a new field to a
+/// template is a JSON-only change.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FieldSpec {
+    /// Backend submission key (e.g. "tenant_id", "secret_value"). Also used
+    /// as the local form key in the renderer.
+    pub key: String,
+    /// Displayed label.
+    pub label: String,
+    #[serde(default)]
+    pub placeholder: String,
+    /// Hint text rendered under the input. Plain text (escaped).
+    #[serde(default)]
+    pub help: String,
+    /// "text" | "password" | "textarea". Defaults to "text".
+    #[serde(default = "default_input_type")]
+    pub input_type: String,
+    /// Whether the field must be filled before submit.
+    #[serde(default)]
+    pub required: bool,
+    /// Render with monospace font (for GUIDs, keys, URLs).
+    #[serde(default)]
+    pub mono: bool,
+    /// Mask value with a show/hide toggle.
+    #[serde(default)]
+    pub secret: bool,
+    /// If true, the field is collected from the user but NOT sent to the
+    /// backend (used as input to client-side substitutions, e.g. Entra's
+    /// tenant_id is spliced into the oauth2_token_endpoint URL).
+    #[serde(default)]
+    pub client_only: bool,
+}
+
+fn default_input_type() -> String {
+    "text".to_string()
+}
+
+/// Client-side string substitution applied to a template-level URL before POST.
+///
+/// Example (Entra): substitute the user's `tenant_id` into the
+/// `{tenant_id}` placeholder of `oauth2_token_endpoint`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClientSubstitution {
+    /// Template field whose string is interpolated (e.g. "oauth2_token_endpoint").
+    pub target: String,
+    /// Form field key whose value is spliced in (e.g. "tenant_id").
+    pub source: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CredentialTemplate {
     pub key: String,
@@ -30,7 +82,7 @@ pub struct CredentialTemplate {
     pub auth_type: String,
     pub header: String,
     pub allowed_url_pattern: String,
-    pub fields: Vec<String>,
+    pub fields: Vec<FieldSpec>,
     pub description: String,
     pub tags: Vec<String>,
     pub sort_order: u32,
@@ -38,6 +90,8 @@ pub struct CredentialTemplate {
     pub oauth2_token_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth2_scopes: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub client_substitutions: Vec<ClientSubstitution>,
 }
 
 #[derive(Embed)]

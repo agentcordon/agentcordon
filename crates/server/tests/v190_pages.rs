@@ -194,6 +194,62 @@ async fn test_credential_new_page() {
 }
 
 #[tokio::test]
+async fn test_credential_new_page_no_hidden_required_inputs() {
+    // Regression: an `<input ... required>` inside a `<div x-show="...">`
+    // block is the silent-submit-block trap. The browser tries to focus the
+    // invalid field to display the validation bubble, can't focus a hidden
+    // element, and aborts the submit without raising any visible error —
+    // no toast, no console error, no POST in the network panel.
+    //
+    // Symptom: clicking "Store Credential" for any template that didn't
+    // need tenant_id (e.g. a GitHub PAT under the generic / blank template)
+    // did nothing. Console: "An invalid form control with name='tenant_id'
+    // is not focusable."
+    //
+    // Conditional validation belongs in the JS submit handler (where it
+    // already lives for tenant_id), not on the HTML `required` attribute.
+    let (ctx, cookie) = setup().await;
+    let (status, _, body) = get_authed(&ctx.app, "/credentials/new", &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    for (line_no, line) in body.lines().enumerate() {
+        if line.contains("x-show=") && line.contains("<div") {
+            // Pull the block bounded by this opening tag through the next
+            // closing </div> at the same nesting depth. Form-groups in this
+            // template don't nest a second form-group, so a naive scan that
+            // walks until the </div> count balances is sufficient.
+            let start = body
+                .lines()
+                .take(line_no)
+                .map(|l| l.len() + 1)
+                .sum::<usize>();
+            let mut depth = 0i32;
+            let mut cursor = start;
+            for chunk in body[start..].split_inclusive('>') {
+                cursor += chunk.len();
+                if chunk.contains("<div") {
+                    depth += 1;
+                }
+                if chunk.contains("</div>") {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+            let block = &body[start..cursor];
+            assert!(
+                !block.contains(" required>") && !block.contains(" required "),
+                "Conditionally-shown block (x-show) contains an input with `required`. \
+                 This silently blocks form submission when the block is hidden. \
+                 Move validation into the JS submit handler instead.\n\nBlock:\n{}",
+                block
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn test_credential_detail_nonexistent() {
     let (ctx, cookie) = setup().await;
 

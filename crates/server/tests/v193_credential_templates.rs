@@ -268,6 +268,13 @@ async fn test_all_templates_have_required_fields() {
     for tpl in templates {
         let key = tpl["key"].as_str().expect("template must have key");
         assert!(!key.is_empty(), "key must not be empty");
+        // `_blank_*` templates are internal fallbacks for the "Blank/Custom"
+        // path; they intentionally have no service, no tags, and no URL
+        // pattern. The frontend uses them as default field-spec sources but
+        // hides them from the template picker.
+        if key.starts_with('_') {
+            continue;
+        }
         assert!(
             tpl["name"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
             "template '{}' must have name",
@@ -327,6 +334,273 @@ async fn test_all_templates_have_required_fields() {
             key
         );
     }
+}
+
+// ===========================================================================
+// 4B-bis. End-to-end credential creation for common templates.
+//
+// These tests guard the core use case: a user picks a template, fills the
+// fields it declares, clicks Store Credential, and the credential persists.
+// The body shape constructed here mirrors what the dynamic-field frontend
+// produces in `submitCredential()` — if these break, the Store Credential
+// button is broken for that template.
+// ===========================================================================
+
+/// Fetch a template by key from the templates endpoint. Panics if absent.
+async fn fetch_template(
+    ctx: &agent_cordon_server::test_helpers::TestContext,
+    cookie: &str,
+    key: &str,
+) -> serde_json::Value {
+    let (status, body) = common::send_json_auto_csrf(
+        &ctx.app,
+        Method::GET,
+        "/api/v1/credential-templates",
+        None,
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "list templates failed: {:?}", body);
+    let templates = body["data"].as_array().expect("data array");
+    templates
+        .iter()
+        .find(|t| t["key"].as_str() == Some(key))
+        .cloned()
+        .unwrap_or_else(|| panic!("template '{}' must exist", key))
+}
+
+/// Mirror the frontend's `submitCredential` body construction: walk the
+/// template's `fields`, copy non-client_only values into the body keyed by
+/// field key, then apply `client_substitutions` against the template's URL
+/// patterns. Returns the JSON body ready to POST.
+fn build_submit_body(
+    template: &serde_json::Value,
+    name: &str,
+    field_values: &[(&str, &str)],
+) -> serde_json::Value {
+    use serde_json::{json, Map, Value};
+    let mut body = json!({
+        "name": name,
+        "service": template["service"].as_str().unwrap_or(""),
+        "credential_type": template["credential_type"].as_str().unwrap_or("generic"),
+        "tags": template["tags"].clone(),
+        "allowed_url_pattern": template["allowed_url_pattern"].clone(),
+        "metadata": {},
+    });
+    let fv: Map<String, Value> = field_values
+        .iter()
+        .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
+        .collect();
+
+    if let Some(fields) = template["fields"].as_array() {
+        for f in fields {
+            let key = match f["key"].as_str() {
+                Some(k) => k,
+                None => continue,
+            };
+            if f["client_only"].as_bool().unwrap_or(false) {
+                continue;
+            }
+            if let Some(val) = fv.get(key) {
+                body[key] = val.clone();
+            }
+        }
+    }
+    if let Some(subs) = template["client_substitutions"].as_array() {
+        for sub in subs {
+            let target = sub["target"].as_str().unwrap_or("");
+            let source = sub["source"].as_str().unwrap_or("");
+            if target.is_empty() || source.is_empty() {
+                continue;
+            }
+            let pattern = template[target].as_str().unwrap_or("").to_string();
+            let src_val = match fv.get(source).and_then(|v| v.as_str()) {
+                Some(v) if !v.is_empty() => v.to_string(),
+                _ => continue,
+            };
+            if pattern.is_empty() {
+                continue;
+            }
+            let placeholder = format!("{{{}}}", source);
+            // Frontend uses encodeURIComponent; for these test values
+            // (ASCII alnum, hyphens, dots) it's a no-op.
+            body[target] = serde_json::Value::String(pattern.replace(&placeholder, &src_val));
+        }
+    }
+    body
+}
+
+async fn post_credential(
+    ctx: &agent_cordon_server::test_helpers::TestContext,
+    cookie: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    common::send_json_auto_csrf(
+        &ctx.app,
+        Method::POST,
+        "/api/v1/credentials",
+        None,
+        Some(cookie),
+        Some(body),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn test_e2e_create_github_personal_access_token() {
+    let (ctx, cookie) = setup().await;
+    let tpl = fetch_template(&ctx, &cookie, "github").await;
+    let body = build_submit_body(
+        &tpl,
+        "my-github-pat",
+        &[("secret_value", "ghp_dummy0123456789ABCDEFGHIJKLMNOPQRSTUV")],
+    );
+    let (status, resp) = post_credential(&ctx, &cookie, body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "github PAT create failed: {:?}",
+        resp
+    );
+    assert_eq!(resp["data"]["service"].as_str(), Some("api.github.com"));
+    assert_eq!(resp["data"]["credential_type"].as_str(), Some("generic"));
+}
+
+#[tokio::test]
+async fn test_e2e_create_openai_api_key() {
+    let (ctx, cookie) = setup().await;
+    let tpl = fetch_template(&ctx, &cookie, "openai").await;
+    let body = build_submit_body(
+        &tpl,
+        "my-openai-key",
+        &[("secret_value", "sk-dummy0123456789ABCDEFGHIJKLMNOPQRSTUV")],
+    );
+    let (status, resp) = post_credential(&ctx, &cookie, body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "openai key create failed: {:?}",
+        resp
+    );
+    assert_eq!(resp["data"]["service"].as_str(), Some("api.openai.com"));
+}
+
+#[tokio::test]
+async fn test_e2e_create_anthropic_api_key() {
+    let (ctx, cookie) = setup().await;
+    let tpl = fetch_template(&ctx, &cookie, "anthropic").await;
+    let body = build_submit_body(
+        &tpl,
+        "my-anthropic-key",
+        &[("secret_value", "sk-ant-dummy0123456789ABCDEFGHIJK")],
+    );
+    let (status, resp) = post_credential(&ctx, &cookie, body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "anthropic key create failed: {:?}",
+        resp
+    );
+}
+
+#[tokio::test]
+async fn test_e2e_create_aws_credentials() {
+    let (ctx, cookie) = setup().await;
+    let tpl = fetch_template(&ctx, &cookie, "aws").await;
+    let body = build_submit_body(
+        &tpl,
+        "my-aws-prod",
+        &[
+            ("aws_access_key_id", "AKIAIOSFODNN7EXAMPLE"),
+            (
+                "aws_secret_access_key",
+                "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            ),
+            ("aws_region", "us-east-1"),
+            ("aws_service", "s3"),
+        ],
+    );
+    let (status, resp) = post_credential(&ctx, &cookie, body).await;
+    assert_eq!(status, StatusCode::OK, "aws create failed: {:?}", resp);
+    assert_eq!(resp["data"]["credential_type"].as_str(), Some("aws"));
+}
+
+#[tokio::test]
+async fn test_e2e_create_entra_id_with_tenant_substitution() {
+    let (ctx, cookie) = setup().await;
+    let tpl = fetch_template(&ctx, &cookie, "entra-id").await;
+    let tenant = "11111111-2222-3333-4444-555555555555";
+    let body = build_submit_body(
+        &tpl,
+        "my-entra-app",
+        &[
+            ("oauth2_client_id", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            ("tenant_id", tenant),
+            ("secret_value", "dummy-client-secret-not-real"),
+            ("oauth2_scopes", "https://graph.microsoft.com/.default"),
+        ],
+    );
+
+    // The frontend must have spliced the tenant_id into the endpoint URL.
+    // This guards the client_substitutions wiring.
+    let endpoint = body["oauth2_token_endpoint"]
+        .as_str()
+        .expect("endpoint set");
+    assert!(
+        endpoint.contains(tenant),
+        "tenant_id must be substituted into oauth2_token_endpoint, got: {}",
+        endpoint
+    );
+    assert!(
+        !endpoint.contains("{tenant_id}"),
+        "placeholder must be replaced, got: {}",
+        endpoint
+    );
+    // tenant_id is client_only; must not reach the backend.
+    assert!(
+        body.get("tenant_id").is_none(),
+        "tenant_id is client_only and must not be in the POST body"
+    );
+
+    let (status, resp) = post_credential(&ctx, &cookie, body).await;
+    assert_eq!(status, StatusCode::OK, "entra create failed: {:?}", resp);
+    assert_eq!(
+        resp["data"]["credential_type"].as_str(),
+        Some("oauth2_client_credentials")
+    );
+}
+
+#[tokio::test]
+async fn test_e2e_create_blank_generic_uses_fallback_fields() {
+    // The Blank/Custom path uses the `_blank_generic` system template's
+    // fields when no template is selected. Mirror that here by reading
+    // _blank_generic directly and posting a credential without using a
+    // user-visible template.
+    let (ctx, cookie) = setup().await;
+    let fallback = fetch_template(&ctx, &cookie, "_blank_generic").await;
+    // The fallback must declare at least secret_value with required:true.
+    let fields = fallback["fields"].as_array().expect("fields");
+    assert!(
+        fields
+            .iter()
+            .any(|f| f["key"].as_str() == Some("secret_value")
+                && f["required"].as_bool().unwrap_or(false)),
+        "_blank_generic must declare required secret_value field; got: {:?}",
+        fields
+    );
+    let mut body = build_submit_body(
+        &fallback,
+        "my-custom-cred",
+        &[("secret_value", "some-opaque-token")],
+    );
+    // For a true blank user, name and service are user-provided.
+    body["service"] = serde_json::Value::String("example.internal".to_string());
+    body["allowed_url_pattern"] =
+        serde_json::Value::String("https://example.internal/*".to_string());
+
+    let (status, resp) = post_credential(&ctx, &cookie, body).await;
+    assert_eq!(status, StatusCode::OK, "blank generic failed: {:?}", resp);
 }
 
 // ===========================================================================

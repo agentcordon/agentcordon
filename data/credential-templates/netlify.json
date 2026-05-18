@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "Authorization: Bearer",
   "allowed_url_pattern": "https://api.netlify.com/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "Personal Access Token",
+      "placeholder": "Paste your Netlify token",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Netlify personal access token. Injected as Authorization: Bearer header.",
-  "tags": ["deployment", "netlify"],
+  "tags": [
+    "deployment",
+    "netlify"
+  ],
   "sort_order": 170
 }

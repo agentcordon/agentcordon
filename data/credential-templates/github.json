@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "Authorization: Bearer",
   "allowed_url_pattern": "https://api.github.com/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "Personal Access Token",
+      "placeholder": "ghp_...",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "GitHub personal access token. Injected as Authorization: Bearer header.",
-  "tags": ["github", "scm"],
+  "tags": [
+    "github",
+    "scm"
+  ],
   "sort_order": 30
 }

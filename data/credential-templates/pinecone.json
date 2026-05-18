@@ -6,8 +6,20 @@
   "auth_type": "api_key",
   "header": "Api-Key",
   "allowed_url_pattern": "https://*.pinecone.io/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "API Key",
+      "placeholder": "Paste your Pinecone API key",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Pinecone vector database API key. Injected as Api-Key header.",
-  "tags": ["database", "vector", "pinecone"],
+  "tags": [
+    "database",
+    "vector",
+    "pinecone"
+  ],
   "sort_order": 210
 }

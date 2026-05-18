@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "apikey",
   "allowed_url_pattern": "https://*.supabase.co/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "Service Role Key",
+      "placeholder": "Paste your Supabase service role key",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Supabase project API key (anon or service_role). Injected as apikey header.",
-  "tags": ["database", "supabase"],
+  "tags": [
+    "database",
+    "supabase"
+  ],
   "sort_order": 200
 }

@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "Authorization",
   "allowed_url_pattern": "https://api.linear.app/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "API Key",
+      "placeholder": "Paste your Linear API key",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Linear API key. Injected as Authorization header.",
-  "tags": ["project-management", "linear"],
+  "tags": [
+    "project-management",
+    "linear"
+  ],
   "sort_order": 130
 }

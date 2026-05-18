@@ -6,8 +6,20 @@
   "auth_type": "api_key",
   "header": "api-key",
   "allowed_url_pattern": "https://*.openai.azure.com/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "API Key",
+      "placeholder": "Paste your Azure OpenAI key",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Azure OpenAI Service API key. Injected as api-key header.",
-  "tags": ["ai", "azure", "openai"],
+  "tags": [
+    "ai",
+    "azure",
+    "openai"
+  ],
   "sort_order": 60
 }

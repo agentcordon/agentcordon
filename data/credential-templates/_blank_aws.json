@@ -1,6 +1,6 @@
 {
-  "key": "aws",
-  "name": "AWS Credentials",
+  "key": "_blank_aws",
+  "name": "Custom (AWS)",
   "service": "aws",
   "credential_type": "aws",
   "auth_type": "aws_sigv4",
@@ -25,18 +25,16 @@
       "key": "aws_region",
       "label": "Region",
       "placeholder": "us-east-1",
-      "help": "Default AWS region for SigV4 signing. Can be overridden per request.",
       "mono": true
     },
     {
       "key": "aws_service",
       "label": "Service",
       "placeholder": "s3",
-      "help": "Default AWS service name (e.g. s3, execute-api). Optional.",
       "mono": true
     }
   ],
-  "description": "AWS access credentials for SigV4 request signing. Supports any AWS service.",
-  "tags": ["aws", "cloud"],
-  "sort_order": 40
+  "description": "Default fields for a blank AWS credential.",
+  "tags": [],
+  "sort_order": 9999
 }

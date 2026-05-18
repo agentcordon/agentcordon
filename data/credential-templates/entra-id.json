@@ -6,10 +6,46 @@
   "auth_type": "oauth2_client_credentials",
   "header": "Authorization",
   "allowed_url_pattern": "https://*.microsoft.com/*",
-  "fields": ["secret_value", "oauth2_client_id", "tenant_id", "oauth2_scopes"],
+  "fields": [
+    {
+      "key": "oauth2_client_id",
+      "label": "Client ID",
+      "placeholder": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "required": true,
+      "mono": true
+    },
+    {
+      "key": "tenant_id",
+      "label": "Tenant ID",
+      "placeholder": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "help": "Your Entra ID tenant — GUID or domain (e.g. contoso.onmicrosoft.com).",
+      "required": true,
+      "mono": true,
+      "client_only": true
+    },
+    {
+      "key": "secret_value",
+      "label": "Client Secret",
+      "placeholder": "Paste your client secret",
+      "required": true,
+      "secret": true
+    },
+    {
+      "key": "oauth2_scopes",
+      "label": "Scopes",
+      "placeholder": "https://graph.microsoft.com/.default",
+      "help": "Space-delimited. For Entra ID use {resource}/.default."
+    }
+  ],
   "description": "OAuth2 client credentials for Microsoft Entra ID (Azure AD). Tokens are acquired automatically and injected as a Bearer header.",
   "tags": ["azure", "microsoft", "entra", "oauth2"],
   "sort_order": 65,
   "oauth2_token_endpoint": "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
-  "oauth2_scopes": "https://graph.microsoft.com/.default"
+  "oauth2_scopes": "https://graph.microsoft.com/.default",
+  "client_substitutions": [
+    {
+      "target": "oauth2_token_endpoint",
+      "source": "tenant_id"
+    }
+  ]
 }

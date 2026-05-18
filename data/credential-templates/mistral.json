@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "Authorization: Bearer",
   "allowed_url_pattern": "https://api.mistral.ai/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "API Key",
+      "placeholder": "Paste your Mistral API key",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Mistral AI API key. Injected as Authorization: Bearer header.",
-  "tags": ["ai", "mistral"],
+  "tags": [
+    "ai",
+    "mistral"
+  ],
   "sort_order": 70
 }

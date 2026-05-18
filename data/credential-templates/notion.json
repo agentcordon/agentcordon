@@ -6,8 +6,19 @@
   "auth_type": "api_key",
   "header": "Authorization: Bearer",
   "allowed_url_pattern": "https://api.notion.com/*",
-  "fields": ["secret_value"],
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "Integration Token",
+      "placeholder": "secret_...",
+      "required": true,
+      "secret": true
+    }
+  ],
   "description": "Notion integration token. Injected as Authorization: Bearer header.",
-  "tags": ["productivity", "notion"],
+  "tags": [
+    "productivity",
+    "notion"
+  ],
   "sort_order": 150
 }
