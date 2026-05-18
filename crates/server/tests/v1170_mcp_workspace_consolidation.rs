@@ -272,8 +272,7 @@ async fn list_mcp_servers_filtered_by_workspace_reads_junction_not_legacy_column
 async fn admin_filter_broker_sync_and_token_scopes_agree_on_junction_bound_mcps() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let admin = make_admin(&ctx, "parity-admin").await;
-    let (session, csrf) =
-        common::login_user(&ctx.app, "parity-admin", common::TEST_PASSWORD).await;
+    let (session, csrf) = common::login_user(&ctx.app, "parity-admin", common::TEST_PASSWORD).await;
     let cookie = common::combined_cookie(&session, &csrf);
 
     let ws = make_workspace(&ctx, "parity-ws", &admin).await;
@@ -285,8 +284,9 @@ async fn admin_filter_broker_sync_and_token_scopes_agree_on_junction_bound_mcps(
     let mcp_b = make_mcp_bound_to(&ctx, "parity-b", &ws, &ws, &admin).await;
     let _mcp_other = make_mcp_bound_to(&ctx, "parity-other-only", &other, &other, &admin).await;
 
-    let expected: std::collections::HashSet<String> =
-        [mcp_a.name.clone(), mcp_b.name.clone()].into_iter().collect();
+    let expected: std::collections::HashSet<String> = [mcp_a.name.clone(), mcp_b.name.clone()]
+        .into_iter()
+        .collect();
 
     // Path 1: admin filter
     let (status, body) = common::send_json(

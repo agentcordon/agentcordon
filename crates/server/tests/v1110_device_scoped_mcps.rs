@@ -173,12 +173,9 @@ async fn test_list_mcp_servers_no_filter_returns_all() {
     );
 }
 
-
-
 // ---------------------------------------------------------------------------
 // 9B. Retry/Idempotency — duplicate MCP on same device
 // ---------------------------------------------------------------------------
-
 
 #[tokio::test]
 async fn test_create_duplicate_mcp_same_device_after_delete() {
@@ -204,8 +201,6 @@ async fn test_create_duplicate_mcp_same_device_after_delete() {
 // ---------------------------------------------------------------------------
 // 9C. Error Handling
 // ---------------------------------------------------------------------------
-
-
 
 // ---------------------------------------------------------------------------
 // 9D. Cross-Feature
@@ -262,7 +257,6 @@ async fn test_cross_device_mcp_authorization_works() {
         "cross-device MCP grant policy should exist"
     );
 }
-
 
 #[tokio::test]
 async fn test_permissions_grant_on_device_scoped_mcp() {

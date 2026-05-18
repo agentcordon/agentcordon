@@ -541,9 +541,7 @@ mod tests {
         let workspaces = ctx.store.list_workspaces().await.expect("list");
         let alice_dev: Vec<_> = workspaces
             .iter()
-            .filter(|w| {
-                w.name == "dev" && w.pk_hash.as_deref() == Some("pk_hash_alice")
-            })
+            .filter(|w| w.name == "dev" && w.pk_hash.as_deref() == Some("pk_hash_alice"))
             .collect();
         assert_eq!(
             alice_dev.len(),

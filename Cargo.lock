@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "agent-cordon-core"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "agent-cordon-server"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "agent-cordon-core",
  "agent-cordon-server",
@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "agentcordon-broker"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "aes-gcm",
  "agent-cordon-core",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "agentcordon-cli"
-version = "0.3.0"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "clap",
