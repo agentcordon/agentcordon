@@ -105,7 +105,6 @@ async fn test_migration_fresh_install_no_mcps() {
     assert_eq!(all_mcps.len(), 0, "fresh install should have no MCPs");
 }
 
-
 #[tokio::test]
 async fn test_migration_preserves_ids_on_oldest_workspace() {
     // Create MCP with known ID on a workspace. Verify the ID is preserved after retrieval.
@@ -259,11 +258,5 @@ async fn test_migration_existing_grants_preserved() {
     );
 }
 
-
-
-
-
 // test_post_migration_create_mcp_requires_workspace_id removed — admin create endpoint no longer exists.
 // MCP servers are now registered via the workspace import endpoint only.
-
-

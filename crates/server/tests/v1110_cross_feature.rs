@@ -291,7 +291,6 @@ async fn test_dashboard_shows_mcp_activity_after_device_proxy() {
     );
 }
 
-
 #[tokio::test]
 async fn test_migration_then_upload_then_sync() {
     // Device has existing MCP → agent uploads new MCP → verify both exist.
