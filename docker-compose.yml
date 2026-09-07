@@ -10,7 +10,7 @@
 #   docker compose -f docker-compose.build.yml up -d --build
 #
 # Both need Docker with the Compose plugin (`docker compose version`). Without
-# it, see README.md § "Production deployment" for the equivalent `docker run`.
+# it, see docs/deployment.md for the equivalent `docker run`.
 #
 # The server auto-generates cryptographic secrets on first run
 # and persists them to the /data volume. No env vars needed.
@@ -20,7 +20,7 @@
 #
 # Optional: create a .env file to override defaults:
 #   AGTCRDN_PORT           — Server host port (default: 3140)
-#   AGTCRDN_ROOT_USERNAME  — Admin username (default: auto-generated)
+#   AGTCRDN_ROOT_USERNAME  — Admin username (default: root)
 #   AGTCRDN_ROOT_PASSWORD  — Admin password (default: auto-generated, printed in logs)
 #
 # Container and volume names come from the Compose project name, which
@@ -29,7 +29,7 @@
 #
 #   COMPOSE_PROJECT_NAME=agentcordon-staging AGTCRDN_PORT=3141 docker compose up -d
 #
-# See .env.example for all available options.
+# See .env.example for the common options, docs/configuration.md for all of them.
 
 services:
   agentcordon:

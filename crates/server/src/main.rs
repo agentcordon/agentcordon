@@ -16,7 +16,7 @@ use agent_cordon_server::state::{policy_engine_from_store, AppState, CatalogStat
 
 /// The environment is the server's configuration surface, so `--help` is the
 /// only place the binary itself can say what it reads. Kept in step with
-/// README § Configuration.
+/// docs/configuration.md.
 const ENV_HELP: &str = "\
 The server takes no configuration flags: everything is read from the
 environment (or a `.env` file your process manager loads for it).
@@ -65,7 +65,7 @@ Sessions and limits:
   AGTCRDN_DEVICE_CODE_TTL_SECS            Device code TTL, seconds    [default: 600]
   AGTCRDN_DEVICE_CODE_POLL_INTERVAL_SECS  Device flow poll interval   [default: 5]
   AGTCRDN_LOGIN_MAX_ATTEMPTS              Failed logins before lockout [default: 5]
-  AGTCRDN_LOGIN_LOCKOUT_SECONDS           Lockout duration, seconds   [default: 900]
+  AGTCRDN_LOGIN_LOCKOUT_SECONDS           Lockout duration, seconds    [default: 30]
   AGTCRDN_TRUST_FORWARDED_HEADERS         Trust X-Forwarded-For. Only behind a
                                           proxy that overwrites it.  [default: false]
 
@@ -81,7 +81,7 @@ Development only:
                                  rule: every private and reserved range becomes a
                                  reachable proxy target.     [default: false]
 
-See README § Configuration for the full table.";
+See docs/configuration.md for the full table.";
 
 /// `agent-cordon-server` takes no flags. It still needs a parser: without one
 /// `--help` fell through to the server boot, which bound 0.0.0.0:3140 and
