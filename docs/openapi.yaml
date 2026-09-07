@@ -10,7 +10,8 @@ info:
   contact:
     name: AgentCordon
   license:
-    name: MIT
+    name: GNU Affero General Public License v3.0 only
+    identifier: AGPL-3.0-only
 
 servers:
   - url: http://localhost:3140
