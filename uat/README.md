@@ -266,6 +266,7 @@ working credential, so S5 runs last.
 | `14-s14-aws.spec.ts` | S14 AWS SigV4 |
 | `15-s16-enforcement.spec.ts` | S16 enforcement across types, second workspace |
 | `16-s17-vaults.spec.ts` | S17 vaults end to end (create, place, rename, share read-only, revoke, refuse a non-empty delete, move, delete), and the provider-client controls an operator is and is not offered |
+| `21-s18-mcp-serve.spec.ts` | S18 `agentcordon mcp-serve`: the CLI's stdio MCP surface, driven over pipes by `uat/mcp_client.py` |
 | `80-s9-restart.spec.ts` | S9 restart persistence (was `08-`) |
 | `90-s5-lifecycle.spec.ts` | S5 lifecycle (destructive, last; was `09-`) |
 
@@ -274,7 +275,10 @@ unchanged, so the new scenarios sort between them: S11–S17 must run **before**
 the S9 restart (restarting the server container recreates the namespace the
 mocks are joined to) and **before** the destructive S5. S17 additionally runs
 **after** S12/S13, because the provider clients it tries to delete only have
-dependents once those scenarios have installed their OAuth2 MCP servers.
+dependents once those scenarios have installed their OAuth2 MCP servers. S18
+runs after S13 for the same reason from the other end: it drives the CLI's
+stdio MCP surface against the `uat-none` server S13 installs, and against the
+S2 credential and the S3 enrolment.
 
 Playwright runs with `workers: 1` and `fullyParallel: false`: the scenarios are
 one ordered story over shared server state. Ids pass between spec files through
@@ -328,7 +332,11 @@ Both now press a button:
    identity provider, a real MCP server and a real network; nothing about them
    is a product claim. `uat/selftest_sigv4.py` pins the one piece of mock
    behaviour that could produce a false product failure (the SigV4 verifier) to
-   AWS's own published test vector.
+   AWS's own published test vector. `uat/mcp_client.py` is the same kind of
+   stand-in on the other side of the CLI: it is the *client* half of an MCP
+   session, spawning `docker exec -i … agentcordon mcp-serve` so the CLI's
+   stdin is a real pipe, the way a runtime would spawn it. It asserts nothing;
+   S18 asserts on the envelopes it returns.
 8. **The mock IdP and the mock MCP server share the server container's network
    namespace.** Forced by the product: a plain-HTTP `oauth2_token_endpoint` is
    accepted only for the literal hosts `localhost`/`127.0.0.1`/`::1`, and the
