@@ -42,11 +42,16 @@ no_release() {
     exit 1
 }
 
-# The HTTP status of a GET, or "000" when the request never completed. curl
-# exits non-zero on a transport failure and prints nothing, so an empty
-# capture is the transport case.
+# The HTTP status of a GET, written to $2, or "000" when the request never
+# completed.
+#
+# Deliberately not `curl -f`: `-f` makes curl exit non-zero on a 404, and then
+# the caller cannot tell "there is no release" from "the network is broken",
+# which is the entire point of this function.
 fetch_status() {
-    curl -fsSL -o "$2" -w '%{http_code}' "$1" 2>/dev/null || echo "000"
+    code=$(curl -sSL -o "$2" -w '%{http_code}' "$1" 2>/dev/null) || code=""
+    [ -n "$code" ] || code="000"
+    printf '%s\n' "$code"
 }
 
 # A fetch that did not complete: DNS, a proxy, TLS, a rate-limit. Distinct from
