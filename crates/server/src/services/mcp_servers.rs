@@ -61,6 +61,21 @@ pub struct ProvisionOutcome {
     pub tool_discovery_error: Option<String>,
 }
 
+/// Why one `mcp_tool_call` was refused. The variant names the audit row's
+/// `reason`, so an operator reading the log can tell a per-tool Deny from a
+/// typo'd server name without re-deriving it from the Cedar reasons.
+pub enum ToolCallDenial<'a> {
+    /// No server of that name resolves for this workspace's owner.
+    UnknownServer,
+    /// The server exists and is switched off — the documented
+    /// immediate-revocation path, not a missing registration.
+    ServerDisabled,
+    /// The tool is not in the server's `allowed_tools` allow-list.
+    ToolNotAllowed,
+    /// Cedar said forbid. Carries the contributing reasons.
+    Policy(&'a [String]),
+}
+
 /// Input for [`McpServerService::provision`].
 pub struct ProvisionInput {
     pub workspace_id: WorkspaceId,
@@ -1553,25 +1568,47 @@ impl McpServerService {
         Ok(())
     }
 
-    /// A workspace asked to call a tool on a server that does not resolve.
-    /// The decision is forbid and there is no Cedar evaluation to emit, so
-    /// this is the only row the attempt leaves.
+    /// A `mcp_tool_call` was refused. Every refusal writes one of these,
+    /// whatever refused it: the unknown- and disabled-server branches, the
+    /// `allowed_tools` allow-list, and a Cedar forbid.
+    ///
+    /// The Cedar branch also leaves a `policy_evaluated` row (the `Authz` seam
+    /// emits it), but that one is generic; this is the domain event the
+    /// dashboard's MCP activity widget and the workspace History tab read, and
+    /// without it a per-tool Deny produced no record of the refusals it exists
+    /// to cause.
     pub async fn record_tool_call_denied(
         &self,
         workspace: &Workspace,
         correlation_id: &str,
+        server: Option<&McpServer>,
         server_name: &str,
         tool_name: &str,
+        denial: ToolCallDenial<'_>,
     ) {
+        let (reason, detail) = match denial {
+            ToolCallDenial::UnknownServer => ("unknown_server", None),
+            ToolCallDenial::ServerDisabled => ("server_disabled", None),
+            ToolCallDenial::ToolNotAllowed => ("tool_not_allowed", None),
+            ToolCallDenial::Policy(reasons) => ("policy_forbid", Some(reasons.join(", "))),
+        };
+        // The resource is the server's id when one resolved, so the row joins
+        // to the MCP server's History tab; an unknown name has nothing to join
+        // to and names itself.
+        let resource_id = server
+            .map(|s| s.id.0.to_string())
+            .unwrap_or_else(|| server_name.to_string());
         let event = AuditEvent::builder(AuditEventType::McpToolCallDenied)
             .action(&format!("mcp_tool_call/{}", tool_name))
-            .resource("mcp_server", server_name)
+            .resource("mcp_server", &resource_id)
             .workspace_actor(&workspace.id, &workspace.name)
-            .decision(AuditDecision::Forbid, Some("unknown_server"))
+            .decision(AuditDecision::Forbid, Some(reason))
             .details(serde_json::json!({
                 "server_name": server_name,
                 "tool_name": tool_name,
                 "policy_decision": "forbid",
+                "reason": reason,
+                "policy_reasons": detail,
             }))
             .correlation_id(correlation_id)
             .build();

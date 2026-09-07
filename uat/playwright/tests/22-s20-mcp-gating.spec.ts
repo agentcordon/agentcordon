@@ -289,19 +289,6 @@ test.describe('S20 MCP tool gating', () => {
   test('a tool call refused by policy writes an mcp_tool_call_denied audit row [G-S20-5]', async ({
     page,
   }) => {
-    // KNOWN OPEN DEFECT — G-S20-5. `McpServerService::record_tool_denied`
-    // exists, `AuditEventType::McpToolCallDenied` exists, the admin UI has a
-    // label for it ("MCP Tool Denied") and docs/audit-logging.md lists it —
-    // but nothing calls it. `crates/server/src/routes/control_plane/
-    // mcp_authorize.rs` emits the domain row only on permit, so a tool call
-    // refused by a policy leaves a `policy_evaluated` forbid and no domain
-    // event. The only `mcp_tool_call_denied` rows in an install come from the
-    // broker's "unknown server" path. An operator who writes a per-tool Deny
-    // therefore gets no audit record of the refusals it causes — the one thing
-    // the deny exists to produce. Call `record_tool_denied` on the forbid
-    // branch and this goes green.
-    test.fail();
-
     await login(page);
     const before = new Set((await auditRows(page)).map((e: any) => e.id));
 
@@ -390,8 +377,8 @@ test.describe('S20 MCP tool gating', () => {
     expect(permittedRow.workspace_name).toBe(UAT.workspace2Name);
     expect(permittedRow.metadata.tool_name).toBe(GRANTED_TOOL);
 
-    // Both refusals are Cedar forbids on `mcp_tool_call`; the domain row a
-    // denial should also write is the open defect G-S20-5 above.
+    // Both refusals are Cedar forbids on `mcp_tool_call`, and each also
+    // writes the `mcp_tool_call_denied` domain row asserted above.
     const evaluated = await apiFromPage(
       page,
       'GET',

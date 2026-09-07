@@ -54,6 +54,7 @@ mod policy_templates;
 mod register_page_copy;
 mod removed_routes;
 mod route_authorization;
+mod s20_mcp_gating;
 mod server_cli;
 mod startup_guard;
 mod storage_contracts;

@@ -12,6 +12,7 @@ use agent_cordon_core::policy::{actions, claim_keys, PolicyPrincipal, PolicyReso
 
 use crate::extractors::AuthenticatedWorkspace;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::mcp_servers::ToolCallDenial;
 use crate::state::AppState;
 
 pub use agent_cordon_core::wire::mcp::{McpAuthorizeRequest, McpAuthorizeResponse};
@@ -66,22 +67,32 @@ pub(super) async fn authorize(
             // Cedar will still deny via implicit deny since the principal/resource won't
             // share an owner.
             all_servers
-                .into_iter()
+                .iter()
                 .find(|s| s.name == server_name && s.enabled)
+                .cloned()
         });
 
     let mcp_server = match mcp_server {
         Some(s) => s,
         None => {
-            // Unknown server — forbid and audit.
+            // Nothing resolved. A server that exists but is switched off is
+            // the documented revocation path and not a typo, and the audit row
+            // has to say which of the two it was.
+            let disabled = all_servers.iter().find(|s| s.name == server_name);
+            let denial = match disabled {
+                Some(_) => ToolCallDenial::ServerDisabled,
+                None => ToolCallDenial::UnknownServer,
+            };
             state
                 .services
                 .mcp_servers
                 .record_tool_call_denied(
                     &workspace.workspace,
                     &correlation_id,
+                    disabled,
                     &server_name,
                     &tool_name,
+                    denial,
                 )
                 .await;
 
@@ -135,6 +146,22 @@ pub(super) async fn authorize(
                 &mcp_server,
                 &server_name,
                 &tool_name,
+            )
+            .await;
+    } else {
+        // A refusal is a domain event too. Without this a per-tool Deny left
+        // only a generic `policy_evaluated` forbid, so the one thing the deny
+        // exists to produce was invisible to every MCP surface in the UI.
+        state
+            .services
+            .mcp_servers
+            .record_tool_call_denied(
+                &workspace.workspace,
+                &correlation_id,
+                Some(&mcp_server),
+                &server_name,
+                &tool_name,
+                ToolCallDenial::Policy(&decision.reasons),
             )
             .await;
     }
