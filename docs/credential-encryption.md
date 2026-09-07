@@ -328,16 +328,18 @@ credential_type`.
   (or a `secret_value` holding the equivalent JSON: `access_key_id`, `secret_access_key`,
   and optionally `region`, `service`, `session_token`)
 - **Default transform:** `aws-sigv4`
-- **Auto-default `allowed_url_pattern`:** `https://*.amazonaws.com/*`
+- **Auto-default `allowed_url_pattern`:** `https://**.amazonaws.com/*` (`**` is one or more DNS
+  labels, so it covers both `sts.amazonaws.com` and `ssm.us-east-1.amazonaws.com`; a single `*`
+  covers only the first, because it stands for exactly one label)
 
 > [!IMPORTANT]
-> **`aws_region` and `aws_service` are only optional for `*.amazonaws.com` targets.** The
+> **`aws_region` and `aws_service` are only optional for `**.amazonaws.com` targets.** The
 > signer infers them from the hostname (`infer_aws_region_service`,
 > `crates/core/src/transform/builtins/aws_sigv4.rs`) and that inference works only when the
 > target host ends in `.amazonaws.com`. Against a VPC endpoint, an S3-compatible store,
 > LocalStack, or a gateway behind a custom domain, a credential stored without both fields
 > fails at **proxy** time, not at create time. Fill both in whenever you also widen
-> `allowed_url_pattern` past `https://*.amazonaws.com/*`.
+> `allowed_url_pattern` past `https://**.amazonaws.com/*`.
 
 A credential carrying `session_token` (or `aws_session_token`) — STS or assumed-role keys —
 is signed with `x-amz-security-token`. `x-amz-content-sha256` is sent for S3-family services

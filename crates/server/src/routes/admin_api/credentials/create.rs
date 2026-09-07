@@ -141,9 +141,11 @@ pub(crate) async fn store_credential(
             transform_name = Some("aws-sigv4".to_string());
         }
 
-        // Pre-default allowed_url_pattern for AWS credentials
+        // Pre-default allowed_url_pattern for AWS credentials. `**` is one or
+        // more labels: regional endpoints are `service.region.amazonaws.com`,
+        // two labels in front of the tail, which a single `*` never covers.
         if allowed_url_pattern.is_none() {
-            allowed_url_pattern = Some("https://*.amazonaws.com/*".to_string());
+            allowed_url_pattern = Some("https://**.amazonaws.com/*".to_string());
         }
 
         secret_value

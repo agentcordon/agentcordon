@@ -208,9 +208,12 @@ before injecting (ADR-0007). `crates/core/src/wire/credentials.rs`,
 `crates/server/src/routes/admin_api/credentials/vend.rs`, `crates/broker/src/routes/proxy.rs`.
 
 **`allowed_url_pattern`** — the URL fence on a credential, matched **structurally**: scheme,
-host and port compared as parsed values, a `*` in the host standing for exactly one label, and a
-glob over path and query only. `crates/core/src/proxy/url_match.rs` (`url_matches_pattern`,
-`validate_url_pattern`, `URL_PATTERN_GRAMMAR`). Validated when written, enforced at vend time on
+host and port compared as parsed values, a `*` in the host standing for exactly one label, a
+leading `**` for one or more labels (`https://**.amazonaws.com/*` covers the regional
+`service.region.amazonaws.com` hosts, never the apex), and a glob over path and query only.
+`crates/core/src/proxy/url_match.rs` (`url_matches_pattern`, `validate_url_pattern`,
+`URL_PATTERN_GRAMMAR`). A pattern whose host has no wildcard **pins** the credential to that
+host (`pattern_pins_host`), which is what lets the SSRF guard defer to it (ADR-0014). Validated when written, enforced at vend time on
 the server and again at injection time in the broker; a mismatch is **403 `url_pattern_denied`**
 naming the pattern and the target, and writes a `credential_vend_denied` audit row.
 *UI:* "Allowed URL pattern" on the credential form; *CLI:* `--allowed-url-pattern`, and the
@@ -463,11 +466,17 @@ schemes, `localhost` and any `*.localhost` name **before DNS**, and any address 
 reserved set — IPv4 `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.0.0/24`,
 the TEST-NETs, `198.18/15`, `224/4`, `240/4`; IPv6 unique-local, link-local, site-local and
 multicast — unwrapping IPv4-mapped, NAT64 and 6to4 forms first. A hostname resolving to any
-reserved address is refused. **It is all-or-nothing**: `AGTCRDN_PROXY_ALLOW_LOOPBACK` (and the
+reserved address is refused. **One thing overrides it on the proxy path**: a credential whose
+`allowed_url_pattern` pins the target host — a host with no wildcard — is forwarded to
+regardless of the address (ADR-0014), because the admin wrote where that credential goes. The
+verdict is therefore decided after the vend, when the pattern is known; an unrestricted or
+wildcard-fenced credential leaves the refusal standing, and the refusal names the pin pattern an
+admin could write. Otherwise **it is all-or-nothing**: `AGTCRDN_PROXY_ALLOW_LOOPBACK` (and the
 broker's `--proxy-allow-loopback`) turns the whole guard off, not just the loopback rule, and
 there is no allow-list form. *Which process:* the **broker** enforces it for `proxy` and
-`mcp-call`; the **server** enforces it for MCP tool discovery and OAuth discovery. A private
-upstream needs the variable set on both. *Error code:* `ssrf_blocked` from the broker's MCP
+`mcp-call` (the pin override applies to `proxy` only; an MCP upstream URL is admin-configured but
+still guarded); the **server** enforces it for MCP tool discovery and OAuth discovery. A private
+MCP upstream needs the variable set on both. *Error code:* `ssrf_blocked` from the broker's MCP
 route (naming the server), `bad_request` from the broker's proxy route; both carry the sentence
 "Blocked by SSRF protection".
 

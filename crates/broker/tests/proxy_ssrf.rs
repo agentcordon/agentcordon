@@ -4,21 +4,26 @@
 //! which switches the guard off so a wiremock upstream on 127.0.0.1 is
 //! reachable. These run it off, which is how the broker ships.
 //!
-//! The refusal has to happen before the vend: a target the broker will not
-//! call is a target whose credential must never leave the server. Every
-//! test here therefore mounts the vend endpoint with `expect(0)`.
+//! The guard's verdict is decided after the vend, not before (ADR-0014): a
+//! credential whose `allowed_url_pattern` names the target host with no
+//! wildcard is the admin saying where the credential goes, and that pin
+//! overrides the guard. Everything else — an unrestricted credential, a
+//! wildcard fence — leaves the refusal standing, and the upstream receives
+//! nothing.
 
 use axum::http::StatusCode;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::common::{mock_vend, pattern_for, vend_path, TestBroker, TestWorkspace};
+use crate::common::{mock_vend, pattern_for, TestBroker, TestWorkspace};
 
 const CRED: &str = "api-token";
 const SECRET: &str = "tok-secret-value-1234567890";
 
 /// A broker with the guard on (loopback not allowed), one registered
-/// workspace, and a vend endpoint that must never be reached.
+/// workspace, and a vend that hands back an unrestricted `generic`
+/// credential — the case in which nothing vouches for the target and the
+/// guard's refusal stands.
 async fn guarded() -> (TestBroker, TestWorkspace) {
     let ws = TestWorkspace::generate();
     let broker = TestBroker::builder()
@@ -26,12 +31,7 @@ async fn guarded() -> (TestBroker, TestWorkspace) {
         .allow_loopback(false)
         .build()
         .await;
-    Mock::given(method("POST"))
-        .and(path(vend_path(CRED)))
-        .respond_with(ResponseTemplate::new(200))
-        .expect(0)
-        .mount(&broker.server)
-        .await;
+    mock_vend(&broker, CRED, "generic", SECRET, None).await;
     (broker, ws)
 }
 
@@ -168,8 +168,8 @@ async fn proxy_refuses_non_http_schemes() {
 }
 
 /// The contrast that makes the refusals above the guard and nothing else:
-/// the identical loopback target, on a broker started with
-/// `--proxy-allow-loopback`, is vended for and forwarded.
+/// the identical loopback target, same unrestricted credential, on a broker
+/// started with `--proxy-allow-loopback`, is forwarded.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_same_loopback_target_is_forwarded_when_loopback_is_allowed() {
     let ws = TestWorkspace::generate();
@@ -179,6 +179,46 @@ async fn the_same_loopback_target_is_forwarded_when_loopback_is_allowed() {
         .build()
         .await;
     let upstream = MockServer::start().await;
+    mock_vend(&broker, CRED, "generic", SECRET, None).await;
+    Mock::given(method("GET"))
+        .and(path("/v1/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let target = format!("{}/v1/items", upstream.uri());
+    let (allowed, body) = proxy_to(&broker, &ws, &target).await;
+    assert_eq!(allowed, StatusCode::OK, "{body}");
+
+    // The same URL, same unrestricted credential, guard on: refused, and
+    // the upstream sees nothing.
+    let (guarded_broker, guarded_ws) = guarded().await;
+    let before = upstream.received_requests().await.unwrap().len();
+    let (refused, body) = proxy_to(&guarded_broker, &guarded_ws, &target).await;
+    assert_eq!(refused, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        upstream.received_requests().await.unwrap().len(),
+        before,
+        "a refused target must not be called"
+    );
+}
+
+/// A credential fenced to exactly this host — scheme, host and port, no
+/// wildcard in the host — is forwarded to a private address on a broker
+/// with the guard on. The admin wrote where the credential goes; a service
+/// on a tailnet or a LAN is exactly such a place, and needing to switch the
+/// whole guard off to reach it was the bug.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_credential_pinned_to_the_host_is_forwarded_to_a_private_address() {
+    let ws = TestWorkspace::generate();
+    let broker = TestBroker::builder()
+        .with_registered(&ws, &["credentials:vend"])
+        .allow_loopback(false)
+        .build()
+        .await;
+    let upstream = MockServer::start().await;
+    // `pattern_for` is `http://127.0.0.1:<port>/*`: one literal host.
     mock_vend(
         &broker,
         CRED,
@@ -195,43 +235,71 @@ async fn the_same_loopback_target_is_forwarded_when_loopback_is_allowed() {
         .await;
 
     let target = format!("{}/v1/items", upstream.uri());
-    let (allowed, body) = proxy_to(&broker, &ws, &target).await;
-    assert_eq!(allowed, StatusCode::OK, "{body}");
+    let (status, body) = proxy_to(&broker, &ws, &target).await;
 
-    // The same URL, same credential, guard on: refused before the vend.
-    let (guarded_broker, guarded_ws) = guarded().await;
-    let (refused, body) = proxy_to(&guarded_broker, &guarded_ws, &target).await;
-    assert_eq!(refused, StatusCode::BAD_REQUEST, "{body}");
-    assert!(
-        guarded_broker
-            .server
-            .received_requests()
-            .await
-            .unwrap()
-            .is_empty(),
-        "no vend may be requested for a target the broker will not call"
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let received = upstream.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1);
+    assert_eq!(
+        received[0]
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok()),
+        Some(format!("Bearer {SECRET}").as_str()),
+        "the credential was injected on the way to the pinned host"
     );
 }
 
-/// The refusal has to name its own escape hatch, and say where the escape
-/// hatch is read.
+/// A wildcard in the host pins nothing: `http://*/…` covers the loopback
+/// alias, but it covers every other single-label host too, so the guard's
+/// refusal stands.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wildcard_host_pattern_does_not_override_the_guard() {
+    let ws = TestWorkspace::generate();
+    let broker = TestBroker::builder()
+        .with_registered(&ws, &["credentials:vend"])
+        .allow_loopback(false)
+        .build()
+        .await;
+    mock_vend(&broker, CRED, "bearer", SECRET, Some("http://*/v1/*")).await;
+    let name = name_resolving_to_a_reserved_address().await;
+
+    let (status, body) = proxy_to(&broker, &ws, &format!("http://{name}/v1/items")).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        message(&body).contains("does not pin one host"),
+        "the refusal says why the fence did not help: {body}"
+    );
+}
+
+/// The refusal has to name its own escape hatches, and say where each is
+/// read.
 ///
 /// `Blocked by SSRF protection: target address is in a private or reserved
-/// range` is a dead end: it does not mention `AGTCRDN_PROXY_ALLOW_LOOPBACK`,
-/// and the flag is a clap `env` argument on the broker
-/// (`crates/broker/src/config.rs`), so it is read once, at startup. The
-/// obvious guess — prefixing the `agentcordon proxy` call with it — sets it on
-/// a process that never looks at it, and the call is refused again. Every
-/// local-development first call hits this
-/// (uat/artifacts/reviews/ONBOARDING-empirical.md F4).
+/// range` is a dead end. There are two ways out: an admin fences the
+/// credential to this exact host, which the message spells out as a pattern
+/// to copy; or the broker is restarted with `AGTCRDN_PROXY_ALLOW_LOOPBACK`,
+/// a clap `env` argument on the broker (`crates/broker/src/config.rs`) read
+/// once, at startup. The obvious guess — prefixing the `agentcordon proxy`
+/// call with the flag — sets it on a process that never looks at it, and
+/// the call is refused again (uat/artifacts/reviews/ONBOARDING-empirical.md F4).
 #[tokio::test(flavor = "multi_thread")]
-async fn the_refusal_says_how_to_allow_loopback_and_where_the_flag_is_read() {
+async fn the_refusal_names_the_pin_pattern_and_the_loopback_flag() {
     let (broker, ws) = guarded().await;
 
     let (status, body) = proxy_to(&broker, &ws, "http://127.0.0.1:18080/echo").await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let msg = message(&body);
 
+    assert!(
+        msg.contains("http://127.0.0.1:18080/*"),
+        "the pattern an admin would write to pin this host, ready to copy: {msg}"
+    );
+    assert!(
+        msg.contains("has no allowed_url_pattern"),
+        "say why the credential did not vouch for the target: {msg}"
+    );
     assert!(
         msg.contains("AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker"),
         "the flag belongs in front of the broker, at start: {msg}"
