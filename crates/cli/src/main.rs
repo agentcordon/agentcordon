@@ -20,6 +20,7 @@ mod agents;
 mod broker;
 mod broker_autostart;
 mod commands;
+mod config;
 mod error;
 mod pin;
 mod platform;
@@ -70,12 +71,14 @@ enum Command {
         #[arg(long)]
         force: bool,
 
-        /// AgentCordon server URL (e.g. http://server:3140). If provided
-        /// and the broker is not already running, `register` will start
-        /// a broker daemon pointed at this server before initiating the
-        /// RFC 8628 device flow. If the broker is already running this
-        /// flag is ignored.
-        #[arg(long = "server-url", env = "AGTCRDN_SERVER_URL")]
+        /// AgentCordon server URL (e.g. http://server:3140). Optional:
+        /// without it the CLI falls back to `AGTCRDN_SERVER_URL` and then
+        /// to `server_url` in `~/.agentcordon/config.toml`, which your
+        /// server's installer wrote. When a server URL is known and no
+        /// broker is running, `register` starts one pointed at it before
+        /// initiating the RFC 8628 device flow. If the broker is already
+        /// running the URL is only used for reporting.
+        #[arg(long = "server-url")]
         server_url: Option<String>,
 
         /// Workspace display name. If omitted, defaults to the current

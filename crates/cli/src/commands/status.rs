@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 use crate::broker::BrokerClient;
+use crate::config::{self, ServerUrl};
 use crate::error::CliError;
 
 #[derive(Deserialize)]
@@ -46,6 +47,28 @@ fn version_skew_warning(broker_version: Option<&str>, cli_version: &str) -> Opti
     ))
 }
 
+/// The line `status` prints about the *configured* server URL — the one a
+/// `register` or an `init` would use — and where it came from.
+///
+/// The broker's `server_url` (the `Server:` line) is the server the running
+/// broker is actually bound to. The two can disagree: an
+/// `AGTCRDN_SERVER_URL` left over in a shell, or a config file written by a
+/// second server's installer, sends the next enrolment somewhere the current
+/// broker is not. Naming the source is how that becomes visible.
+fn configured_server_line(configured: Option<&ServerUrl>) -> String {
+    match configured {
+        Some(c) => format!(
+            "Configured server: {} (from {})",
+            c.url,
+            c.source.describe()
+        ),
+        None => format!(
+            "Configured server: none. {}",
+            config::missing_server_url_hint()
+        ),
+    }
+}
+
 /// Check workspace registration and broker connectivity.
 pub async fn run() -> Result<(), CliError> {
     let client = BrokerClient::connect().await?;
@@ -62,6 +85,11 @@ pub async fn run() -> Result<(), CliError> {
     if let Some(server_url) = &data.server_url {
         println!("Server: {server_url} (reachable)");
     }
+
+    println!(
+        "{}",
+        configured_server_line(config::resolve_server_url(None).as_ref())
+    );
 
     println!("Workspace: {}", client.keypair().identity());
     println!("Registered: {}", if data.registered { "yes" } else { "no" });
@@ -100,7 +128,8 @@ fn format_expiry(expires_at: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::version_skew_warning;
+    use super::{configured_server_line, version_skew_warning};
+    use crate::config::{ServerUrl, ServerUrlSource};
 
     #[test]
     fn matching_versions_say_nothing() {
@@ -126,5 +155,34 @@ mod tests {
         // It is refused earlier, by the /health fingerprint check, with its
         // own upgrade hint. A second guess here would only be noise.
         assert!(version_skew_warning(None, "0.4.0").is_none());
+    }
+
+    /// The three sources `status` must be able to tell apart. Without this
+    /// line a stale `AGTCRDN_SERVER_URL` and a config file written by another
+    /// server's installer look identical from the terminal.
+    #[test]
+    fn the_configured_server_line_names_its_source() {
+        for (source, expected) in [
+            (ServerUrlSource::Flag, "--server-url"),
+            (ServerUrlSource::Env, "AGTCRDN_SERVER_URL"),
+            (ServerUrlSource::ConfigFile, "~/.agentcordon/config.toml"),
+        ] {
+            let line = configured_server_line(Some(&ServerUrl {
+                url: "https://cordon.example.com".to_string(),
+                source,
+            }));
+            assert!(line.contains("https://cordon.example.com"), "{line}");
+            assert!(line.contains(expected), "{line}");
+            assert_eq!(line.lines().count(), 1, "one line: {line}");
+        }
+    }
+
+    /// Nothing configured is a state to report, not a blank: it is exactly
+    /// the state in which `agentcordon init` cannot enrol.
+    #[test]
+    fn no_configured_server_says_so_and_hints() {
+        let line = configured_server_line(None);
+        assert!(line.contains("none"), "{line}");
+        assert!(line.contains("--server-url"), "{line}");
     }
 }

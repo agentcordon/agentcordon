@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::broker::BrokerClient;
 use crate::broker_autostart;
+use crate::config;
 use crate::error::CliError;
 
 #[derive(Serialize)]
@@ -98,22 +99,24 @@ fn expiry_phrase(expires_in: u64) -> String {
 
 /// Register this workspace with the broker via device flow.
 ///
-/// If `server_url` is provided (via `--server-url` or `AGTCRDN_SERVER_URL`)
-/// and no broker is already running, this will auto-start the broker
-/// pointed at that server before initiating the device flow. If the
-/// broker is already running the flag is ignored.
+/// The server URL is resolved by [`config::resolve_server_url`]: the
+/// `--server-url` flag, then `AGTCRDN_SERVER_URL`, then `server_url` in
+/// `~/.agentcordon/config.toml` (written by the installer). If one is known
+/// and no broker is already running, this auto-starts the broker pointed at
+/// that server before initiating the device flow. If the broker is already
+/// running the URL is not used.
 pub async fn run(
     scopes: Vec<String>,
     force: bool,
     server_url: Option<String>,
     name: Option<String>,
 ) -> Result<(), CliError> {
-    // If --server-url was supplied, give the broker a chance to come up
-    // before we attempt discovery. `ensure_broker_running` itself tries
-    // the env-var + port-file path first, so passing --server-url when a
-    // broker is already running is a no-op.
-    if let Some(ref url) = server_url {
-        broker_autostart::ensure_broker_running(url).await?;
+    // If a server URL is known from anywhere, give the broker a chance to
+    // come up before we attempt discovery. `ensure_broker_running` itself
+    // tries the env-var + port-file path first, so a known URL with a broker
+    // already running is a no-op.
+    if let Some(resolved) = config::resolve_server_url(server_url.as_deref()) {
+        broker_autostart::ensure_broker_running(&resolved.url).await?;
     }
 
     let client = match BrokerClient::connect_for_registration(force).await {
