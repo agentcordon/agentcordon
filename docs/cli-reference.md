@@ -578,10 +578,12 @@ picks from it. The rule is fixed, so two runs choose the same credential:
 1. An **expired** credential is never a candidate.
 2. A **fenced** credential is a candidate when its `allowed_url_pattern` covers the
    target. The comparison is structural, not textual: the scheme, host and port are
-   compared as values, a `*` in the host stands for exactly one DNS label, and a `*`
-   in the path or query matches any run of characters. `https://*.github.com/*` does
-   **not** cover `https://api.github.com.attacker.example/x`, nor
-   `https://api.github.com:8443/x`.
+   compared as values, a `*` in the host stands for exactly one DNS label, a leading
+   `**` stands for one or more labels, and a `*` in the path or query matches any run
+   of characters. `https://*.github.com/*` does **not** cover
+   `https://api.github.com.attacker.example/x`, nor `https://api.github.com:8443/x`;
+   `https://*.amazonaws.com/*` does **not** cover `https://ssm.us-east-1.amazonaws.com/`
+   (two labels), but `https://**.amazonaws.com/*` does.
 3. **Exactly one** fenced candidate is used.
 4. With no fenced candidate, an **unfenced** credential (`* (any URL)`) is used, and
    `proxy` says so on stderr. An unfenced credential is never preferred over one whose
@@ -595,7 +597,9 @@ is still one round trip per call: that is the audit record, and it is where the 
 is checked against the fence.
 
 > **SSRF Protection:** Private IPs, loopback, and link-local addresses are blocked by the
-> broker by default. For local development, start the **broker** with
+> broker by default, unless the credential's `allowed_url_pattern` pins that exact host (no
+> wildcard in the host), in which case the broker forwards to it — that is how a tailnet or
+> LAN service is reached. For local development with an unfenced credential, start the **broker** with
 > `AGTCRDN_PROXY_ALLOW_LOOPBACK=true` -- that is the process that makes this call, so it is
 > the only one `proxy` needs. The **server** reads the same variable for its *own* outbound
 > calls (MCP tool discovery and OAuth discovery); reaching a private upstream end to end

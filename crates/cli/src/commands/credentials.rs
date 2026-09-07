@@ -544,6 +544,21 @@ mod selector_tests {
                 false,
             ),
             (
+                "https://*.amazonaws.com/*",
+                "https://ssm.us-east-1.amazonaws.com/",
+                false,
+            ),
+            (
+                "https://**.amazonaws.com/*",
+                "https://ssm.us-east-1.amazonaws.com/",
+                true,
+            ),
+            (
+                "https://**.amazonaws.com/*",
+                "https://amazonaws.com/",
+                false,
+            ),
+            (
                 "https://api.example.com/repos/*/pulls",
                 "https://api.example.com/repos/x/pulls",
                 true,

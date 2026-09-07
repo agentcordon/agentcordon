@@ -45,7 +45,10 @@ Only if a call errors, run `agentcordon credentials` or `agentcordon mcp-servers
 - `url_pattern_denied` — the credential's fence does not cover the target, and the message names
   the pattern. Pick another credential. Never retry with a raw token, and never rewrite the URL
   to get past the fence; if nothing covers the target, say so and ask for a credential.
-- `Blocked by SSRF protection` — a loopback or private target: restart the broker as
+- `Blocked by SSRF protection` — a loopback or private target that no credential is pinned to. A
+  credential fenced to exactly that host (no wildcard in the host, e.g. `https://ha.example.ts.net/*`)
+  is forwarded to a private address; the message shows the pattern an admin would write. Otherwise,
+  for local development only, restart the broker as
   `AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker --server-url <server>`; it reads the flag once, at startup.
 - Exit codes: 2 broker not running · 3 not registered · 4 auth failed · 5 authorization denied
   (includes `url_pattern_denied`) · 6 upstream failed, not AgentCordon · 7 `--auto` found none or several.

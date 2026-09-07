@@ -160,9 +160,16 @@ non-HTTP schemes, `localhost` and any `*.localhost` name before DNS, and every r
 IPv4 and IPv6 range, unwrapping IPv4-mapped, NAT64 and 6to4 forms first. A hostname that
 resolves to a reserved address is refused.
 
+The one exception needs no variable. On `agentcordon proxy`, a credential whose
+`allowed_url_pattern` names the target host with no wildcard — `https://ha.example.ts.net/*`,
+`http://192.168.1.10:8080/*` — is forwarded to whatever that host resolves to, because the
+admin who wrote the fence has said where the credential goes. That is how a service on a
+tailnet or a LAN is reached without touching the guard (ADR-0014). The refusal shows the
+pattern to write.
+
 `AGTCRDN_PROXY_ALLOW_LOOPBACK` turns that guard **off entirely** — not just the loopback
-rule. Every private and reserved range becomes a reachable target. There is no allow-list
-form: no CIDR variable, no per-host exception.
+rule. Every private and reserved range becomes a reachable target for every credential and
+every MCP upstream. There is no allow-list form: no CIDR variable.
 
 The server and the broker each read the variable for their own outbound calls, and setting
 it on one does nothing for the other.

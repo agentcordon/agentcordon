@@ -11,7 +11,7 @@ use p256::elliptic_curve::sec1::ToEncodedPoint;
 use serde::Deserialize;
 
 use agent_cordon_core::proxy::leak_scanner::{self, LeakScanner};
-use agent_cordon_core::proxy::url_match::url_matches_pattern;
+use agent_cordon_core::proxy::url_match::{pattern_pins_host, url_matches_pattern};
 use agent_cordon_core::proxy::url_safety::validate_proxy_target_resolved;
 
 use crate::auth::AuthenticatedWorkspace;
@@ -22,6 +22,23 @@ use crate::upstream;
 use crate::vend;
 
 use super::helpers::{error_response, with_token_refresh};
+
+/// The pattern an admin would write to pin a credential to `url`'s host:
+/// its scheme, host and explicit port, and every path under it. Shown in
+/// the SSRF refusal so the fix is a copy rather than a guess.
+fn pin_pattern_for(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(u) => {
+            let port = u.port().map(|p| format!(":{p}")).unwrap_or_default();
+            format!(
+                "{}://{}{port}/*",
+                u.scheme(),
+                u.host_str().unwrap_or_default()
+            )
+        }
+        Err(_) => "scheme://host[:port]/*".to_string(),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ProxyRequest {
@@ -78,19 +95,18 @@ pub async fn post_proxy(
         }
     };
 
-    // SSRF validation — async DNS resolution prevents DNS rebinding attacks
-    if !state.config.proxy_allow_loopback {
-        if let Err(reason) = validate_proxy_target_resolved(&proxy_req.url).await {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "bad_request",
-                &format!(
-                    "Blocked by SSRF protection: {reason}.{}",
-                    super::helpers::LOOPBACK_HINT
-                ),
-            );
-        }
-    }
+    // SSRF guard: resolve the target and refuse a private or reserved
+    // address. The verdict is held rather than returned, because a refusal
+    // is overridden by a credential whose allowed_url_pattern pins this
+    // exact host (ADR-0014), and the pattern arrives with the vend. A target
+    // outside every pattern is refused by the server before any secret
+    // leaves it, so vending first costs nothing the pattern check did not
+    // already permit.
+    let guard_verdict = if state.config.proxy_allow_loopback {
+        Ok(())
+    } else {
+        validate_proxy_target_resolved(&proxy_req.url).await
+    };
 
     // Compute broker's public key (base64url-encoded uncompressed P-256 point)
     let pub_key = state.encryption_key.public_key();
@@ -149,6 +165,43 @@ pub async fn post_proxy(
             ),
         };
         return error_response(StatusCode::FORBIDDEN, "url_pattern_denied", &message);
+    }
+
+    // The target is inside the pattern. If the guard refused it, the
+    // pattern decides: one that names this host with no wildcard is the
+    // admin saying where the credential goes, and a tailnet or LAN address
+    // is where such a service lives. A wildcard or absent pattern vouches
+    // for no particular host, so the guard's refusal stands.
+    if let Err(reason) = guard_verdict {
+        let pinned = vend_response
+            .allowed_url_pattern
+            .as_deref()
+            .is_some_and(pattern_pins_host);
+        if pinned {
+            tracing::info!(
+                credential = %proxy_req.credential,
+                target = %proxy_req.url,
+                "forwarding to a private address: the credential's allowed_url_pattern pins this host"
+            );
+        } else {
+            let fence = match vend_response.allowed_url_pattern.as_deref() {
+                Some(pattern) => format!("is fenced to {pattern}, which does not pin one host"),
+                None => "has no allowed_url_pattern".to_string(),
+            };
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                &format!(
+                    "Blocked by SSRF protection: {reason}. Credential '{}' {fence}; an admin \
+                     can allow this target by fencing the credential to {} (a pattern that \
+                     names one host, with no wildcard in the host, is forwarded to even at a \
+                     private address).{}",
+                    proxy_req.credential,
+                    pin_pattern_for(&proxy_req.url),
+                    super::helpers::LOOPBACK_HINT
+                ),
+            );
+        }
     }
 
     // ECIES decrypt

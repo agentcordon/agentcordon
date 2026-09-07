@@ -648,9 +648,13 @@ async fn a_partial_host_wildcard_is_refused() {
 async fn the_documented_url_patterns_are_accepted() {
     let (ctx, cookie) = admin_session().await;
 
-    for (i, pattern) in ["https://api.github.com/*", "https://*.amazonaws.com/*"]
-        .iter()
-        .enumerate()
+    for (i, pattern) in [
+        "https://api.github.com/*",
+        "https://*.amazonaws.com/*",
+        "https://**.amazonaws.com/*",
+    ]
+    .iter()
+    .enumerate()
     {
         let (status, body) = common::send_json_auto_csrf(
             &ctx.app,
