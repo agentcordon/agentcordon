@@ -1,223 +1,45 @@
-use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+//! Workspace key access for the CLI.
+//!
+//! The key format, permission policy, and signing payloads live in
+//! `agentcordon-identity` (shared with the broker). This module only
+//! resolves where the key directory is and maps the crate's errors onto
+//! `CliError` with the messages users have always seen.
 
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
-use sha2::{Digest, Sha256};
+use std::path::PathBuf;
+
+use agentcordon_identity::{KeyFileError, SignedHeaders, WorkspaceKey, WORKSPACE_DIR_NAME};
 
 use crate::error::CliError;
-
-/// Loaded workspace keypair.
-pub struct Keypair {
-    pub signing_key: SigningKey,
-    pub verifying_key: VerifyingKey,
-}
-
-impl Keypair {
-    /// Hex-encoded public key (64 chars).
-    pub fn public_key_hex(&self) -> String {
-        hex::encode(self.verifying_key.to_bytes())
-    }
-
-    /// SHA-256 hash of the raw public key bytes, hex-encoded.
-    pub fn pk_hash(&self) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(self.verifying_key.to_bytes());
-        hex::encode(hasher.finalize())
-    }
-
-    /// Full identity string: `sha256:<hash>`.
-    pub fn identity(&self) -> String {
-        format!("sha256:{}", self.pk_hash())
-    }
-}
 
 /// Resolve the `.agentcordon/` directory from `AGTCRDN_WORKSPACE_DIR` or cwd.
 pub fn workspace_dir() -> PathBuf {
     let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(base).join(".agentcordon")
+    PathBuf::from(base).join(WORKSPACE_DIR_NAME)
 }
 
 /// Load the Ed25519 keypair from `.agentcordon/`, enforcing file permissions.
-pub fn load_keypair() -> Result<Keypair, CliError> {
-    let dir = workspace_dir();
-    let key_path = dir.join("workspace.key");
-    let pub_path = dir.join("workspace.pub");
-
-    if !key_path.exists() {
-        return Err(CliError::general("no keypair found. Run: agentcordon init"));
-    }
-
-    // Check directory permissions
-    check_permissions(&dir, 0o700, "directory .agentcordon/")?;
-    // Check private key permissions
-    check_permissions(&key_path, 0o600, "private key workspace.key")?;
-
-    let seed_hex = fs::read_to_string(&key_path)
-        .map_err(|e| CliError::general(format!("failed to read private key: {e}")))?;
-    let seed_bytes = hex::decode(seed_hex.trim())
-        .map_err(|e| CliError::general(format!("invalid private key format: {e}")))?;
-
-    let seed: [u8; 32] = seed_bytes
-        .try_into()
-        .map_err(|_| CliError::general("private key must be 32 bytes"))?;
-
-    let signing_key = SigningKey::from_bytes(&seed);
-    let verifying_key = signing_key.verifying_key();
-
-    // Verify public key file matches
-    if pub_path.exists() {
-        let pub_hex = fs::read_to_string(&pub_path)
-            .map_err(|e| CliError::general(format!("failed to read public key: {e}")))?;
-        let pub_bytes = hex::decode(pub_hex.trim())
-            .map_err(|e| CliError::general(format!("invalid public key format: {e}")))?;
-        if pub_bytes != verifying_key.to_bytes() {
-            return Err(CliError::general(
-                "public key file does not match private key",
-            ));
+pub fn load_keypair() -> Result<WorkspaceKey, CliError> {
+    agentcordon_identity::load_workspace_key(&workspace_dir()).map_err(|e| match e {
+        KeyFileError::NotFound { .. } => {
+            CliError::general("no keypair found. Run: agentcordon init")
         }
-    }
-
-    Ok(Keypair {
-        signing_key,
-        verifying_key,
+        other => CliError::general(other.to_string()),
     })
 }
 
-/// Check that file/dir permissions are not more permissive than `max_mode`.
-///
-/// On Unix this enforces POSIX mode bits. On Windows there is no equivalent
-/// POSIX mode, so we rely on NTFS ACL defaults (the user's profile directory
-/// is already ACL-protected) and skip the check.
-#[cfg(unix)]
-fn check_permissions(path: &Path, max_mode: u32, label: &str) -> Result<(), CliError> {
-    let metadata =
-        fs::metadata(path).map_err(|e| CliError::general(format!("cannot stat {label}: {e}")))?;
-    let mode = metadata.permissions().mode() & 0o777;
-    if mode & !max_mode != 0 {
-        return Err(CliError::general(format!(
-            "{label} has permissions {mode:04o}, expected {max_mode:04o} or stricter. \
-             Fix with: chmod {max_mode:04o} {}",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn check_permissions(_path: &Path, _max_mode: u32, _label: &str) -> Result<(), CliError> {
-    Ok(())
-}
-
-/// Canonicalise a request path-and-query for inclusion in the signed payload.
-///
-/// The rule is applied byte-identically on the broker side
-/// (`crates/broker/src/auth.rs`):
-///
-/// - Strip a single trailing `/` from `path` unless `path == "/"`.
-/// - If `query` is `Some(non-empty)`, append `"?"` + the query verbatim
-///   (percent-encoding untouched, parameters NOT re-sorted).
-/// - If `query` is `None` or `Some("")`, append nothing.
-///
-/// Fragments never appear in `Uri::query()` and are not included in the
-/// outgoing CLI path, so no fragment-stripping is needed.
-pub(crate) fn canonicalise_path_and_query(path: &str, query: Option<&str>) -> String {
-    let trimmed: &str = if path.len() > 1 && path.ends_with('/') {
-        &path[..path.len() - 1]
-    } else {
-        path
-    };
-    match query {
-        Some(q) if !q.is_empty() => format!("{trimmed}?{q}"),
-        _ => trimmed.to_string(),
-    }
-}
-
-/// Build the signed payload and produce signing headers.
-///
-/// Payload format: `METHOD\nPATH_WITH_QUERY\nTIMESTAMP\nBODY`.
+/// Sign a broker request with the current time.
 ///
 /// `path` MUST already be in the canonical path-and-query form produced by
-/// [`canonicalise_path_and_query`]; callers in `broker.rs` apply it before
-/// invoking `sign_request`. The broker verifier reconstructs the same
-/// canonical form from the incoming `Uri`, so signatures round-trip.
-///
-/// Breaking change vs. pre-2026-04-17 CLIs: the old payload used only the
-/// path (no query), so any mixed-version CLI+broker pair will fail
-/// verification with 401 until both sides are upgraded together.
+/// [`agentcordon_identity::canonicalise_path_and_query`]; callers in
+/// `broker.rs` apply it before invoking this. The broker verifier
+/// reconstructs the same canonical form from the incoming `Uri`, so
+/// signatures round-trip.
 pub fn sign_request(
-    keypair: &Keypair,
+    key: &WorkspaceKey,
     method: &str,
     path: &str,
     body: &str,
 ) -> Result<SignedHeaders, CliError> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| CliError::general(format!("system clock error: {e}")))?
-        .as_secs()
-        .to_string();
-
-    let signed_bytes = format!("{method}\n{path}\n{timestamp}\n{body}");
-    let signature = keypair.signing_key.sign(signed_bytes.as_bytes());
-
-    Ok(SignedHeaders {
-        public_key: keypair.public_key_hex(),
-        timestamp,
-        signature: hex::encode(signature.to_bytes()),
-    })
-}
-
-/// Headers to attach to a signed broker request.
-pub struct SignedHeaders {
-    pub public_key: String,
-    pub timestamp: String,
-    pub signature: String,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn canonicalise_plain_path() {
-        assert_eq!(canonicalise_path_and_query("/foo/bar", None), "/foo/bar");
-    }
-
-    #[test]
-    fn canonicalise_strips_trailing_slash() {
-        assert_eq!(canonicalise_path_and_query("/foo/bar/", None), "/foo/bar");
-    }
-
-    #[test]
-    fn canonicalise_with_query() {
-        assert_eq!(
-            canonicalise_path_and_query("/foo/bar", Some("a=1&b=2")),
-            "/foo/bar?a=1&b=2"
-        );
-    }
-
-    #[test]
-    fn canonicalise_strips_trailing_slash_with_query() {
-        assert_eq!(
-            canonicalise_path_and_query("/foo/bar/", Some("a=1&b=2")),
-            "/foo/bar?a=1&b=2"
-        );
-    }
-
-    #[test]
-    fn canonicalise_root_path() {
-        assert_eq!(canonicalise_path_and_query("/", None), "/");
-    }
-
-    #[test]
-    fn canonicalise_root_with_query() {
-        assert_eq!(canonicalise_path_and_query("/", Some("a=1")), "/?a=1");
-    }
-
-    #[test]
-    fn canonicalise_root_with_empty_query() {
-        assert_eq!(canonicalise_path_and_query("/", Some("")), "/");
-    }
+    agentcordon_identity::sign_request(key, method, path, body.as_bytes())
+        .map_err(|e| CliError::general(format!("system clock error: {e}")))
 }

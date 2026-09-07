@@ -27,6 +27,8 @@
 //   view_audit          - View audit log entries
 //   rotate_key          - Rotate a workspace's API key
 //   manage_oidc_providers - CRUD OIDC identity providers
+//   manage_oauth_provider_clients - CRUD the OAuth client registrations
+//                         AgentCordon holds at upstream authorization servers
 //   manage_vaults       - Share/unshare credential vaults
 //   rotate_encryption_key - Rotate the server encryption key
 //   manage_mcp_servers  - CRUD MCP server registrations
@@ -93,8 +95,13 @@ permit(
 
 // --- Admin ---
 
-// 2a. Enabled admin users have full access to system, workspace, MCP, and
-// policy resources. Credential access is scoped to own credentials (2b).
+// 2a. Enabled admin users have full access to system, workspace, and
+// policy resources. Credential access is scoped to own credentials (2b);
+// MCP servers are covered by 2e-mcp. This is also what grants the
+// admin-only System actions — `manage_oidc_providers`,
+// `manage_oauth_provider_clients`, `manage_vaults`,
+// `rotate_encryption_key` — none of which appear in the operator or
+// viewer grants below.
 permit(
   principal is AgentCordon::User,
   action,
@@ -107,14 +114,6 @@ permit(
   principal is AgentCordon::User,
   action,
   resource is AgentCordon::WorkspaceResource
-) when {
-  principal.enabled && principal.role == "admin"
-};
-
-permit(
-  principal is AgentCordon::User,
-  action,
-  resource is AgentCordon::McpServer
 ) when {
   principal.enabled && principal.role == "admin"
 };
@@ -168,13 +167,45 @@ permit(
   principal.enabled && principal.role == "operator"
 };
 
-// 2e. Enabled operators can manage workspaces.
+// 2e. Enabled operators can perform system-level workspace management:
+// approve device-flow registrations (which makes them the owner) and list.
 permit(
   principal is AgentCordon::User,
   action == AgentCordon::Action::"manage_workspaces",
-  resource
+  resource is AgentCordon::System
 ) when {
   principal.enabled && principal.role == "operator"
+};
+
+// 2e-owner. Enabled operators can manage the workspaces they own. Other
+// users' workspaces are out of reach; admins (2a) cover those.
+permit(
+  principal is AgentCordon::User,
+  action == AgentCordon::Action::"manage_workspaces",
+  resource is AgentCordon::WorkspaceResource
+) when {
+  principal.enabled && principal.role == "operator"
+    && resource has owner && resource.owner == principal
+};
+
+// 2e-mcp. Enabled admins manage any MCP server; enabled operators manage
+// the MCP servers they own. System-level manage_mcp_servers (2a, 2d) covers
+// creating and listing; a route that names a server checks the server.
+permit(
+  principal is AgentCordon::User,
+  action == AgentCordon::Action::"manage_mcp_servers",
+  resource is AgentCordon::McpServer
+) when {
+  principal.enabled && principal.role == "admin"
+};
+
+permit(
+  principal is AgentCordon::User,
+  action == AgentCordon::Action::"manage_mcp_servers",
+  resource is AgentCordon::McpServer
+) when {
+  principal.enabled && principal.role == "operator"
+    && resource has owner && resource.owner == principal
 };
 
 // --- Viewer ---

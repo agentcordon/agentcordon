@@ -185,7 +185,11 @@ async fn test_new_policy_has_cedar_editor() {
     );
 }
 
-/// The parseCedarStatements JS function should be present on the detail page.
+/// The statement parser the detail page actually runs must be on the page.
+///
+/// It used to name `parseReadableStatements`, a second parser nothing called:
+/// `init()` has always used `parseStatementsWithCedar`, so this assertion
+/// froze a dead copy in place (uat/artifacts/reviews/UI-REVIEW-static.md J8).
 #[tokio::test]
 async fn test_policy_detail_has_parse_function() {
     let (ctx, cookie) = setup().await;
@@ -195,7 +199,11 @@ async fn test_policy_detail_has_parse_function() {
 
     assert_eq!(status, StatusCode::OK);
     assert!(
-        body.contains("parseReadableStatements"),
-        "policy detail page should include the parseReadableStatements JavaScript function"
+        body.contains("parseStatementsWithCedar"),
+        "policy detail page should include the statement parser it calls"
+    );
+    assert!(
+        !body.contains("parseReadableStatements"),
+        "the second, uncalled parser is deleted"
     );
 }

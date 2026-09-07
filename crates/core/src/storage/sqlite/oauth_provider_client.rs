@@ -2,10 +2,12 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use super::helpers::map_store_error;
 use super::SqliteStore;
 use crate::domain::oauth_provider_client::{
     OAuthProviderClient, OAuthProviderClientId, OAuthProviderClientSummary, RegistrationSource,
 };
+use crate::domain::time::{format_timestamp, parse_timestamp};
 use crate::error::StoreError;
 use crate::storage::OAuthProviderClientStore;
 
@@ -33,21 +35,15 @@ fn parse_json_array(s: &str) -> Vec<String> {
 }
 
 fn opt_dt_to_string(dt: Option<DateTime<Utc>>) -> Option<String> {
-    dt.map(|d| d.to_rfc3339())
+    dt.map(|d| format_timestamp(&d))
 }
 
 fn parse_opt_dt(s: Option<String>, col: usize) -> Result<Option<DateTime<Utc>>, rusqlite::Error> {
     match s {
         None => Ok(None),
-        Some(s) => DateTime::parse_from_rfc3339(&s)
-            .map(|dt| Some(dt.with_timezone(&Utc)))
-            .map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    col,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            }),
+        Some(s) => parse_timestamp(&s).map(Some).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
+        }),
     }
 }
 
@@ -87,15 +83,15 @@ impl SqliteStore {
                         c.registration_client_uri,
                         c.label,
                         c.enabled as i32,
-                        c.created_at.to_rfc3339(),
-                        c.updated_at.to_rfc3339(),
+                        format_timestamp(&c.created_at),
+                        format_timestamp(&c.updated_at),
                     ],
                 )
                 .map_err(tokio_rusqlite::Error::Rusqlite)?;
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_oauth_provider_client(
@@ -119,7 +115,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_oauth_provider_client_by_authorization_server_url(
@@ -145,7 +141,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn list_oauth_provider_clients(
@@ -168,7 +164,7 @@ impl SqliteStore {
                 Ok(out)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn update_oauth_provider_client(
@@ -212,7 +208,7 @@ impl SqliteStore {
                         c.registration_client_uri,
                         c.label,
                         c.enabled as i32,
-                        c.updated_at.to_rfc3339(),
+                        format_timestamp(&c.updated_at),
                         c.id.0.to_string(),
                     ],
                 )
@@ -220,7 +216,7 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn delete_oauth_provider_client(
@@ -239,7 +235,7 @@ impl SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }
 
@@ -290,11 +286,9 @@ fn parse_uuid(s: &str) -> Result<Uuid, rusqlite::Error> {
 }
 
 fn parse_dt(s: &str, col: usize) -> Result<DateTime<Utc>, rusqlite::Error> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
-        })
+    parse_timestamp(s).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 fn row_to_oauth_provider_client(

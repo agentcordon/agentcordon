@@ -408,15 +408,20 @@ async fn test_audit_log_page() {
 // 3H. Users Pages
 // ===========================================================================
 
+/// The user table is a Settings section, so `/settings/users` sends the
+/// reader to it rather than rendering a second copy
+/// (uat/artifacts/fresh-user-docker-2.md F5).
 #[tokio::test]
 async fn test_users_list_page() {
     let (ctx, cookie) = setup().await;
 
-    let (status, content_type, body) = get_authed(&ctx.app, "/settings/users", &cookie).await;
+    let (status, _content_type, _body) = get_authed(&ctx.app, "/settings/users", &cookie).await;
+    assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
 
+    let (status, content_type, body) = get_authed(&ctx.app, "/settings", &cookie).await;
     assert_eq!(status, StatusCode::OK);
     assert!(content_type.contains("text/html"));
-    assert!(body.contains("User") || body.contains("user"));
+    assert!(body.contains("users-section"));
 }
 
 #[tokio::test]

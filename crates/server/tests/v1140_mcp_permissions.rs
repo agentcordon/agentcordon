@@ -13,7 +13,6 @@ use serde_json::json;
 use uuid::Uuid;
 
 use agent_cordon_core::domain::user::UserRole;
-use agent_cordon_server::events::DeviceEvent;
 use agent_cordon_server::test_helpers::TestAppBuilder;
 
 use crate::common::*;
@@ -281,72 +280,6 @@ async fn test_revoke_mcp_permission() {
     });
     assert!(!found, "mcp_tool_call should have been revoked");
 }
-
-/// Test #5: Grant permission emits PolicyChanged SSE event.
-#[tokio::test]
-async fn test_grant_emits_policy_changed_sse() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .with_agent("target", &[])
-        .build()
-        .await;
-    let (cookie, server_id, agent_id, _) = standard_mcp_setup(&ctx).await;
-
-    // Subscribe BEFORE granting
-    let mut rx = ctx.state.event_bus.subscribe();
-
-    grant_mcp_permission(&ctx.app, &cookie, &server_id, &agent_id, "mcp_tool_call").await;
-
-    // Check for PolicyChanged event
-    let event = rx.try_recv().expect("should have received an SSE event");
-    match event {
-        DeviceEvent::PolicyChanged { policy_name } => {
-            assert!(
-                policy_name.contains("grant:mcp:"),
-                "policy_name should contain grant:mcp prefix, got: {}",
-                policy_name
-            );
-        }
-        other => panic!("expected PolicyChanged event, got {:?}", other),
-    }
-}
-
-/// Test #6: Revoke permission emits PolicyChanged SSE event.
-#[tokio::test]
-async fn test_revoke_emits_policy_changed_sse() {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .with_agent("target", &[])
-        .build()
-        .await;
-    let (cookie, server_id, agent_id, _) = standard_mcp_setup(&ctx).await;
-
-    // Grant first
-    grant_mcp_permission(&ctx.app, &cookie, &server_id, &agent_id, "mcp_tool_call").await;
-
-    // Subscribe AFTER grant (only care about revoke event)
-    let mut rx = ctx.state.event_bus.subscribe();
-
-    revoke_mcp_permission(&ctx.app, &cookie, &server_id, &agent_id, "mcp_tool_call").await;
-
-    let event = rx
-        .try_recv()
-        .expect("should have received an SSE event on revoke");
-    match event {
-        DeviceEvent::PolicyChanged { policy_name } => {
-            assert!(
-                policy_name.contains("grant:mcp:"),
-                "revoke policy_name should contain grant:mcp prefix, got: {}",
-                policy_name
-            );
-        }
-        other => panic!("expected PolicyChanged on revoke, got {:?}", other),
-    }
-}
-
-// ===========================================================================
-// 1B. Retry/Idempotency
-// ===========================================================================
 
 /// Test #8: Duplicate grant returns 409 Conflict (not 500).
 #[tokio::test]

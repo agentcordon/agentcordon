@@ -351,24 +351,49 @@ async fn test_openapi_covers_mcp_generate_policies() {
     );
 }
 
-/// 4B-5: Spec includes device whoami endpoint.
+/// 4B-5: Spec covers the broker-facing workspace sync endpoints.
+///
+/// These replaced `/api/v1/devices/whoami` and `/api/v1/devices/{id}/agents`,
+/// which this release removed along with the rest of the device routes.
 #[tokio::test]
-async fn test_openapi_covers_device_whoami() {
+async fn test_openapi_covers_workspace_sync() {
     let spec = fetch_openapi_spec().await;
-    assert!(
-        spec_has_path(&spec, "/api/v1/devices/whoami"),
-        "OpenAPI spec should include /api/v1/devices/whoami"
-    );
+    for path in [
+        "/api/v1/workspaces/mcp-servers",
+        "/api/v1/workspaces/mcp-tools",
+        "/api/v1/workspaces/mcp-authorize",
+    ] {
+        assert!(
+            spec_has_path(&spec, path),
+            "OpenAPI spec should include {path}"
+        );
+    }
 }
 
-/// 4B-6: Spec includes device agents endpoint.
+/// 4B-6: Spec covers workspace revocation, and no longer advertises routes
+/// this release removed. A spec that names a route the router does not
+/// register sends a reader to a 404.
 #[tokio::test]
-async fn test_openapi_covers_device_agents() {
+async fn test_openapi_covers_workspace_revoke_and_drops_removed_routes() {
     let spec = fetch_openapi_spec().await;
     assert!(
-        spec_has_path(&spec, "/api/v1/devices/{id}/agents"),
-        "OpenAPI spec should include /api/v1/devices/{{id}}/agents"
+        spec_has_path(&spec, "/api/v1/workspaces/{id}/revoke"),
+        "OpenAPI spec should include /api/v1/workspaces/{{id}}/revoke"
     );
+    for gone in [
+        "/api/v1/devices/whoami",
+        "/api/v1/devices/{id}/agents",
+        "/api/v1/devices/{id}/rotate-key",
+        "/api/v1/agents/{id}/rotate-key",
+        "/api/v1/proxy/execute",
+        "/api/v1/mcp/proxy",
+        "/.well-known/jwks.json",
+    ] {
+        assert!(
+            !spec_has_path(&spec, gone),
+            "OpenAPI spec still advertises the removed route {gone}"
+        );
+    }
 }
 
 /// 4B-7: /api/v1/mcp-servers path should exist in OpenAPI spec (GET for list).
@@ -382,7 +407,10 @@ async fn test_openapi_mcp_servers_path_exists() {
     );
 }
 
-/// 4B-8: Security schemes include BearerAuth and SessionAuth.
+/// 4B-8: Security schemes name the two ways a caller actually authenticates —
+/// the `agtcrdn_session` cookie and an opaque OAuth bearer access token — and
+/// nothing else. The old `BearerAuth` / `SessionAuth` / `WorkspaceIdentity`
+/// entries described a JWT scheme and a `session` cookie that no route uses.
 #[tokio::test]
 async fn test_openapi_security_schemes_defined() {
     let spec = fetch_openapi_spec().await;
@@ -392,18 +420,23 @@ async fn test_openapi_security_schemes_defined() {
         .and_then(|s| s.as_mapping())
         .expect("components.securitySchemes should be a mapping");
 
-    let has_bearer_auth = schemes
+    let names: Vec<String> = schemes
         .keys()
-        .any(|k| k.as_str().map(|s| s == "BearerAuth").unwrap_or(false));
-    let has_session_auth = schemes
-        .keys()
-        .any(|k| k.as_str().map(|s| s == "SessionAuth").unwrap_or(false));
+        .filter_map(|k| k.as_str().map(str::to_string))
+        .collect();
 
-    assert!(has_bearer_auth, "securitySchemes should define BearerAuth");
-    assert!(
-        has_session_auth,
-        "securitySchemes should define SessionAuth"
-    );
+    for expected in ["SessionCookie", "BearerJWT"] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "securitySchemes should define {expected}; found {names:?}"
+        );
+    }
+    for stale in ["BearerAuth", "SessionAuth", "WorkspaceIdentity"] {
+        assert!(
+            !names.iter().any(|n| n == stale),
+            "securitySchemes still defines the unused scheme {stale}"
+        );
+    }
 }
 
 /// 4B-9: info.version matches "1.5.3".
@@ -466,4 +499,86 @@ async fn test_openapi_all_paths_have_descriptions() {
         "The following path+method combos lack a summary or description: {:?}",
         missing
     );
+}
+
+/// The spec's `credential_type` enums must list every type the server accepts.
+/// They listed three of six, so a generated client rejected `api_key_header`,
+/// `api_key_query` and `oauth2_user_authorization` — all three of which the
+/// server creates happily (uat/artifacts/fresh-user-docker.md F-9).
+///
+/// The enum on the create request body and the one on the `Credential` schema
+/// are the same set, and `KNOWN_CREDENTIAL_TYPES` in
+/// `crates/server/src/services/credentials.rs` is what both describe.
+#[tokio::test]
+async fn test_openapi_credential_type_enums_list_every_accepted_type() {
+    let spec = fetch_openapi_spec().await;
+    let expected = [
+        "generic",
+        "aws",
+        "api_key_header",
+        "api_key_query",
+        "oauth2_client_credentials",
+        "oauth2_user_authorization",
+    ];
+
+    let create_enum = spec
+        .get("paths")
+        .and_then(|p| p.get("/api/v1/credentials"))
+        .and_then(|p| p.get("post"))
+        .and_then(|p| p.get("requestBody"))
+        .and_then(|p| p.get("content"))
+        .and_then(|p| p.get("application/json"))
+        .and_then(|p| p.get("schema"))
+        .and_then(|p| p.get("properties"))
+        .and_then(|p| p.get("credential_type"))
+        .and_then(|p| p.get("enum"))
+        .expect("POST /api/v1/credentials declares a credential_type enum");
+
+    let schema_enum = spec
+        .get("components")
+        .and_then(|c| c.get("schemas"))
+        .and_then(|s| s.get("CredentialSummary"))
+        .and_then(|c| c.get("properties"))
+        .and_then(|p| p.get("credential_type"))
+        .and_then(|p| p.get("enum"))
+        .expect("the CredentialSummary schema declares a credential_type enum");
+
+    for (label, node) in [
+        ("request body", create_enum),
+        ("CredentialSummary", schema_enum),
+    ] {
+        let values: Vec<String> = node
+            .as_sequence()
+            .expect("an enum is a sequence")
+            .iter()
+            .map(|v| v.as_str().expect("enum values are strings").to_string())
+            .collect();
+        for want in expected {
+            assert!(
+                values.iter().any(|v| v == want),
+                "the {label} credential_type enum omits {want:?}: {values:?}"
+            );
+        }
+        assert_eq!(
+            values.len(),
+            expected.len(),
+            "the {label} credential_type enum lists something the server rejects: {values:?}"
+        );
+    }
+
+    // The prose next to the enum must not contradict it.
+    let description = spec
+        .get("paths")
+        .and_then(|p| p.get("/api/v1/credentials"))
+        .and_then(|p| p.get("post"))
+        .and_then(|p| p.get("description"))
+        .and_then(|d| d.as_str())
+        .expect("POST /api/v1/credentials has a description")
+        .to_string();
+    for want in expected {
+        assert!(
+            description.contains(want),
+            "the POST /api/v1/credentials description omits {want:?}: {description:?}"
+        );
+    }
 }

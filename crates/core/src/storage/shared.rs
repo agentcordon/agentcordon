@@ -1,13 +1,15 @@
-//! Shared helpers used by both SQLite and PostgreSQL storage backends.
+//! Backend-independent storage helpers: the parts of the store that are
+//! about the schema and the domain rather than about the driver.
 //!
 //! Contains:
-//! - Enum serialization/deserialization (both backends store enums as strings)
-//! - SQL column list constants (identical across backends)
+//! - Enum serialization/deserialization (enums are stored as strings)
+//! - SQL column list constants
 //! - Dynamic SQL builders for audit filters and credential updates
 //! - Shared audit event logging
 
 use crate::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use crate::domain::credential::CredentialUpdate;
+use crate::domain::time::format_timestamp;
 use crate::domain::user::UserRole;
 use crate::error::StoreError;
 use crate::storage::AuditFilter;
@@ -107,7 +109,6 @@ pub fn serialize_metadata(value: &serde_json::Value) -> Result<String, StoreErro
 // ---------------------------------------------------------------------------
 // SQL column list constants
 // ---------------------------------------------------------------------------
-// Both SQLite and PostgreSQL use identical column names and ordering.
 // Centralising them here means a schema change only needs one update.
 
 /// Columns for the `workspaces` table (SELECT).
@@ -117,11 +118,22 @@ pub const WORKSPACE_COLUMNS: &str = "id, name, enabled, status, pk_hash, encrypt
 /// Uses the new workspace_id/workspace_name columns from the v2.0 migration.
 pub const AUDIT_COLUMNS: &str = "id, timestamp, correlation_id, event_type, workspace_id, workspace_name, action, resource_type, resource_id, decision, decision_reason, metadata, user_id, user_name";
 
-/// Columns for the `credentials` table — full row (SELECT).
-pub const CREDENTIAL_COLUMNS: &str = "id, name, service, encrypted_value, nonce, scopes, metadata, created_by, created_at, updated_at, allowed_url_pattern, created_by_user, expires_at, transform_script, transform_name, vault, credential_type, tags, key_version, description, target_identity";
+/// Columns for the `credentials` table — INSERT, in the order
+/// `store_credential` binds them.
+pub const CREDENTIAL_INSERT_COLUMNS: &str = "id, name, service, encrypted_value, nonce, scopes, metadata, created_by, created_at, updated_at, allowed_url_pattern, created_by_user, expires_at, transform_script, transform_name, vault_id, credential_type, tags, key_version, description, target_identity";
 
-/// Columns for the `credentials` table — summary (no encrypted_value / nonce / key_version).
-pub const CREDENTIAL_SUMMARY_COLUMNS: &str = "id, name, service, scopes, metadata, created_by, created_at, allowed_url_pattern, created_by_user, expires_at, transform_script, transform_name, vault, credential_type, tags, description, target_identity";
+/// What every credential SELECT reads from: the row joined to its vault, so
+/// a summary can carry the vault's display name without a second query. The
+/// join is LEFT so a row whose vault has somehow gone still comes back.
+pub const CREDENTIAL_SOURCE: &str = "credentials c LEFT JOIN vaults v ON v.id = c.vault_id";
+
+/// Columns for the `credentials` table — full row (SELECT), qualified for
+/// [`CREDENTIAL_SOURCE`].
+pub const CREDENTIAL_COLUMNS: &str = "c.id, c.name, c.service, c.encrypted_value, c.nonce, c.scopes, c.metadata, c.created_by, c.created_at, c.updated_at, c.allowed_url_pattern, c.created_by_user, c.expires_at, c.transform_script, c.transform_name, c.vault_id, v.name, c.credential_type, c.tags, c.key_version, c.description, c.target_identity";
+
+/// Columns for the `credentials` table — summary (no encrypted_value / nonce / key_version),
+/// qualified for [`CREDENTIAL_SOURCE`].
+pub const CREDENTIAL_SUMMARY_COLUMNS: &str = "c.id, c.name, c.service, c.scopes, c.metadata, c.created_by, c.created_at, c.allowed_url_pattern, c.created_by_user, c.expires_at, c.transform_script, c.transform_name, c.vault_id, v.name, c.credential_type, c.tags, c.description, c.target_identity";
 
 /// Columns for the `users` table (SELECT).
 pub const USER_COLUMNS: &str =
@@ -147,29 +159,6 @@ pub const OIDC_PROVIDER_COLUMNS: &str = "id, name, issuer_url, client_id, encryp
 pub const OIDC_PROVIDER_SUMMARY_COLUMNS: &str = "id, name, issuer_url, client_id, scopes, role_mapping, auto_provision, enabled, username_claim, created_at, updated_at";
 
 // ---------------------------------------------------------------------------
-// Placeholder style abstraction
-// ---------------------------------------------------------------------------
-
-/// SQL placeholder style — SQLite uses `?` (or `?N`), PostgreSQL uses `$N`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaceholderStyle {
-    /// `?` positional (rusqlite — positional `?` without explicit index)
-    QuestionMark,
-    /// `$1`, `$2`, … (PostgreSQL / sqlx)
-    DollarSign,
-}
-
-impl PlaceholderStyle {
-    /// Format a placeholder for the given 1-based parameter index.
-    pub fn param(&self, idx: u32) -> String {
-        match self {
-            PlaceholderStyle::QuestionMark => "?".to_string(),
-            PlaceholderStyle::DollarSign => format!("${}", idx),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Audit filter SQL builder
 // ---------------------------------------------------------------------------
 
@@ -186,23 +175,20 @@ pub struct AuditFilterQuery {
 /// Build a dynamic audit filter SQL query.
 ///
 /// Returns the complete SQL string and the ordered list of string parameter
-/// values to bind. The caller is responsible for binding them in order using
-/// the backend-specific mechanism. `limit` and `offset` are appended last.
-pub fn build_audit_filter_sql(filter: &AuditFilter, style: PlaceholderStyle) -> AuditFilterQuery {
+/// values to bind. The caller binds them in order. `limit` and `offset` are
+/// appended last.
+pub fn build_audit_filter_sql(filter: &AuditFilter) -> AuditFilterQuery {
     let base = format!("SELECT {} FROM audit_events", AUDIT_COLUMNS);
     let mut conditions = Vec::new();
     let mut param_values: Vec<String> = Vec::new();
-    let mut idx: u32 = 1;
 
     if let Some(rt) = &filter.resource_type {
-        conditions.push(format!("resource_type = {}", style.param(idx)));
+        conditions.push("resource_type = ?".to_string());
         param_values.push(rt.to_string());
-        idx += 1;
     }
     if let Some(ri) = &filter.resource_id {
-        conditions.push(format!("resource_id = {}", style.param(idx)));
+        conditions.push("resource_id = ?".to_string());
         param_values.push(ri.to_string());
-        idx += 1;
     }
     match filter.source.as_deref() {
         Some("device") => conditions.push("workspace_id IS NOT NULL".to_string()),
@@ -210,44 +196,36 @@ pub fn build_audit_filter_sql(filter: &AuditFilter, style: PlaceholderStyle) -> 
         _ => {} // "all" or omitted — no filter
     }
     if let Some(action) = &filter.action {
-        conditions.push(format!("action = {}", style.param(idx)));
+        conditions.push("action = ?".to_string());
         param_values.push(action.to_string());
-        idx += 1;
     }
     if let Some(decision) = &filter.decision {
-        conditions.push(format!("decision = {}", style.param(idx)));
+        conditions.push("decision = ?".to_string());
         param_values.push(decision.to_string());
-        idx += 1;
     }
     if let Some(event_type) = &filter.event_type {
-        conditions.push(format!("event_type = {}", style.param(idx)));
+        conditions.push("event_type = ?".to_string());
         param_values.push(event_type.to_string());
-        idx += 1;
     }
     if let Some(workspace_id) = &filter.workspace_id {
-        conditions.push(format!("workspace_id = {}", style.param(idx)));
+        conditions.push("workspace_id = ?".to_string());
         param_values.push(workspace_id.to_string());
-        idx += 1;
     }
     if let Some(workspace_name) = &filter.workspace_name {
-        conditions.push(format!("workspace_name = {}", style.param(idx)));
+        conditions.push("workspace_name = ?".to_string());
         param_values.push(workspace_name.to_string());
-        idx += 1;
     }
     if let Some(user_id) = &filter.user_id {
-        conditions.push(format!("user_id = {}", style.param(idx)));
+        conditions.push("user_id = ?".to_string());
         param_values.push(user_id.to_string());
-        idx += 1;
     }
     if !filter.exclude_event_types.is_empty() {
         let placeholders: Vec<String> = filter
             .exclude_event_types
             .iter()
             .map(|et| {
-                let p = style.param(idx);
                 param_values.push(et.clone());
-                idx += 1;
-                p
+                "?".to_string()
             })
             .collect();
         conditions.push(format!("event_type NOT IN ({})", placeholders.join(", ")));
@@ -258,11 +236,7 @@ pub fn build_audit_filter_sql(filter: &AuditFilter, style: PlaceholderStyle) -> 
         sql.push_str(" WHERE ");
         sql.push_str(&conditions.join(" AND "));
     }
-    sql.push_str(&format!(
-        " ORDER BY timestamp DESC LIMIT {} OFFSET {}",
-        style.param(idx),
-        style.param(idx + 1)
-    ));
+    sql.push_str(" ORDER BY timestamp DESC LIMIT ? OFFSET ?");
 
     AuditFilterQuery {
         sql,
@@ -294,118 +268,99 @@ pub struct CredentialUpdateQuery {
 
 /// Build a dynamic UPDATE SQL for credential patches.
 ///
-/// `json_cast_suffix` is the type cast to append for JSON columns
-/// (empty string for SQLite, `"::jsonb"` for PostgreSQL).
+/// The credential id is bound by the caller as the final parameter.
 pub fn build_credential_update_sql(
-    id_placeholder: &str,
     updates: &CredentialUpdate,
-    style: PlaceholderStyle,
-    json_cast_suffix: &str,
 ) -> Result<CredentialUpdateQuery, StoreError> {
     let mut set_clauses: Vec<String> = Vec::new();
     let mut params: Vec<CredentialParamValue> = Vec::new();
-    let mut idx: u32 = 1;
 
     if let Some(ref name) = updates.name {
-        set_clauses.push(format!("name = {}", style.param(idx)));
+        set_clauses.push("name = ?".to_string());
         params.push(CredentialParamValue::String(name.clone()));
-        idx += 1;
     }
     if let Some(ref service) = updates.service {
-        set_clauses.push(format!("service = {}", style.param(idx)));
+        set_clauses.push("service = ?".to_string());
         params.push(CredentialParamValue::String(service.clone()));
-        idx += 1;
     }
     if let Some(ref scopes) = updates.scopes {
         let scopes_json = serde_json::to_string(scopes)
             .map_err(|e| StoreError::Database(format!("serialize scopes: {}", e)))?;
-        set_clauses.push(format!("scopes = {}{}", style.param(idx), json_cast_suffix));
+        set_clauses.push("scopes = ?".to_string());
         params.push(CredentialParamValue::String(scopes_json));
-        idx += 1;
     }
     if let Some(ref metadata) = updates.metadata {
         let metadata_json = serde_json::to_string(metadata)
             .map_err(|e| StoreError::Database(format!("serialize metadata: {}", e)))?;
-        set_clauses.push(format!(
-            "metadata = {}{}",
-            style.param(idx),
-            json_cast_suffix
-        ));
+        set_clauses.push("metadata = ?".to_string());
         params.push(CredentialParamValue::String(metadata_json));
-        idx += 1;
     }
     if let Some(ref url_pattern) = updates.allowed_url_pattern {
         if url_pattern.is_empty() {
             // Empty string means "clear the restriction" — set DB column to NULL
             set_clauses.push("allowed_url_pattern = NULL".to_string());
         } else {
-            set_clauses.push(format!("allowed_url_pattern = {}", style.param(idx)));
+            set_clauses.push("allowed_url_pattern = ?".to_string());
             params.push(CredentialParamValue::String(url_pattern.clone()));
-            idx += 1;
         }
     }
     if let Some(ref expires_at) = updates.expires_at {
-        set_clauses.push(format!("expires_at = {}", style.param(idx)));
-        params.push(CredentialParamValue::String(expires_at.to_rfc3339()));
-        idx += 1;
+        set_clauses.push("expires_at = ?".to_string());
+        params.push(CredentialParamValue::String(format_timestamp(expires_at)));
     }
+    // An empty transform clears the column, the same way an empty URL pattern does.
     if let Some(ref transform_script) = updates.transform_script {
-        set_clauses.push(format!("transform_script = {}", style.param(idx)));
-        params.push(CredentialParamValue::String(transform_script.clone()));
-        idx += 1;
+        if transform_script.is_empty() {
+            set_clauses.push("transform_script = NULL".to_string());
+        } else {
+            set_clauses.push("transform_script = ?".to_string());
+            params.push(CredentialParamValue::String(transform_script.clone()));
+        }
     }
     if let Some(ref transform_name) = updates.transform_name {
-        set_clauses.push(format!("transform_name = {}", style.param(idx)));
-        params.push(CredentialParamValue::String(transform_name.clone()));
-        idx += 1;
+        if transform_name.is_empty() {
+            set_clauses.push("transform_name = NULL".to_string());
+        } else {
+            set_clauses.push("transform_name = ?".to_string());
+            params.push(CredentialParamValue::String(transform_name.clone()));
+        }
     }
-    if let Some(ref vault) = updates.vault {
-        set_clauses.push(format!("vault = {}", style.param(idx)));
-        params.push(CredentialParamValue::String(vault.clone()));
-        idx += 1;
+    if let Some(ref vault_id) = updates.vault_id {
+        set_clauses.push("vault_id = ?".to_string());
+        params.push(CredentialParamValue::String(vault_id.clone()));
     }
     if let Some(ref tags) = updates.tags {
         let tags_json = serde_json::to_string(tags)
             .map_err(|e| StoreError::Database(format!("serialize tags: {}", e)))?;
-        set_clauses.push(format!("tags = {}{}", style.param(idx), json_cast_suffix));
+        set_clauses.push("tags = ?".to_string());
         params.push(CredentialParamValue::String(tags_json));
-        idx += 1;
     }
     if let Some(ref description) = updates.description {
-        set_clauses.push(format!("description = {}", style.param(idx)));
+        set_clauses.push("description = ?".to_string());
         params.push(CredentialParamValue::String(description.clone()));
-        idx += 1;
     }
     if let Some(ref target_identity) = updates.target_identity {
-        set_clauses.push(format!("target_identity = {}", style.param(idx)));
+        set_clauses.push("target_identity = ?".to_string());
         params.push(CredentialParamValue::String(target_identity.clone()));
-        idx += 1;
     }
     if let Some(ref encrypted_value) = updates.encrypted_value {
-        set_clauses.push(format!("encrypted_value = {}", style.param(idx)));
+        set_clauses.push("encrypted_value = ?".to_string());
         params.push(CredentialParamValue::Bytes(encrypted_value.clone()));
-        idx += 1;
     }
     if let Some(ref nonce) = updates.nonce {
-        set_clauses.push(format!("nonce = {}", style.param(idx)));
+        set_clauses.push("nonce = ?".to_string());
         params.push(CredentialParamValue::Bytes(nonce.clone()));
-        idx += 1;
     }
     if let Some(key_version) = updates.key_version {
-        set_clauses.push(format!("key_version = {}", style.param(idx)));
+        set_clauses.push("key_version = ?".to_string());
         params.push(CredentialParamValue::Int64(key_version));
-        idx += 1;
     }
 
     let has_changes = !set_clauses.is_empty();
 
     if !has_changes {
         // Nothing to update — just touch updated_at
-        let sql = format!(
-            "UPDATE credentials SET updated_at = {} WHERE id = {}",
-            style.param(1),
-            style.param(2)
-        );
+        let sql = "UPDATE credentials SET updated_at = ? WHERE id = ?".to_string();
         return Ok(CredentialUpdateQuery {
             sql,
             params: Vec::new(), // caller handles now + id
@@ -414,20 +369,15 @@ pub fn build_credential_update_sql(
     }
 
     // Always update updated_at
-    let now = chrono::Utc::now().to_rfc3339();
-    set_clauses.push(format!("updated_at = {}", style.param(idx)));
+    let now = format_timestamp(&chrono::Utc::now());
+    set_clauses.push("updated_at = ?".to_string());
     params.push(CredentialParamValue::String(now));
-    idx += 1;
 
+    // The caller appends the credential id as the final bind parameter.
     let sql = format!(
-        "UPDATE credentials SET {} WHERE id = {}",
-        set_clauses.join(", "),
-        style.param(idx)
+        "UPDATE credentials SET {} WHERE id = ?",
+        set_clauses.join(", ")
     );
-    // Caller must append the credential ID as the final bind parameter.
-    // We include id_placeholder in our knowledge but the actual value is
-    // bound by the caller.
-    let _ = id_placeholder;
 
     Ok(CredentialUpdateQuery {
         sql,

@@ -9,7 +9,7 @@
 .login-submit-btn { animation: none !important; }
 
 /* Standardized alert styles for login messages */
-.login-alert { border-radius: var(--r-sm); padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
+.login-alert { border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
 .login-alert--info { background: var(--wash); color: var(--ink); border: 1px solid var(--line); }
 .login-alert--error { background: var(--danger-bg); color: var(--danger); border: 1px solid rgba(194,48,48,0.2); }
 </style>
@@ -102,14 +102,19 @@
                     <div class="login-divider" role="separator" aria-orientation="horizontal">or</div>
                     <div class="login-sso-group">
                         <template x-for="provider in ssoProviders" :key="provider.id">
-                            <button type="button"
-                                    class="btn btn-secondary login-sso-btn"
-                                    :disabled="ssoRedirecting === provider.id"
-                                    :aria-label="'Sign in with ' + provider.name"
-                                    @click="startSsoLogin(provider.id)">
+                            <!--
+                              A real link, so the destination is inspectable and
+                              the browser's own navigation applies. The click
+                              handler only marks the button busy while the
+                              redirect is in flight.
+                            -->
+                            <a class="btn btn-secondary login-sso-btn"
+                               :href="ssoStartUrl(provider.id)"
+                               :aria-label="'Sign in with ' + provider.name"
+                               @click="ssoRedirecting = provider.id">
                                 <span x-show="ssoRedirecting === provider.id" class="spinner spinner-dark" aria-hidden="true"></span>
                                 <span x-text="ssoRedirecting === provider.id ? 'Redirecting...' : 'Continue with ' + provider.name"></span>
-                            </button>
+                            </a>
                         </template>
                     </div>
                 </div>
@@ -234,7 +239,7 @@ function loginPage() {
                 this.loginMessage = msgParam;
             }
             // Load SSO providers via the public (unauthenticated) endpoint
-            fetch('/api/v1/auth/oidc/providers')
+            AC.fetch('/api/v1/auth/oidc/providers')
                 .then(r => r.ok ? r.json() : { data: [] })
                 .then(json => { this.ssoProviders = (json.data || []); })
                 .catch(() => {});
@@ -243,7 +248,7 @@ function loginPage() {
             this.loginError = '';
             this.loginLoading = true;
             try {
-                const resp = await fetch('/api/v1/auth/login', {
+                const resp = await AC.fetch('/api/v1/auth/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -276,9 +281,14 @@ function loginPage() {
                 this.loginLoading = false;
             }
         },
-        startSsoLogin(providerId) {
-            this.ssoRedirecting = providerId;
-            window.location.href = '/api/v1/oidc/auth/' + providerId;
+        /*
+         * The OIDC flow starts at /api/v1/auth/oidc/authorize?provider=<id>,
+         * which answers 302 to the provider. The button used to name a path
+         * that is not a route at all, so every SSO sign-in landed on the
+         * generic 404 page (UI review B2).
+         */
+        ssoStartUrl(providerId) {
+            return '/api/v1/auth/oidc/authorize?provider=' + encodeURIComponent(providerId);
         }
     };
 }

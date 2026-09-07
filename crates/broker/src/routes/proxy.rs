@@ -1,6 +1,8 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use axum::extract::State;
+use axum::http::header::CONTENT_TYPE;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -8,15 +10,18 @@ use base64::Engine;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use serde::Deserialize;
 
+use agent_cordon_core::proxy::leak_scanner::{self, LeakScanner};
+use agent_cordon_core::proxy::url_match::url_matches_pattern;
 use agent_cordon_core::proxy::url_safety::validate_proxy_target_resolved;
 
 use crate::auth::AuthenticatedWorkspace;
 use crate::credential_transform::{self, CredentialMaterial};
 use crate::server_client::ServerClient;
 use crate::state::SharedState;
+use crate::upstream;
 use crate::vend;
 
-use super::helpers::{error_response, require_scope, with_token_refresh};
+use super::helpers::{error_response, with_token_refresh};
 
 #[derive(Debug, Deserialize)]
 pub struct ProxyRequest {
@@ -61,13 +66,17 @@ pub async fn post_proxy(
     };
 
     // Validate HTTP method
-    if reqwest::Method::from_bytes(proxy_req.method.to_uppercase().as_bytes()).is_err() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "bad_request",
-            &format!("Invalid HTTP method: {}", proxy_req.method),
-        );
-    }
+    let http_method = match reqwest::Method::from_bytes(proxy_req.method.to_uppercase().as_bytes())
+    {
+        Ok(m) => m,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                &format!("Invalid HTTP method: {}", proxy_req.method),
+            );
+        }
+    };
 
     // SSRF validation — async DNS resolution prevents DNS rebinding attacks
     if !state.config.proxy_allow_loopback {
@@ -80,11 +89,6 @@ pub async fn post_proxy(
         }
     }
 
-    // Scope pre-check: workspace must have credentials:vend
-    if let Err(e) = require_scope(&state, &auth.pk_hash, "credentials:vend", "proxy").await {
-        return e;
-    }
-
     // Compute broker's public key (base64url-encoded uncompressed P-256 point)
     let pub_key = state.encryption_key.public_key();
     let pub_key_point = pub_key.to_encoded_point(false);
@@ -94,12 +98,15 @@ pub async fn post_proxy(
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
     let credential_name = proxy_req.credential.clone();
     let bpk = broker_pub_key_b64.clone();
+    let target_method = http_method.to_string();
+    let target_url = proxy_req.url.clone();
 
     let vend_response = match with_token_refresh(&state, &auth.pk_hash, |token| {
         let sc = server_client.clone();
         let cred = credential_name.clone();
         let key = bpk.clone();
-        async move { sc.vend_credential(&cred, &token, &key).await }
+        let (m, u) = (target_method.clone(), target_url.clone());
+        async move { sc.vend_credential(&cred, &token, &key, &m, &u).await }
     })
     .await
     {
@@ -107,9 +114,44 @@ pub async fn post_proxy(
         Err(e) => return e,
     };
 
+    // The server bound this vend to a pattern; check the target against it
+    // again here, in the process that will actually inject, so a mismatched
+    // or stale vend never reaches an upstream. The check runs on the URL the
+    // caller asked for, before the credential's own query material is added.
+    // A credential without a pattern is only acceptable for the generic
+    // type; anything else fails closed.
+    let pattern_ok = match vend_response.allowed_url_pattern.as_deref() {
+        Some(pattern) => url_matches_pattern(&proxy_req.url, pattern),
+        None => vend_response.credential_type == "generic",
+    };
+    if !pattern_ok {
+        tracing::warn!(
+            credential = %proxy_req.credential,
+            credential_type = %vend_response.credential_type,
+            "refusing to inject: target outside the vended URL pattern"
+        );
+        // Same code the server uses for its own copy of this check, so the
+        // caller reads one cause however far the request got.
+        let message = match vend_response.allowed_url_pattern.as_deref() {
+            Some(pattern) => format!(
+                "credential '{}' is fenced to the URL pattern {pattern}, which does not \
+                 cover {}. This is the credential's allowed_url_pattern, not a policy \
+                 decision.",
+                proxy_req.credential, proxy_req.url
+            ),
+            None => format!(
+                "credential '{}' has no allowed_url_pattern, and a {} credential may \
+                 only be injected into a target its pattern covers.",
+                proxy_req.credential, vend_response.credential_type
+            ),
+        };
+        return error_response(StatusCode::FORBIDDEN, "url_pattern_denied", &message);
+    }
+
     // ECIES decrypt
     let decrypted =
         match vend::decrypt_vend_envelope(&vend_response.encrypted_envelope, &state.encryption_key)
+            .await
         {
             Ok(c) => c,
             Err(e) => {
@@ -122,102 +164,15 @@ pub async fn post_proxy(
             }
         };
 
-    // For oauth2_client_credentials, exchange the client secret for an access
-    // token via the provider's token endpoint before applying the bearer transform.
-    //
-    // NOTE: `credential_type` lives on the outer `VendResponse` — NOT inside
-    // the ECIES envelope plaintext. The server only encrypts `{value, metadata}`
-    // in the envelope. Reading `decrypted.credential_type` here silently
-    // returned `None` and skipped the exchange, injecting the raw client_secret
-    // as a bearer token (Graph: "IDX14100: JWT is not well formed").
-    let credential_value = if vend_response.credential_type == "oauth2_client_credentials" {
-        let client_id = decrypted
-            .metadata
-            .get("oauth2_client_id")
-            .cloned()
-            .unwrap_or_default();
-        let token_endpoint = decrypted
-            .metadata
-            .get("oauth2_token_endpoint")
-            .cloned()
-            .unwrap_or_default();
-        let scopes = decrypted
-            .metadata
-            .get("oauth2_scopes")
-            .cloned()
-            .unwrap_or_default();
+    // An `oauth2_client_credentials` (or `oauth2_user_authorization`)
+    // credential arrives already exchanged: the server vended the upstream
+    // access token, so it is injected like any bearer. The broker never
+    // holds the client secret or refresh token and never calls a token
+    // endpoint.
+    let credential_value = decrypted.value;
 
-        if client_id.is_empty() || token_endpoint.is_empty() {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "oauth2_client_credentials credential missing client_id or token_endpoint metadata",
-            );
-        }
-
-        // Build a minimal StoredCredential for the token manager's cache key.
-        // Derive a deterministic UUID from the credential name via SHA-256 so
-        // repeated proxy calls for the same credential reuse the cached token.
-        use sha2::{Digest, Sha256};
-        let hash = Sha256::digest(proxy_req.credential.as_bytes());
-        let cache_id = uuid::Uuid::from_bytes(hash[..16].try_into().unwrap());
-        let cache_cred = agent_cordon_core::domain::credential::StoredCredential {
-            id: agent_cordon_core::domain::credential::CredentialId(cache_id),
-            name: proxy_req.credential.clone(),
-            service: String::new(),
-            encrypted_value: vec![],
-            nonce: vec![],
-            scopes: vec![],
-            metadata: serde_json::json!({
-                "oauth2_client_id": client_id,
-                "oauth2_token_endpoint": token_endpoint,
-                "oauth2_scopes": scopes,
-            }),
-            created_by: None,
-            created_by_user: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            allowed_url_pattern: None,
-            expires_at: None,
-            transform_script: None,
-            transform_name: None,
-            vault: String::new(),
-            credential_type: "oauth2_client_credentials".to_string(),
-            tags: vec![],
-            description: None,
-            target_identity: None,
-            key_version: 0,
-        };
-
-        match state
-            .oauth2_cc
-            .get_token(&cache_cred, &decrypted.value)
-            .await
-        {
-            Ok(result) => {
-                tracing::debug!(
-                    credential = %proxy_req.credential,
-                    cached = !result.was_refreshed,
-                    "oauth2 client_credentials token acquired"
-                );
-                result.access_token
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "oauth2 client_credentials token exchange failed");
-                return error_response(
-                    StatusCode::BAD_GATEWAY,
-                    "bad_gateway",
-                    &format!("OAuth2 token exchange failed: {}", e),
-                );
-            }
-        }
-    } else {
-        decrypted.value
-    };
-
-    // Apply credential transform.
-    // `credential_type` comes from the outer `VendResponse`, not from the
-    // envelope plaintext (see the note above the oauth2 exchange block).
+    // Apply credential transform. `credential_type` comes from the outer
+    // `VendResponse`, not from the envelope plaintext.
     let material = CredentialMaterial {
         credential_type: Some(vend_response.credential_type.clone()),
         value: credential_value,
@@ -246,6 +201,18 @@ pub async fn post_proxy(
         }
     };
 
+    // The secret material the injection put on the wire is a needle for the
+    // response scan. `injected_needles` decides what counts as secret: the
+    // signature yes, the `host` and `x-amz-date` a signer also emits no.
+    let scanner = LeakScanner::new(leak_scanner::injected_needles(
+        &material.value,
+        transformed
+            .headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str())),
+        transformed.query_params.values().map(String::as_str),
+    ));
+
     // Merge transform headers
     for (k, v) in &transformed.headers {
         user_headers.insert(k.clone(), v.clone());
@@ -269,19 +236,23 @@ pub async fn post_proxy(
     };
 
     // Execute upstream request
-    let http_method =
-        reqwest::Method::from_bytes(proxy_req.method.to_uppercase().as_bytes()).unwrap();
-
-    let mut upstream_req = state.http_client.request(http_method, &final_url);
+    let mut upstream_req = state.upstream_client.request(http_method, &final_url);
     for (key, value) in &user_headers {
-        upstream_req = upstream_req.header(key.as_str(), value.as_str());
+        if !upstream::is_hop_by_hop(key) {
+            upstream_req = upstream_req.header(key.as_str(), value.as_str());
+        }
     }
     if let Some(body_str) = &proxy_req.body {
-        if let Ok(json_body) = serde_json::from_str::<serde_json::Value>(body_str) {
-            upstream_req = upstream_req.json(&json_body);
-        } else {
-            upstream_req = upstream_req.body(body_str.clone());
+        // `agentcordon proxy --body` sends no Content-Type of its own and
+        // has always meant JSON; keep labelling such a body so existing
+        // calls still work. A caller's own Content-Type is passed through.
+        if !user_headers
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case("content-type"))
+        {
+            upstream_req = upstream_req.header(CONTENT_TYPE, "application/json");
         }
+        upstream_req = upstream_req.body(body_str.clone());
     }
 
     let upstream_resp = match upstream_req.send().await {
@@ -296,17 +267,10 @@ pub async fn post_proxy(
         }
     };
 
-    // Build response
-    let resp_status = upstream_resp.status().as_u16();
-    let mut resp_headers = HashMap::new();
-    for (key, value) in upstream_resp.headers() {
-        if let Ok(v) = value.to_str() {
-            resp_headers.insert(key.to_string(), v.to_string());
-        }
-    }
-    let resp_body = match upstream_resp.text().await {
-        Ok(t) => t,
+    let collected = match upstream::collect(upstream_resp).await {
+        Ok(c) => c,
         Err(e) => {
+            tracing::warn!(error = %e, "upstream response rejected");
             return error_response(
                 StatusCode::BAD_GATEWAY,
                 "bad_gateway",
@@ -314,6 +278,37 @@ pub async fn post_proxy(
             );
         }
     };
+
+    // Redact anything the upstream echoed back, in the body and in every
+    // header value, before the response leaves the broker.
+    let mut leaked = false;
+    let resp_body = match scanner.redact(&String::from_utf8_lossy(&collected.body)) {
+        Cow::Borrowed(clean) => clean.to_string(),
+        Cow::Owned(redacted) => {
+            leaked = true;
+            redacted
+        }
+    };
+    let resp_headers: Vec<(String, String)> = collected
+        .headers
+        .into_iter()
+        .map(|(name, value)| {
+            let value = match scanner.redact(&value) {
+                Cow::Borrowed(_) => value,
+                Cow::Owned(redacted) => {
+                    leaked = true;
+                    redacted
+                }
+            };
+            (name, value)
+        })
+        .collect();
+    if leaked {
+        tracing::warn!(
+            credential = %proxy_req.credential,
+            "upstream response echoed an injected credential value; redacted"
+        );
+    }
 
     // Return proxied response
     let body_json: serde_json::Value =
@@ -323,7 +318,7 @@ pub async fn post_proxy(
         StatusCode::OK,
         axum::Json(serde_json::json!({
             "data": {
-                "status_code": resp_status,
+                "status_code": collected.status,
                 "headers": resp_headers,
                 "body": body_json,
             }

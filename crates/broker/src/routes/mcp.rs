@@ -1,189 +1,245 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use agent_cordon_core::proxy::leak_scanner::{self, LeakScanner};
 use agent_cordon_core::proxy::url_safety::validate_proxy_target_resolved;
 
 use crate::auth::AuthenticatedWorkspace;
 use crate::credential_transform::{self, CredentialMaterial};
-use crate::oauth2_refresh::{RotationCallback, RotationError};
+use agent_cordon_core::wire::mcp::{McpServerSyncEntry, McpToolSyncEntry};
+
 use crate::server_client::ServerClient;
 use crate::state::{CachedCredential, SharedState};
 
-use super::helpers::{
-    error_response, get_access_token, ok_response, require_scope, with_token_refresh,
-};
+use super::helpers::{error_response, ok_response, with_token_refresh};
 
-/// Exchange an `oauth2_client_credentials` credential for an access token
-/// via the provider's token endpoint, using the broker's `OAuth2TokenManager`.
-async fn resolve_client_credentials_value(
-    state: &SharedState,
-    credential_name: &str,
-    cred: &CachedCredential,
-) -> Option<String> {
-    let client_id = cred.metadata.get("oauth2_client_id")?;
-    let token_endpoint = cred.metadata.get("oauth2_token_endpoint")?;
-    let scopes = cred
-        .metadata
-        .get("oauth2_scopes")
-        .cloned()
-        .unwrap_or_default();
+type ErrorResponse = (StatusCode, axum::Json<serde_json::Value>);
 
-    // Build a minimal StoredCredential for the token manager's cache key.
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(credential_name.as_bytes());
-    let cache_id = uuid::Uuid::from_bytes(hash[..16].try_into().unwrap());
-    let cache_cred = agent_cordon_core::domain::credential::StoredCredential {
-        id: agent_cordon_core::domain::credential::CredentialId(cache_id),
-        name: credential_name.to_string(),
-        service: String::new(),
-        encrypted_value: vec![],
-        nonce: vec![],
-        scopes: vec![],
-        metadata: serde_json::json!({
-            "oauth2_client_id": client_id,
-            "oauth2_token_endpoint": token_endpoint,
-            "oauth2_scopes": scopes,
-        }),
-        created_by: None,
-        created_by_user: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        allowed_url_pattern: None,
-        expires_at: None,
-        transform_script: None,
-        transform_name: None,
-        vault: String::new(),
-        credential_type: "oauth2_client_credentials".to_string(),
-        tags: vec![],
-        description: None,
-        target_identity: None,
-        key_version: 0,
-    };
+/// What an agent is told about one MCP server.
+///
+/// A projection of the server's [`McpServerSyncEntry`], not a passthrough:
+/// the sync entry also carries the ids of the credentials the server needs,
+/// which is control-plane bookkeeping an agent has no use for. Built
+/// field-by-field, so a rename on the sync endpoint is a compile error.
+///
+#[derive(Serialize)]
+struct McpServerListEntry {
+    name: String,
+    description: Option<String>,
+    tools: Vec<String>,
+    transport: Option<String>,
+    url: Option<String>,
+}
 
-    match state.oauth2_cc.get_token(&cache_cred, &cred.value).await {
-        Ok(result) => {
-            tracing::debug!(
-                credential = %credential_name,
-                cached = !result.was_refreshed,
-                "oauth2 client_credentials token acquired for MCP"
-            );
-            Some(result.access_token)
-        }
-        Err(e) => {
-            tracing::warn!(
-                credential = %credential_name,
-                error = %e,
-                "OAuth2 client_credentials token exchange failed for MCP credential"
-            );
-            None
+impl From<McpServerSyncEntry> for McpServerListEntry {
+    fn from(e: McpServerSyncEntry) -> Self {
+        Self {
+            name: e.name,
+            description: e.description,
+            tools: e.tools,
+            transport: Some(e.transport),
+            url: e.url,
         }
     }
 }
 
-/// Resolve the effective credential value for a cached credential.
-///
-/// For `oauth2_user_authorization` credentials, exchanges the stored refresh
-/// token for an access token via the token endpoint. For `oauth2_client_credentials`,
-/// exchanges the client secret for an access token via the client credentials grant.
-/// For all other types, returns the raw value as-is.
-async fn resolve_credential_value(
+/// What the broker knows about one MCP server for the calling workspace,
+/// read from the sync cache.
+#[derive(Clone)]
+struct CachedTarget {
+    url: Option<String>,
+    auth_method: String,
+    credential: Option<CachedCredential>,
+}
+
+/// Read the cache entry for `server_name` under `pk_hash`.
+async fn cached_target(
     state: &SharedState,
     pk_hash: &str,
-    credential_name: &str,
-    cred: &CachedCredential,
-) -> Option<String> {
-    if cred.credential_type == "oauth2_client_credentials" {
-        return resolve_client_credentials_value(state, credential_name, cred).await;
+    server_name: &str,
+) -> Option<CachedTarget> {
+    let configs = state.mcp_configs.read().await;
+    configs
+        .get(pk_hash)?
+        .iter()
+        .find(|s| s.name == server_name)
+        .map(|cached| CachedTarget {
+            url: (!cached.url.is_empty()).then(|| cached.url.clone()),
+            auth_method: cached.auth_method.clone(),
+            credential: cached.credential.clone(),
+        })
+}
+
+/// Resolve the target for a tool call, syncing with the server when the
+/// cache has no usable entry: the server is unknown, a credential is
+/// missing where one is expected, or the cached upstream access token is
+/// about to expire. The broker never refreshes a token itself; the server
+/// puts a fresh one in the next sync envelope.
+async fn resolve_target(
+    state: &SharedState,
+    pk_hash: &str,
+    server_name: &str,
+) -> Option<CachedTarget> {
+    let now = chrono::Utc::now();
+    let cached = cached_target(state, pk_hash, server_name).await;
+    let needs_sync = match &cached {
+        None => true,
+        Some(t) => {
+            t.url.is_none()
+                || (t.credential.is_none() && t.auth_method != "none")
+                || t.credential.as_ref().is_some_and(|c| c.is_stale(now))
+        }
+    };
+    if !needs_sync {
+        tracing::debug!(server = %server_name, "using cached MCP config");
+        return cached;
     }
 
-    if cred.credential_type != "oauth2_user_authorization" {
-        return Some(cred.value.clone());
+    tracing::info!(
+        server = %server_name,
+        known = cached.is_some(),
+        pk_hash = %pk_hash,
+        "MCP cache miss or stale credential, syncing with server"
+    );
+    crate::mcp_sync::sync_workspace_now(state, pk_hash).await;
+    let refreshed = cached_target(state, pk_hash, server_name).await;
+    match &refreshed {
+        Some(t) => tracing::info!(
+            server = %server_name,
+            has_url = t.url.is_some(),
+            has_cred = t.credential.is_some(),
+            "on-demand sync result"
+        ),
+        None => tracing::warn!(server = %server_name, "server not found in cache after sync"),
     }
+    refreshed
+}
 
-    let token_url = cred.metadata.get("oauth2_token_url");
-    let client_id = cred.metadata.get("oauth2_client_id");
-    let client_secret = cred.metadata.get("oauth2_client_secret");
-
-    match (token_url, client_id, client_secret) {
-        (Some(token_url), Some(client_id), Some(client_secret)) => {
-            // Build a rotation callback closing over the workspace context
-            // so that when the provider rotates the refresh token, the new
-            // value is (a) persisted on the server, then (b) reflected in
-            // the broker's in-memory cache — both before the access token
-            // is cached. See `OAuth2RefreshManager::get_access_token`.
-            let state_cb = state.clone();
-            let pk_hash_cb = pk_hash.to_string();
-            let cred_name_cb = credential_name.to_string();
-            let rotation_callback: RotationCallback = std::sync::Arc::new(
-                move |new_refresh: String| {
-                    let state = state_cb.clone();
-                    let pk_hash = pk_hash_cb.clone();
-                    let cred_name = cred_name_cb.clone();
-                    Box::pin(async move {
-                        let workspace_token = get_access_token(&state, &pk_hash).await.ok_or_else(
-                        || {
-                            RotationError(
-                                "no workspace access token available to persist rotated refresh token"
-                                    .to_string(),
-                            )
-                        },
-                    )?;
-                        let server_client =
-                            ServerClient::new(state.http_client.clone(), state.server_url.clone());
-                        server_client
-                            .update_mcp_credential_refresh_token(
-                                &workspace_token,
-                                &cred_name,
-                                &new_refresh,
-                            )
-                            .await
-                            .map_err(|e| RotationError(e.to_string()))?;
-                        // Persist succeeded — now update the broker's in-memory
-                        // cache so the next refresh uses the rotated value.
-                        state
-                            .update_mcp_credential_value(&pk_hash, &cred_name, new_refresh.clone())
-                            .await;
-                        Ok(())
-                    })
-                },
+/// Replace every value the scanner knows was injected, anywhere in `value`.
+///
+/// An MCP server that echoes its request — a debug tool, an error message,
+/// a mirrored header — would otherwise hand the agent the very credential
+/// the broker exists to keep from it. Serializing and re-scanning catches
+/// the echo wherever it landed: free text, a nested JSON field, a tool
+/// description. This is the same scan `routes/proxy.rs` runs on an upstream
+/// response body.
+fn redact_json(
+    scanner: &LeakScanner,
+    value: serde_json::Value,
+    server_name: &str,
+) -> serde_json::Value {
+    let text = value.to_string();
+    match scanner.redact(&text) {
+        Cow::Borrowed(_) => value,
+        Cow::Owned(redacted) => {
+            tracing::warn!(
+                server = %server_name,
+                "MCP server echoed an injected credential value; redacted"
             );
+            // Redaction never introduces a quote or a backslash, so the
+            // result still parses. Falling back to the raw string keeps the
+            // secret out of the response even if it somehow does not.
+            serde_json::from_str(&redacted).unwrap_or(serde_json::Value::String(redacted))
+        }
+    }
+}
 
-            match state
-                .oauth2_refresh
-                .get_access_token(
-                    credential_name,
-                    &cred.value,
-                    token_url,
-                    client_id,
-                    client_secret,
-                    Some(rotation_callback),
-                )
-                .await
-            {
-                Ok(token) => Some(token),
-                Err(e) => {
-                    tracing::warn!(
-                        credential = %credential_name,
-                        "OAuth2 token exchange failed, credential will not be injected"
-                    );
-                    tracing::debug!(error = %e, "token exchange error details");
-                    None
+/// Build the upstream JSON-RPC request with the credential injected, and the
+/// scanner that recognises everything the injection put on the wire. The
+/// cached value is used as-is: for OAuth-backed servers it is already the
+/// upstream access token the server exchanged for.
+fn build_upstream_request(
+    state: &SharedState,
+    server_name: &str,
+    mcp_url: &str,
+    credential: Option<&CachedCredential>,
+    body: &serde_json::Value,
+) -> Result<(reqwest::RequestBuilder, LeakScanner), ErrorResponse> {
+    let mut url = reqwest::Url::parse(mcp_url).map_err(|e| {
+        error_response(
+            StatusCode::BAD_GATEWAY,
+            "bad_gateway",
+            &format!("invalid MCP server URL '{}': {}", server_name, e),
+        )
+    })?;
+    let mut headers: Vec<(String, String)> = Vec::new();
+    // The secret material the injection puts on the wire is a needle for the
+    // response scan; `injected_needles` decides what counts as secret, the
+    // same way the proxy route does.
+    let mut needles: Vec<String> = Vec::new();
+
+    if let Some(cred) = credential {
+        let material = CredentialMaterial {
+            credential_type: Some(cred.credential_type.clone()),
+            value: cred.value.clone(),
+            username: None,
+            metadata: cred.metadata.clone(),
+        };
+        match credential_transform::apply(
+            &material,
+            cred.transform_name.as_deref(),
+            "POST",
+            mcp_url,
+            &HashMap::new(),
+            None,
+        ) {
+            Ok(transformed) => {
+                needles.extend(leak_scanner::injected_needles(
+                    &material.value,
+                    transformed
+                        .headers
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str())),
+                    transformed.query_params.values().map(String::as_str),
+                ));
+                headers.extend(transformed.headers);
+                // MCP servers normally take header auth; a query-param
+                // credential is appended to the URL.
+                for (k, v) in &transformed.query_params {
+                    url.query_pairs_mut().append_pair(k, v);
                 }
             }
-        }
-        _ => {
-            tracing::warn!(
-                credential = %credential_name,
-                "OAuth2 authorization code credential missing required metadata, \
-                 credential will not be injected"
-            );
-            None
+            Err(e) => {
+                tracing::warn!(error = %e, server = %server_name, "credential transform failed, proceeding without injection");
+                needles.extend(leak_scanner::injected_needles(&material.value, [], []));
+            }
         }
     }
+
+    let mut req = state
+        .upstream_client
+        .post(url)
+        .header("Content-Type", "application/json");
+    for (k, v) in &headers {
+        req = req.header(k, v);
+    }
+    Ok((req.json(body), LeakScanner::new(needles)))
+}
+
+/// SSRF check for an MCP upstream, shared by the tool-list probe and the
+/// tool call: resolve the host and refuse private or reserved addresses
+/// unless the broker was started with `--proxy-allow-loopback`, exactly as
+/// the proxy route does.
+async fn check_upstream_target(
+    state: &SharedState,
+    server_name: &str,
+    url: &str,
+) -> Result<(), ErrorResponse> {
+    if state.config.proxy_allow_loopback {
+        return Ok(());
+    }
+    validate_proxy_target_resolved(url).await.map_err(|reason| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "ssrf_blocked",
+            &format!("Blocked by SSRF protection: MCP server '{server_name}': {reason}"),
+        )
+    })
 }
 
 /// Parse a JSON-RPC response from an MCP server, handling both
@@ -203,12 +259,15 @@ async fn parse_mcp_response(resp: reqwest::Response) -> Result<serde_json::Value
         "parsing MCP response"
     );
 
-    if content_type.contains("text/event-stream") {
-        let body_text = resp
-            .text()
-            .await
-            .map_err(|e| format!("failed to read SSE body: {e}"))?;
+    // Both branches read through the upstream cap so an MCP server cannot
+    // make the broker buffer without bound.
+    let mut resp = resp;
+    let body_text = match crate::upstream::read_body_capped(&mut resp).await {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) => return Err(format!("failed to read response body: {e}")),
+    };
 
+    if content_type.contains("text/event-stream") {
         for line in body_text.lines() {
             let line = line.trim();
             if let Some(data) = line.strip_prefix("data:") {
@@ -226,13 +285,6 @@ async fn parse_mcp_response(resp: reqwest::Response) -> Result<serde_json::Value
 
         Err("no JSON-RPC response found in SSE stream".to_string())
     } else {
-        // Try reading as text first — if json() fails on streaming responses,
-        // we can still attempt SSE parsing as a fallback.
-        let body_text = resp
-            .text()
-            .await
-            .map_err(|e| format!("failed to read response body: {e}"))?;
-
         tracing::debug!(
             body_len = body_text.len(),
             body_prefix = %body_text.chars().take(200).collect::<String>(),
@@ -289,10 +341,6 @@ pub async fn list_servers(
         }
     };
 
-    if let Err(e) = require_scope(&state, &auth.pk_hash, "mcp:discover", "mcp.list_servers").await {
-        return e;
-    }
-
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
 
     match with_token_refresh(&state, &auth.pk_hash, |token| {
@@ -301,7 +349,11 @@ pub async fn list_servers(
     })
     .await
     {
-        Ok(servers) => ok_response(serde_json::json!(servers)),
+        Ok(servers) => {
+            let entries: Vec<McpServerListEntry> =
+                servers.into_iter().map(McpServerListEntry::from).collect();
+            ok_response(serde_json::json!(entries))
+        }
         Err(e) => e,
     }
 }
@@ -326,13 +378,9 @@ pub async fn list_tools(
         }
     };
 
-    if let Err(e) = require_scope(&state, &auth.pk_hash, "mcp:discover", "mcp.list_tools").await {
-        return e;
-    }
-
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
 
-    let mut all_tools: Vec<crate::server_client::McpToolSummary> =
+    let mut all_tools: Vec<McpToolSyncEntry> =
         match with_token_refresh(&state, &auth.pk_hash, |token| {
             let sc = server_client.clone();
             async move { sc.list_mcp_tools(&token).await }
@@ -345,11 +393,12 @@ pub async fn list_tools(
 
     // Live discovery: for servers with empty tools but cached credentials,
     // call tools/list on the upstream with auth injection. This handles servers
-    // that require authentication for tool discovery.
+    // that require authentication for tool discovery. The sync just made
+    // also gives every OAuth-backed server a fresh upstream token.
     crate::mcp_sync::sync_workspace_now(&state, &auth.pk_hash).await;
 
     // Collect servers needing live discovery (servers not already represented in all_tools)
-    let servers_to_probe: Vec<(String, String, crate::state::CachedCredential)> = {
+    let servers_to_probe: Vec<(String, String, CachedCredential)> = {
         let configs = state.mcp_configs.read().await;
         if let Some(servers) = configs.get(&auth.pk_hash) {
             servers
@@ -373,6 +422,12 @@ pub async fn list_tools(
     };
 
     for (server_name, url, cred) in servers_to_probe {
+        // The probe is an outbound request with a credential attached; it
+        // gets the same SSRF check as a tool call.
+        if let Err(e) = check_upstream_target(&state, &server_name, &url).await {
+            return e;
+        }
+
         let jsonrpc = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -380,43 +435,21 @@ pub async fn list_tools(
             "params": {}
         });
 
-        let mut req = state
-            .http_client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(5));
-
-        // Resolve credential value (exchanges refresh token for access token if OAuth2 authz code)
-        if let Some(effective_value) =
-            resolve_credential_value(&state, &auth.pk_hash, &server_name, &cred).await
-        {
-            let material = CredentialMaterial {
-                credential_type: Some(cred.credential_type.clone()),
-                value: effective_value,
-                username: None,
-                metadata: cred.metadata.clone(),
+        let (req, scanner) =
+            match build_upstream_request(&state, &server_name, &url, Some(&cred), &jsonrpc) {
+                Ok((r, s)) => (r.timeout(std::time::Duration::from_secs(5)), s),
+                Err(_) => continue,
             };
-            if let Ok(transformed) = credential_transform::apply(
-                &material,
-                cred.transform_name.as_deref(),
-                "POST",
-                &url,
-                &HashMap::new(),
-                None,
-            ) {
-                for (k, v) in &transformed.headers {
-                    req = req.header(k, v);
-                }
-            }
-        }
 
-        let resp = match req.json(&jsonrpc).send().await {
+        let resp = match req.send().await {
             Ok(r) if r.status().is_success() => r,
             _ => continue,
         };
 
+        // The probe carried the credential, so its answer gets the same
+        // scan a tool call's does before any of it is handed to the agent.
         let body: serde_json::Value = match parse_mcp_response(resp).await {
-            Ok(v) => v,
+            Ok(v) => redact_json(&scanner, v, &server_name),
             Err(_) => continue,
         };
 
@@ -435,7 +468,7 @@ pub async fn list_tools(
                     .and_then(|d| d.as_str())
                     .map(|s| s.to_string());
                 let input_schema = tool.get("inputSchema").cloned();
-                all_tools.push(crate::server_client::McpToolSummary {
+                all_tools.push(McpToolSyncEntry {
                     server: server_name.clone(),
                     tool: name.to_string(),
                     description,
@@ -498,10 +531,6 @@ pub async fn call_tool(
         }
     };
 
-    if let Err(e) = require_scope(&state, &auth.pk_hash, "mcp:invoke", "mcp.call_tool").await {
-        return e;
-    }
-
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
     let server_name = call_req.server.clone();
     let tool_name = call_req.tool.clone();
@@ -519,7 +548,7 @@ pub async fn call_tool(
         Err(e) => return e,
     };
 
-    if auth_resp.decision != "permit" {
+    if !auth_resp.is_permit() {
         return error_response(
             StatusCode::FORBIDDEN,
             "forbidden",
@@ -527,84 +556,14 @@ pub async fn call_tool(
         );
     }
 
-    // Look up target server: try cached config first, fall back to server fetch.
-    let (mcp_url, cached_credential) = {
-        let configs = state.mcp_configs.read().await;
-        if let Some(servers) = configs.get(&auth.pk_hash) {
-            if let Some(cached) = servers.iter().find(|s| s.name == server_name) {
-                let url = if cached.url.is_empty() {
-                    None
-                } else {
-                    Some(cached.url.clone())
-                };
-                (url, cached.credential.clone())
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
-        }
-    };
-
-    // If cache miss OR server found without credentials (stale sync), trigger
-    // an on-demand sync and retry. This handles both "just provisioned" and
-    // "background sync ran without include_credentials" scenarios.
-    // For servers with auth_method "none", a missing credential is expected.
-    let cached_auth_method = {
-        let configs = state.mcp_configs.read().await;
-        configs
-            .get(&auth.pk_hash)
-            .and_then(|servers| servers.iter().find(|s| s.name == server_name))
-            .map(|s| s.auth_method.clone())
-    };
-    let needs_sync = mcp_url.is_none()
-        || (cached_credential.is_none() && cached_auth_method.as_deref() != Some("none"));
-    let (mcp_url, cached_credential) = if needs_sync {
-        tracing::info!(
-            server = %server_name,
-            has_url = mcp_url.is_some(),
-            has_cred = cached_credential.is_some(),
-            pk_hash = %auth.pk_hash,
-            "MCP cache miss/stale, triggering on-demand sync"
-        );
-        crate::mcp_sync::sync_workspace_now(&state, &auth.pk_hash).await;
-
-        // Retry cache lookup after sync
-        let configs = state.mcp_configs.read().await;
-        if let Some(servers) = configs.get(&auth.pk_hash) {
-            if let Some(cached) = servers.iter().find(|s| s.name == server_name) {
-                let url = if cached.url.is_empty() {
-                    None
-                } else {
-                    Some(cached.url.clone())
-                };
-                tracing::info!(
-                    server = %server_name,
-                    has_url_after = url.is_some(),
-                    has_cred_after = cached.credential.is_some(),
-                    "on-demand sync result"
-                );
-                (url, cached.credential.clone())
-            } else {
-                tracing::warn!(server = %server_name, "server not found in cache after sync");
-                (None, None)
-            }
-        } else {
-            tracing::warn!(pk_hash = %auth.pk_hash, "no cache entry for workspace after sync");
-            (None, None)
-        }
-    } else {
-        tracing::debug!(
-            server = %server_name,
-            has_cred = cached_credential.is_some(),
-            "using cached MCP config"
-        );
-        (mcp_url, cached_credential)
-    };
-
-    let mcp_url = match mcp_url {
-        Some(url) => url,
-        None => {
+    let target = resolve_target(&state, &auth.pk_hash, &server_name).await;
+    let (mcp_url, mut credential) = match target {
+        Some(CachedTarget {
+            url: Some(url),
+            credential,
+            ..
+        }) => (url, credential),
+        _ => {
             return error_response(
                 StatusCode::NOT_FOUND,
                 "not_found",
@@ -617,14 +576,8 @@ pub async fn call_tool(
     };
 
     // SSRF validation — prevent MCP servers from targeting internal/cloud metadata endpoints
-    if !state.config.proxy_allow_loopback {
-        if let Err(reason) = validate_proxy_target_resolved(&mcp_url).await {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "ssrf_blocked",
-                &format!("Blocked by SSRF protection: {reason}"),
-            );
-        }
+    if let Err(e) = check_upstream_target(&state, &server_name, &mcp_url).await {
+        return e;
     }
 
     let jsonrpc_request = serde_json::json!({
@@ -637,83 +590,62 @@ pub async fn call_tool(
         }
     });
 
-    // Build the request, injecting credentials if available
-    let mut req_builder = state
-        .http_client
-        .post(&mcp_url)
-        .header("Content-Type", "application/json");
+    // Send once; on a 401 with a credential injected, the token the server
+    // gave us is no longer good (revoked, or expired early). Sync once more
+    // for a fresh one and retry a single time.
+    let mut retried = false;
+    // The scanner comes back with the response it belongs to: a retry
+    // injects a fresh token, and that is the value to look for in the reply.
+    let (mcp_resp, scanner) = loop {
+        let (req, scanner) = match build_upstream_request(
+            &state,
+            &server_name,
+            &mcp_url,
+            credential.as_ref(),
+            &jsonrpc_request,
+        ) {
+            Ok(pair) => pair,
+            Err(e) => return e,
+        };
 
-    if let Some(ref cred) = cached_credential {
-        // Resolve credential value (exchanges refresh token for access token if OAuth2 authz code)
-        if let Some(effective_value) =
-            resolve_credential_value(&state, &auth.pk_hash, &server_name, cred).await
-        {
-            let material = CredentialMaterial {
-                credential_type: Some(cred.credential_type.clone()),
-                value: effective_value,
-                username: None,
-                metadata: cred.metadata.clone(),
-            };
-            match credential_transform::apply(
-                &material,
-                cred.transform_name.as_deref(),
-                "POST",
-                &mcp_url,
-                &HashMap::new(),
-                None,
-            ) {
-                Ok(transformed) => {
-                    for (k, v) in &transformed.headers {
-                        req_builder = req_builder.header(k, v);
-                    }
-                    // Query params are not directly injectable on reqwest builder
-                    // after URL construction, but MCP servers typically use header auth.
-                    if !transformed.query_params.is_empty() {
-                        let mut url_with_params = match reqwest::Url::parse(&mcp_url) {
-                            Ok(u) => u,
-                            Err(e) => {
-                                return error_response(
-                                    StatusCode::BAD_GATEWAY,
-                                    "bad_gateway",
-                                    &format!("invalid MCP server URL '{}': {}", server_name, e),
-                                );
-                            }
-                        };
-                        for (k, v) in &transformed.query_params {
-                            url_with_params.query_pairs_mut().append_pair(k, v);
-                        }
-                        req_builder = state
-                            .http_client
-                            .post(url_with_params)
-                            .header("Content-Type", "application/json");
-                        // Re-add credential headers
-                        for (k, v) in &transformed.headers {
-                            req_builder = req_builder.header(k, v);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, server = %server_name, "credential transform failed, proceeding without injection");
-                }
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, server = %server_name, url = %mcp_url, "HTTP MCP request failed");
+                return error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "bad_gateway",
+                    &format!("Failed to connect to MCP server '{}': {}", server_name, e),
+                );
             }
-        } // if let Some(effective_value)
-    }
+        };
 
-    let mcp_resp = match req_builder.json(&jsonrpc_request).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error = %e, server = %server_name, url = %mcp_url, "HTTP MCP request failed");
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                "bad_gateway",
-                &format!("Failed to connect to MCP server '{}': {}", server_name, e),
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED && credential.is_some() && !retried {
+            retried = true;
+            tracing::info!(
+                server = %server_name,
+                "MCP server rejected the upstream token; syncing for a fresh one and retrying"
             );
+            crate::mcp_sync::sync_workspace_now(&state, &auth.pk_hash).await;
+            match cached_target(&state, &auth.pk_hash, &server_name).await {
+                Some(CachedTarget {
+                    credential: Some(fresh),
+                    ..
+                }) => {
+                    credential = Some(fresh);
+                    continue;
+                }
+                _ => break (resp, scanner),
+            }
         }
+        break (resp, scanner);
     };
 
     let mcp_status = mcp_resp.status();
+    // Redact before anything is read out of the result: an MCP server that
+    // echoes what it was called with must not hand the agent the credential.
     let mcp_body: serde_json::Value = match parse_mcp_response(mcp_resp).await {
-        Ok(v) => v,
+        Ok(v) => redact_json(&scanner, v, &server_name),
         Err(e) => {
             tracing::error!(error = %e, server = %server_name, "failed to parse MCP response");
             return error_response(

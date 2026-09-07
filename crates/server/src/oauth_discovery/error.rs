@@ -18,6 +18,10 @@ pub enum DiscoveryError {
     NoAuthorizationServer,
     #[error("cross-origin endpoint: expected {expected}, got {actual}")]
     CrossOriginEndpoint { expected: String, actual: String },
+    #[error("authorization server issuer mismatch: metadata served from {expected} declares issuer {actual}")]
+    IssuerMismatch { expected: String, actual: String },
+    #[error("refused to fetch discovery target: {0}")]
+    BlockedTarget(String),
     #[error("registration endpoint not supported by provider")]
     NoDcrSupport,
     #[error("DCR registration failed: HTTP {status}")]

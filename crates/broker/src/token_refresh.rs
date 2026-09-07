@@ -1,9 +1,13 @@
-//! Background token refresh task.
+//! Background token refresh task and single-flight reactive refresh.
 //!
-//! Proactively refreshes OAuth tokens before they expire,
-//! and marks workspaces as `revoked` on refresh failure.
+//! Proactively refreshes OAuth tokens before they expire, marks workspaces
+//! as `revoked` on terminal refresh failure, and serialises refreshes per
+//! workspace so two callers that both saw a 401 spend the refresh token
+//! once between them.
 
-use std::time::Instant;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use tracing::{info, warn};
@@ -11,6 +15,32 @@ use tracing::{info, warn};
 use crate::server_client::{ServerClient, ServerClientError};
 use crate::state::{SharedState, TokenStatus};
 use crate::token_store;
+
+/// A refresh that completed this recently satisfies a caller that arrives
+/// holding a 401 from before it: the token it was refused with is gone.
+const RECENT_REFRESH: Duration = Duration::from_secs(5);
+
+/// Per-workspace refresh locks.
+///
+/// The lock's payload is the instant of the last successful refresh under
+/// it. A caller acquires the lock, re-reads the workspace, and refreshes
+/// only if nobody else did since it decided to.
+#[derive(Default)]
+pub struct RefreshLocks {
+    inner: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<Instant>>>>>,
+}
+
+impl RefreshLocks {
+    /// The lock for `pk_hash`, created on first use.
+    pub fn for_workspace(&self, pk_hash: &str) -> Arc<tokio::sync::Mutex<Option<Instant>>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(pk_hash.to_string())
+            .or_default()
+            .clone()
+    }
+}
 
 /// Classification of a refresh failure used to decide whether to flip the
 /// workspace to `Revoked` (terminal) or leave it `Valid` so the next tick
@@ -49,7 +79,7 @@ fn classify_refresh_error(err: &ServerClientError) -> RefreshErrorKind {
 /// `config.token_ttl_buffer` seconds, attempts a proactive refresh.
 pub fn spawn_refresh_task(state: SharedState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
             cleanup_stale_pending(&state).await;
@@ -65,7 +95,7 @@ pub fn spawn_refresh_task(state: SharedState) -> tokio::task::JoinHandle<()> {
 /// stale pending entry from a previous session — currently impossible
 /// since pending is in-memory, but guards against future persistence).
 async fn cleanup_stale_pending(state: &SharedState) {
-    const GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+    const GRACE: Duration = Duration::from_secs(60);
     let now = Instant::now();
     let mut pending = state.pending.write().await;
     let before = pending.len();
@@ -76,73 +106,45 @@ async fn cleanup_stale_pending(state: &SharedState) {
     }
 }
 
+/// Whether a workspace's token is within the proactive-refresh buffer.
+fn expiring_soon(ws: &crate::state::WorkspaceState, buffer_secs: i64) -> bool {
+    ws.token_status == TokenStatus::Valid
+        && (ws.token_expires_at - Utc::now()).num_seconds() < buffer_secs
+}
+
 async fn refresh_expiring_tokens(state: &SharedState) {
     let buffer_secs = state.config.token_ttl_buffer as i64;
-    let now = Utc::now();
 
-    // Collect workspaces that need refresh
-    let to_refresh: Vec<(String, String, String)> = {
+    let candidates: Vec<String> = {
         let workspaces = state.workspaces.read().await;
         workspaces
             .iter()
-            .filter(|(_, ws)| {
-                ws.token_status == TokenStatus::Valid
-                    && (ws.token_expires_at - now).num_seconds() < buffer_secs
-            })
-            .map(|(pk_hash, ws)| {
-                (
-                    pk_hash.clone(),
-                    ws.refresh_token.clone(),
-                    ws.client_id.clone(),
-                )
-            })
+            .filter(|(_, ws)| expiring_soon(ws, buffer_secs))
+            .map(|(pk_hash, _)| pk_hash.clone())
             .collect()
     };
 
-    if to_refresh.is_empty() {
-        return;
-    }
+    for pk_hash in candidates {
+        let lock = state.refresh_locks.for_workspace(&pk_hash);
+        let mut last_refresh = lock.lock().await;
 
-    let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
+        // Re-read under the lock: a reactive refresh may have run since
+        // the candidate list was built.
+        let credentials = {
+            let workspaces = state.workspaces.read().await;
+            workspaces
+                .get(&pk_hash)
+                .filter(|ws| expiring_soon(ws, buffer_secs))
+                .map(|ws| (ws.refresh_token.clone(), ws.client_id.clone()))
+        };
+        let Some((refresh_token, client_id)) = credentials else {
+            continue;
+        };
 
-    for (pk_hash, refresh_token, client_id) in to_refresh {
-        match server_client
-            .refresh_token(&refresh_token, &client_id)
-            .await
-        {
-            Ok(token_resp) => {
-                let refresh_rotated = token_resp.refresh_token.is_some();
-                let mut workspaces = state.workspaces.write().await;
-                if let Some(ws) = workspaces.get_mut(&pk_hash) {
-                    ws.access_token = token_resp.access_token;
-                    if let Some(rt) = token_resp.refresh_token {
-                        ws.refresh_token = rt;
-                    }
-                    ws.token_expires_at =
-                        Utc::now() + chrono::Duration::seconds(token_resp.expires_in as i64);
-                    ws.token_status = TokenStatus::Valid;
-                    info!(
-                        workspace = ws.workspace_name,
-                        "proactively refreshed OAuth token"
-                    );
-                }
-                drop(workspaces);
-
-                // Persist updated tokens
-                let workspaces = state.workspaces.read().await;
-                if let Err(e) = token_store::save(
-                    &state.config.token_store_path(),
-                    &workspaces,
-                    &state.encryption_key,
-                ) {
-                    warn!(error = %e, "failed to persist token store after refresh");
-                }
-                drop(workspaces);
-
-                // Update recovery store when refresh token was rotated
-                if refresh_rotated {
-                    token_store::save_recovery_store(state).await;
-                }
+        match refresh_workspace(state, &pk_hash, &refresh_token, &client_id).await {
+            Ok(()) => {
+                *last_refresh = Some(Instant::now());
+                info!(pk_hash = pk_hash, "proactively refreshed OAuth token");
             }
             Err(e) => match classify_refresh_error(&e) {
                 RefreshErrorKind::Terminal => {
@@ -151,10 +153,7 @@ async fn refresh_expiring_tokens(state: &SharedState) {
                         error = %e,
                         "token refresh terminally rejected by server — marking workspace as revoked"
                     );
-                    let mut workspaces = state.workspaces.write().await;
-                    if let Some(ws) = workspaces.get_mut(&pk_hash) {
-                        ws.token_status = TokenStatus::Revoked;
-                    }
+                    mark_revoked(state, &pk_hash).await;
                 }
                 RefreshErrorKind::Transient => {
                     info!(
@@ -168,68 +167,62 @@ async fn refresh_expiring_tokens(state: &SharedState) {
     }
 }
 
-/// Attempt a reactive token refresh for a specific workspace (on 401 from server).
+/// Attempt a reactive token refresh for a specific workspace (on 401 from
+/// the server).
 ///
-/// Returns `true` if the refresh succeeded and the caller should retry.
+/// Single-flight per workspace: the caller notes the access token it was
+/// refused with, waits for the workspace's refresh lock, and re-reads the
+/// state. If the token changed while it waited, or a refresh completed
+/// within `RECENT_REFRESH`, the refresh already happened and the caller
+/// should retry with the new token without spending another refresh.
+///
+/// Returns `true` if the workspace now holds a token the caller should
+/// retry with.
 pub async fn try_reactive_refresh(state: &SharedState, pk_hash: &str) -> bool {
-    let (refresh_token, client_id) = {
+    let refused_with = {
         let workspaces = state.workspaces.read().await;
         match workspaces.get(pk_hash) {
-            Some(ws)
-                if ws.token_status == TokenStatus::Valid
-                    || ws.token_status == TokenStatus::Expired =>
-            {
-                (ws.refresh_token.clone(), ws.client_id.clone())
-            }
+            Some(ws) if ws.token_status != TokenStatus::Revoked => ws.access_token.clone(),
             _ => return false,
         }
     };
 
-    let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
+    let lock = state.refresh_locks.for_workspace(pk_hash);
+    let mut last_refresh = lock.lock().await;
 
-    match server_client
-        .refresh_token(&refresh_token, &client_id)
-        .await
-    {
-        Ok(token_resp) => {
-            let refresh_rotated = token_resp.refresh_token.is_some();
-            let mut workspaces = state.workspaces.write().await;
-            if let Some(ws) = workspaces.get_mut(pk_hash) {
-                ws.access_token = token_resp.access_token;
-                if let Some(rt) = token_resp.refresh_token {
-                    ws.refresh_token = rt;
-                }
-                ws.token_expires_at =
-                    Utc::now() + chrono::Duration::seconds(token_resp.expires_in as i64);
-                ws.token_status = TokenStatus::Valid;
-            }
-            drop(workspaces);
+    let current = {
+        let workspaces = state.workspaces.read().await;
+        match workspaces.get(pk_hash) {
+            Some(ws) if ws.token_status != TokenStatus::Revoked => (
+                ws.access_token.clone(),
+                ws.refresh_token.clone(),
+                ws.client_id.clone(),
+            ),
+            _ => return false,
+        }
+    };
+    let (access_token, refresh_token, client_id) = current;
 
-            let workspaces = state.workspaces.read().await;
-            if let Err(e) = token_store::save(
-                &state.config.token_store_path(),
-                &workspaces,
-                &state.encryption_key,
-            ) {
-                warn!(error = %e, "failed to persist token store after reactive refresh");
-            }
-            drop(workspaces);
+    let refreshed_meanwhile = access_token != refused_with
+        || last_refresh.is_some_and(|at| at.elapsed() < RECENT_REFRESH);
+    if refreshed_meanwhile {
+        info!(
+            pk_hash = pk_hash,
+            "token already refreshed by a concurrent request"
+        );
+        return true;
+    }
 
-            // Update recovery store when refresh token was rotated
-            if refresh_rotated {
-                token_store::save_recovery_store(state).await;
-            }
-
+    match refresh_workspace(state, pk_hash, &refresh_token, &client_id).await {
+        Ok(()) => {
+            *last_refresh = Some(Instant::now());
             true
         }
         Err(e) => {
             match classify_refresh_error(&e) {
                 RefreshErrorKind::Terminal => {
                     warn!(error = %e, "reactive token refresh terminally rejected — marking as revoked");
-                    let mut workspaces = state.workspaces.write().await;
-                    if let Some(ws) = workspaces.get_mut(pk_hash) {
-                        ws.token_status = TokenStatus::Revoked;
-                    }
+                    mark_revoked(state, pk_hash).await;
                 }
                 RefreshErrorKind::Transient => {
                     info!(error = %e, "reactive token refresh failed transiently — leaving workspace valid");
@@ -237,6 +230,58 @@ pub async fn try_reactive_refresh(state: &SharedState, pk_hash: &str) -> bool {
             }
             false
         }
+    }
+}
+
+/// Call the server's token endpoint and, on success, install the new
+/// token, persist the encrypted store, and update the recovery store when
+/// the refresh token rotated. Callers hold the workspace's refresh lock.
+async fn refresh_workspace(
+    state: &SharedState,
+    pk_hash: &str,
+    refresh_token: &str,
+    client_id: &str,
+) -> Result<(), ServerClientError> {
+    let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
+    let token_resp = server_client
+        .refresh_token(refresh_token, client_id)
+        .await?;
+    let refresh_rotated = token_resp.refresh_token.is_some();
+
+    {
+        let mut workspaces = state.workspaces.write().await;
+        if let Some(ws) = workspaces.get_mut(pk_hash) {
+            ws.access_token = token_resp.access_token;
+            if let Some(rt) = token_resp.refresh_token {
+                ws.refresh_token = rt;
+            }
+            ws.token_expires_at = Utc::now() + chrono::Duration::seconds(token_resp.expires_in);
+            ws.token_status = TokenStatus::Valid;
+        }
+    }
+
+    {
+        let workspaces = state.workspaces.read().await;
+        if let Err(e) = token_store::save(
+            &state.config.token_store_path(),
+            &workspaces,
+            &state.encryption_key,
+        ) {
+            warn!(error = %e, "failed to persist token store after refresh");
+        }
+    }
+
+    if refresh_rotated {
+        token_store::save_recovery_store(state).await;
+    }
+
+    Ok(())
+}
+
+async fn mark_revoked(state: &SharedState, pk_hash: &str) {
+    let mut workspaces = state.workspaces.write().await;
+    if let Some(ws) = workspaces.get_mut(pk_hash) {
+        ws.token_status = TokenStatus::Revoked;
     }
 }
 

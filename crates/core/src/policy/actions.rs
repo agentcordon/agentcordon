@@ -17,6 +17,10 @@ pub const MANAGE_WORKSPACES: &str = "manage_workspaces";
 pub const VIEW_AUDIT: &str = "view_audit";
 pub const ROTATE_KEY: &str = "rotate_key";
 pub const MANAGE_OIDC_PROVIDERS: &str = "manage_oidc_providers";
+/// CRUD the OAuth client registrations AgentCordon holds at upstream
+/// authorization servers. One row per origin, shared by every MCP server
+/// there, so it is admin-only — `manage_mcp_servers` only reads them.
+pub const MANAGE_OAUTH_PROVIDER_CLIENTS: &str = "manage_oauth_provider_clients";
 pub const MANAGE_VAULTS: &str = "manage_vaults";
 pub const ROTATE_ENCRYPTION_KEY: &str = "rotate_encryption_key";
 pub const MANAGE_MCP_SERVERS: &str = "manage_mcp_servers";

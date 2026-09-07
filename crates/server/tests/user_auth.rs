@@ -16,7 +16,6 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use agent_cordon_core::auth::jwt::JwtIssuer;
 use agent_cordon_core::crypto::aes_gcm::AesGcmEncryptor;
 use agent_cordon_core::crypto::password::hash_password;
 use agent_cordon_core::domain::user::{User, UserId, UserRole};
@@ -37,12 +36,11 @@ const TEST_PASSWORD: &str = "strong-password-123!";
 // ---------------------------------------------------------------------------
 
 /// Build the complete test application state with an in-memory store.
-/// Returns (router, store, encryptor, jwt_issuer).
+/// Returns (router, store, encryptor).
 async fn setup_test_app() -> (
     Router,
     Arc<dyn Store + Send + Sync>,
     Arc<AesGcmEncryptor>,
-    Arc<JwtIssuer>,
     agent_cordon_server::state::AppState,
 ) {
     setup_test_app_with_rate_limit(5, 900).await
@@ -56,7 +54,6 @@ async fn setup_test_app_with_rate_limit(
     Router,
     Arc<dyn Store + Send + Sync>,
     Arc<AesGcmEncryptor>,
-    Arc<JwtIssuer>,
     agent_cordon_server::state::AppState,
 ) {
     let ctx = TestAppBuilder::new()
@@ -66,7 +63,7 @@ async fn setup_test_app_with_rate_limit(
         })
         .build()
         .await;
-    (ctx.app, ctx.store, ctx.encryptor, ctx.jwt_issuer, ctx.state)
+    (ctx.app, ctx.store, ctx.encryptor, ctx.state)
 }
 
 /// Create a user directly in the store and return the User.
@@ -107,8 +104,11 @@ async fn create_agent_in_db(
     let workspace = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled,
-        status: WorkspaceStatus::Active,
+        status: if enabled {
+            WorkspaceStatus::Active
+        } else {
+            WorkspaceStatus::Disabled
+        },
         pk_hash: None,
         encryption_public_key: None,
         tags: tags.into_iter().map(String::from).collect(),
@@ -255,7 +255,7 @@ async fn send_json(
 
 #[tokio::test]
 async fn test_login_valid_credentials_returns_session_cookie() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _user = create_user_in_db(
         &*store,
         "alice",
@@ -302,7 +302,7 @@ async fn test_login_valid_credentials_returns_session_cookie() {
 
 #[tokio::test]
 async fn test_login_invalid_password_returns_401() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _user = create_user_in_db(
         &*store,
         "alice",
@@ -328,7 +328,7 @@ async fn test_login_invalid_password_returns_401() {
 
 #[tokio::test]
 async fn test_login_nonexistent_user_returns_401() {
-    let (app, _store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, _store, _enc, _state) = setup_test_app().await;
 
     let (status, body) = send_json(
         &app,
@@ -345,7 +345,7 @@ async fn test_login_nonexistent_user_returns_401() {
 
 #[tokio::test]
 async fn test_login_disabled_user_returns_401() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     // Create a disabled user
     let _user = create_user_in_db(
         &*store,
@@ -372,7 +372,7 @@ async fn test_login_disabled_user_returns_401() {
 
 #[tokio::test]
 async fn test_me_with_valid_session_returns_user_info() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let user = create_user_in_db(
         &*store,
         "alice",
@@ -404,7 +404,7 @@ async fn test_me_with_valid_session_returns_user_info() {
 
 #[tokio::test]
 async fn test_me_without_session_returns_401() {
-    let (app, _store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, _store, _enc, _state) = setup_test_app().await;
 
     let (status, _body) = send_json(&app, Method::GET, "/api/v1/auth/me", None, None, None).await;
 
@@ -413,7 +413,7 @@ async fn test_me_without_session_returns_401() {
 
 #[tokio::test]
 async fn test_logout_invalidates_session() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _user = create_user_in_db(
         &*store,
         "alice",
@@ -477,7 +477,7 @@ async fn test_logout_invalidates_session() {
 
 #[tokio::test]
 async fn test_create_user_as_admin() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _admin = create_user_in_db(
         &*store,
         "admin",
@@ -515,7 +515,7 @@ async fn test_create_user_as_admin() {
 
 #[tokio::test]
 async fn test_create_user_password_too_short_returns_400() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _admin = create_user_in_db(
         &*store,
         "admin",
@@ -554,7 +554,7 @@ async fn test_create_user_password_too_short_returns_400() {
 
 #[tokio::test]
 async fn test_create_user_as_non_admin_returns_403() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     // Create a viewer user
     let _viewer = create_user_in_db(
         &*store,
@@ -586,7 +586,7 @@ async fn test_create_user_as_non_admin_returns_403() {
 
 #[tokio::test]
 async fn test_list_users_as_admin() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _admin = create_user_in_db(
         &*store,
         "admin",
@@ -629,7 +629,7 @@ async fn test_list_users_as_admin() {
 
 #[tokio::test]
 async fn test_delete_user_as_admin() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _admin = create_user_in_db(
         &*store,
         "admin",
@@ -664,7 +664,7 @@ async fn test_delete_user_as_admin() {
 
 #[tokio::test]
 async fn test_delete_root_user_returns_403() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let admin = create_user_in_db(
         &*store,
         "admin",
@@ -693,7 +693,7 @@ async fn test_delete_root_user_returns_403() {
 
 #[tokio::test]
 async fn test_update_root_role_returns_403() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _admin = create_user_in_db(
         &*store,
         "admin",
@@ -727,7 +727,7 @@ async fn test_update_root_role_returns_403() {
 
 #[tokio::test]
 async fn test_disable_root_user_returns_403() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _admin = create_user_in_db(
         &*store,
         "admin",
@@ -765,7 +765,7 @@ async fn test_disable_root_user_returns_403() {
 
 #[tokio::test]
 async fn test_user_creates_credential_has_created_by_user() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let admin = create_user_in_db(
         &*store,
         "admin",
@@ -813,7 +813,7 @@ async fn test_user_creates_credential_has_created_by_user() {
 
 #[tokio::test]
 async fn test_agent_creates_credential_has_created_by_agent() {
-    let (_app, store, _enc, _jwt, state) = setup_test_app().await;
+    let (_app, store, _enc, state) = setup_test_app().await;
     let (agent, api_key) =
         create_agent_in_db(&*store, "test-agent", vec!["admin"], true, None).await;
 
@@ -860,7 +860,7 @@ async fn test_agent_creates_credential_has_created_by_agent() {
 
 #[tokio::test]
 async fn test_agent_list_requires_user_auth() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
 
     // Create an agent (not a user) and try to list agents with bearer auth
     let (_agent, api_key) =
@@ -888,7 +888,7 @@ async fn test_agent_list_requires_user_auth() {
 
 #[tokio::test]
 async fn test_agent_create_not_exposed() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _admin = create_user_in_db(
         &*store,
         "admin",
@@ -928,7 +928,7 @@ async fn test_agent_create_not_exposed() {
 
 #[tokio::test]
 async fn test_list_users_as_viewer_returns_403() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _viewer = create_user_in_db(
         &*store,
         "viewer",
@@ -956,7 +956,7 @@ async fn test_list_users_as_viewer_returns_403() {
 
 #[tokio::test]
 async fn test_list_users_as_operator_returns_403() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _operator = create_user_in_db(
         &*store,
         "operator",
@@ -984,7 +984,7 @@ async fn test_list_users_as_operator_returns_403() {
 
 #[tokio::test]
 async fn test_agent_list_as_admin_user_succeeds() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let admin = create_user_in_db(
         &*store,
         "admin",
@@ -1026,7 +1026,7 @@ async fn test_agent_list_as_admin_user_succeeds() {
 
 #[tokio::test]
 async fn test_me_with_invalid_cookie_returns_401() {
-    let (app, _store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, _store, _enc, _state) = setup_test_app().await;
 
     let (status, _body) = send_json(
         &app,
@@ -1043,7 +1043,7 @@ async fn test_me_with_invalid_cookie_returns_401() {
 
 #[tokio::test]
 async fn test_create_user_duplicate_username_returns_409() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _admin = create_user_in_db(
         &*store,
         "admin",
@@ -1087,7 +1087,7 @@ async fn test_create_user_duplicate_username_returns_409() {
 
 #[tokio::test]
 async fn test_successful_login_emits_user_login_success_audit_event() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let user = create_user_in_db(
         &*store,
         "audituser",
@@ -1154,7 +1154,7 @@ async fn test_successful_login_emits_user_login_success_audit_event() {
 
 #[tokio::test]
 async fn test_failed_login_wrong_password_emits_user_login_failed_audit_event() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _user = create_user_in_db(
         &*store,
         "auditfail",
@@ -1217,7 +1217,7 @@ async fn test_failed_login_wrong_password_emits_user_login_failed_audit_event() 
 
 #[tokio::test]
 async fn test_failed_login_user_not_found_emits_audit_event() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
 
     // Attempt login with non-existent user
     let (status, _body) = send_json(
@@ -1257,7 +1257,7 @@ async fn test_failed_login_user_not_found_emits_audit_event() {
 
 #[tokio::test]
 async fn test_failed_login_disabled_user_emits_audit_event() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _user = create_user_in_db(
         &*store,
         "disabledaudit",
@@ -1299,7 +1299,7 @@ async fn test_failed_login_disabled_user_emits_audit_event() {
 
 #[tokio::test]
 async fn test_audit_login_events_never_contain_secrets() {
-    let (app, store, _enc, _jwt, _state) = setup_test_app().await;
+    let (app, store, _enc, _state) = setup_test_app().await;
     let _user = create_user_in_db(
         &*store,
         "secretcheck",
@@ -1368,7 +1368,7 @@ async fn test_audit_login_events_never_contain_secrets() {
 #[tokio::test]
 async fn test_login_rate_limit_normal_login_still_works() {
     // With rate limiting enabled, a normal valid login should succeed
-    let (app, store, _enc, _jwt, _state) = setup_test_app_with_rate_limit(5, 900).await;
+    let (app, store, _enc, _state) = setup_test_app_with_rate_limit(5, 900).await;
     let _user = create_user_in_db(
         &*store,
         "alice",
@@ -1395,7 +1395,7 @@ async fn test_login_rate_limit_normal_login_still_works() {
 #[tokio::test]
 async fn test_login_rate_limit_blocks_after_max_failed_attempts() {
     // Set max_attempts=3 for faster testing
-    let (app, store, _enc, _jwt, _state) = setup_test_app_with_rate_limit(3, 900).await;
+    let (app, store, _enc, _state) = setup_test_app_with_rate_limit(3, 900).await;
     let _user = create_user_in_db(
         &*store,
         "bob",
@@ -1454,7 +1454,7 @@ async fn test_login_rate_limit_blocks_after_max_failed_attempts() {
 #[tokio::test]
 async fn test_login_rate_limit_different_users_independent() {
     // Rate limiting is per-username: locking out bob should not affect alice
-    let (app, store, _enc, _jwt, _state) = setup_test_app_with_rate_limit(2, 900).await;
+    let (app, store, _enc, _state) = setup_test_app_with_rate_limit(2, 900).await;
     let _alice = create_user_in_db(
         &*store,
         "alice",
@@ -1524,7 +1524,7 @@ async fn test_login_rate_limit_different_users_independent() {
 async fn test_login_rate_limit_successful_login_resets_counter() {
     // With max_attempts=3, fail twice, then succeed. After that, 2 more fails
     // should not trigger lockout (counter was reset on success).
-    let (app, store, _enc, _jwt, _state) = setup_test_app_with_rate_limit(3, 900).await;
+    let (app, store, _enc, _state) = setup_test_app_with_rate_limit(3, 900).await;
     let _user = create_user_in_db(
         &*store,
         "carol",
@@ -1620,7 +1620,7 @@ async fn test_login_rate_limit_successful_login_resets_counter() {
 #[tokio::test]
 async fn test_login_rate_limit_expires_after_lockout_window() {
     // Use a 0-second lockout window so the lockout expires immediately.
-    let (app, store, _enc, _jwt, _state) = setup_test_app_with_rate_limit(2, 0).await;
+    let (app, store, _enc, _state) = setup_test_app_with_rate_limit(2, 0).await;
     let _user = create_user_in_db(
         &*store,
         "dave",
@@ -1665,7 +1665,7 @@ async fn test_login_rate_limit_expires_after_lockout_window() {
 #[tokio::test]
 async fn test_login_rate_limit_emits_audit_event() {
     // Verify that a LoginRateLimited audit event is emitted
-    let (app, store, _enc, _jwt, _state) = setup_test_app_with_rate_limit(2, 900).await;
+    let (app, store, _enc, _state) = setup_test_app_with_rate_limit(2, 900).await;
     let _user =
         create_user_in_db(&*store, "eve", TEST_PASSWORD, UserRole::Admin, false, true).await;
 
@@ -1722,7 +1722,7 @@ async fn test_login_rate_limit_emits_audit_event() {
 #[tokio::test]
 async fn test_login_rate_limit_wrong_password_returns_401_not_429_below_threshold() {
     // Below the threshold, wrong password should still be 401 Unauthorized, not 429
-    let (app, store, _enc, _jwt, _state) = setup_test_app_with_rate_limit(5, 900).await;
+    let (app, store, _enc, _state) = setup_test_app_with_rate_limit(5, 900).await;
     let _user = create_user_in_db(
         &*store,
         "frank",
@@ -1757,7 +1757,7 @@ async fn test_login_rate_limit_wrong_password_returns_401_not_429_below_threshol
 async fn test_login_rate_limit_nonexistent_user_also_rate_limited() {
     // Rate limiting should apply even for usernames that don't exist in the DB
     // to prevent user enumeration via timing differences.
-    let (app, _store, _enc, _jwt, _state) = setup_test_app_with_rate_limit(2, 900).await;
+    let (app, _store, _enc, _state) = setup_test_app_with_rate_limit(2, 900).await;
 
     // 2 failed attempts for a nonexistent user
     for _ in 0..2 {
@@ -1794,7 +1794,7 @@ async fn test_login_rate_limit_nonexistent_user_also_rate_limited() {
 async fn test_login_rate_limit_429_has_correct_error_structure() {
     // Verify the 429 response body has the expected shape:
     //   { "error": { "code": "too_many_requests", "message": "..." } }
-    let (app, store, _enc, _jwt, _state) = setup_test_app_with_rate_limit(1, 60).await;
+    let (app, store, _enc, _state) = setup_test_app_with_rate_limit(1, 60).await;
     let _user =
         create_user_in_db(&*store, "ivan", TEST_PASSWORD, UserRole::Admin, false, true).await;
 

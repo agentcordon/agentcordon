@@ -30,56 +30,21 @@ pub fn ok_response(data: serde_json::Value) -> (StatusCode, axum::Json<serde_jso
     )
 }
 
-/// Check that the workspace identified by `pk_hash` has the required OAuth scope.
-///
-/// `action` describes the operation being attempted (e.g., "proxy", "credentials.list")
-/// and is included in denial logs for audit/debugging context.
-///
-/// Returns `Ok(())` if the scope is present, or a 403 error response if missing.
-pub async fn require_scope(
-    state: &SharedState,
-    pk_hash: &str,
-    required_scope: &str,
-    action: &str,
-) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
-    let workspaces = state.workspaces.read().await;
-    match workspaces.get(pk_hash) {
-        Some(ws) => {
-            // Empty scopes = unrestricted (workspace registered without explicit scope limits)
-            if ws.scopes.is_empty() || ws.scopes.iter().any(|s| s == required_scope) {
-                Ok(())
-            } else {
-                tracing::warn!(
-                    action = %action,
-                    workspace_name = %ws.workspace_name,
-                    client_id = %ws.client_id,
-                    pk_hash = %pk_hash,
-                    required_scope = %required_scope,
-                    granted_scopes = ?ws.scopes,
-                    token_status = ?ws.token_status,
-                    "scope check denied: workspace missing required scope"
-                );
-                Err(error_response(
-                    StatusCode::FORBIDDEN,
-                    "forbidden",
-                    &format!("Workspace does not have required scope: {}", required_scope),
-                ))
-            }
-        }
-        None => {
-            tracing::warn!(
-                action = %action,
-                pk_hash = %pk_hash,
-                required_scope = %required_scope,
-                "scope check denied: workspace not registered"
-            );
-            Err(error_response(
-                StatusCode::UNAUTHORIZED,
-                "reregistration_required",
-                "Workspace tokens expired and could not be refreshed. Run: agentcordon setup <server_url>",
-            ))
-        }
-    }
+/// Error codes on a server 403 that the broker relays verbatim instead of
+/// summarising as a policy denial. Each names a cause the caller can act on
+/// and that has nothing to do with Cedar.
+const RELAYED_403_CODES: &[&str] = &["url_pattern_denied"];
+
+/// The server's own error envelope, when a 403 body carries one of the codes
+/// in [`RELAYED_403_CODES`]. `None` for every other 403, which stays
+/// summarised.
+fn passthrough_403(body: &str) -> Option<serde_json::Value> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let code = parsed.get("error")?.get("code")?.as_str()?;
+    RELAYED_403_CODES
+        .contains(&code)
+        .then_some(())
+        .map(|()| parsed)
 }
 
 /// Execute a server request with automatic 401 retry via token refresh.
@@ -139,11 +104,26 @@ where
                 "Token expired and refresh failed",
             ))
         }
-        Err(ServerClientError::ServerError { status: 403, .. }) => Err(error_response(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "Access denied by server policy",
-        )),
+        Err(ServerClientError::ServerError {
+            status: 403,
+            ref body,
+        }) => {
+            // A 403 is summarised rather than relayed, so a Cedar denial does
+            // not leak policy detail to an agent. One kind of 403 is not a
+            // policy decision at all — the credential's own
+            // `allowed_url_pattern` — and reporting that as "access denied by
+            // server policy" sends the reader to the wrong screen entirely.
+            // That one code, and its message, come through as the server
+            // wrote them.
+            if let Some(envelope) = passthrough_403(body) {
+                return Err((StatusCode::FORBIDDEN, axum::Json(envelope)));
+            }
+            Err(error_response(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Access denied by server policy",
+            ))
+        }
         Err(ServerClientError::ServerError { status, body }) => {
             tracing::warn!(status = status, "server request failed");
             // Propagate the server's error envelope verbatim when present so the

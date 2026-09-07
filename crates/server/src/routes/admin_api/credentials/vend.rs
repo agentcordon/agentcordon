@@ -2,232 +2,58 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
-
-use agent_cordon_core::crypto::SecretEncryptor;
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::domain::workspace::Workspace;
-use agent_cordon_core::policy::{
-    actions, claim_keys, PolicyContext, PolicyPrincipal, PolicyResource,
-};
+use agent_cordon_core::policy::{actions, PolicyPrincipal, PolicyResource};
 
+use crate::crypto_helpers::parse_broker_public_key;
 use crate::extractors::authenticated_workspace;
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::credentials::{VendOutcome, VendTarget};
 use crate::state::AppState;
 
-#[derive(Serialize)]
-pub(crate) struct VendResponse {
-    credential_type: String,
-    transform_name: Option<String>,
-    encrypted_envelope: VendEnvelopeResponse,
-    vend_id: String,
-}
+pub(crate) use agent_cordon_core::wire::credentials::{VendRequest, VendResponse};
+use agent_cordon_core::wire::EncryptedEnvelopeWire;
 
-#[derive(Serialize)]
-struct VendEnvelopeResponse {
-    version: u8,
-    ephemeral_public_key: String,
-    ciphertext: String,
-    nonce: String,
-    aad: String,
-}
-
-/// Optional request body for vend endpoints. The broker may provide its own
-/// ECIES public key so the server encrypts the credential to the broker
-/// rather than to the workspace's stored key.
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct VendRequest {
-    /// Base64url-encoded uncompressed P-256 public key (65 bytes decoded).
-    /// When present, the server encrypts the credential envelope to this key
-    /// instead of the workspace's `encryption_public_key`.
-    #[serde(default)]
-    broker_public_key: Option<String>,
-}
-
-use crate::crypto_helpers::parse_broker_public_key;
-
-/// Extract the encryption JWK from a workspace's `encryption_public_key` value (JWK JSON string).
-fn parse_encryption_jwk(encryption_public_key: &str) -> Result<serde_json::Value, ApiError> {
-    let jwk: serde_json::Value = serde_json::from_str(encryption_public_key)
-        .map_err(|_| ApiError::Internal("invalid encryption public key JWK".to_string()))?;
-    Ok(jwk)
-}
-
-/// Convert a P-256 JWK to uncompressed SEC1 bytes (65 bytes: 0x04 || x || y).
-fn jwk_to_uncompressed_point(jwk: &serde_json::Value) -> Result<Vec<u8>, ApiError> {
-    let x = jwk
-        .get("x")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ApiError::Internal("encryption key missing 'x' coordinate".to_string()))?;
-    let y = jwk
-        .get("y")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ApiError::Internal("encryption key missing 'y' coordinate".to_string()))?;
-
-    let x_bytes = URL_SAFE_NO_PAD
-        .decode(x)
-        .map_err(|_| ApiError::Internal("invalid x coordinate encoding".to_string()))?;
-    let y_bytes = URL_SAFE_NO_PAD
-        .decode(y)
-        .map_err(|_| ApiError::Internal("invalid y coordinate encoding".to_string()))?;
-
-    let mut point = Vec::with_capacity(65);
-    point.push(0x04);
-    point.extend_from_slice(&x_bytes);
-    point.extend_from_slice(&y_bytes);
-
-    Ok(point)
-}
-
-/// Shared vend logic: policy check → decrypt → ECIES encrypt → audit → response.
-///
-/// Both `vend_credential` (by ID) and `vend_credential_to_device` (by name)
-/// delegate here after their unique credential lookup.
-///
-/// `broker_pub_bytes`: If `Some`, use this P-256 public key for ECIES encryption
-/// (provided by the broker in the request body). Otherwise fall back to
-/// `workspace.encryption_public_key`.
-async fn vend_inner(
-    state: &AppState,
-    workspace: &Workspace,
-    cred: &StoredCredential,
-    corr_id: String,
-    broker_pub_bytes: Option<Vec<u8>>,
-    oauth_claims: Option<serde_json::Value>,
-) -> Result<VendResponse, ApiError> {
-    if cred.is_expired() {
-        return Err(ApiError::Forbidden("credential has expired".to_string()));
-    }
-
-    // Cedar policy evaluation via the Authz seam.
-    let decision = state
-        .authz
-        .request(
-            crate::authz::PolicyCaller::Principal {
-                principal: PolicyPrincipal::Workspace(workspace),
-                oauth_claims: oauth_claims.clone(),
-            },
-            &corr_id,
-        )
-        .check_with_reasons(
-            actions::VEND_CREDENTIAL,
-            &PolicyResource::Credential {
-                credential: cred.clone(),
-            },
-        )
-        .await?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        // Authz auto-emitted PolicyEvaluated/Forbid.
-        return Err(ApiError::Forbidden("access denied by policy".to_string()));
-    }
-
-    // Capture policy reasoning for the vend audit event
-    let policy_reason = if decision.reasons.is_empty() {
-        None
-    } else {
-        Some(decision.reasons.join(", "))
-    };
-    let mut policy_metadata = serde_json::json!({});
-    agent_cordon_core::domain::audit::enrich_metadata_with_policy_reasoning(
-        &mut policy_metadata,
-        &decision,
-        Some(&PolicyContext {
-            correlation_id: Some(corr_id.clone()),
-            ..Default::default()
-        }),
-        None,
-    );
-
-    // Resolve encryption public key: prefer broker-provided key, fall back to workspace key
-    let ws_pub_bytes = if let Some(broker_bytes) = broker_pub_bytes {
-        broker_bytes
-    } else {
-        let encryption_key_str = workspace
-            .encryption_public_key
-            .as_ref()
-            .ok_or_else(|| ApiError::UnprocessableEntity(
-                "workspace encryption key not configured \u{2014} provide broker_public_key in the request body or register with an encryption key".to_string(),
-            ))?;
-        let encryption_jwk = parse_encryption_jwk(encryption_key_str)?;
-        jwk_to_uncompressed_point(&encryption_jwk)?
-    };
-
-    // Decrypt (AES-GCM) → re-encrypt (ECIES) for the recipient device.
-    // For oauth2_client_credentials, include OAuth2 metadata (client_id,
-    // token_endpoint, scopes) so the broker can exchange the client secret
-    // for an access token before proxying upstream.
-    let (envelope, vend_id) = if cred.credential_type == "oauth2_client_credentials" {
-        let mut meta = std::collections::HashMap::new();
-        if let Some(obj) = cred.metadata.as_object() {
-            for key in &["oauth2_client_id", "oauth2_token_endpoint", "oauth2_scopes"] {
-                if let Some(val) = obj.get(*key).and_then(|v| v.as_str()) {
-                    meta.insert(key.to_string(), val.to_string());
-                }
-            }
-        }
-        crate::crypto_helpers::reencrypt_credential_with_metadata(
-            state.encryptor.as_ref(),
-            cred,
-            &workspace.id.0.to_string(),
-            &ws_pub_bytes,
-            meta,
-        )
-        .await?
-    } else {
-        crate::crypto_helpers::reencrypt_credential_for_device_with_prefix(
-            state.encryptor.as_ref(),
-            cred,
-            &workspace.id.0.to_string(),
-            &ws_pub_bytes,
-            "vnd",
-        )
-        .await?
-    };
-
-    // Domain audit: credential was vended — NEVER include credential secret values.
-    // Include the policy reasoning so the audit UI can link to contributing policies.
-    let mut vend_metadata = serde_json::json!({
-        "workspace_id": workspace.id.0.to_string(),
-        "credential_name": cred.name,
-        "vend_id": vend_id,
-    });
-    // Merge contributing_policies from policy evaluation into vend metadata
-    if let Some(policies) = policy_metadata.get("contributing_policies") {
-        vend_metadata["contributing_policies"] = policies.clone();
-    }
-    let event = AuditEvent::builder(AuditEventType::CredentialVended)
-        .action("vend_credential")
-        .workspace_actor(&workspace.id, &workspace.name)
-        .resource("credential", &cred.id.0.to_string())
-        .correlation_id(&corr_id)
-        .decision(AuditDecision::Permit, policy_reason.as_deref())
-        .details(vend_metadata)
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
-
-    // Build response — credential material is ONLY in the ECIES envelope
-    Ok(VendResponse {
-        credential_type: cred.credential_type.clone(),
-        transform_name: cred.transform_name.clone(),
-        encrypted_envelope: VendEnvelopeResponse {
-            version: envelope.version,
-            ephemeral_public_key: envelope.ephemeral_public_key,
-            ciphertext: envelope.ciphertext,
-            nonce: envelope.nonce,
-            aad: envelope.aad,
+/// Shape a completed vend into its wire response. The credential material
+/// is ONLY in the ECIES envelope.
+fn vend_response(v: VendOutcome) -> VendResponse {
+    VendResponse {
+        credential_type: v.credential_type,
+        transform_name: v.transform_name,
+        allowed_url_pattern: v.allowed_url_pattern,
+        encrypted_envelope: EncryptedEnvelopeWire {
+            version: v.envelope.version,
+            ephemeral_public_key: v.envelope.ephemeral_public_key,
+            ciphertext: v.envelope.ciphertext,
+            nonce: v.envelope.nonce,
+            aad: v.envelope.aad,
         },
-        vend_id,
+        vend_id: v.vend_id,
+    }
+}
+
+/// The request the credential is about to be injected into, as named by the
+/// caller. Trimming, the `GET` default and upper-casing are the server's
+/// decision, so they live here rather than on the wire type.
+fn vend_target(req: &VendRequest) -> Option<VendTarget> {
+    let url = req
+        .target_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())?;
+    Some(VendTarget {
+        method: req
+            .method
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .unwrap_or("GET")
+            .to_ascii_uppercase(),
+        url: url.to_string(),
     })
 }
 
@@ -243,88 +69,11 @@ pub(crate) async fn reveal_credential(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let cred_id = CredentialId(id);
-
-    // Load the credential — return 404 for both "not found" and later "not authorized"
-    // to avoid leaking credential existence.
-    let cred = state
-        .store
-        .get_credential(&cred_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
-
-    // Cedar policy check BEFORE decryption (deny-first).
-    // Root users bypass Cedar entirely (handled in evaluate).
-    let decision = state
-        .authz
-        .request(
-            crate::authz::PolicyCaller::Principal {
-                principal: PolicyPrincipal::User(&auth_user.user),
-                oauth_claims: None,
-            },
-            &corr.0,
-        )
-        .with_claim(
-            claim_keys::REQUESTED_SCOPES,
-            serde_json::json!(Vec::<String>::new()),
-        )
-        .check_with_reasons(
-            actions::UNPROTECT,
-            &PolicyResource::Credential {
-                credential: cred.clone(),
-            },
-        )
+    let secret_value = state
+        .services
+        .credentials
+        .reveal(&auth_user, &corr.0, &CredentialId(id))
         .await?;
-
-    if decision.decision == PolicyDecisionResult::Forbid {
-        // Authz auto-emitted PolicyEvaluated/Forbid.
-        // Return 404 to avoid leaking credential existence to unauthorized users.
-        return Err(ApiError::NotFound("credential not found".to_string()));
-    }
-
-    // Capture policy reasoning for the reveal audit event
-    let reveal_reason = if decision.reasons.is_empty() {
-        None
-    } else {
-        Some(decision.reasons.join(", "))
-    };
-    let mut reveal_policy_meta = serde_json::json!({});
-    agent_cordon_core::domain::audit::enrich_metadata_with_policy_reasoning(
-        &mut reveal_policy_meta,
-        &decision,
-        None,
-        None,
-    );
-
-    // Decrypt the credential secret value with credential ID as AAD
-    let plaintext = state.encryptor.decrypt(
-        &cred.encrypted_value,
-        &cred.nonce,
-        cred_id.0.to_string().as_bytes(),
-    )?;
-    let secret_value = String::from_utf8(plaintext)
-        .map_err(|_| ApiError::Internal("credential value is not valid UTF-8".to_string()))?;
-
-    // Domain audit: secret was revealed — NEVER log the secret itself.
-    // Include policy reasoning so audit UI can link to contributing policies.
-    let mut reveal_metadata = serde_json::json!({
-        "credential_name": cred.name,
-        "service": cred.service,
-    });
-    if let Some(policies) = reveal_policy_meta.get("contributing_policies") {
-        reveal_metadata["contributing_policies"] = policies.clone();
-    }
-    let event = AuditEvent::builder(AuditEventType::CredentialSecretViewed)
-        .action("unprotect")
-        .user_actor(&auth_user.user)
-        .resource("credential", &id.to_string())
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, reveal_reason.as_deref())
-        .details(reveal_metadata)
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
 
     Ok(Json(ApiResponse::ok(serde_json::json!({
         "secret_value": secret_value,
@@ -357,24 +106,23 @@ pub(crate) async fn vend_credential(
             .transpose()?,
         None => None,
     };
+    let target = body.as_ref().and_then(|Json(req)| vend_target(req));
 
-    let cred_id = CredentialId(id);
-    let cred = state
-        .store
-        .get_credential(&cred_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
+    let cred = state.services.credentials.load(&CredentialId(id)).await?;
 
-    let response = vend_inner(
-        &state,
-        &auth.workspace,
-        &cred,
-        corr.0,
-        broker_pub,
-        auth.oauth_claims,
-    )
-    .await?;
-    Ok(Json(ApiResponse::ok(response)))
+    let outcome = state
+        .services
+        .credentials
+        .vend(
+            &auth.workspace,
+            auth.oauth_claims,
+            &cred,
+            &corr.0,
+            broker_pub,
+            target.as_ref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(vend_response(outcome))))
 }
 
 /// POST /api/v1/credentials/vend-device/{name}
@@ -403,6 +151,7 @@ pub(crate) async fn vend_credential_to_device(
             .transpose()?,
         None => None,
     };
+    let target = body.as_ref().and_then(|Json(req)| vend_target(req));
 
     // Resolve credential by name: load only credentials matching this name,
     // then evaluate Cedar authorization on each match.
@@ -504,14 +253,17 @@ pub(crate) async fn vend_credential_to_device(
         }
     };
 
-    let response = vend_inner(
-        &state,
-        &auth.workspace,
-        &cred,
-        corr.0,
-        broker_pub,
-        auth.oauth_claims,
-    )
-    .await?;
-    Ok(Json(ApiResponse::ok(response)))
+    let outcome = state
+        .services
+        .credentials
+        .vend(
+            &auth.workspace,
+            auth.oauth_claims,
+            &cred,
+            &corr.0,
+            broker_pub,
+            target.as_ref(),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(vend_response(outcome))))
 }

@@ -1,39 +1,34 @@
 //! HTTP client for calling the AgentCordon server.
+//!
+//! Every request body, form, query string and response body here is one of
+//! the shared wire types in [`agent_cordon_core::wire`] — the same types the
+//! server's routes use. Nothing on this path builds a body with
+//! `serde_json::json!` or reads a response through `serde_json::Value`
+//! lookups: a field renamed on the server is a compile error here.
 
-use serde::{Deserialize, Serialize};
+use agent_cordon_core::wire::credentials::{VendRequest, VendResponse};
+use agent_cordon_core::wire::mcp::{
+    McpAuthorizeRequest, McpAuthorizeResponse, McpServerSyncEntry, McpServerSyncResponse,
+    McpSyncQuery, McpToolSyncEntry,
+};
+use agent_cordon_core::wire::oauth::{
+    device_poll_errors, grant_types, DeviceAuthorizationRequest, OAuthErrorBody, TokenRequest,
+};
+pub use agent_cordon_core::wire::oauth::{DeviceAuthorizationResponse, TokenResponse};
+use agent_cordon_core::wire::ApiEnvelope;
+
+use agent_cordon_core::domain::credential::CredentialSummary;
+
+// Re-exported so the rest of the broker names these types through the
+// client it talks to the server with.
+pub use agent_cordon_core::wire::mcp::McpCredentialEnvelope;
+pub use agent_cordon_core::wire::EncryptedEnvelopeWire;
 
 /// HTTP client for server communication (OAuth, credential vend, MCP).
 #[derive(Clone)]
 pub struct ServerClient {
     http: reqwest::Client,
     base_url: String,
-}
-
-// ---------------------------------------------------------------------------
-// Server response types
-// ---------------------------------------------------------------------------
-
-/// Generic API envelope from the server.
-#[derive(Debug, Deserialize)]
-pub struct ApiEnvelope<T> {
-    pub data: T,
-}
-
-/// Response from `POST /api/v1/oauth/device/code` (RFC 8628 §3.2).
-#[derive(Debug, Clone, Deserialize)]
-pub struct DeviceCodeResponse {
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    #[serde(default)]
-    pub verification_uri_complete: Option<String>,
-    pub expires_in: u64,
-    #[serde(default = "default_device_interval")]
-    pub interval: u64,
-}
-
-fn default_device_interval() -> u64 {
-    5
 }
 
 /// Outcome of a single device-code token poll. The four RFC 8628 §3.5
@@ -52,131 +47,6 @@ pub enum DeviceTokenPollResult {
     /// Transport / deserialization error — treat like `Pending` in the
     /// caller (retry) but log.
     Transport(String),
-}
-
-#[derive(Debug, Deserialize)]
-struct DeviceTokenErrorBody {
-    error: String,
-}
-
-/// Response from `POST /api/v1/oauth/token`.
-#[derive(Debug, Deserialize)]
-pub struct TokenResponse {
-    pub access_token: String,
-    #[allow(dead_code)]
-    pub token_type: String,
-    pub expires_in: u64,
-    pub refresh_token: Option<String>,
-    pub scope: Option<String>,
-    /// Per-workspace client_id the issued tokens are bound to. The broker
-    /// MUST persist this and echo it on subsequent refresh calls — using the
-    /// bootstrap `BROKER_CLIENT_ID` instead causes server-side
-    /// `invalid_grant: client_id mismatch`. `Option` for back-compat with
-    /// pre-fix servers; absent means fall back to `BROKER_CLIENT_ID` and
-    /// log so the misconfiguration is visible.
-    #[serde(default)]
-    pub client_id: Option<String>,
-}
-
-/// Credential vend response from the server.
-#[derive(Debug, Deserialize)]
-pub struct VendResponse {
-    #[allow(dead_code)]
-    pub credential_id: Option<String>,
-    #[allow(dead_code)]
-    pub credential_name: Option<String>,
-    #[allow(dead_code)]
-    pub credential_type: String,
-    pub transform_name: Option<String>,
-    pub encrypted_envelope: VendEnvelope,
-    #[allow(dead_code)]
-    pub vend_id: String,
-}
-
-/// ECIES envelope from vend response.
-#[derive(Debug, Deserialize)]
-pub struct VendEnvelope {
-    pub version: u8,
-    pub ephemeral_public_key: String,
-    pub ciphertext: String,
-    pub nonce: String,
-    pub aad: String,
-}
-
-/// Summary of a credential (from list endpoint).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CredentialSummary {
-    pub id: String,
-    pub name: String,
-    pub service: Option<String>,
-    pub credential_type: String,
-    #[serde(default)]
-    pub scopes: Vec<String>,
-    pub allowed_url_pattern: Option<String>,
-    pub expires_at: Option<String>,
-    #[serde(default)]
-    pub expired: bool,
-    pub vault: Option<String>,
-}
-
-/// MCP server summary from the server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpServerSummary {
-    pub name: String,
-    pub description: Option<String>,
-    #[serde(default)]
-    pub tools: Vec<String>,
-    pub transport: Option<String>,
-    pub url: Option<String>,
-}
-
-/// MCP tool summary from the server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpToolSummary {
-    pub server: String,
-    pub tool: String,
-    pub description: Option<String>,
-    pub input_schema: Option<serde_json::Value>,
-}
-
-/// MCP server sync entry (from credential-enhanced sync endpoint).
-#[derive(Debug, Clone, Deserialize)]
-pub struct McpServerSyncEntry {
-    pub id: String,
-    pub name: String,
-    pub transport: String,
-    pub url: Option<String>,
-    #[serde(default)]
-    pub tools: Vec<String>,
-    pub enabled: bool,
-    pub auth_method: String,
-    pub credential_envelopes: Option<Vec<McpCredentialEnvelope>>,
-}
-
-/// ECIES-encrypted credential envelope for an MCP server's credential.
-#[derive(Debug, Clone, Deserialize)]
-pub struct McpCredentialEnvelope {
-    pub credential_name: String,
-    pub credential_type: String,
-    pub transform_name: Option<String>,
-    pub encrypted_envelope: EncryptedEnvelopeResponse,
-}
-
-/// Wire format for an ECIES encrypted envelope (deserialization side).
-#[derive(Debug, Clone, Deserialize)]
-pub struct EncryptedEnvelopeResponse {
-    pub version: u8,
-    pub ephemeral_public_key: String,
-    pub ciphertext: String,
-    pub nonce: String,
-    pub aad: String,
-}
-
-/// MCP authorization response.
-#[derive(Debug, Deserialize)]
-pub struct McpAuthorizeResponse {
-    pub decision: String,
-    pub correlation_id: String,
 }
 
 /// Client error type.
@@ -211,39 +81,29 @@ impl ServerClient {
         scopes: &[String],
         workspace_name: &str,
         public_key_hash: &str,
-    ) -> Result<DeviceCodeResponse, ServerClientError> {
+    ) -> Result<DeviceAuthorizationResponse, ServerClientError> {
         let url = format!("{}/api/v1/oauth/device/code", self.base_url);
 
-        let scope = scopes.join(" ");
-        let params = [
-            ("client_id", client_id),
-            ("scope", &scope),
-            ("workspace_name", workspace_name),
-            ("public_key_hash", public_key_hash),
-        ];
+        let form = DeviceAuthorizationRequest {
+            client_id: Some(client_id.to_string()),
+            scope: Some(scopes.join(" ")),
+            workspace_name: Some(workspace_name.to_string()),
+            public_key_hash: Some(public_key_hash.to_string()),
+        };
 
         let resp = self
             .http
             .post(&url)
-            .form(&params)
+            .form(&form)
             .send()
             .await
             .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
+        let resp = check_status(resp).await?;
 
-        let device_resp: DeviceCodeResponse = resp
-            .json()
+        resp.json()
             .await
-            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
-        Ok(device_resp)
+            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))
     }
 
     /// Poll the server's token endpoint once with the device_code grant
@@ -259,13 +119,14 @@ impl ServerClient {
     ) -> DeviceTokenPollResult {
         let url = format!("{}/api/v1/oauth/token", self.base_url);
 
-        let params = [
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("device_code", device_code),
-            ("client_id", client_id),
-        ];
+        let form = TokenRequest {
+            grant_type: Some(grant_types::DEVICE_CODE.to_string()),
+            device_code: Some(device_code.to_string()),
+            client_id: Some(client_id.to_string()),
+            ..TokenRequest::default()
+        };
 
-        let resp = match self.http.post(&url).form(&params).send().await {
+        let resp = match self.http.post(&url).form(&form).send().await {
             Ok(r) => r,
             Err(e) => return DeviceTokenPollResult::Transport(e.to_string()),
         };
@@ -280,15 +141,16 @@ impl ServerClient {
             }
         } else {
             // RFC 8628 §3.5 defines error codes in a JSON body on 4xx.
-            let err: DeviceTokenErrorBody =
-                serde_json::from_str(&text).unwrap_or(DeviceTokenErrorBody {
+            let err: OAuthErrorBody =
+                serde_json::from_str(&text).unwrap_or_else(|_| OAuthErrorBody {
                     error: "invalid_request".to_string(),
+                    error_description: None,
                 });
             match err.error.as_str() {
-                "authorization_pending" => DeviceTokenPollResult::Pending,
-                "slow_down" => DeviceTokenPollResult::SlowDown,
-                "expired_token" => DeviceTokenPollResult::Expired,
-                "access_denied" => DeviceTokenPollResult::Denied,
+                device_poll_errors::AUTHORIZATION_PENDING => DeviceTokenPollResult::Pending,
+                device_poll_errors::SLOW_DOWN => DeviceTokenPollResult::SlowDown,
+                device_poll_errors::EXPIRED_TOKEN => DeviceTokenPollResult::Expired,
+                device_poll_errors::ACCESS_DENIED => DeviceTokenPollResult::Denied,
                 other => DeviceTokenPollResult::Other(other.to_string()),
             }
         }
@@ -302,43 +164,39 @@ impl ServerClient {
     ) -> Result<TokenResponse, ServerClientError> {
         let url = format!("{}/api/v1/oauth/token", self.base_url);
 
-        let params = [
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", client_id),
-        ];
+        let form = TokenRequest {
+            grant_type: Some(grant_types::REFRESH_TOKEN.to_string()),
+            refresh_token: Some(refresh_token.to_string()),
+            client_id: Some(client_id.to_string()),
+            ..TokenRequest::default()
+        };
 
         let resp = self
             .http
             .post(&url)
-            .form(&params)
+            .form(&form)
             .send()
             .await
             .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
+        let resp = check_status(resp).await?;
 
-        let token_resp: TokenResponse = resp
-            .json()
+        resp.json()
             .await
-            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
-
-        Ok(token_resp)
+            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))
     }
 
-    /// Vend a credential from the server (ECIES-encrypted).
+    /// Vend a credential from the server (ECIES-encrypted) for one request:
+    /// `method` and `target_url` name where the credential is about to be
+    /// sent so the server can refuse a target outside the credential's
+    /// allowed URL pattern.
     pub async fn vend_credential(
         &self,
         credential_name: &str,
         access_token: &str,
         broker_pub_key_b64: &str,
+        method: &str,
+        target_url: &str,
     ) -> Result<VendResponse, ServerClientError> {
         let url = format!(
             "{}/api/v1/credentials/vend-device/{}",
@@ -346,9 +204,11 @@ impl ServerClient {
             urlencoding::encode(credential_name)
         );
 
-        let body = serde_json::json!({
-            "broker_public_key": broker_pub_key_b64,
-        });
+        let body = VendRequest {
+            broker_public_key: Some(broker_pub_key_b64.to_string()),
+            method: Some(method.to_string()),
+            target_url: Some(target_url.to_string()),
+        };
 
         let resp = self
             .http
@@ -359,21 +219,7 @@ impl ServerClient {
             .await
             .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
-
-        let envelope: ApiEnvelope<VendResponse> = resp
-            .json()
-            .await
-            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
-
-        Ok(envelope.data)
+        envelope::<VendResponse>(check_status(resp).await?).await
     }
 
     /// List credentials available to a workspace.
@@ -391,66 +237,61 @@ impl ServerClient {
             .await
             .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
-
-        let envelope: ApiEnvelope<Vec<CredentialSummary>> = resp
-            .json()
-            .await
-            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
-
-        Ok(envelope.data)
+        envelope::<Vec<CredentialSummary>>(check_status(resp).await?).await
     }
 
-    /// List MCP servers available to a workspace.
+    /// List MCP servers available to a workspace, without credentials.
     pub async fn list_mcp_servers(
         &self,
         access_token: &str,
-    ) -> Result<Vec<McpServerSummary>, ServerClientError> {
+    ) -> Result<Vec<McpServerSyncEntry>, ServerClientError> {
+        self.sync_mcp_servers(access_token, McpSyncQuery::default())
+            .await
+    }
+
+    /// List MCP servers with ECIES-encrypted credential envelopes.
+    pub async fn list_mcp_servers_with_credentials(
+        &self,
+        access_token: &str,
+        broker_public_key: &str,
+    ) -> Result<Vec<McpServerSyncEntry>, ServerClientError> {
+        self.sync_mcp_servers(
+            access_token,
+            McpSyncQuery {
+                include_credentials: true,
+                broker_public_key: Some(broker_public_key.to_string()),
+            },
+        )
+        .await
+    }
+
+    /// `GET /api/v1/workspaces/mcp-servers` — the one sync call, with and
+    /// without credential envelopes.
+    async fn sync_mcp_servers(
+        &self,
+        access_token: &str,
+        query: McpSyncQuery,
+    ) -> Result<Vec<McpServerSyncEntry>, ServerClientError> {
         let url = format!("{}/api/v1/workspaces/mcp-servers", self.base_url);
 
         let resp = self
             .http
             .get(&url)
+            .query(&query)
             .bearer_auth(access_token)
             .send()
             .await
             .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
-
-        // Server returns { data: { servers: [...] } }
-        #[derive(Deserialize)]
-        struct ServersWrapper {
-            servers: Vec<McpServerSummary>,
-        }
-
-        let envelope: ApiEnvelope<ServersWrapper> = resp
-            .json()
-            .await
-            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
-
-        Ok(envelope.data.servers)
+        let body = envelope::<McpServerSyncResponse>(check_status(resp).await?).await?;
+        Ok(body.servers)
     }
 
     /// List MCP tools available to a workspace.
     pub async fn list_mcp_tools(
         &self,
         access_token: &str,
-    ) -> Result<Vec<McpToolSummary>, ServerClientError> {
+    ) -> Result<Vec<McpToolSyncEntry>, ServerClientError> {
         let url = format!("{}/api/v1/workspaces/mcp-tools", self.base_url);
 
         let resp = self
@@ -461,21 +302,7 @@ impl ServerClient {
             .await
             .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
-
-        let envelope: ApiEnvelope<Vec<McpToolSummary>> = resp
-            .json()
-            .await
-            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
-
-        Ok(envelope.data)
+        envelope::<Vec<McpToolSyncEntry>>(check_status(resp).await?).await
     }
 
     /// Authorize an MCP tool call via Cedar policy on the server.
@@ -487,10 +314,10 @@ impl ServerClient {
     ) -> Result<McpAuthorizeResponse, ServerClientError> {
         let url = format!("{}/api/v1/workspaces/mcp-authorize", self.base_url);
 
-        let body = serde_json::json!({
-            "server_name": server_name,
-            "tool_name": tool_name,
-        });
+        let body = McpAuthorizeRequest {
+            server_name: server_name.to_string(),
+            tool_name: tool_name.to_string(),
+        };
 
         let resp = self
             .http
@@ -501,70 +328,15 @@ impl ServerClient {
             .await
             .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
-
-        let envelope: ApiEnvelope<McpAuthorizeResponse> = resp
-            .json()
-            .await
-            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
-
-        Ok(envelope.data)
-    }
-
-    /// List MCP servers with ECIES-encrypted credential envelopes.
-    pub async fn list_mcp_servers_with_credentials(
-        &self,
-        token: &str,
-        broker_public_key: &str,
-    ) -> Result<Vec<McpServerSyncEntry>, ServerClientError> {
-        let url = format!(
-            "{}/api/v1/workspaces/mcp-servers?include_credentials=true&broker_public_key={}",
-            self.base_url,
-            urlencoding::encode(broker_public_key),
-        );
-
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
-
-        #[derive(Deserialize)]
-        struct ServersWrapper {
-            servers: Vec<McpServerSyncEntry>,
-        }
-
-        let envelope: ApiEnvelope<ServersWrapper> = resp
-            .json()
-            .await
-            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
-
-        Ok(envelope.data.servers)
+        envelope::<McpAuthorizeResponse>(check_status(resp).await?).await
     }
 
     /// Create a credential via the workspace-initiated `agent-store` endpoint.
     ///
-    /// `body` is the raw JSON object the server's `agent-store` route accepts
-    /// (`name`, `service`, `secret_value`, optional `metadata`, `tags`, etc.).
-    /// Returns the deserialized `CredentialSummary` from the server's envelope.
+    /// `body` is the raw JSON object the CLI sent (`name`, `service`,
+    /// `secret_value`, optional `metadata`, `tags`, ...). It is forwarded
+    /// unread: the broker deliberately takes no view of the fields the
+    /// server's `agent-store` route validates.
     pub async fn agent_store_credential(
         &self,
         access_token: &str,
@@ -581,67 +353,7 @@ impl ServerClient {
             .await
             .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
-
-        let envelope: ApiEnvelope<CredentialSummary> = resp
-            .json()
-            .await
-            .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
-
-        Ok(envelope.data)
-    }
-
-    /// Persist a rotated OAuth2 refresh token for an MCP credential.
-    ///
-    /// Calls the server's workspace-scoped rotation endpoint. The server
-    /// enforces that the credential belongs to the calling workspace and
-    /// emits an audit event. On success returns `Ok(())`; any non-2xx or
-    /// transport error is propagated so the broker can abort the refresh
-    /// and avoid caching a stale access token.
-    ///
-    /// SECURITY: the new refresh token value is sent in the JSON body and
-    /// MUST NOT be logged at any level.
-    pub async fn update_mcp_credential_refresh_token(
-        &self,
-        workspace_token: &str,
-        credential_name: &str,
-        new_refresh_token: &str,
-    ) -> Result<(), ServerClientError> {
-        let url = format!(
-            "{}/api/v1/workspaces/mcp/rotate-refresh-token",
-            self.base_url
-        );
-
-        let body = serde_json::json!({
-            "credential_name": credential_name,
-            "new_refresh_token": new_refresh_token,
-        });
-
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(workspace_token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ServerClientError::RequestFailed(e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ServerClientError::ServerError {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
-        Ok(())
+        envelope::<CredentialSummary>(check_status(resp).await?).await
     }
 
     /// Check if the server is reachable.
@@ -652,6 +364,30 @@ impl ServerClient {
             Ok(resp) if resp.status().is_success()
         )
     }
+}
+
+/// Turn a non-2xx answer into a [`ServerClientError::ServerError`] carrying
+/// the body, so callers can branch on the status (401 drives token refresh).
+async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ServerClientError> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    Err(ServerClientError::ServerError {
+        status: status.as_u16(),
+        body: resp.text().await.unwrap_or_default(),
+    })
+}
+
+/// Read a `{"data": ...}` body into `T`.
+async fn envelope<T: serde::de::DeserializeOwned>(
+    resp: reqwest::Response,
+) -> Result<T, ServerClientError> {
+    let body: ApiEnvelope<T> = resp
+        .json()
+        .await
+        .map_err(|e| ServerClientError::InvalidResponse(e.to_string()))?;
+    Ok(body.data)
 }
 
 #[cfg(test)]

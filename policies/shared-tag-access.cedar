@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Tag-Based Credential Access
 // ---------------------------------------------------------------------------
-// Workspaces can access and proxy credentials when they share at least one tag.
+// Enabled workspaces can access and proxy credentials when they share at least one tag.
 // This enables convention-based access control: tag both the workspace and the
 // credential with the same label (e.g., "ci", "deploy", "staging") and
 // access is granted automatically — no per-workspace permission grants needed.
@@ -18,7 +18,7 @@ permit(
   action == AgentCordon::Action::"access",
   resource is AgentCordon::Credential
 ) when {
-  principal.tags.containsAny(resource.tags)
+  principal.enabled && principal.tags.containsAny(resource.tags)
 };
 
 // Workspaces can proxy through credentials that share a tag.
@@ -27,7 +27,7 @@ permit(
   action == AgentCordon::Action::"vend_credential",
   resource is AgentCordon::Credential
 ) when {
-  principal.tags.containsAny(resource.tags)
+  principal.enabled && principal.tags.containsAny(resource.tags)
 };
 
 // Workspaces can list/view credentials that share a tag.
@@ -36,5 +36,5 @@ permit(
   action == AgentCordon::Action::"list",
   resource is AgentCordon::Credential
 ) when {
-  principal.tags.containsAny(resource.tags)
+  principal.enabled && principal.tags.containsAny(resource.tags)
 };

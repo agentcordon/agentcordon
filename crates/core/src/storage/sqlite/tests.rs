@@ -21,7 +21,6 @@ fn make_agent(name: &str) -> Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
         tags: vec!["reader".to_string()],
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -49,7 +48,7 @@ async fn test_create_and_get_agent() {
     assert_eq!(fetched.id, agent.id);
     assert_eq!(fetched.name, agent.name);
     assert_eq!(fetched.tags, agent.tags);
-    assert_eq!(fetched.enabled, agent.enabled);
+    assert_eq!(fetched.status, agent.status);
 
     // Get by name
     let fetched_by_name = store
@@ -132,7 +131,8 @@ async fn test_store_and_get_credential() {
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -186,7 +186,8 @@ async fn test_store_credential_with_expiry() {
         expires_at: Some(future),
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -239,7 +240,8 @@ async fn test_expired_credential_is_expired() {
         expires_at: Some(past),
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -287,7 +289,8 @@ async fn test_list_credentials_shows_expired_flag() {
         expires_at: Some(past),
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -310,7 +313,8 @@ async fn test_list_credentials_shows_expired_flag() {
         expires_at: Some(future),
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -333,7 +337,8 @@ async fn test_list_credentials_shows_expired_flag() {
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -406,7 +411,8 @@ async fn test_list_credentials_returns_summaries() {
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -454,7 +460,8 @@ async fn test_delete_credential() {
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -784,7 +791,8 @@ async fn test_delete_agent_conflict_with_credentials() {
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -894,88 +902,6 @@ async fn test_get_workspaces_by_owner() {
 }
 
 #[tokio::test]
-async fn test_store_and_check_workspace_jti() {
-    let store = setup_store().await;
-    let ws = make_agent("jti-ws");
-    store.create_workspace(&ws).await.expect("create workspace");
-
-    let jti = "unique-jti-12345";
-    let expires_at = Utc::now() + chrono::Duration::hours(1);
-
-    // Not yet stored
-    let exists = store
-        .check_workspace_jti(jti)
-        .await
-        .expect("check jti before store");
-    assert!(!exists, "JTI should not exist before storing");
-
-    // Store
-    let stored = store
-        .store_workspace_jti(jti, &ws.id, &expires_at)
-        .await
-        .expect("store jti");
-    assert!(stored, "first store should succeed");
-
-    // Now exists
-    let exists_after = store
-        .check_workspace_jti(jti)
-        .await
-        .expect("check jti after store");
-    assert!(exists_after, "JTI should exist after storing");
-
-    // Duplicate store returns false (INSERT OR IGNORE)
-    let dup = store
-        .store_workspace_jti(jti, &ws.id, &expires_at)
-        .await
-        .expect("duplicate jti");
-    assert!(!dup, "duplicate JTI store should return false");
-}
-
-#[tokio::test]
-async fn test_cleanup_expired_jtis() {
-    let store = setup_store().await;
-    let ws = make_agent("cleanup-ws");
-    store.create_workspace(&ws).await.expect("create workspace");
-
-    let now = Utc::now();
-
-    // Store an expired JTI
-    let expired_at = now - chrono::Duration::hours(1);
-    store
-        .store_workspace_jti("expired-jti", &ws.id, &expired_at)
-        .await
-        .expect("store expired jti");
-
-    // Store a valid JTI
-    let future = now + chrono::Duration::hours(1);
-    store
-        .store_workspace_jti("valid-jti", &ws.id, &future)
-        .await
-        .expect("store valid jti");
-
-    // Cleanup
-    let cleaned = store
-        .cleanup_expired_workspace_jtis()
-        .await
-        .expect("cleanup");
-    assert_eq!(cleaned, 1, "should clean up 1 expired JTI");
-
-    // Expired one is gone
-    let expired_exists = store
-        .check_workspace_jti("expired-jti")
-        .await
-        .expect("check expired");
-    assert!(!expired_exists, "expired JTI should be cleaned up");
-
-    // Valid one still exists
-    let valid_exists = store
-        .check_workspace_jti("valid-jti")
-        .await
-        .expect("check valid");
-    assert!(valid_exists, "valid JTI should still exist");
-}
-
-#[tokio::test]
 async fn test_touch_workspace_authenticated() {
     let store = setup_store().await;
     let ws = make_agent("touch-ws");
@@ -996,215 +922,6 @@ async fn test_touch_workspace_authenticated() {
         "updated_at should reflect the touch time, diff={}s",
         diff
     );
-}
-
-#[tokio::test]
-async fn test_workspace_registration_crud() {
-    use crate::domain::workspace::WorkspaceRegistration;
-
-    let store = setup_store().await;
-    let now = Utc::now();
-    let expires = now + chrono::Duration::hours(1);
-
-    let reg = WorkspaceRegistration {
-        pk_hash: "test-pk-hash-abc123".to_string(),
-        code_challenge: "challenge-hash".to_string(),
-        code_hash: "code-hash-value".to_string(),
-        approval_code: Some("ALPHA-123456".to_string()),
-        expires_at: expires,
-        attempts: 0,
-        max_attempts: 3,
-        approved_by: Some("admin-user-id".to_string()),
-        created_at: now,
-    };
-
-    // Create
-    store
-        .create_workspace_registration(&reg)
-        .await
-        .expect("create registration");
-
-    // Read
-    let fetched = store
-        .get_workspace_registration("test-pk-hash-abc123")
-        .await
-        .expect("get")
-        .unwrap();
-    assert_eq!(fetched.pk_hash, "test-pk-hash-abc123");
-    assert_eq!(fetched.code_challenge, "challenge-hash");
-    assert_eq!(fetched.code_hash, "code-hash-value");
-    assert_eq!(fetched.approval_code, Some("ALPHA-123456".to_string()));
-    assert_eq!(fetched.attempts, 0);
-    assert_eq!(fetched.max_attempts, 3);
-    assert_eq!(fetched.approved_by, Some("admin-user-id".to_string()));
-
-    // Null approval code
-    store
-        .null_registration_approval_code("test-pk-hash-abc123")
-        .await
-        .expect("null approval code");
-    let after_null = store
-        .get_workspace_registration("test-pk-hash-abc123")
-        .await
-        .expect("get after null")
-        .unwrap();
-    assert!(
-        after_null.approval_code.is_none(),
-        "approval code should be null after nulling"
-    );
-
-    // Increment attempts
-    store
-        .increment_registration_attempts("test-pk-hash-abc123")
-        .await
-        .expect("increment");
-    let after_inc = store
-        .get_workspace_registration("test-pk-hash-abc123")
-        .await
-        .expect("get after inc")
-        .unwrap();
-    assert_eq!(after_inc.attempts, 1, "attempts should be incremented");
-
-    // Delete
-    let deleted = store
-        .delete_workspace_registration("test-pk-hash-abc123")
-        .await
-        .expect("delete");
-    assert!(deleted);
-
-    // Verify gone
-    let gone = store
-        .get_workspace_registration("test-pk-hash-abc123")
-        .await
-        .expect("get after delete");
-    assert!(gone.is_none());
-
-    // Delete non-existent returns false
-    let deleted_again = store
-        .delete_workspace_registration("test-pk-hash-abc123")
-        .await
-        .expect("delete again");
-    assert!(!deleted_again);
-}
-
-/// Helper: create the provisioning_tokens table (migration not yet registered).
-/// This is a known gap: the migration file exists at
-/// migrations/20260321220100_provisioning_tokens.sql but is not in the
-/// MIGRATIONS array in migrations.rs.
-async fn create_provisioning_tokens_table(store: &SqliteStore) {
-    store
-        .conn()
-        .call(move |conn| {
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS provisioning_tokens (
-                        token_hash TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        expires_at TEXT NOT NULL,
-                        used INTEGER NOT NULL DEFAULT 0,
-                        created_at TEXT NOT NULL
-                    );",
-            )
-            .map_err(tokio_rusqlite::Error::Rusqlite)?;
-            Ok(())
-        })
-        .await
-        .expect("create provisioning_tokens table");
-}
-
-#[tokio::test]
-async fn test_provisioning_token_crud() {
-    use crate::domain::workspace::ProvisioningToken;
-
-    let store = setup_store().await;
-    create_provisioning_tokens_table(&store).await;
-    let now = Utc::now();
-    let expires = now + chrono::Duration::hours(24);
-
-    let token = ProvisioningToken {
-        token_hash: "hash-of-raw-token-abc".to_string(),
-        name: "ci-deploy-token".to_string(),
-        expires_at: expires,
-        used: false,
-        created_at: now,
-    };
-
-    // Create
-    store
-        .create_provisioning_token(&token)
-        .await
-        .expect("create token");
-
-    // Read
-    let fetched = store
-        .get_provisioning_token("hash-of-raw-token-abc")
-        .await
-        .expect("get")
-        .unwrap();
-    assert_eq!(fetched.name, "ci-deploy-token");
-    assert!(!fetched.used);
-
-    // Not found
-    let missing = store
-        .get_provisioning_token("nonexistent-hash")
-        .await
-        .expect("get missing");
-    assert!(missing.is_none());
-
-    // Mark used
-    let marked = store
-        .mark_provisioning_token_used("hash-of-raw-token-abc")
-        .await
-        .expect("mark used");
-    assert!(marked, "marking unused token should succeed");
-
-    // Verify used
-    let after_use = store
-        .get_provisioning_token("hash-of-raw-token-abc")
-        .await
-        .expect("get after use")
-        .unwrap();
-    assert!(after_use.used, "token should be marked as used");
-
-    // Mark used again returns false
-    let marked_again = store
-        .mark_provisioning_token_used("hash-of-raw-token-abc")
-        .await
-        .expect("mark used again");
-    assert!(
-        !marked_again,
-        "marking already-used token should return false"
-    );
-}
-
-#[tokio::test]
-async fn test_jti_duplicate_detection() {
-    let store = setup_store().await;
-    let ws = make_agent("jti-dup-ws");
-    store.create_workspace(&ws).await.expect("create workspace");
-
-    let expires = Utc::now() + chrono::Duration::hours(1);
-    let jti = "replay-attempt-jti";
-
-    // First store succeeds
-    let first = store
-        .store_workspace_jti(jti, &ws.id, &expires)
-        .await
-        .expect("first store");
-    assert!(first);
-
-    // Same JTI again = replay detected
-    let replay = store
-        .store_workspace_jti(jti, &ws.id, &expires)
-        .await
-        .expect("replay store");
-    assert!(!replay, "replay JTI must be rejected");
-
-    // Different JTI succeeds
-    let different = store
-        .store_workspace_jti("different-jti", &ws.id, &expires)
-        .await
-        .expect("different jti");
-    assert!(different);
 }
 
 #[tokio::test]
@@ -1265,42 +982,6 @@ async fn test_get_workspace_by_pk_hash_with_multiple_workspaces() {
 }
 
 #[tokio::test]
-async fn test_provisioning_token_duplicate_hash_conflict() {
-    use crate::domain::workspace::ProvisioningToken;
-
-    let store = setup_store().await;
-    create_provisioning_tokens_table(&store).await;
-    let now = Utc::now();
-    let expires = now + chrono::Duration::hours(1);
-
-    let token1 = ProvisioningToken {
-        token_hash: "same-hash".to_string(),
-        name: "token-1".to_string(),
-        expires_at: expires,
-        used: false,
-        created_at: now,
-    };
-    let token2 = ProvisioningToken {
-        token_hash: "same-hash".to_string(),
-        name: "token-2".to_string(),
-        expires_at: expires,
-        used: false,
-        created_at: now,
-    };
-
-    store
-        .create_provisioning_token(&token1)
-        .await
-        .expect("create first token");
-    let result = store.create_provisioning_token(&token2).await;
-    assert!(result.is_err(), "duplicate token_hash should fail");
-    assert!(
-        matches!(result.unwrap_err(), StoreError::Conflict { .. }),
-        "error should be Conflict for duplicate provisioning token"
-    );
-}
-
-#[tokio::test]
 async fn test_workspace_with_all_optional_fields() {
     let store = setup_store().await;
     let owner_id = crate::domain::user::UserId(Uuid::new_v4());
@@ -1315,7 +996,6 @@ async fn test_workspace_with_all_optional_fields() {
         id: parent_id.clone(),
         name: "parent-workspace".to_string(),
         tags: vec![],
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -1334,7 +1014,6 @@ async fn test_workspace_with_all_optional_fields() {
         id: WorkspaceId(Uuid::new_v4()),
         name: "full-featured-ws".to_string(),
         tags: vec!["tag1".to_string(), "tag2".to_string()],
-        enabled: true,
         status: WorkspaceStatus::Pending,
         pk_hash: Some("pk-hash-full".to_string()),
         encryption_public_key: Some("{\"kty\":\"EC\",\"crv\":\"P-256\"}".to_string()),
@@ -1364,86 +1043,630 @@ async fn test_workspace_with_all_optional_fields() {
     assert_eq!(fetched.tags, vec!["tag1".to_string(), "tag2".to_string()]);
 }
 
-#[tokio::test]
-async fn test_cleanup_no_expired_jtis() {
-    let store = setup_store().await;
-    let ws = make_agent("no-expired-ws");
-    store.create_workspace(&ws).await.expect("create workspace");
+// ---------------------------------------------------------------------------
+// Store contracts: error mapping
+//
+// The driver's constraint failures surface as `Conflict` (naming the
+// constraint) and a missing row as `NotFound`, from every method, so the
+// HTTP layer can answer 409 and 404 without per-method special cases.
+// ---------------------------------------------------------------------------
 
-    let future = Utc::now() + chrono::Duration::hours(1);
+fn make_user(username: &str) -> crate::domain::user::User {
+    let now = Utc::now();
+    crate::domain::user::User {
+        id: crate::domain::user::UserId(Uuid::new_v4()),
+        username: username.to_string(),
+        display_name: None,
+        password_hash: "hash".to_string(),
+        role: crate::domain::user::UserRole::Viewer,
+        is_root: false,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn make_credential(name: &str, created_at: chrono::DateTime<Utc>) -> StoredCredential {
+    StoredCredential {
+        id: CredentialId(Uuid::new_v4()),
+        name: name.to_string(),
+        service: "svc".to_string(),
+        encrypted_value: vec![1, 2, 3],
+        nonce: vec![4, 5, 6],
+        scopes: vec![],
+        metadata: serde_json::json!({}),
+        created_by: None,
+        created_by_user: None,
+        created_at,
+        updated_at: created_at,
+        allowed_url_pattern: None,
+        expires_at: None,
+        transform_script: None,
+        transform_name: None,
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
+        credential_type: "generic".to_string(),
+        tags: vec![],
+        description: None,
+        target_identity: None,
+        key_version: 1,
+    }
+}
+
+fn conflict_message(err: StoreError) -> String {
+    match err {
+        StoreError::Conflict { message, .. } => message,
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn duplicate_username_is_a_conflict_naming_the_constraint() {
+    let store = setup_store().await;
+    store.create_user(&make_user("dup")).await.expect("first");
+    let err = store
+        .create_user(&make_user("dup"))
+        .await
+        .expect_err("second insert of the same username must fail");
+    let message = conflict_message(err);
+    assert!(message.contains("users.username"), "{message}");
+}
+
+#[tokio::test]
+async fn updating_a_missing_user_is_not_found() {
+    let store = setup_store().await;
+    let err = store
+        .update_user(&make_user("ghost"))
+        .await
+        .expect_err("no such user");
+    assert!(matches!(err, StoreError::NotFound(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn updating_a_missing_workspace_is_not_found() {
+    let store = setup_store().await;
+    let err = store
+        .update_workspace(&make_agent("ghost"))
+        .await
+        .expect_err("no such workspace");
+    assert!(matches!(err, StoreError::NotFound(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn duplicate_credential_id_is_a_conflict() {
+    let store = setup_store().await;
+    let cred = make_credential("twice", Utc::now());
+    store.store_credential(&cred).await.expect("first");
+    let err = store
+        .store_credential(&cred)
+        .await
+        .expect_err("same primary key");
+    let message = conflict_message(err);
+    assert!(message.contains("credentials.id"), "{message}");
+}
+
+#[tokio::test]
+async fn dangling_foreign_key_is_a_conflict() {
+    let store = setup_store().await;
+    let mut cred = make_credential("orphan", Utc::now());
+    cred.created_by_user = Some(crate::domain::user::UserId(Uuid::new_v4()));
+    let err = store
+        .store_credential(&cred)
+        .await
+        .expect_err("created_by_user points at no user");
+    let message = conflict_message(err);
+    assert!(message.contains("FOREIGN KEY"), "{message}");
+}
+
+#[tokio::test]
+async fn duplicate_vault_share_is_a_conflict() {
+    use crate::domain::vault::VaultShare;
+
+    let store = setup_store().await;
+    let owner = crate::domain::user::UserId(Uuid::new_v4());
+    let target = crate::domain::user::UserId(Uuid::new_v4());
+    insert_test_user(&store, &owner).await;
+    insert_test_user(&store, &target).await;
+    let share = |id: &str| VaultShare {
+        id: id.to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        shared_with_user_id: target.clone(),
+        permission_level: "read".to_string(),
+        shared_by_user_id: owner.clone(),
+        created_at: Utc::now(),
+    };
+    store.share_vault(&share("s1")).await.expect("first share");
+    let err = store
+        .share_vault(&share("s2"))
+        .await
+        .expect_err("same vault and user again");
+    let message = conflict_message(err);
+    assert!(message.contains("vault_shares"), "{message}");
+}
+
+// ---------------------------------------------------------------------------
+// Store contracts: timestamps
+//
+// Every write uses one fixed-precision RFC 3339 form so `ORDER BY created_at`
+// is chronological, and reads still accept the free-precision values earlier
+// releases wrote.
+// ---------------------------------------------------------------------------
+
+async fn seed_credential_with_raw_created_at(
+    store: &SqliteStore,
+    name: &str,
+    created_at: &str,
+) -> CredentialId {
+    let id = CredentialId(Uuid::new_v4());
+    let id_str = id.0.hyphenated().to_string();
+    let name = name.to_string();
+    let created_at = created_at.to_string();
     store
-        .store_workspace_jti("future-jti", &ws.id, &future)
+        .conn()
+        .call(move |conn| {
+            conn.execute(
+                "INSERT INTO credentials (id, name, service, encrypted_value, nonce, created_at, updated_at) \
+                 VALUES (?1, ?2, 'svc', X'00', X'00', ?3, ?3)",
+                rusqlite::params![id_str, name, created_at],
+            )?;
+            Ok(())
+        })
         .await
-        .expect("store");
+        .expect("seed credential");
+    id
+}
 
-    let cleaned = store
-        .cleanup_expired_workspace_jtis()
+async fn raw_created_at(store: &SqliteStore, id: &CredentialId) -> String {
+    let id_str = id.0.hyphenated().to_string();
+    store
+        .conn()
+        .call(move |conn| {
+            Ok(conn.query_row(
+                "SELECT created_at FROM credentials WHERE id = ?1",
+                rusqlite::params![id_str],
+                |r| r.get::<_, String>(0),
+            )?)
+        })
         .await
-        .expect("cleanup");
-    assert_eq!(cleaned, 0, "no expired JTIs should be cleaned");
+        .expect("read created_at")
 }
 
 #[tokio::test]
-async fn test_workspace_registration_not_found() {
+async fn timestamps_sort_and_round_trip_across_old_and_new_formats() {
+    use chrono::TimeZone;
+
     let store = setup_store().await;
-    let result = store
-        .get_workspace_registration("nonexistent-pk-hash")
+    let base = Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0).unwrap();
+
+    // Rows written by earlier releases: free precision, "+00:00" offset.
+    let old_zero =
+        seed_credential_with_raw_created_at(&store, "ts", "2026-03-01T12:00:00+00:00").await;
+    let old_nanos =
+        seed_credential_with_raw_created_at(&store, "ts", "2026-03-01T12:00:00.750000000+00:00")
+            .await;
+
+    // A row written by this release, between the two.
+    let new = make_credential("ts", base + chrono::Duration::milliseconds(250));
+    store.store_credential(&new).await.expect("store");
+
+    let written = raw_created_at(&store, &new.id).await;
+    assert_eq!(
+        written, "2026-03-01T12:00:00.250000Z",
+        "writes use fixed microsecond precision with a Z suffix"
+    );
+
+    let rows = store
+        .list_stored_credentials_by_name("ts")
         .await
-        .expect("get nonexistent");
-    assert!(result.is_none());
+        .expect("list ordered by created_at");
+    let ids: Vec<CredentialId> = rows.iter().map(|c| c.id.clone()).collect();
+    assert_eq!(
+        ids,
+        vec![old_zero, new.id.clone(), old_nanos],
+        "ORDER BY created_at is chronological across old and new rows"
+    );
+    assert_eq!(rows[0].created_at, base);
+    assert_eq!(rows[1].created_at, new.created_at);
+    assert_eq!(
+        rows[2].created_at,
+        base + chrono::Duration::milliseconds(750)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Store contracts: atomic multi-step writes
+//
+// Consume-then-mint, archive-then-replace, and delete-then-insert are single
+// store operations in one immediate transaction. A failure in the second
+// step leaves the first invisible; the compare-and-swap of the first step
+// still makes a second caller lose and mint nothing.
+// ---------------------------------------------------------------------------
+
+use crate::oauth2::types::{
+    DeviceCode, DeviceCodeStatus, OAuthAccessToken, OAuthAuthCode, OAuthClient, OAuthRefreshToken,
+};
+use crate::storage::{DeviceCodeStore, OAuthStore};
+
+/// The public bootstrap client seeded by migration 006.
+const BOOTSTRAP_CLIENT: &str = "agentcordon-broker";
+
+async fn exec_raw(store: &SqliteStore, sql: &str) {
+    let sql = sql.to_string();
+    store
+        .conn()
+        .call(move |conn| {
+            conn.execute_batch(&sql)?;
+            Ok(())
+        })
+        .await
+        .expect("raw sql");
+}
+
+async fn count_raw(store: &SqliteStore, sql: &str) -> i64 {
+    let sql = sql.to_string();
+    store
+        .conn()
+        .call(move |conn| Ok(conn.query_row(&sql, [], |r| r.get::<_, i64>(0))?))
+        .await
+        .expect("raw count")
+}
+
+fn token_pair(client_id: &str, suffix: &str) -> (OAuthAccessToken, OAuthRefreshToken) {
+    let now = Utc::now();
+    let user_id = crate::domain::user::UserId(Uuid::new_v4());
+    let access = OAuthAccessToken {
+        token_hash: format!("at-{suffix}"),
+        client_id: client_id.to_string(),
+        user_id: user_id.clone(),
+        scopes: vec![],
+        created_at: now,
+        expires_at: now + chrono::Duration::minutes(15),
+        revoked_at: None,
+    };
+    let refresh = OAuthRefreshToken {
+        token_hash: format!("rt-{suffix}"),
+        client_id: client_id.to_string(),
+        user_id,
+        scopes: vec![],
+        access_token_hash: access.token_hash.clone(),
+        family_id: format!("rt-{suffix}"),
+        created_at: now,
+        expires_at: now + chrono::Duration::days(30),
+        revoked_at: None,
+    };
+    (access, refresh)
+}
+
+async fn approved_device_code(store: &SqliteStore, hash: &str) {
+    let now = Utc::now();
+    store
+        .insert_device_code(&DeviceCode {
+            device_code: hash.to_string(),
+            user_code: format!("uc-{hash}"),
+            client_id: BOOTSTRAP_CLIENT.to_string(),
+            scopes: vec![],
+            status: DeviceCodeStatus::Pending,
+            workspace_name_prefill: None,
+            pk_hash_prefill: None,
+            approved_user_id: None,
+            last_polled_at: None,
+            interval_secs: 5,
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(10),
+        })
+        .await
+        .expect("insert device code");
+    assert!(store
+        .approve_device_code(&format!("uc-{hash}"), "u1")
+        .await
+        .expect("approve"));
+}
+
+async fn device_code_status(store: &SqliteStore, hash: &str) -> DeviceCodeStatus {
+    store
+        .get_device_code_by_device_code(hash)
+        .await
+        .expect("lookup")
+        .expect("row")
+        .status
 }
 
 #[tokio::test]
-async fn test_workspace_registration_replace_on_conflict() {
-    use crate::domain::workspace::WorkspaceRegistration;
+async fn device_code_consume_and_mint_is_all_or_nothing() {
+    let store = setup_store().await;
+    approved_device_code(&store, "dc1").await;
 
+    // The refresh token names a client that does not exist, so its insert
+    // fails on the foreign key after the code was marked consumed.
+    let (access, mut refresh) = token_pair(BOOTSTRAP_CLIENT, "bad");
+    refresh.client_id = "no-such-client".to_string();
+    let err = store
+        .consume_device_code_and_issue_tokens("dc1", &access, &refresh)
+        .await
+        .expect_err("the mint fails");
+    assert!(matches!(err, StoreError::Conflict { .. }), "{err:?}");
+    assert_eq!(
+        device_code_status(&store, "dc1").await,
+        DeviceCodeStatus::Approved
+    );
+    assert_eq!(
+        count_raw(&store, "SELECT COUNT(*) FROM oauth_access_tokens").await,
+        0
+    );
+
+    // The same code then exchanges cleanly.
+    let (access, refresh) = token_pair(BOOTSTRAP_CLIENT, "ok");
+    assert!(store
+        .consume_device_code_and_issue_tokens("dc1", &access, &refresh)
+        .await
+        .expect("consume and mint"));
+    assert_eq!(
+        device_code_status(&store, "dc1").await,
+        DeviceCodeStatus::Consumed
+    );
+    assert!(store
+        .get_oauth_access_token("at-ok")
+        .await
+        .unwrap()
+        .is_some());
+    assert!(store
+        .get_oauth_refresh_token("rt-ok")
+        .await
+        .unwrap()
+        .is_some());
+
+    // A second consume loses the compare-and-swap and mints nothing.
+    let (access, refresh) = token_pair(BOOTSTRAP_CLIENT, "late");
+    assert!(!store
+        .consume_device_code_and_issue_tokens("dc1", &access, &refresh)
+        .await
+        .expect("second consume"));
+    assert_eq!(
+        count_raw(&store, "SELECT COUNT(*) FROM oauth_access_tokens").await,
+        1
+    );
+    assert_eq!(
+        count_raw(&store, "SELECT COUNT(*) FROM oauth_refresh_tokens").await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn auth_code_consume_and_mint_is_all_or_nothing() {
     let store = setup_store().await;
     let now = Utc::now();
-    let expires = now + chrono::Duration::hours(1);
-
-    let reg1 = WorkspaceRegistration {
-        pk_hash: "replace-pk-hash".to_string(),
-        code_challenge: "challenge-1".to_string(),
-        code_hash: "code-hash-1".to_string(),
-        approval_code: Some("ALPHA-111111".to_string()),
-        expires_at: expires,
-        attempts: 0,
-        max_attempts: 3,
-        approved_by: None,
-        created_at: now,
-    };
-
     store
-        .create_workspace_registration(&reg1)
+        .create_oauth_auth_code(&OAuthAuthCode {
+            code_hash: "code-1".to_string(),
+            client_id: BOOTSTRAP_CLIENT.to_string(),
+            user_id: crate::domain::user::UserId(Uuid::new_v4()),
+            redirect_uri: "http://localhost:1/cb".to_string(),
+            scopes: vec![],
+            code_challenge: None,
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(5),
+            consumed_at: None,
+        })
         .await
-        .expect("create first reg");
+        .expect("auth code");
 
-    // Create again with same pk_hash (INSERT OR REPLACE)
-    let reg2 = WorkspaceRegistration {
-        pk_hash: "replace-pk-hash".to_string(),
-        code_challenge: "challenge-2".to_string(),
-        code_hash: "code-hash-2".to_string(),
-        approval_code: Some("BETA-222222".to_string()),
-        expires_at: expires,
-        attempts: 0,
-        max_attempts: 5,
-        approved_by: Some("admin".to_string()),
-        created_at: now,
-    };
-
-    store
-        .create_workspace_registration(&reg2)
+    let (mut access, refresh) = token_pair(BOOTSTRAP_CLIENT, "bad");
+    access.client_id = "no-such-client".to_string();
+    let err = store
+        .consume_oauth_auth_code_and_issue_tokens("code-1", &access, &refresh)
         .await
-        .expect("replace reg");
+        .expect_err("the mint fails");
+    assert!(matches!(err, StoreError::Conflict { .. }), "{err:?}");
+    let code = store.get_oauth_auth_code("code-1").await.unwrap().unwrap();
+    assert!(code.consumed_at.is_none(), "the code is not consumed");
+    assert_eq!(
+        count_raw(&store, "SELECT COUNT(*) FROM oauth_refresh_tokens").await,
+        0
+    );
 
-    // Should have the second registration's data
-    let fetched = store
-        .get_workspace_registration("replace-pk-hash")
+    let (access, refresh) = token_pair(BOOTSTRAP_CLIENT, "ok");
+    assert!(store
+        .consume_oauth_auth_code_and_issue_tokens("code-1", &access, &refresh)
         .await
-        .expect("get")
+        .expect("consume and mint"));
+    let code = store.get_oauth_auth_code("code-1").await.unwrap().unwrap();
+    assert!(code.consumed_at.is_some());
+
+    let (access, refresh) = token_pair(BOOTSTRAP_CLIENT, "late");
+    assert!(!store
+        .consume_oauth_auth_code_and_issue_tokens("code-1", &access, &refresh)
+        .await
+        .expect("second consume"));
+    assert_eq!(
+        count_raw(&store, "SELECT COUNT(*) FROM oauth_access_tokens").await,
+        1
+    );
+}
+
+fn secret_update(
+    value: &[u8],
+    nonce: &[u8],
+    key_version: i64,
+) -> crate::domain::credential::CredentialUpdate {
+    crate::domain::credential::CredentialUpdate {
+        name: None,
+        service: None,
+        scopes: None,
+        metadata: None,
+        allowed_url_pattern: None,
+        expires_at: None,
+        transform_script: None,
+        transform_name: None,
+        vault_id: None,
+        tags: None,
+        description: None,
+        target_identity: None,
+        encrypted_value: Some(value.to_vec()),
+        nonce: Some(nonce.to_vec()),
+        key_version: Some(key_version),
+    }
+}
+
+#[tokio::test]
+async fn secret_rotation_archives_and_replaces_in_one_transaction() {
+    let store = setup_store().await;
+    let mut cred = make_credential("rot", Utc::now());
+    cred.key_version = 3;
+    store.store_credential(&cred).await.expect("store");
+
+    // A write that fails leaves no history row and the old ciphertext.
+    exec_raw(
+        &store,
+        "CREATE TRIGGER fail_update BEFORE UPDATE ON credentials \
+         BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )
+    .await;
+    let err = store
+        .rotate_credential_secret(
+            &cred.id,
+            &secret_update(b"new", b"n2", 4),
+            Some("alice"),
+            None,
+        )
+        .await
+        .expect_err("the write fails");
+    assert!(matches!(err, StoreError::Database(_)), "{err:?}");
+    assert!(store
+        .list_secret_history(&cred.id)
+        .await
+        .unwrap()
+        .is_empty());
+    let unchanged = store.get_credential(&cred.id).await.unwrap().unwrap();
+    assert_eq!(unchanged.encrypted_value, cred.encrypted_value);
+    exec_raw(&store, "DROP TRIGGER fail_update;").await;
+
+    // The rotation archives what the row held, under the row's key version.
+    assert!(store
+        .rotate_credential_secret(
+            &cred.id,
+            &secret_update(b"new", b"n2", 4),
+            Some("alice"),
+            None
+        )
+        .await
+        .expect("rotate"));
+    let history = store.list_secret_history(&cred.id).await.unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].changed_by_user.as_deref(), Some("alice"));
+    let archived = store
+        .get_secret_history_value(&cred.id, &history[0].id.to_string())
+        .await
+        .unwrap()
         .unwrap();
-    assert_eq!(fetched.code_challenge, "challenge-2");
-    assert_eq!(fetched.approval_code, Some("BETA-222222".to_string()));
-    assert_eq!(fetched.max_attempts, 5);
-    assert_eq!(fetched.approved_by, Some("admin".to_string()));
+    assert_eq!(archived.encrypted_value, cred.encrypted_value);
+    assert_eq!(archived.nonce, cred.nonce);
+    assert_eq!(archived.key_version, 3);
+    let rotated = store.get_credential(&cred.id).await.unwrap().unwrap();
+    assert_eq!(rotated.encrypted_value, b"new");
+    assert_eq!(rotated.nonce, b"n2");
+    assert_eq!(rotated.key_version, 4);
+
+    // A credential that does not exist archives nothing.
+    let missing = CredentialId(Uuid::new_v4());
+    assert!(!store
+        .rotate_credential_secret(&missing, &secret_update(b"x", b"y", 1), None, None)
+        .await
+        .expect("no row"));
+    assert_eq!(
+        count_raw(&store, "SELECT COUNT(*) FROM credential_secret_history").await,
+        1
+    );
+
+    // An update without a new ciphertext is refused outright.
+    let mut no_secret = secret_update(b"x", b"y", 1);
+    no_secret.encrypted_value = None;
+    assert!(store
+        .rotate_credential_secret(&cred.id, &no_secret, None, None)
+        .await
+        .is_err());
+}
+
+fn make_client(client_id: &str, pk_hash: &str) -> OAuthClient {
+    OAuthClient {
+        id: Uuid::new_v4(),
+        client_id: client_id.to_string(),
+        client_secret_hash: None,
+        workspace_name: "ws".to_string(),
+        public_key_hash: pk_hash.to_string(),
+        workspace_id: None,
+        redirect_uris: vec![],
+        allowed_scopes: vec![],
+        created_by_user: crate::domain::user::UserId(Uuid::new_v4()),
+        created_at: Utc::now(),
+        revoked_at: None,
+    }
+}
+
+#[tokio::test]
+async fn client_replacement_deletes_and_inserts_in_one_transaction() {
+    let store = setup_store().await;
+    let old = make_client("client-old", "hash-1");
+    store.create_oauth_client(&old).await.expect("old client");
+    let (access, refresh) = token_pair("client-old", "old");
+    store.create_oauth_access_token(&access).await.unwrap();
+    store.create_oauth_refresh_token(&refresh).await.unwrap();
+
+    // A failed insert leaves the old client and its tokens alone.
+    exec_raw(
+        &store,
+        "CREATE TRIGGER fail_insert BEFORE INSERT ON oauth_clients \
+         BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )
+    .await;
+    let err = store
+        .replace_oauth_client(&make_client("client-new", "hash-1"))
+        .await
+        .expect_err("the insert fails");
+    assert!(matches!(err, StoreError::Database(_)), "{err:?}");
+    assert!(store
+        .get_oauth_client_by_client_id("client-old")
+        .await
+        .unwrap()
+        .is_some());
+    assert!(store
+        .get_oauth_access_token("at-old")
+        .await
+        .unwrap()
+        .is_some());
+    exec_raw(&store, "DROP TRIGGER fail_insert;").await;
+
+    // The replacement removes the old client with everything that referred to it.
+    let replaced = store
+        .replace_oauth_client(&make_client("client-new", "hash-1"))
+        .await
+        .expect("replace");
+    assert_eq!(replaced.as_deref(), Some("client-old"));
+    assert!(store
+        .get_oauth_client_by_client_id("client-old")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_oauth_access_token("at-old")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_oauth_refresh_token("rt-old")
+        .await
+        .unwrap()
+        .is_none());
+    let current = store
+        .get_oauth_client_by_public_key_hash("hash-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.client_id, "client-new");
+
+    // With nothing to replace it is a plain insert.
+    let fresh = store
+        .replace_oauth_client(&make_client("client-other", "hash-2"))
+        .await
+        .expect("insert");
+    assert_eq!(fresh, None);
 }

@@ -183,17 +183,6 @@ async fn send_json(
     (status, json)
 }
 
-/// Helper: build MCP proxy request body (JSON-RPC envelope).
-fn mcp_proxy_tools_list(mcp_server: &str) -> Value {
-    json!({
-        "mcp_server": mcp_server,
-        "jsonrpc": "2.0",
-        "method": "tools/list",
-        "params": {},
-        "id": 1
-    })
-}
-
 /// Helper: register an MCP server directly in the store.
 async fn register_mcp_server_in_store(
     store: &(dyn Store + Send + Sync),
@@ -206,7 +195,6 @@ async fn register_mcp_server_in_store(
     let workspace = agent_cordon_core::domain::workspace::Workspace {
         id: agent_cordon_core::domain::workspace::WorkspaceId(Uuid::new_v4()),
         name: format!("test-workspace-{}", name),
-        enabled: true,
         status: agent_cordon_core::domain::workspace::WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -458,50 +446,6 @@ async fn test_mcp_server_delete_not_found() {
 }
 
 // ===========================================================================
-// WS3: MCP Proxy Endpoint — Deprecated (410 Gone)
-// ===========================================================================
-
-// ---------------------------------------------------------------------------
-// 12. MCP proxy — returns 410 Gone deprecation response
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_mcp_proxy_returns_gone() {
-    let ctx = TestAppBuilder::new().with_admin().build().await;
-
-    // Send a valid JSON-RPC request — should get deprecation error regardless
-    let (status, body) = send_json(
-        &ctx.app,
-        Method::POST,
-        "/api/v1/mcp/proxy",
-        None,
-        None,
-        None,
-        Some(mcp_proxy_tools_list("any-server")),
-    )
-    .await;
-
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "deprecated proxy returns 200 with JSON-RPC error: {}",
-        body
-    );
-    assert_eq!(body["jsonrpc"], "2.0");
-    assert!(body["error"].is_object(), "should have JSON-RPC error");
-    assert_eq!(
-        body["error"]["code"], -32099,
-        "should be deprecation error code -32099"
-    );
-    let msg = body["error"]["message"].as_str().unwrap_or("");
-    assert!(
-        msg.contains("moved to the device"),
-        "error message should mention device migration: {}",
-        msg
-    );
-}
-
-// ===========================================================================
 // WS2: Cedar Policy Tests
 // ===========================================================================
 
@@ -537,7 +481,7 @@ async fn test_cedar_mcp_tool_call_admin_allowed() {
             claim_keys::TOOL_NAME,
             serde_json::json!(Some("create_issue".to_string())),
         )
-        .check_with_reasons_blocking(
+        .check_with_reasons(
             "mcp_tool_call",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
@@ -547,6 +491,7 @@ async fn test_cedar_mcp_tool_call_admin_allowed() {
                 owner: None,
             },
         )
+        .await
         .expect("policy evaluation should succeed");
 
     assert_eq!(
@@ -585,7 +530,7 @@ async fn test_cedar_mcp_tool_call_non_admin_allowed() {
             claim_keys::TOOL_NAME,
             serde_json::json!(Some("create_issue".to_string())),
         )
-        .check_with_reasons_blocking(
+        .check_with_reasons(
             "mcp_tool_call",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
@@ -595,6 +540,7 @@ async fn test_cedar_mcp_tool_call_non_admin_allowed() {
                 owner: Some(owner_id),
             },
         )
+        .await
         .expect("policy evaluation should succeed");
 
     assert_eq!(
@@ -633,7 +579,7 @@ async fn test_cedar_mcp_list_tools_enabled_agent_allowed() {
             },
             &uuid::Uuid::new_v4().to_string(),
         )
-        .check_with_reasons_blocking(
+        .check_with_reasons(
             "mcp_list_tools",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
@@ -643,6 +589,7 @@ async fn test_cedar_mcp_list_tools_enabled_agent_allowed() {
                 owner: Some(owner_id),
             },
         )
+        .await
         .expect("policy evaluation should succeed");
 
     assert_eq!(
@@ -741,7 +688,7 @@ async fn test_cedar_mcp_tool_call_disabled_server_forbidden() {
             claim_keys::TOOL_NAME,
             serde_json::json!(Some("create_issue".to_string())),
         )
-        .check_with_reasons_blocking(
+        .check_with_reasons(
             "mcp_tool_call",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
@@ -751,6 +698,7 @@ async fn test_cedar_mcp_tool_call_disabled_server_forbidden() {
                 owner: None,
             },
         )
+        .await
         .expect("policy evaluation should succeed");
 
     assert_eq!(
@@ -782,7 +730,7 @@ async fn test_cedar_mcp_list_tools_disabled_server_forbidden() {
             },
             &uuid::Uuid::new_v4().to_string(),
         )
-        .check_with_reasons_blocking(
+        .check_with_reasons(
             "mcp_list_tools",
             &PolicyResource::McpServer {
                 id: Uuid::new_v4().to_string(),
@@ -792,6 +740,7 @@ async fn test_cedar_mcp_list_tools_disabled_server_forbidden() {
                 owner: None,
             },
         )
+        .await
         .expect("policy evaluation should succeed");
 
     assert_eq!(

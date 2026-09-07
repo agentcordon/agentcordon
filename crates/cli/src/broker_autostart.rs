@@ -26,10 +26,10 @@ use crate::platform;
 /// `server_url` if none is already running. Returns the broker's base URL
 /// on success.
 pub(crate) async fn ensure_broker_running(server_url: &str) -> Result<String, CliError> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-        .map_err(|e| CliError::general(format!("failed to create HTTP client: {e}")))?;
+    // The same client the rest of the CLI uses, so an https broker named by
+    // AGTCRDN_BROKER_URL is trusted here too (AGTCRDN_BROKER_CA) rather than
+    // looking dead and provoking a second broker.
+    let client = crate::broker::http_client(std::time::Duration::from_secs(2))?;
 
     // Try existing broker via env var or port file
     if let Ok(url) = discover_existing_broker(&client).await {
@@ -77,9 +77,12 @@ pub(crate) async fn ensure_broker_running(server_url: &str) -> Result<String, Cl
 
 /// Try to discover an already-running broker.
 async fn discover_existing_broker(client: &reqwest::Client) -> Result<String, CliError> {
-    // 1. Environment override
-    if let Ok(url) = std::env::var("AGTCRDN_BROKER_URL") {
-        let url = url.trim_end_matches('/').to_string();
+    // 1. Environment override. The URL rule (loopback or https) is applied
+    //    before any request goes out; an invalid value is an error, not a
+    //    fall-through to the port file, so a typo cannot silently start a
+    //    second broker.
+    if let Ok(url) = std::env::var(crate::broker::BROKER_URL_ENV) {
+        let url = crate::broker::validate_broker_url(&url)?;
         if client.get(format!("{url}/health")).send().await.is_ok() {
             return Ok(url);
         }
@@ -88,8 +91,7 @@ async fn discover_existing_broker(client: &reqwest::Client) -> Result<String, Cl
     // 2. Port file
     let port_path = broker_port_path()?;
     if let Ok(port_str) = std::fs::read_to_string(&port_path) {
-        if let Ok(port) = port_str.trim().parse::<u16>() {
-            let url = format!("http://localhost:{port}");
+        if let Ok(url) = crate::broker::broker_url_from_port_file(&port_str) {
             if client.get(format!("{url}/health")).send().await.is_ok() {
                 return Ok(url);
             }

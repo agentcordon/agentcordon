@@ -1,7 +1,9 @@
 //! v1.10.0 — Policy Tester Integration Tests (Feature 7).
 //!
 //! Verifies the policy tester API endpoint (POST /api/v1/policies/test)
-//! and the tester UI elements on the policy detail page.
+//! and the tester UI elements on the tester page. The inline tester the
+//! policy detail page used to carry merged into that page
+//! (uat/artifacts/reviews/DESIGN-REVIEW.md §1.11); the detail page now links to it.
 
 use crate::common;
 
@@ -299,34 +301,45 @@ async fn test_policy_tester_missing_fields() {
 // 7B. Policy Tester UI Elements
 // ===========================================================================
 
-/// The policy detail page should have the policy tester section.
+/// The tester page carries the tester, and the policy detail page carries the
+/// way to it — prefilled with the policy being read.
 #[tokio::test]
 async fn test_policy_detail_has_tester_ui() {
     let (ctx, cookie) = setup().await;
     let policy_id = create_test_policy(&ctx.app, &cookie, "tester-ui-test", SIMPLE_PERMIT).await;
 
     let (status, body) = get_html(&ctx.app, &format!("/security/{}", policy_id), &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("'/security/tester?policy=' + policy.id"),
+        "the policy detail page links to the one tester, prefilled"
+    );
+    assert!(
+        body.contains("Test this policy"),
+        "and says what the link opens"
+    );
 
+    let (status, body) = get_html(&ctx.app, "/security/tester", &cookie).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.contains("Policy Tester"),
-        "policy detail page should contain the 'Policy Tester' section"
+        "the tester page is the 'Policy Tester'"
     );
     assert!(
-        body.contains("test-principal-type"),
-        "policy detail should have principal type selector"
+        body.contains("tester-principal"),
+        "the tester has a principal selector"
     );
     assert!(
-        body.contains("test-action"),
-        "policy detail should have action input"
+        body.contains("tester-action"),
+        "the tester has an action selector"
     );
     assert!(
-        body.contains("test-resource-type"),
-        "policy detail should have resource type selector"
+        body.contains("tester-resource"),
+        "the tester has a resource selector"
     );
     assert!(
-        body.contains("Test Policy"),
-        "policy detail should have 'Test Policy' button"
+        body.contains("testing ? 'Testing...' : 'Test'"),
+        "the tester has a 'Test' button"
     );
 }
 
@@ -337,17 +350,17 @@ async fn test_policy_tester_principal_options() {
     let policy_id =
         create_test_policy(&ctx.app, &cookie, "tester-options-test", SIMPLE_PERMIT).await;
 
-    let (status, body) = get_html(&ctx.app, &format!("/security/{}", policy_id), &cookie).await;
+    let _ = policy_id;
+    let (status, body) = get_html(&ctx.app, "/security/tester", &cookie).await;
 
     assert_eq!(status, StatusCode::OK);
     // Check for principal type options (v2.0: Device removed, Workspace/Agent unified)
-    let has_agent_or_workspace =
-        body.contains(r#"value="Agent"#) || body.contains(r#"value="Workspace"#);
+    let has_agent_or_workspace = body.contains(r#"'Agent:'"#) || body.contains(r#"'Workspace:'"#);
     assert!(
         has_agent_or_workspace,
         "should have Agent or Workspace option"
     );
-    assert!(body.contains(r#"value="User"#), "should have User option");
+    assert!(body.contains(r#"'User:'"#), "should have User option");
     // Check for resource type options
     assert!(
         body.contains(r#"value="Credential"#),

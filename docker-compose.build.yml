@@ -1,20 +1,32 @@
 # AgentCordon — Build from Source
 #
-# Usage:
-#   docker compose -f docker-compose.build.yml up --build -d
+# Usage (from a clone of this repository):
+#   docker compose -f docker-compose.build.yml up -d --build
 #
-# Same zero-config experience as production, but builds the image
-# locally from the Dockerfile instead of pulling from the registry.
+# Same zero-config experience as docker-compose.yml, but builds the image
+# locally from this tree's Dockerfile instead of pulling from the registry.
+# Use this whenever the published image does not match the tree you are on.
+#
+# Needs Docker with the Compose plugin (`docker compose version`). Without it,
+# `docker build -t agentcordon:local .` plus the `docker run` form in
+# README.md § Quick Start (c) or § "Production deployment" does the same job --
+# both spell out this same build-then-run recipe.
 #
 # No .env required — the server auto-generates secrets on first run.
 # Optionally create a .env to override port, admin credentials, etc.
+#
+# Container and volume names come from the Compose project name, which
+# defaults to this directory's name. To run two independent stacks on one
+# host, give each its own project name and host port:
+#
+#   COMPOSE_PROJECT_NAME=agentcordon-dev AGTCRDN_PORT=3141 \
+#     docker compose -f docker-compose.build.yml up -d --build
 
 services:
   agentcordon:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: agentcordon
     ports:
       - "${AGTCRDN_PORT:-3140}:3140"
     volumes:

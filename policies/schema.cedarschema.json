@@ -363,6 +363,20 @@
           }
         }
       },
+      "manage_oauth_provider_clients": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["System"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "timestamp": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      },
       "manage_vaults": {
         "appliesTo": {
           "principalTypes": ["User"],
@@ -394,7 +408,7 @@
       "manage_mcp_servers": {
         "appliesTo": {
           "principalTypes": ["User"],
-          "resourceTypes": ["System"],
+          "resourceTypes": ["McpServer", "System"],
           "context": {
             "type": "Record",
             "attributes": {

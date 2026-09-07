@@ -18,23 +18,37 @@ use axum::http::{Method, StatusCode};
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, String) {
-    let ctx = TestAppBuilder::new()
-        .with_config(|c| {
-            c.seed_demo = true;
-        })
-        .with_admin()
-        .build()
-        .await;
+/// A disabled forbid policy the tests switch on to watch RSoP change.
+const READ_ONLY_WORKSPACES_POLICY: &str = r#"// Read-only: prevent workspaces from modifying or deleting credentials.
+forbid(
+    principal is AgentCordon::Workspace,
+    action in [
+        AgentCordon::Action::"update",
+        AgentCordon::Action::"delete",
+        AgentCordon::Action::"create"
+    ],
+    resource is AgentCordon::Credential
+);"#;
 
-    agent_cordon_server::seed::seed_demo_data(
-        &ctx.store,
-        &ctx.encryptor,
-        &ctx.state.config,
-        &ctx.jwt_issuer,
-    )
-    .await
-    .expect("seed example policies");
+async fn setup() -> (agent_cordon_server::test_helpers::TestContext, String) {
+    use agent_cordon_core::domain::policy::{PolicyId, StoredPolicy};
+
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+
+    let now = chrono::Utc::now();
+    ctx.store
+        .store_policy(&StoredPolicy {
+            id: PolicyId(uuid::Uuid::new_v4()),
+            name: "Read-Only Workspaces".to_string(),
+            description: Some("Prevents workspaces from modifying credentials.".to_string()),
+            cedar_policy: READ_ONLY_WORKSPACES_POLICY.to_string(),
+            enabled: false,
+            is_system: false,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("store the disabled read-only policy");
 
     // Use root user so Cedar owner-scoping doesn't hide credentials.
     let _user = common::create_user_in_db(
@@ -96,7 +110,7 @@ async fn get_first_credential_id(
 
 #[tokio::test]
 async fn test_enabling_curated_policy_changes_rsop() {
-    let (ctx, cookie) = setup_with_seed().await;
+    let (ctx, cookie) = setup().await;
     let cred_id = get_first_credential_id(&ctx, &cookie).await;
 
     // Create a non-admin agent
@@ -117,7 +131,7 @@ async fn test_enabling_curated_policy_changes_rsop() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Find and enable the "Read-Only Agents" curated policy
+    // Find and enable the disabled read-only policy
     let (_, policies_body) = common::send_json_auto_csrf(
         &ctx.app,
         Method::GET,
@@ -197,7 +211,7 @@ async fn test_enabling_curated_policy_changes_rsop() {
 
 #[tokio::test]
 async fn test_vend_credential_consistency_across_features() {
-    let (ctx, cookie) = setup_with_seed().await;
+    let (ctx, cookie) = setup().await;
 
     // 1. Check schema
     let (status, schema_body) = common::send_json_auto_csrf(
@@ -248,7 +262,7 @@ async fn test_vend_credential_consistency_across_features() {
 
 #[tokio::test]
 async fn test_policy_test_and_rsop_agree() {
-    let (ctx, cookie) = setup_with_seed().await;
+    let (ctx, cookie) = setup().await;
     let cred_id = get_first_credential_id(&ctx, &cookie).await;
 
     // Get RSoP result for the credential
@@ -324,7 +338,7 @@ async fn test_policy_test_and_rsop_agree() {
 
 #[tokio::test]
 async fn test_full_policy_lifecycle() {
-    let (ctx, cookie) = setup_with_seed().await;
+    let (ctx, cookie) = setup().await;
     let cred_id = get_first_credential_id(&ctx, &cookie).await;
 
     // 1. Create a new policy
@@ -425,7 +439,7 @@ async fn test_full_policy_lifecycle() {
 
 #[tokio::test]
 async fn test_schema_and_validation_consistent() {
-    let (ctx, cookie) = setup_with_seed().await;
+    let (ctx, cookie) = setup().await;
 
     // Get schema
     let (status, schema_body) = common::send_json_auto_csrf(
@@ -498,7 +512,7 @@ async fn test_schema_and_validation_consistent() {
 
 #[tokio::test]
 async fn test_error_format_consistency_across_features() {
-    let (ctx, cookie) = setup_with_seed().await;
+    let (ctx, cookie) = setup().await;
 
     // Policy not found
     let (_, policy_404) = common::send_json_auto_csrf(

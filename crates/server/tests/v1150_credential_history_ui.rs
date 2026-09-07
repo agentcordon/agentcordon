@@ -236,6 +236,67 @@ async fn test_secret_history_restore() {
     );
 }
 
+/// A history entry belongs to one credential. Restoring another credential's
+/// entry onto this one would splice in ciphertext encrypted under a
+/// different associated-data value and leave this credential undecryptable.
+#[tokio::test]
+async fn restore_refuses_another_credentials_history_entry() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, csrf) = login_user(&ctx.app, "admin", TEST_PASSWORD).await;
+    let full_cookie = combined_cookie(&cookie, &csrf);
+
+    let target = create_test_credential(&ctx, &full_cookie, &csrf, "target-cred", "t-1").await;
+    let other = create_test_credential(&ctx, &full_cookie, &csrf, "other-cred", "o-1").await;
+    rotate_secret(&ctx, &full_cookie, &csrf, &other, "o-2").await;
+
+    let (_, body) = send_json(
+        &ctx.app,
+        Method::GET,
+        &format!("/api/v1/credentials/{}/secret-history", other),
+        None,
+        Some(&full_cookie),
+        None,
+        None,
+    )
+    .await;
+    let other_history_id = body["data"][0]["id"]
+        .as_str()
+        .expect("other's entry")
+        .to_string();
+
+    let (status, _) = send_json(
+        &ctx.app,
+        Method::POST,
+        &format!(
+            "/api/v1/credentials/{}/secret-history/{}/restore",
+            target, other_history_id
+        ),
+        None,
+        Some(&full_cookie),
+        Some(&csrf),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "entry is not the target's");
+
+    let (_, body) = send_json(
+        &ctx.app,
+        Method::GET,
+        &format!("/api/v1/credentials/{}/secret-history", target),
+        None,
+        Some(&full_cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        body["data"].as_array().map(|a| a.len()),
+        Some(0),
+        "no restore snapshot was written for the target"
+    );
+}
+
 /// Test #4: History timestamp correlates with audit event timestamp.
 #[tokio::test]
 async fn test_history_includes_audit_correlation() {
@@ -668,5 +729,50 @@ async fn test_restore_creates_audit_event() {
             .as_str()
             .is_some(),
         "audit event metadata should include restored_from_history_id"
+    );
+}
+
+// ===========================================================================
+// 9E. The row names who rotated the secret (uat/artifacts/reviews/UI-REVIEW-live.md M10)
+// ===========================================================================
+
+/// A rotation row carried `changed_by_user`, which is a UUID, and nothing a
+/// reader could recognise: the History tab showed "-" under Changed By while
+/// the audit table under it named the actor. The response resolves the id the
+/// same way `owner_username` is resolved on a credential — display name, else
+/// username — and a workspace-authored rotation names the workspace.
+#[tokio::test]
+async fn secret_history_names_the_user_who_rotated_the_secret() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let _admin = create_test_user(&*ctx.store, "rotator", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, csrf) = login_user(&ctx.app, "rotator", TEST_PASSWORD).await;
+    let full_cookie = combined_cookie(&cookie, &csrf);
+
+    let cred_id = create_test_credential(&ctx, &full_cookie, &csrf, "who-rotated", "v1").await;
+    rotate_secret(&ctx, &full_cookie, &csrf, &cred_id, "v2").await;
+
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::GET,
+        &format!("/api/v1/credentials/{}/secret-history", cred_id),
+        None,
+        Some(&full_cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "list history: {}", body);
+
+    let entry = &body["data"][0];
+    assert!(
+        entry.get("changed_at").and_then(|v| v.as_str()).is_some(),
+        "the row carries the date it was rotated: {entry}"
+    );
+    // `create_test_user` gives every user a display name; the response prefers
+    // it over the username, the same way `owner_username` does.
+    assert_eq!(
+        entry.get("changed_by_name").and_then(|v| v.as_str()),
+        Some("Test rotator"),
+        "the row names the actor, not their UUID: {entry}"
     );
 }

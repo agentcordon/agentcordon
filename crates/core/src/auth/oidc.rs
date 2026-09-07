@@ -113,6 +113,7 @@ impl OidcClient {
     pub fn new() -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
+            .user_agent(crate::user_agent_for("oidc"))
             .build()
             .expect("failed to build HTTP client");
 

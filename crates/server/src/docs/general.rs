@@ -128,50 +128,6 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     });
 
     // -----------------------------------------------------------------------
-    // Device SSE Events
-    // -----------------------------------------------------------------------
-    endpoints.push(EndpointDoc {
-        method: "GET".to_string(),
-        path: "/api/v1/devices/events".to_string(),
-        description: "SSE event stream for device push notifications. Authenticated via device JWT. Streams events relevant to the authenticated device. Events include: mcp_config_changed, agent_status_changed, credential_rotated, workspace_revoked, policy_changed, permission_changed. The policy_changed event is emitted when a Cedar policy is created, updated, or deleted, enabling devices to immediately re-sync their policy set. The permission_changed event is emitted when a credential permission is granted, revoked, or set for an agent.".to_string(),
-        auth_required: true,
-        request_body: None,
-        response_body: Some(json!({
-            "type": "text/event-stream",
-            "description": "Server-Sent Events stream",
-            "event_types": {
-                "mcp_config_changed": {
-                    "description": "MCP server configuration created/updated/deleted",
-                    "payload": { "device_id": "uuid|null", "server_name": "string" }
-                },
-                "agent_status_changed": {
-                    "description": "Agent enabled/disabled",
-                    "payload": { "device_id": "uuid", "agent_id": "uuid" }
-                },
-                "credential_rotated": {
-                    "description": "Credential secret rotated",
-                    "payload": { "credential_name": "string" }
-                },
-                "workspace_revoked": {
-                    "description": "Workspace identity revoked",
-                    "payload": { "workspace_identity_id": "uuid", "pk_hash": "string" }
-                },
-                "policy_changed": {
-                    "description": "Cedar policy created/updated/deleted — triggers immediate sync_policies() on device",
-                    "payload": { "policy_name": "string" }
-                },
-                "permission_changed": {
-                    "description": "Credential permission granted/revoked/set for an agent — triggers permission cache invalidation on device",
-                    "payload": { "agent_id": "uuid" }
-                }
-            }
-        })),
-        query_params: None,
-        path_params: None,
-        error_codes: vec!["unauthorized".to_string()],
-    });
-
-    // -----------------------------------------------------------------------
     // Docs (self-referential)
     // -----------------------------------------------------------------------
     endpoints.push(EndpointDoc {

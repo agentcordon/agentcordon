@@ -75,7 +75,7 @@ impl<S: Store + ?Sized> PasswordAuthenticator<S> {
     }
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::password::hash_password;

@@ -24,7 +24,7 @@ pub use oauth_provider_client_store::OAuthProviderClientStore;
 pub use oauth_store::{ConsentRevocationCounts, OAuthStore};
 pub use oidc_store::OidcStore;
 pub use policy_store::PolicyStore;
-pub use secret_history_store::SecretHistoryStore;
+pub use secret_history_store::{SecretHistoryCiphertext, SecretHistoryStore};
 pub use session_store::SessionStore;
 pub use user_store::UserStore;
 pub use vault_store::VaultStore;

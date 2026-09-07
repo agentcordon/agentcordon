@@ -29,9 +29,10 @@
     },
     {
       "key": "aws_service",
-      "label": "Service",
+      "label": "AWS service",
       "placeholder": "s3",
-      "mono": true
+      "mono": true,
+      "help": "The AWS service the signature is scoped to (e.g. s3, execute-api). Not the credential's own Service above. Optional."
     }
   ],
   "description": "Default fields for a blank AWS credential.",

@@ -7,27 +7,62 @@
     <meta name="description" content="AgentCordon: self-hostable identity provider for AI agents. Encrypted credential vault, Cedar policy engine, credential proxy, and full audit trail.">
     <meta name="robots" content="noindex, nofollow">
     <link rel="icon" href="/img/favicon.svg" type="image/svg+xml">
+    <!-- The UI face, self-hosted. Preloaded because the browser would
+         otherwise only discover it after parsing vault.css, which costs a
+         round trip and a visible swap. `crossorigin` is required on a font
+         preload even same-origin, or it is fetched twice. -->
+    <link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="/css/vault.css">
     <script>
-    /* Theme initialization — runs before paint to prevent FOUC */
+    /*
+     * Theme resolution — runs before paint to prevent FOUC.
+     *
+     * `data-theme` is always stamped, with the *resolved* theme: the reader's
+     * stored choice if they have made one, otherwise what the OS reports. The
+     * stylesheet therefore needs one dark palette, selected by
+     * `[data-theme="dark"]`, instead of the two verbatim copies it used to
+     * carry — one for the toggle and one under `prefers-color-scheme` — which
+     * had already drifted into applying a dark-only highlight to light-mode
+     * readers (uat/artifacts/reviews/UI-REVIEW-static.md C2).
+     *
+     * A reader who has not chosen still follows the OS live, through the
+     * listener below.
+     */
     (function() {
-        var stored = localStorage.getItem('agentcordon-theme');
-        if (stored === 'dark' || stored === 'light') {
-            document.documentElement.setAttribute('data-theme', stored);
+        var mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+        function stored() {
+            var v = localStorage.getItem('agentcordon-theme');
+            return (v === 'dark' || v === 'light') ? v : null;
+        }
+        function resolve() {
+            return stored() || ((mq && mq.matches) ? 'dark' : 'light');
+        }
+        document.documentElement.setAttribute('data-theme', resolve());
+        if (mq && mq.addEventListener) {
+            mq.addEventListener('change', function() {
+                if (stored()) return; // an explicit choice wins over the OS
+                var next = resolve();
+                document.documentElement.setAttribute('data-theme', next);
+                if (window.Alpine && Alpine.store('theme')) {
+                    Alpine.store('theme').current = next;
+                }
+            });
         }
     })();
     </script>
+    <!--
+      Shared UI primitives — AC.confirm / AC.modal / AC.fetch / AC.reportError /
+      AC.toast. Loaded synchronously and before everything else so an Alpine
+      `x-init` or an inline handler can call it during first paint. It also
+      defines the legacy globals `showToast` and `reportApiError`.
+    -->
+    <script src="/js/ac.js"></script>
     <script>
     function getCsrfToken() {
-        var match = document.cookie.match(/agtcrdn_csrf=([^;]+)/);
-        return match ? match[1] : '';
+        return AC.csrfToken();
     }
 
     /* === Shared UI Utilities === */
-
-    function showToast(message, type) {
-        window.dispatchEvent(new CustomEvent('toast', { detail: { message: message || 'Something happened', type: type || 'info' } }));
-    }
 
     function formatDateTime(ts) {
         if (!ts) return '';
@@ -54,31 +89,222 @@
         return status.charAt(0).toUpperCase() + status.slice(1);
     }
 
+    /*
+     * Credential types are named the same everywhere: the docs, the CLI
+     * (`agentcordon credentials`), the API's `credential_type` and these
+     * screens all say `api_key_header`. The UI used to invent its own words
+     * for them — `generic` was shown as "API Key" directly above the two
+     * types that really are API keys — so a reader told to pick a type had
+     * to guess which entry was meant. The name is the label; the gloss is a
+     * hint beside it, never a replacement for it.
+     */
+    var CREDENTIAL_TYPE_GLOSS = {
+        generic: 'bearer token or any secret',
+        aws: 'SigV4',
+        api_key_header: 'custom header',
+        api_key_query: 'query parameter',
+        oauth2_client_credentials: 'application',
+        oauth2_user_authorization: 'delegated'
+    };
+
     function credTypeLabel(type) {
-        var labels = { generic: 'API Key', aws: 'AWS', oauth2_client_credentials: 'OAuth2', api_key: 'API Key', password: 'Password', certificate: 'Certificate', ssh_key: 'SSH Key', other: 'Other' };
-        return labels[type] || type || 'Unknown';
+        return type || 'unknown';
     }
 
+    function credTypeGloss(type) {
+        return CREDENTIAL_TYPE_GLOSS[type] || '';
+    }
+
+    /** "api_key_header — custom header": the form of the name used in a picker. */
+    function credTypeOptionLabel(type) {
+        var gloss = credTypeGloss(type);
+        return gloss ? type + ' — ' + gloss : type;
+    }
+
+    /*
+     * The type as a list has to show it.
+     *
+     * `generic` is not one injection: a bearer token and a basic-auth pair are
+     * both `generic`, and the transform is the only thing that tells them
+     * apart. A list that prints the type alone prints the same word for two
+     * different credentials, and the reader has to open each one to find out
+     * which is which (uat/artifacts/fresh-user-native-2.md, UI impressions 2).
+     * Every other type fixes its transform, so only `generic` names one.
+     */
+    function credTypeWithTransform(cred) {
+        var type = (cred && cred.credential_type) || 'generic';
+        if (type !== 'generic') return credTypeLabel(type);
+        var transform = (cred && cred.transform_name) || 'bearer';
+        return credTypeLabel(type) + ' · ' + transform;
+    }
+
+    /*
+     * "just now" / "3m ago" / "2d ago", falling back to the absolute time once
+     * a week has passed. The audit log has always read this way; the dashboard
+     * printed `9/6/2026 12:38:32 PM` for the same rows and spent a phone's
+     * whole Timestamp column on it (uat/artifacts/fresh-user-native-2.md F15).
+     * One helper, so the two screens cannot drift again. Callers pair it with
+     * `:title="formatDateTime(...)"` so the exact time is one hover away.
+     */
+    function timeAgo(ts) {
+        if (!ts) return '';
+        var diff = Math.max(0, Math.floor((Date.now() - new Date(ts).getTime()) / 1000));
+        if (diff < 60) return 'just now';
+        if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+        if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+        if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
+        return formatDateTime(ts);
+    }
+
+    /*
+     * Arrow-key navigation for a tab bar, bound once per bar as
+     * `@keydown="acTabKeydown($event)"`.
+     *
+     * The bar is a tablist and each button a tab with a roving `tabindex`, so
+     * Tab reaches the bar once and the arrows move within it. Activation
+     * follows focus, which is the right form when every panel is already in
+     * the page.
+     */
+    function acTabKeydown(ev) {
+        var step = { ArrowLeft: -1, ArrowRight: 1, Home: 'first', End: 'last' }[ev.key];
+        if (step === undefined) return;
+        var bar = ev.currentTarget || (ev.target && ev.target.closest('[role="tablist"]'));
+        if (!bar) return;
+        var tabs = Array.prototype.slice.call(bar.querySelectorAll('[role=tab]'));
+        if (tabs.length === 0) return;
+        var at = tabs.indexOf(document.activeElement);
+        if (at < 0) {
+            at = 0;
+            for (var i = 0; i < tabs.length; i++) {
+                if (tabs[i].getAttribute('aria-selected') === 'true') at = i;
+            }
+        }
+        var next = step === 'first' ? 0
+            : step === 'last' ? tabs.length - 1
+            : (at + step + tabs.length) % tabs.length;
+        ev.preventDefault();
+        tabs[next].focus();
+        tabs[next].click();
+    }
+
+    /*
+     * Put the reader in front of the input a rejected save named.
+     *
+     * The messages this product writes are good; the placement was not — a
+     * refused save left the page looking unchanged, and the reader had to go
+     * looking for the reason (uat/artifacts/fresh-user-docker-2.md, UI
+     * impressions 1). The toast still fires; this scrolls the field into view
+     * and focuses it so the marked input is what the caret is in.
+     */
+    function focusFieldError(id) {
+        requestAnimationFrame(function() {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            if (el.focus) el.focus({ preventScroll: true });
+        });
+    }
+
+    /* ======================================================================
+     * BEGIN audit-event vocabulary — one label and one principal per event
+     *
+     * The Dashboard and the Audit page ran `eventTypeLabel`; the four History
+     * tabs printed the raw wire name, so the same row read "Credential Vended"
+     * on one screen and `credential_secret_rotated` on the next
+     * (uat/artifacts/reviews/UI-REVIEW-live.md m1). And the Dashboard derived a row's principal
+     * as `user_name || workspace_name` while Audit used the reverse, so one
+     * event named two different actors (uat/artifacts/reviews/UI-REVIEW-static.md B4).
+     *
+     * Both live here, and `crates/server/tests/admin_ui_controls.rs` fails any
+     * template that shows an event type raw or re-derives a principal inline.
+     * ==================================================================== */
+
+    /* Wire names that do not Title-Case into the words an operator uses. */
+    var EVENT_TYPE_LABELS = {
+        'user_login_success': 'Login',
+        'user_login_failed': 'Login Failed',
+        'credential_vend_denied': 'Vend Denied',
+        'credential_secret_viewed': 'Secret Revealed',
+        'credential_secret_rotated': 'Secret Rotated',
+        'credential_secret_restored': 'Secret Restored',
+        'mcp_tool_called': 'MCP Tool Call',
+        'mcp_tool_call_denied': 'MCP Tool Denied',
+        'workspace_auth_failed': 'Workspace Auth Failed'
+    };
+
+    /* Acronyms the generic Title-Case pass would spell "Mcp" or "Oauth". */
+    var EVENT_WORD_CASING = {
+        'mcp': 'MCP', 'oauth': 'OAuth', 'oauth2': 'OAuth2', 'oidc': 'OIDC',
+        'sse': 'SSE', 'url': 'URL', 'api': 'API', 'aws': 'AWS', 'csrf': 'CSRF',
+        'llm': 'LLM', 'id': 'ID', 'rsop': 'RSoP'
+    };
+
     function eventTypeLabel(type) {
-        var labels = {
-            'user_login_success': 'Login',
-            'user_login_failed': 'Login Failed',
-            'user_created': 'User Created',
-            'credential_created': 'Credential Created',
-            'credential_updated': 'Credential Updated',
-            'credential_deleted': 'Credential Deleted',
-            'credential_vended': 'Credential Vended',
-            'credential_vend_denied': 'Vend Denied',
-            'policy_changed': 'Policy Changed',
-            'workspace_registered': 'Workspace Registered',
-            'workspace_updated': 'Workspace Updated',
-            'workspace_deleted': 'Workspace Deleted',
-            'mcp_tool_call': 'MCP Tool Call',
-            'mcp_tool_denied': 'MCP Tool Denied',
+        if (!type) return '';
+        if (EVENT_TYPE_LABELS[type]) return EVENT_TYPE_LABELS[type];
+        return String(type).split('_').map(function(word) {
+            if (EVENT_WORD_CASING[word]) return EVENT_WORD_CASING[word];
+            return word.charAt(0).toUpperCase() + word.slice(1);
+        }).join(' ');
+    }
+
+    /*
+     * Who did this. An audit row carries a workspace, a user, or neither: the
+     * workspace is the acting principal whenever there is one (a vend the
+     * broker made on an agent's behalf names the agent, not the human who
+     * happens to own the credential), the user is the principal for anything
+     * done in this admin UI, and a row with neither was written by the server
+     * itself.
+     */
+    function eventPrincipal(ev) {
+        if (!ev) return 'system';
+        return ev.workspace_name || ev.user_name || 'system';
+    }
+    /* END audit-event vocabulary */
+
+    /* ======================================================================
+     * The one overflow menu.
+     *
+     * Every page header used to line Delete up beside Edit, eight pixels
+     * apart, and a workspace header carried three buttons of which two were
+     * red (uat/artifacts/reviews/DESIGN-REVIEW.md §2.1). Destructive actions move behind a `⋯`
+     * button, and that button is this component wherever it appears: it says
+     * it opens a menu, it reports whether the menu is open, and while it is
+     * open it holds the keyboard through the same `AC.modal` handle every
+     * dialog in the product uses — Tab confined to the menu, Escape to leave,
+     * focus handed back to the trigger.
+     * ==================================================================== */
+    function acOverflowMenu() {
+        return {
+            open: false,
+            _trap: null,
+            toggle() {
+                if (this.open) { this.close(); } else { this.openMenu(); }
+            },
+            openMenu() {
+                this.open = true;
+                this.$nextTick(() => {
+                    var el = this.$refs.acMenu;
+                    if (!el) return;
+                    this._trap = AC.modal(el, { onEscape: () => this.close() });
+                });
+            },
+            close() {
+                if (!this.open) return;
+                this.open = false;
+                this.releaseTrap();
+            },
+            releaseTrap() {
+                if (!this._trap) return;
+                this._trap.release();
+                this._trap = null;
+            },
+            /* Alpine calls this when the tree is torn down; a menu that is
+               destroyed while open would otherwise leave the page inert. */
+            destroy() {
+                this.releaseTrap();
+            }
         };
-        if (labels[type]) return labels[type];
-        // Fallback: convert snake_case to Title Case
-        return type.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
     }
 
     function permLabel(perm) {
@@ -139,10 +365,10 @@
     document.addEventListener('alpine:init', function() {
         /* Theme store */
         Alpine.store('theme', {
-            current: localStorage.getItem('agentcordon-theme') || null,
+            /* The pre-paint script above already resolved and stamped it. */
+            current: document.documentElement.getAttribute('data-theme') || 'light',
             get isDark() {
-                if (this.current) return this.current === 'dark';
-                return window.matchMedia('(prefers-color-scheme: dark)').matches;
+                return this.current === 'dark';
             },
             toggle() {
                 var next = this.isDark ? 'light' : 'dark';
@@ -150,55 +376,15 @@
                 localStorage.setItem('agentcordon-theme', next);
             }
         });
-
-        /* Slide panel component */
-        Alpine.data('slidePanel', function() {
-            return {
-                open: false,
-                loading: false,
-                content: '',
-                panelTitle: '',
-                detailUrl: '',
-                async show(url, title, fullUrl) {
-                    this.panelTitle = title || 'Details';
-                    this.detailUrl = fullUrl || '';
-                    this.loading = true;
-                    this.open = true;
-                    try {
-                        var resp = await fetch(url);
-                        if (resp.ok) {
-                            this.content = await resp.text();
-                        } else if (resp.status === 403) {
-                            this.content = '<div class="empty-state" style="padding:20px;"><h3>Access Denied</h3><p>You don\'t have permission to view this resource.</p></div>';
-                        } else if (resp.status === 404) {
-                            this.content = '<div class="empty-state" style="padding:20px;"><h3>Not Found</h3><p>This resource no longer exists.</p></div>';
-                        } else {
-                            this.content = '<p class="text-faint" style="padding:20px;">Failed to load details.</p>';
-                        }
-                    } catch(e) {
-                        this.content = '<p class="text-faint" style="padding:20px;">Failed to load details.</p>';
-                    }
-                    this.loading = false;
-                },
-                close() {
-                    this.open = false;
-                    this.content = '';
-                    this.panelTitle = '';
-                    this.detailUrl = '';
-                },
-                handleKeydown(e) {
-                    if (e.key === 'Escape' && this.open) {
-                        this.close();
-                    }
-                }
-            };
-        });
     });
     </script>
     <script src="/js/service-icons.js"></script>
     <script defer src="/js/alpine.min.js"></script>
     <style>
     [x-cloak] { display: none !important; }
+    /* `.modal-overlay` is display:flex, which outranks the UA's [hidden] rule;
+       AC.confirm toggles `hidden`, so make it win. */
+    [hidden] { display: none !important; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
     .skip-link { position: absolute; top: -100%; left: 16px; z-index: 999; padding: 8px 16px; background: var(--accent); color: #fff; border-radius: var(--radius-sm, 4px); font-weight: 600; text-decoration: none; font-size: 14px; }
     .skip-link:focus { top: 8px; }
@@ -210,6 +396,30 @@
     <a href="#main-content" class="skip-link">Skip to content</a>
     {% include "partials/toast.html" %}
 
+    <!--
+      The one confirmation dialog. Every "are you sure?" in the product is an
+      `AC.confirm({...})` call against this markup: one title, one message, one
+      pair of buttons, focus starting on Cancel and trapped until it is
+      answered. Pages that supply their own body block get an identical element
+      built by `ac.js` on first use.
+    -->
+    <div id="ac-confirm" class="modal-overlay" hidden
+         role="dialog" aria-modal="true"
+         aria-labelledby="ac-confirm-title" aria-describedby="ac-confirm-message">
+        <div class="modal" role="document">
+            <h3 id="ac-confirm-title"></h3>
+            <p id="ac-confirm-message"></p>
+            <div class="ac-confirm-field" id="ac-confirm-field" hidden>
+                <label class="form-label" for="ac-confirm-input" id="ac-confirm-input-label"></label>
+                <input class="form-input" type="text" id="ac-confirm-input">
+            </div>
+            <div class="ac-confirm-actions">
+                <button type="button" class="btn btn-secondary" id="ac-confirm-cancel">Cancel</button>
+                <button type="button" class="btn btn-primary" id="ac-confirm-ok">Confirm</button>
+            </div>
+        </div>
+    </div>
+
     {% if show_nav %}
     {% include "partials/nav.html" %}
     {% endif %}
@@ -218,25 +428,6 @@
         {% block content %}{% endblock %}
     </main>
 
-    {% if show_nav %}
-    <!-- Slide-in panel -->
-    <div x-data="slidePanel()" @keydown.window="handleKeydown($event)" @slide-panel-open.window="show($event.detail.url, $event.detail.title, $event.detail.fullUrl)">
-        <div class="slide-panel-backdrop" :class="{ 'slide-panel-visible': open }" @click="close()" aria-hidden="true"></div>
-        <aside class="slide-panel slide-in-panel" x-show="open" :class="{ 'slide-panel-visible': open }" role="dialog" aria-modal="true" :aria-label="panelTitle">
-            <div class="slide-panel-header">
-                <button class="slide-panel-close close-btn" @click="close()" aria-label="Close panel">&times;</button>
-            </div>
-            <div class="slide-panel-content">
-                <div x-show="loading" class="page-loader page-loader-sm">
-                    <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
-                    <span class="page-loader-label">Loading...</span>
-                </div>
-                <div x-show="!loading" x-html="content"></div>
-            </div>
-        </aside>
-    </div>
-
-    {% endif %}
 
     {% block scripts %}{% endblock %}
 

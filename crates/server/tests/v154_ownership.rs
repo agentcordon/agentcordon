@@ -38,7 +38,6 @@ async fn setup_user_agent(
     let agent = agent_cordon_core::domain::agent::Agent {
         id: agent_cordon_core::domain::workspace::WorkspaceId(uuid::Uuid::new_v4()),
         name: format!("{}-agent", username),
-        enabled: true,
         status: agent_cordon_core::domain::workspace::WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: Some(enc_jwk_str),
@@ -349,7 +348,6 @@ async fn test_admin_agent_can_vend_any_credential() {
     let admin_agent = agent_cordon_core::domain::workspace::Workspace {
         id: agent_cordon_core::domain::workspace::WorkspaceId(uuid::Uuid::new_v4()),
         name: "admin-vend-agent".to_string(),
-        enabled: true,
         status: agent_cordon_core::domain::workspace::WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: Some(enc_jwk_admin_str),

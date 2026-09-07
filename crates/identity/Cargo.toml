@@ -1,0 +1,26 @@
+[package]
+name = "agentcordon-identity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Not on crates.io: the release artifacts are the tagged binaries and the
+# container image, not a registry upload.
+publish = false
+description = "Workspace identity shared by the AgentCordon CLI and broker: key file, sha256 identity, canonical signing payloads"
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[package.metadata.release]
+# The CHANGELOG is the workspace's, not this crate's. cargo-release runs
+# pre-release-replacements once per released package, so only
+# agent-cordon-server rewrites it (see release.toml).
+pre-release-replacements = []

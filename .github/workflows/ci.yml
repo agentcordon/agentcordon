@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,8 +27,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run Clippy
-        run: cargo clippy --workspace -- -D warnings
+      - name: Run Clippy (all targets, including tests)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Every enforcement module has a caller
+        run: python3 scripts/check-dead-modules.py
 
   test:
     name: Test Suite
@@ -63,3 +68,62 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps
+
+  version:
+    name: Version consistency
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      # `[workspace.package] version` is the single source of truth: all three
+      # binaries must print it. The release workflow runs this same script
+      # with `--tag` to check the tag and the CHANGELOG.
+      - name: All three binaries report the workspace version
+        run: scripts/check-version.sh
+
+  security:
+    name: Advisories & licences
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # deny.toml drives this: RUSTSEC advisories, the licence allow-list,
+      # wildcard/banned crates, and the registries a dependency may come from.
+      # Run the same thing locally with `cargo deny check`.
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+
+  docker:
+    name: Docker (source build)
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # The release image is built from prebuilt binaries in release.yml.
+      # This job keeps the from-source Dockerfile (docker-compose.build.yml)
+      # honest: it used to reference a crate that no longer existed.
+      - name: Build server image from source
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

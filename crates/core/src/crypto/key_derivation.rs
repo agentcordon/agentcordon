@@ -1,5 +1,4 @@
 use hkdf::Hkdf;
-use p256::ecdsa::{SigningKey, VerifyingKey};
 use sha2::Sha256;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -16,49 +15,13 @@ pub fn derive_master_key(
 }
 
 /// Derive a 256-bit session-hashing key from a master secret using HKDF-SHA256.
-/// Uses domain-specific info label for separation from both the AES-GCM encryption
-/// key and the JWT signing key.
+/// Uses a domain-specific info label for separation from the AES-GCM encryption
+/// key.
 pub fn derive_session_hash_key(
     master_secret: &str,
     salt: &[u8],
 ) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
     hkdf_derive(master_secret, salt, b"agentcordon:session-hash-v2")
-}
-
-/// Derive a P-256 ECDSA signing key pair from a master secret using HKDF-SHA256.
-///
-/// Uses a domain-specific info label (`agentcordon:jwt-es256-v1`) to derive 32 bytes
-/// of key material, which are used as the P-256 private key scalar. The public
-/// (verifying) key is derived from the private key.
-///
-/// This produces a deterministic key pair for a given (master_secret, salt) pair.
-pub fn derive_jwt_signing_keypair(
-    master_secret: &str,
-    salt: &[u8],
-) -> Result<(SigningKey, VerifyingKey), CryptoError> {
-    let seed = hkdf_derive(master_secret, salt, b"agentcordon:jwt-es256-v1")?;
-    let signing_key = SigningKey::from_bytes(seed.as_ref().into())
-        .map_err(|e| CryptoError::KeyDerivation(format!("P-256 key from HKDF output: {e}")))?;
-    let verifying_key = VerifyingKey::from(&signing_key);
-    Ok((signing_key, verifying_key))
-}
-
-/// Derive a P-256 ECDSA key pair from a master secret using HKDF-SHA256 with
-/// a caller-supplied info label.
-///
-/// This is the generic version of [`derive_jwt_signing_keypair`] — use it when
-/// you need a deterministic P-256 key pair with a custom domain-separation label
-/// (e.g., combined-container device keys).
-pub fn derive_p256_keypair(
-    master_secret: &str,
-    salt: &[u8],
-    info_label: &[u8],
-) -> Result<(SigningKey, VerifyingKey), CryptoError> {
-    let seed = hkdf_derive(master_secret, salt, info_label)?;
-    let signing_key = SigningKey::from_bytes(seed.as_ref().into())
-        .map_err(|e| CryptoError::KeyDerivation(format!("P-256 key from HKDF output: {e}")))?;
-    let verifying_key = VerifyingKey::from(&signing_key);
-    Ok((signing_key, verifying_key))
 }
 
 /// Derive a deterministic device ID (UUID v4-format) from a master secret and salt
@@ -139,32 +102,6 @@ mod tests {
     }
 
     #[test]
-    fn es256_keypair_derivation_is_deterministic() {
-        let secret = "my-master-secret";
-        let salt = b"sixteen-byte-sal";
-        let (sk1, vk1) =
-            derive_jwt_signing_keypair(secret, salt).expect("derivation should succeed");
-        let (sk2, vk2) =
-            derive_jwt_signing_keypair(secret, salt).expect("derivation should succeed");
-        assert_eq!(
-            sk1.to_bytes(),
-            sk2.to_bytes(),
-            "same inputs must produce the same signing key"
-        );
-        assert_eq!(vk1, vk2, "same inputs must produce the same verifying key");
-    }
-
-    #[test]
-    fn es256_different_secrets_produce_different_keys() {
-        let salt = b"sixteen-byte-sal";
-        let (sk1, _) =
-            derive_jwt_signing_keypair("secret-a", salt).expect("derivation should succeed");
-        let (sk2, _) =
-            derive_jwt_signing_keypair("secret-b", salt).expect("derivation should succeed");
-        assert_ne!(sk1.to_bytes(), sk2.to_bytes());
-    }
-
-    #[test]
     fn session_hash_key_differs_from_master_key() {
         let secret = "my-master-secret";
         let salt = b"sixteen-byte-sal";
@@ -224,83 +161,6 @@ mod tests {
         assert_eq!(bytes[8] >> 6, 0b10, "variant bits must be RFC 4122 (10xx)");
     }
 
-    // --- derive_p256_keypair tests ---
-
-    #[test]
-    fn test_derive_p256_keypair_deterministic() {
-        let (sk1, vk1) =
-            derive_p256_keypair("secret", b"salt", b"test-label-v1").expect("derive p256 keypair");
-        let (sk2, vk2) =
-            derive_p256_keypair("secret", b"salt", b"test-label-v1").expect("derive p256 keypair");
-        assert_eq!(
-            sk1.to_bytes(),
-            sk2.to_bytes(),
-            "same inputs must produce same signing key"
-        );
-        assert_eq!(vk1, vk2, "same inputs must produce same verifying key");
-    }
-
-    #[test]
-    fn test_derive_p256_keypair_different_labels() {
-        let (sk1, _) =
-            derive_p256_keypair("secret", b"salt", b"label-a").expect("derive p256 keypair a");
-        let (sk2, _) =
-            derive_p256_keypair("secret", b"salt", b"label-b").expect("derive p256 keypair b");
-        assert_ne!(
-            sk1.to_bytes(),
-            sk2.to_bytes(),
-            "different labels must produce different keys"
-        );
-    }
-
-    #[test]
-    fn test_derive_p256_keypair_differs_from_jwt_keypair() {
-        let secret = "same-secret";
-        let salt = b"same-salt-value!";
-        let (sk_jwt, _) = derive_jwt_signing_keypair(secret, salt).expect("derive JWT keypair");
-        let (sk_custom, _) = derive_p256_keypair(secret, salt, b"agentcordon:custom-label-v1")
-            .expect("derive custom keypair");
-        assert_ne!(
-            sk_jwt.to_bytes(),
-            sk_custom.to_bytes(),
-            "JWT keypair and custom-label keypair must differ (different HKDF info)"
-        );
-    }
-
-    #[test]
-    fn test_derived_p256_keypair_can_sign_jwt() {
-        use crate::auth::jwt::JwtIssuer;
-
-        let (sk, vk) = derive_p256_keypair("secret", b"salt", b"agentcordon:test-jwt-v1")
-            .expect("derive keypair for JWT");
-
-        // Create a JwtIssuer from the derived keypair and sign a token
-        let issuer = JwtIssuer::new(&sk, &vk, "test-issuer".to_string(), 300);
-        let claims = serde_json::json!({
-            "iss": "test-issuer",
-            "sub": "test-sub",
-            "aud": "test-aud",
-            "exp": chrono::Utc::now().timestamp() + 300,
-            "iat": chrono::Utc::now().timestamp(),
-            "nbf": chrono::Utc::now().timestamp(),
-            "jti": "test-jti",
-        });
-        let token = issuer.sign_custom_claims(&claims);
-        assert!(
-            token.is_ok(),
-            "derived P-256 keypair must produce valid JWT: {:?}",
-            token.err()
-        );
-
-        // Validate the token
-        let validated = issuer.validate_custom_audience(&token.unwrap(), "test-aud");
-        assert!(
-            validated.is_ok(),
-            "JWT from derived keypair must validate: {:?}",
-            validated.err()
-        );
-    }
-
     #[test]
     fn test_all_hkdf_labels_are_unique() {
         // Collect all known HKDF info labels used in this module and the broader codebase.
@@ -308,7 +168,6 @@ mod tests {
         let labels: Vec<&[u8]> = vec![
             b"agentcordon:encryption-v2",   // derive_master_key
             b"agentcordon:session-hash-v2", // derive_session_hash_key
-            b"agentcordon:jwt-es256-v1",    // derive_jwt_signing_keypair
             b"agentcordon:device-id-v1",    // derive_device_id
         ];
 
@@ -332,22 +191,19 @@ mod tests {
 
         let master = derive_master_key(secret, salt).expect("master key");
         let session = derive_session_hash_key(secret, salt).expect("session key");
-        let (jwt_sk, _) = derive_jwt_signing_keypair(secret, salt).expect("jwt keypair");
+        let device_id = derive_device_id(secret, salt);
 
         // All three must be distinct
         assert_ne!(*master, *session, "master key != session key");
-        #[allow(deprecated)]
-        {
-            assert_ne!(
-                master.as_ref(),
-                jwt_sk.to_bytes().as_slice(),
-                "master key != jwt key material"
-            );
-            assert_ne!(
-                session.as_ref(),
-                jwt_sk.to_bytes().as_slice(),
-                "session key != jwt key material"
-            );
-        }
+        assert_ne!(
+            &master[..16],
+            device_id.as_bytes(),
+            "master key != device-id material"
+        );
+        assert_ne!(
+            &session[..16],
+            device_id.as_bytes(),
+            "session key != device-id material"
+        );
     }
 }

@@ -474,3 +474,102 @@ async fn test_agent_store_emits_audit_event() {
         "audit should include workspace name"
     );
 }
+
+// ===========================================================================
+// allowed_url_pattern
+// ===========================================================================
+
+/// A workspace-created credential may fence itself to a URL pattern.
+///
+/// `agentcordon credentials create` is the safest-looking command in the CLI
+/// and it used to produce the least safe credential: this route ignored any
+/// pattern the caller sent, so the credential proxied anywhere. The pattern
+/// the caller sends must be the pattern that is stored.
+#[tokio::test]
+async fn test_agent_store_stores_allowed_url_pattern() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+
+    let agent = ctx.admin_agent.as_ref().expect("admin agent");
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
+
+    let (status, body) = send_device_and_agent_auth(
+        &ctx.app,
+        Method::POST,
+        "/api/v1/credentials/agent-store",
+        ctx.admin_signing_key(),
+        ctx.admin_device_id(),
+        &agent_jwt,
+        Some(json!({
+            "name": "fenced-cred",
+            "service": "github",
+            "secret_value": "ghp_fenced_secret_value",
+            "allowed_url_pattern": "https://api.github.com/*",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "agent-store: {}", body);
+    assert_eq!(
+        body["data"]["allowed_url_pattern"].as_str(),
+        Some("https://api.github.com/*"),
+        "the route must store the pattern it was given: {body}"
+    );
+
+    let cred = ctx
+        .store
+        .get_credential_by_name("fenced-cred")
+        .await
+        .expect("lookup")
+        .expect("credential row");
+    assert_eq!(
+        cred.allowed_url_pattern.as_deref(),
+        Some("https://api.github.com/*"),
+        "the stored row carries the pattern, not just the response"
+    );
+}
+
+/// No pattern, and a blank one, both mean "unrestricted". A blank string must
+/// not be stored as a pattern, which would fence the credential to nothing.
+#[tokio::test]
+async fn test_agent_store_without_pattern_is_unrestricted() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+
+    let agent = ctx.admin_agent.as_ref().expect("admin agent");
+    let agent_jwt = issue_agent_jwt(&ctx.state, agent).await;
+
+    for (name, body) in [
+        (
+            "no-pattern-cred",
+            json!({
+                "name": "no-pattern-cred",
+                "service": "github",
+                "secret_value": "ghp_secret_one",
+            }),
+        ),
+        (
+            "blank-pattern-cred",
+            json!({
+                "name": "blank-pattern-cred",
+                "service": "github",
+                "secret_value": "ghp_secret_two",
+                "allowed_url_pattern": "   ",
+            }),
+        ),
+    ] {
+        let (status, resp) = send_device_and_agent_auth(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/credentials/agent-store",
+            ctx.admin_signing_key(),
+            ctx.admin_device_id(),
+            &agent_jwt,
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "agent-store {name}: {resp}");
+        assert!(
+            resp["data"]["allowed_url_pattern"].is_null(),
+            "{name} should be unrestricted, got {}",
+            resp["data"]["allowed_url_pattern"]
+        );
+    }
+}

@@ -5,10 +5,8 @@
 //! policy reasons.
 
 use axum::{extract::State, Json};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::policy::{actions, claim_keys, PolicyPrincipal, PolicyResource};
 
@@ -16,27 +14,7 @@ use crate::extractors::AuthenticatedWorkspace;
 use crate::response::{ApiError, ApiResponse};
 use crate::state::AppState;
 
-/// Request body for MCP tool-call authorization.
-#[derive(Deserialize)]
-pub struct McpAuthorizeRequest {
-    server_name: String,
-    tool_name: String,
-}
-
-/// Response for MCP tool-call authorization.
-///
-/// Reasons (`policy_id`, `policy_name`, `statement_index`) are
-/// intentionally absent: this is an untrusted-caller-facing endpoint and
-/// the reasons would let workspaces enumerate the policy graph. The full
-/// reasons are still recorded in the `PolicyEvaluated` audit event,
-/// retrievable by admins via the correlation ID through the audit query
-/// path. Privileged channel for privileged consumers; opaque response
-/// for untrusted callers.
-#[derive(Serialize)]
-pub struct McpAuthorizeResponse {
-    decision: String,
-    correlation_id: String,
-}
+pub use agent_cordon_core::wire::mcp::{McpAuthorizeRequest, McpAuthorizeResponse};
 
 /// POST /api/v1/workspaces/mcp-authorize — evaluate Cedar policy for an MCP tool call.
 ///
@@ -96,25 +74,19 @@ pub(super) async fn authorize(
         Some(s) => s,
         None => {
             // Unknown server — forbid and audit.
-            let event = AuditEvent::builder(AuditEventType::McpToolCallDenied)
-                .action(&format!("mcp_tool_call/{}", tool_name))
-                .resource("mcp_server", &server_name)
-                .workspace_actor(&workspace.workspace.id, &workspace.workspace.name)
-                .decision(AuditDecision::Forbid, Some("unknown_server"))
-                .details(serde_json::json!({
-                    "server_name": server_name,
-                    "tool_name": tool_name,
-                    "policy_decision": "forbid",
-                }))
-                .correlation_id(&correlation_id)
-                .build();
-
-            if let Err(e) = state.store.append_audit_event(&event).await {
-                tracing::warn!(error = %e, "failed to write mcp-authorize audit event");
-            }
+            state
+                .services
+                .mcp_servers
+                .record_tool_call_denied(
+                    &workspace.workspace,
+                    &correlation_id,
+                    &server_name,
+                    &tool_name,
+                )
+                .await;
 
             return Ok(Json(ApiResponse::ok(McpAuthorizeResponse {
-                decision: "forbid".to_string(),
+                decision: McpAuthorizeResponse::FORBID.to_string(),
                 correlation_id,
             })));
         }
@@ -143,27 +115,28 @@ pub(super) async fn authorize(
         .await?;
 
     let is_permit = decision.decision == PolicyDecisionResult::Permit;
-    let decision_str = if is_permit { "permit" } else { "forbid" };
+    let decision_str = if is_permit {
+        McpAuthorizeResponse::PERMIT
+    } else {
+        McpAuthorizeResponse::FORBID
+    };
 
     // Authz auto-emits the PolicyEvaluated audit event with full reasons.
     // Emit a domain-specific McpToolCalled event on permit for observability.
     // Reasons are deliberately NOT serialised into the HTTP response — they
     // remain in the audit log only (retrievable by admins via correlation_id).
     if is_permit {
-        let event = AuditEvent::builder(AuditEventType::McpToolCalled)
-            .action("mcp_tool_call")
-            .workspace_actor(&workspace.workspace.id, &workspace.workspace.name)
-            .resource("mcp_server", &mcp_server.id.0.to_string())
-            .correlation_id(&correlation_id)
-            .decision(AuditDecision::Permit, None)
-            .details(serde_json::json!({
-                "server_name": server_name,
-                "tool_name": tool_name,
-            }))
-            .build();
-        if let Err(e) = state.store.append_audit_event(&event).await {
-            tracing::warn!(error = %e, "failed to write McpToolCalled audit event");
-        }
+        state
+            .services
+            .mcp_servers
+            .record_tool_called(
+                &workspace.workspace,
+                &correlation_id,
+                &mcp_server,
+                &server_name,
+                &tool_name,
+            )
+            .await;
     }
 
     Ok(Json(ApiResponse::ok(McpAuthorizeResponse {

@@ -19,7 +19,13 @@
 param(
     [string] $ServerUrl = "{SERVER_URL}",
     [string] $InstallDir = (Join-Path $env:LOCALAPPDATA "AgentCordon\bin"),
-    [string] $ReleaseUrl = "https://github.com/agentcordon/agentcordon/releases/latest/download"
+    # Pinned to the version of the server that served this script, not to
+    # `latest`. `latest` is the newest *published* release, which on a server
+    # built from source is older than the server itself — and v0.4.0 changed
+    # the signed request payload, so a CLI and broker from the wrong side of
+    # that change cannot talk to this server at all.
+    [string] $Version    = "{VERSION}",
+    [string] $ReleaseUrl = "https://github.com/agentcordon/agentcordon/releases/download/v{VERSION}"
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +36,23 @@ function Write-Info($text)   { Write-Host "  $text" -ForegroundColor Green }
 function Write-Step($text)   { Write-Host "  $text" -ForegroundColor Cyan }
 function Write-Warn2($text)  { Write-Host "  ! $text" -ForegroundColor Yellow }
 function Write-Err($text)    { Write-Host "  x $text" -ForegroundColor Red }
+
+# The pinned release is not on GitHub — the normal state of a server built
+# from `main` between releases.
+function Write-NoRelease {
+    Write-Host ""
+    Write-Err "No published release for AgentCordon v$Version."
+    Write-Host ""
+    Write-Host "  This server is running v$Version, and the installer only installs binaries"
+    Write-Host "  from the matching release: a CLI and broker from a different version may"
+    Write-Host "  not be able to talk to it."
+    Write-Host ""
+    Write-Host "  Build the CLI and broker from source instead (README, Building from Source):"
+    Write-Host "    git clone https://github.com/agentcordon/agentcordon"
+    Write-Host "    cd agentcordon; cargo build --release"
+    Write-Host ""
+    exit 1
+}
 
 # --- Banner ---
 Write-Host ""
@@ -79,7 +102,7 @@ try {
     }
     Write-Info "Checksums loaded ($($checksums.Count) entries)"
 } catch {
-    Write-Warn2 "SHA256SUMS not found at $sumsUrl — continuing without checksum verification."
+    Write-NoRelease
 }
 
 # --- Download + verify + install each binary ---

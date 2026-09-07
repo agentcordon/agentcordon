@@ -2,17 +2,25 @@ FROM rust:1-bookworm AS builder
 
 WORKDIR /build
 
-# Copy manifests first for dependency caching
+# Copy manifests first for dependency caching. Every workspace member must be
+# present or Cargo refuses to resolve the workspace.
 COPY Cargo.toml Cargo.lock ./
+COPY crates/identity/Cargo.toml crates/identity/Cargo.toml
 COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/server/Cargo.toml crates/server/Cargo.toml
-COPY crates/gateway/Cargo.toml crates/gateway/Cargo.toml
+COPY crates/broker/Cargo.toml crates/broker/Cargo.toml
+COPY crates/cli/Cargo.toml crates/cli/Cargo.toml
 
-# Create dummy source files to build dependencies
-RUN mkdir -p crates/core/src crates/server/src crates/gateway/src \
+# Stub every target the manifests declare so the dependency build succeeds
+# without real sources.
+RUN mkdir -p crates/identity/src crates/core/src crates/server/src crates/broker/src crates/cli/src \
+    && echo "pub fn _dummy() {}" > crates/identity/src/lib.rs \
     && echo "pub fn _dummy() {}" > crates/core/src/lib.rs \
+    && echo "pub fn _dummy() {}" > crates/server/src/lib.rs \
     && echo "fn main() {}" > crates/server/src/main.rs \
-    && echo "fn main() {}" > crates/gateway/src/main.rs \
+    && echo "pub fn _dummy() {}" > crates/broker/src/lib.rs \
+    && echo "fn main() {}" > crates/broker/src/main.rs \
+    && echo "fn main() {}" > crates/cli/src/main.rs \
     && mkdir -p policies migrations \
     && touch policies/default.cedar \
     && touch migrations/001_init.sql
@@ -25,14 +33,31 @@ COPY policies/ policies/
 COPY migrations/ migrations/
 COPY docs/ docs/
 COPY data/ data/
+COPY tools/ tools/
 
-# Touch source files to invalidate cache for actual build
-RUN touch crates/core/src/lib.rs crates/server/src/main.rs
+# Touch entry points so the stubs' fingerprints are invalidated
+RUN touch crates/identity/src/lib.rs crates/core/src/lib.rs crates/server/src/lib.rs crates/server/src/main.rs \
+    crates/broker/src/lib.rs crates/broker/src/main.rs crates/cli/src/main.rs
 
 RUN cargo build --release --bin agent-cordon-server
 
 # Runtime stage
 FROM debian:trixie-slim
+
+# Build metadata. The release workflow passes the tag's version and commit;
+# a local `docker build` gets the defaults. The *binary's* own `--version`
+# always comes from `[workspace.package] version` via CARGO_PKG_VERSION --
+# these arguments only label the image.
+ARG VERSION=dev
+ARG VCS_REF=unknown
+
+LABEL org.opencontainers.image.title="AgentCordon" \
+      org.opencontainers.image.description="Credential brokering and policy enforcement for autonomous AI agents" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.source="https://github.com/agentcordon/agentcordon" \
+      org.opencontainers.image.url="https://agentcordon.dev" \
+      org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

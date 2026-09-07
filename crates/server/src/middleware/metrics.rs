@@ -30,7 +30,9 @@ pub async fn record_http_metrics(request: Request, next: Next) -> Response {
 
 /// Known path prefixes whose next segment is a dynamic name (not a UUID/numeric ID).
 /// These are normalized to `{name}` to prevent high-cardinality label explosion
-/// from user-defined names (e.g., vault names).
+/// from user-defined names. A vault is addressed by id now, so its segment is
+/// normalized as a UUID before this ever applies; the prefix stays as the guard
+/// against anything else reaching the label.
 const DYNAMIC_NAME_PREFIXES: &[&str] = &["vaults"];
 
 /// Replace UUID-shaped, numeric, and known dynamic-name path segments with
@@ -112,6 +114,14 @@ mod tests {
         assert!(is_uuid("550e8400-e29b-41d4-a716-446655440000"));
         assert!(!is_uuid("not-a-uuid"));
         assert!(!is_uuid("550e8400e29b41d4a716446655440000")); // no dashes
+    }
+
+    #[test]
+    fn test_normalize_path_vault_id() {
+        assert_eq!(
+            normalize_path("/api/v1/vaults/550e8400-e29b-41d4-a716-446655440000/credentials"),
+            "/api/v1/vaults/{id}/credentials"
+        );
     }
 
     #[test]

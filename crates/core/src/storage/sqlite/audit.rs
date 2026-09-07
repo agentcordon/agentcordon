@@ -4,10 +4,9 @@ use super::helpers::*;
 use super::SqliteStore;
 
 use crate::domain::audit::AuditEvent;
+use crate::domain::time::format_timestamp;
 use crate::error::StoreError;
-use crate::storage::shared::{
-    build_audit_filter_sql, log_audit_event, PlaceholderStyle, AUDIT_COLUMNS,
-};
+use crate::storage::shared::{build_audit_filter_sql, log_audit_event, AUDIT_COLUMNS};
 use crate::storage::{AuditFilter, AuditStore};
 use uuid::Uuid;
 
@@ -16,7 +15,7 @@ impl SqliteStore {
         log_audit_event(event);
 
         let event_id = event.id.hyphenated().to_string();
-        let timestamp = event.timestamp.to_rfc3339();
+        let timestamp = format_timestamp(&event.timestamp);
         let correlation_id = event.correlation_id.clone();
         let event_type = serialize_event_type(&event.event_type)?;
         let workspace_id = event
@@ -62,7 +61,7 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_audit_event(
@@ -87,7 +86,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn list_audit_events(
@@ -116,7 +115,7 @@ impl SqliteStore {
                 Ok(events)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn list_audit_events_filtered(
@@ -127,7 +126,7 @@ impl SqliteStore {
 
         self.conn()
             .call(move |conn| {
-                let fq = build_audit_filter_sql(&filter, PlaceholderStyle::QuestionMark);
+                let fq = build_audit_filter_sql(&filter);
 
                 let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
                 for v in &fq.param_values {
@@ -152,7 +151,7 @@ impl SqliteStore {
                 Ok(events)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }
 

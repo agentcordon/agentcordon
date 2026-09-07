@@ -1,48 +1,10 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::fs;
 use std::path::Path;
 
-use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
-use sha2::{Digest, Sha256};
+use agentcordon_identity::{pk_hash_of, KeyFileError};
 
 use crate::error::CliError;
 use crate::signing::workspace_dir;
-
-/// Create a file atomically at `path` with the given body.
-///
-/// Uses `O_CREAT | O_EXCL` (Unix) / `CREATE_NEW` (Windows) so the file is
-/// created in a single syscall that fails if anything already exists at
-/// the path — closing the check-then-write TOCTOU window that a plain
-/// `fs::write` leaves open. On Unix, `mode` is passed to `open(2)` so the
-/// file is created with the requested permissions from the first instant
-/// it exists, not widened to umask-default and then chmod'd.
-///
-/// `_mode` is accepted on all platforms for call-site symmetry but is
-/// only honoured on Unix; Windows files inherit NTFS ACLs from the parent
-/// directory.
-fn create_new_file(path: &Path, _mode: u32, body: &[u8], label: &str) -> Result<(), CliError> {
-    let mut opts = OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    opts.mode(_mode);
-
-    let mut file = match opts.open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(CliError::general(format!(
-                "{label} appeared concurrently — re-run `agentcordon init`"
-            )));
-        }
-        Err(e) => {
-            return Err(CliError::general(format!("failed to write {label}: {e}")));
-        }
-    };
-    file.write_all(body)
-        .map_err(|e| CliError::general(format!("failed to write {label}: {e}")))
-}
 
 /// Generate Ed25519 keypair and prepare workspace for registration.
 pub fn run(agent: &str) -> Result<(), CliError> {
@@ -57,49 +19,32 @@ pub fn run(agent: &str) -> Result<(), CliError> {
     }
 
     let dir = workspace_dir();
-    let key_path = dir.join("workspace.key");
-    let pub_path = dir.join("workspace.pub");
 
     // Idempotent: if key already exists, just print identity
-    if key_path.exists() {
-        let pub_hex = fs::read_to_string(&pub_path)
-            .map_err(|e| CliError::general(format!("failed to read public key: {e}")))?;
-        let pub_bytes = hex::decode(pub_hex.trim())
+    if agentcordon_identity::workspace_key_exists(&dir) {
+        let pub_hex = agentcordon_identity::read_public_key_hex(&dir)
+            .map_err(|e| CliError::general(e.to_string()))?;
+        let pub_bytes = hex::decode(&pub_hex)
             .map_err(|e| CliError::general(format!("invalid public key format: {e}")))?;
-        let hash = hex::encode(Sha256::digest(&pub_bytes));
+        let hash = pk_hash_of(&pub_bytes);
         println!("Workspace identity: sha256:{hash}");
         println!("(keypair already exists)");
 
         // Still generate agent-specific files even if key exists
         generate_for_agent(agent, &hash)?;
-        ensure_agentcordon_mcp_entry()?;
         return Ok(());
     }
 
-    // Create .agentcordon/ directory with mode 0700 (Unix only; Windows uses ACL defaults).
-    fs::create_dir_all(&dir)
-        .map_err(|e| CliError::general(format!("failed to create .agentcordon/: {e}")))?;
-    #[cfg(unix)]
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
-        .map_err(|e| CliError::general(format!("failed to set directory permissions: {e}")))?;
+    // Create .agentcordon/ (mode 0700) and write the keypair (0600 / 0644)
+    // atomically; the identity crate owns the format and the policy.
+    let key = agentcordon_identity::create_workspace_key(&dir).map_err(|e| match e {
+        KeyFileError::AlreadyExists { .. } => {
+            CliError::general(format!("{e} — re-run `agentcordon init`"))
+        }
+        other => CliError::general(other.to_string()),
+    })?;
 
-    // Generate Ed25519 keypair
-    let mut csprng = OsRng;
-    let signing_key = SigningKey::generate(&mut csprng);
-    let verifying_key = signing_key.verifying_key();
-
-    // Write private key (hex seed, mode 0600) atomically: create_new +
-    // explicit mode close the TOCTOU window that `fs::write` +
-    // follow-up `set_permissions` left open.
-    let seed_hex = hex::encode(signing_key.to_bytes());
-    create_new_file(&key_path, 0o600, seed_hex.as_bytes(), "private key")?;
-
-    // Write public key (hex, mode 0644) atomically.
-    let pub_hex = hex::encode(verifying_key.to_bytes());
-    create_new_file(&pub_path, 0o644, pub_hex.as_bytes(), "public key")?;
-
-    // Compute pk_hash
-    let hash = hex::encode(Sha256::digest(verifying_key.to_bytes()));
+    let hash = key.pk_hash();
     println!("Workspace identity: sha256:{hash}");
 
     // Add .agentcordon/ to .gitignore
@@ -107,10 +52,6 @@ pub fn run(agent: &str) -> Result<(), CliError> {
 
     // Generate agent-specific instruction files
     generate_for_agent(agent, &hash)?;
-
-    // Ensure .mcp.json contains the `agentcordon` MCP server entry so that
-    // Claude Code (and other MCP-aware agents) can auto-discover it.
-    ensure_agentcordon_mcp_entry()?;
 
     Ok(())
 }
@@ -121,11 +62,11 @@ fn generate_for_agent(agent: &str, pk_hash: &str) -> Result<(), CliError> {
     generate_agents_md(pk_hash)?;
 
     match agent {
-        "claude-code" => generate_claude_md(pk_hash)?,
+        "claude-code" => generate_claude_md()?,
         "codex" => generate_codex_config()?,
         "openclaw" => generate_openclaw_config()?,
         "all" => {
-            generate_claude_md(pk_hash)?;
+            generate_claude_md()?;
             generate_codex_config()?;
             generate_openclaw_config()?;
         }
@@ -168,241 +109,218 @@ fn generate_agents_md(pk_hash: &str) -> Result<(), CliError> {
          - `agentcordon credentials` — list credentials available to this workspace\n\
          - `agentcordon proxy <credential-name> <METHOD> <url>` — authenticated API call\n\
          - `agentcordon proxy <credential-name> POST <url> --body '{{...}}'` — POST with JSON body\n\
-         - `agentcordon mcp-servers` — list MCP servers\n\
-         - `agentcordon mcp-tools` — discover available tools\n\
+         - `agentcordon mcp-servers` — list MCP servers this workspace may use\n\
+         - `agentcordon mcp-tools` — list every tool, with its description\n\
+         - `agentcordon mcp-tools --schema --server <server> --tool <tool>` — the tool's \
+         exact argument names and types\n\
          - `agentcordon mcp-call <server> <tool> [--arg key=value]` — call an MCP tool\n\
+         - `agentcordon mcp-call <server> <tool> --args-json '{{...}}'` — call with nested \
+         or array arguments\n\
          - `agentcordon status` — check connection and identity\n\
          - `agentcordon help` — full command reference\n\
          \n\
          When you need to call an external API, use `agentcordon proxy` instead of direct \
          HTTP with raw tokens. Every access is policy-checked and audit-logged.\n\
          \n\
+         ### Using MCP servers\n\
+         \n\
+         1. Run `agentcordon mcp-servers` to see which servers this workspace may use. \
+         Several may be listed; they are not interchangeable.\n\
+         2. Run `agentcordon mcp-tools` to see every tool and what it does.\n\
+         3. **Choose the server, then the tool, by these rules, in order:**\n\
+         \n\
+         - **Match the service the task is about.** Pick the server that fronts the system \
+         the task names (the issue tracker for an issue, the deployment platform for a \
+         deploy). The server's name and its tools' descriptions are the signal; the \
+         `DESCRIPTION` column of `mcp-servers` is often empty and proves nothing.\n\
+         - **Prefer the server whose authenticated identity fits the question.** Several \
+         servers may expose an identically named tool while speaking to different accounts \
+         or tenants. Pick the one authenticated as the identity the answer should be about.\n\
+         - **Never pick an unauthenticated server for a question about identity, \
+         permissions, or private data.** A server the admin configured with no auth cannot \
+         answer \"who am I\" or \"what may I access\" — it will return a plausible-looking \
+         null or anonymous result. Least privilege applies to *credentials*, not to \
+         choosing an MCP server: do not fall back to a no-auth server because it looks \
+         safer.\n\
+         - If two servers still fit, say which you picked and why rather than guessing \
+         silently.\n\
+         \n\
+         4. **Before calling a tool, run \
+         `agentcordon mcp-tools --schema --server <server> --tool <tool>`** to read its \
+         `input_schema`. Never guess argument names. Use `--arg key=value` for flat \
+         arguments and `--args-json` for nested objects or arrays.\n\
+         \n\
+         MCP tools are reached through the AgentCordon broker, not through a native \
+         `.mcp.json` entry — there is no `.mcp.json` for these servers and you should not \
+         create one.\n\
+         \n\
          ### Environment\n\
+         \n\
+         **You do not need to configure the broker.** `agentcordon-broker` binds a port the \
+         OS picks and writes the URL to `~/.agentcordon/broker.port`; the CLI reads that \
+         file and connects. There is no default broker port to assume.\n\
          \n\
          | Variable | Default | Description |\n\
          |----------|---------|-------------|\n\
-         | `AGTCRDN_BROKER_URL` | `http://localhost:3141` | Broker URL the CLI connects to |\n\
+         | `AGTCRDN_BROKER_URL` | *(unset — discovered from `~/.agentcordon/broker.port`)* | \
+         **Override only.** Set it solely when the broker is somewhere the port file cannot \
+         name it, such as another host or container. Must be plain `http://` to a loopback \
+         host or any `https://` URL. |\n\
          \n\
-         Set `AGTCRDN_BROKER_URL` if the broker is running on a non-default host or port.\n\
+         Do not export `AGTCRDN_BROKER_URL` speculatively: a wrong value overrides working \
+         discovery and breaks every command. If `agentcordon status` cannot reach the \
+         broker, start one (`agentcordon-broker --server-url <server>`) rather than \
+         guessing a URL.\n\
          \n\
-         **Local development**: If proxying to localhost URLs, ensure the broker was \
-         started with `AGTCRDN_PROXY_ALLOW_LOOPBACK=true` (this is a broker-side flag, \
-         not a CLI flag).\n\
-         \n\
-         **MCP servers**: If the admin has configured MCP servers, `agentcordon mcp-servers` \
-         lists them and `agentcordon mcp-tools` shows available tools.\n\
-         \n\
-         **MCP tools**: After installing MCP servers from the marketplace, use \
-         `agentcordon mcp-tools` to list available tools and \
-         `agentcordon mcp-call <server> <tool> [--arg key=value]` to call them. \
-         MCP tools are accessed through the AgentCordon broker, not through native \
-         `.mcp.json` integration.\n\
+         **Local development**: to proxy to a `localhost` URL the broker must have been \
+         started with `AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker --server-url \
+         <server>`. The broker reads it once, at startup (`crates/broker/src/config.rs`); \
+         the CLI never looks at it, so prefixing a `proxy` call with it does nothing.\n\
          <!-- END AGENTCORDON -->\n"
     );
 
-    if agents_md_path.exists() {
-        let content = fs::read_to_string(&agents_md_path)
-            .map_err(|e| CliError::general(format!("failed to read AGENTS.md: {e}")))?;
-        if content.contains("<!-- BEGIN AGENTCORDON -->") {
-            // Replace existing section
-            if let (Some(start), Some(end)) = (
-                content.find("<!-- BEGIN AGENTCORDON -->"),
-                content.find("<!-- END AGENTCORDON -->"),
-            ) {
-                let end = end + "<!-- END AGENTCORDON -->".len();
-                // Include trailing newline if present
-                let end = if content[end..].starts_with('\n') {
-                    end + 1
-                } else {
-                    end
-                };
-                let mut new_content = String::new();
-                new_content.push_str(&content[..start]);
-                new_content.push_str(section.trim_start());
-                new_content.push_str(&content[end..]);
-                fs::write(&agents_md_path, new_content)
-                    .map_err(|e| CliError::general(format!("failed to write AGENTS.md: {e}")))?;
-                println!("Updated AGENTS.md with AgentCordon instructions");
-            }
-            return Ok(());
-        }
-        // Append to existing AGENTS.md
-        let separator = if content.ends_with('\n') { "" } else { "\n" };
-        fs::write(&agents_md_path, format!("{content}{separator}{section}"))
-            .map_err(|e| CliError::general(format!("failed to update AGENTS.md: {e}")))?;
-        println!("Appended AgentCordon instructions to AGENTS.md");
-    } else {
-        let content = format!("# Agent Instructions\n{section}");
-        fs::write(&agents_md_path, content)
-            .map_err(|e| CliError::general(format!("failed to write AGENTS.md: {e}")))?;
-        println!("Created AGENTS.md with AgentCordon instructions");
-    }
-
-    Ok(())
+    write_marked_block(
+        &agents_md_path,
+        "AGENTS.md",
+        &section,
+        "# Agent Instructions\n",
+    )
 }
 
 /// Generate CLAUDE.md as a thin wrapper that imports AGENTS.md.
-fn generate_claude_md(pk_hash: &str) -> Result<(), CliError> {
+///
+/// The identity is *not* repeated here. It used to be, and `CLAUDE.md` was
+/// then skipped on every rerun (its content mentioned "AgentCordon"), so after
+/// a key regeneration `AGENTS.md` and `CLAUDE.md` named different identities
+/// and the agent read both (uat/artifacts/reviews/UI-REVIEW-static.md G1).
+fn generate_claude_md() -> Result<(), CliError> {
     let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
     let claude_md_path = Path::new(&base).join("CLAUDE.md");
 
-    // Only create if it doesn't exist or exists but doesn't mention AgentCordon
-    if claude_md_path.exists() {
-        let content = fs::read_to_string(&claude_md_path)
-            .map_err(|e| CliError::general(format!("failed to read CLAUDE.md: {e}")))?;
-        if content.contains("AgentCordon") {
-            return Ok(());
-        }
-        // Append AgentCordon section to existing CLAUDE.md
-        let separator = if content.ends_with('\n') {
-            "\n"
-        } else {
-            "\n\n"
-        };
-        let section = format!(
-            "{separator}## AgentCordon\n\
-             \n\
-             @AGENTS.md\n\
-             \n\
-             AC_IDENTITY: sha256:{pk_hash}\n"
-        );
-        fs::write(&claude_md_path, format!("{content}{section}"))
-            .map_err(|e| CliError::general(format!("failed to update CLAUDE.md: {e}")))?;
-        println!("Appended AgentCordon reference to CLAUDE.md");
-    } else {
-        let content = format!(
-            "# Claude Code Instructions\n\
-             \n\
-             @AGENTS.md\n\
-             \n\
-             AC_IDENTITY: sha256:{pk_hash}\n"
-        );
-        fs::write(&claude_md_path, content)
-            .map_err(|e| CliError::general(format!("failed to write CLAUDE.md: {e}")))?;
-        println!("Created CLAUDE.md with AgentCordon instructions");
-    }
+    let section = "\n\
+                   <!-- BEGIN AGENTCORDON -->\n\
+                   ## AgentCordon\n\
+                   \n\
+                   @AGENTS.md\n\
+                   <!-- END AGENTCORDON -->\n";
 
-    Ok(())
+    write_marked_block(
+        &claude_md_path,
+        "CLAUDE.md",
+        section,
+        "# Claude Code Instructions\n",
+    )
 }
 
 /// Generate Codex-specific config referencing AGENTS.md.
 fn generate_codex_config() -> Result<(), CliError> {
     let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
     let codex_dir = Path::new(&base).join(".codex");
-    let instructions_path = codex_dir.join("instructions.md");
-
-    if instructions_path.exists() {
-        let content = fs::read_to_string(&instructions_path).map_err(|e| {
-            CliError::general(format!("failed to read .codex/instructions.md: {e}"))
-        })?;
-        if content.contains("AgentCordon") {
-            return Ok(());
-        }
-    }
-
     fs::create_dir_all(&codex_dir)
         .map_err(|e| CliError::general(format!("failed to create .codex/: {e}")))?;
 
-    let content = "# Codex Instructions\n\
-                   \n\
-                   AGENTS.md is the primary instruction file and is loaded automatically by Codex.\n\
-                   \n\
-                   ## AgentCordon Notes\n\
-                   \n\
-                   - Use `agentcordon credentials` to discover available credentials\n\
-                   - Use `agentcordon proxy <credential> <METHOD> <url>` for authenticated API calls\n\
-                   - Skills are at `.agents/skills/` (native Codex discovery path)\n";
-
-    fs::write(&instructions_path, content)
-        .map_err(|e| CliError::general(format!("failed to write .codex/instructions.md: {e}")))?;
-
-    println!("Created .codex/instructions.md");
-    Ok(())
+    write_marked_block(
+        &codex_dir.join("instructions.md"),
+        ".codex/instructions.md",
+        &agent_stub_block(),
+        "# Codex Instructions\n\
+         \n\
+         AGENTS.md is the primary instruction file and is loaded automatically by Codex.\n",
+    )
 }
 
 /// Generate OpenClaw-specific config referencing AGENTS.md.
 fn generate_openclaw_config() -> Result<(), CliError> {
     let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
     let openclaw_dir = Path::new(&base).join(".openclaw");
-    let instructions_path = openclaw_dir.join("instructions.md");
-
-    if instructions_path.exists() {
-        let content = fs::read_to_string(&instructions_path).map_err(|e| {
-            CliError::general(format!("failed to read .openclaw/instructions.md: {e}"))
-        })?;
-        if content.contains("AgentCordon") {
-            return Ok(());
-        }
-    }
-
     fs::create_dir_all(&openclaw_dir)
         .map_err(|e| CliError::general(format!("failed to create .openclaw/: {e}")))?;
 
-    let content = "# OpenClaw Instructions\n\
-                   \n\
-                   AGENTS.md is the primary instruction file and is loaded automatically by OpenClaw.\n\
-                   \n\
-                   ## AgentCordon Notes\n\
-                   \n\
-                   - Use `agentcordon credentials` to discover available credentials\n\
-                   - Use `agentcordon proxy <credential> <METHOD> <url>` for authenticated API calls\n\
-                   - Skills are at `.agents/skills/` (native OpenClaw discovery path)\n\
-                   - Skill hot-reload is supported — changes take effect without restart\n";
-
-    fs::write(&instructions_path, content).map_err(|e| {
-        CliError::general(format!("failed to write .openclaw/instructions.md: {e}"))
-    })?;
-
-    println!("Created .openclaw/instructions.md");
-    Ok(())
+    write_marked_block(
+        &openclaw_dir.join("instructions.md"),
+        ".openclaw/instructions.md",
+        &agent_stub_block(),
+        "# OpenClaw Instructions\n\
+         \n\
+         AGENTS.md is the primary instruction file and is loaded automatically by OpenClaw.\n",
+    )
 }
 
-/// Ensure `.mcp.json` exists and contains an `agentcordon` MCP server entry.
+/// The block both agent stubs carry: two commands and a pointer at the one
+/// file that holds the rest.
 ///
-/// Claude Code reads this file to auto-discover MCP servers. We inject an
-/// entry that points at `agentcordon mcp-serve` so the agent can reach the
-/// AgentCordon broker as a native MCP server. Any other entries already in
-/// the file are preserved untouched — we never read, back up, or persist
-/// the user's existing MCP secrets.
-fn ensure_agentcordon_mcp_entry() -> Result<(), CliError> {
-    let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
-    let mcp_json_path = Path::new(&base).join(".mcp.json");
+/// It used to name `.agents/skills/` as a "native discovery path" and promise
+/// skill hot-reload. `init` writes no skill, so both sentences pointed at a
+/// directory that does not exist (uat/artifacts/reviews/UI-REVIEW-static.md G4).
+fn agent_stub_block() -> String {
+    "\n\
+     <!-- BEGIN AGENTCORDON -->\n\
+     ## AgentCordon Notes\n\
+     \n\
+     - Use `agentcordon credentials` to discover available credentials\n\
+     - Use `agentcordon proxy <credential> <METHOD> <url>` for authenticated API calls\n\
+     - AGENTS.md carries the workspace identity, the full command list and the rules for \
+     choosing an MCP server\n\
+     <!-- END AGENTCORDON -->\n"
+        .to_string()
+}
 
-    let mut json: serde_json::Value = if mcp_json_path.exists() {
-        let content = fs::read_to_string(&mcp_json_path)
-            .map_err(|e| CliError::general(format!("failed to read .mcp.json: {e}")))?;
-        serde_json::from_str(&content)
-            .map_err(|e| CliError::general(format!("invalid .mcp.json: {e}")))?
-    } else {
-        serde_json::json!({ "mcpServers": {} })
-    };
+const BLOCK_BEGIN: &str = "<!-- BEGIN AGENTCORDON -->";
+const BLOCK_END: &str = "<!-- END AGENTCORDON -->";
 
-    if !json.is_object() {
-        json = serde_json::json!({ "mcpServers": {} });
+/// Write `section` into `path` as the file's one delimited AgentCordon block.
+///
+/// Every file `init` touches is edited the same way: the block between
+/// `<!-- BEGIN AGENTCORDON -->` and `<!-- END AGENTCORDON -->` is replaced in
+/// place, anything else the user wrote is left alone, and a file without the
+/// markers gets the block appended.
+///
+/// The markers are the whole point. `CLAUDE.md`, `.codex/instructions.md` and
+/// `.openclaw/instructions.md` used to be skipped whenever their text merely
+/// contained the word "AgentCordon", so a project whose instructions said "we
+/// do not use AgentCordon here" never got the import, and one that did get it
+/// never got an update (uat/artifacts/reviews/UI-REVIEW-static.md G5).
+///
+/// `section` carries its own leading newline and both markers; `preamble` is
+/// the title written above it when the file does not exist yet.
+fn write_marked_block(
+    path: &Path,
+    label: &str,
+    section: &str,
+    preamble: &str,
+) -> Result<(), CliError> {
+    if !path.exists() {
+        fs::write(path, format!("{preamble}{section}"))
+            .map_err(|e| CliError::general(format!("failed to write {label}: {e}")))?;
+        println!("Created {label} with AgentCordon instructions");
+        return Ok(());
     }
-    let obj = json.as_object_mut().unwrap();
-    let servers = obj
-        .entry("mcpServers".to_string())
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    if !servers.is_object() {
-        *servers = serde_json::Value::Object(serde_json::Map::new());
+
+    let content = fs::read_to_string(path)
+        .map_err(|e| CliError::general(format!("failed to read {label}: {e}")))?;
+
+    if let (Some(start), Some(end)) = (content.find(BLOCK_BEGIN), content.find(BLOCK_END)) {
+        let end = end + BLOCK_END.len();
+        // Swallow the block's trailing newline so a rerun does not grow the file.
+        let end = if content[end..].starts_with('\n') {
+            end + 1
+        } else {
+            end
+        };
+        let mut updated = String::with_capacity(content.len() + section.len());
+        updated.push_str(&content[..start]);
+        updated.push_str(section.trim_start_matches('\n'));
+        updated.push_str(&content[end..]);
+        fs::write(path, updated)
+            .map_err(|e| CliError::general(format!("failed to write {label}: {e}")))?;
+        println!("Updated {label} with AgentCordon instructions");
+        return Ok(());
     }
-    let servers_map = servers.as_object_mut().unwrap();
-    servers_map.insert(
-        "agentcordon".to_string(),
-        serde_json::json!({
-            "command": "agentcordon",
-            "args": ["mcp-serve"],
-        }),
-    );
 
-    let mut new_content = serde_json::to_string_pretty(&json)
-        .map_err(|e| CliError::general(format!("failed to serialize .mcp.json: {e}")))?;
-    new_content.push('\n');
-    fs::write(&mcp_json_path, new_content)
-        .map_err(|e| CliError::general(format!("failed to write .mcp.json: {e}")))?;
-
-    println!("Ensured .mcp.json contains agentcordon MCP server entry");
+    let separator = if content.ends_with('\n') { "" } else { "\n" };
+    fs::write(path, format!("{content}{separator}{section}"))
+        .map_err(|e| CliError::general(format!("failed to update {label}: {e}")))?;
+    println!("Appended AgentCordon instructions to {label}");
     Ok(())
 }
 
@@ -463,117 +381,309 @@ mod tests {
         }
     }
 
-    fn read_mcp(dir: &Path) -> serde_json::Value {
-        let body = fs::read_to_string(dir.join(".mcp.json")).unwrap();
-        serde_json::from_str(&body).unwrap()
-    }
-
+    /// `agentcordon mcp-serve` does not exist; an `.mcp.json` entry pointing
+    /// at it made every Claude Code session fail to start an MCP server.
+    /// `init` leaves `.mcp.json` to the user.
     #[test]
-    fn ensure_entry_creates_file_when_missing() {
+    fn init_does_not_create_mcp_json() {
         let dir = TempDir::new().unwrap();
         let _g = EnvGuard::new(dir.path());
 
-        ensure_agentcordon_mcp_entry().unwrap();
+        run("claude-code").unwrap();
 
-        let json = read_mcp(dir.path());
-        let servers = json["mcpServers"].as_object().unwrap();
-        assert_eq!(servers.len(), 1);
-        let entry = &servers["agentcordon"];
-        assert_eq!(entry["command"], "agentcordon");
-        assert_eq!(entry["args"][0], "mcp-serve");
+        assert!(
+            !dir.path().join(".mcp.json").exists(),
+            "init must not create .mcp.json"
+        );
     }
 
     #[test]
-    fn ensure_entry_preserves_existing_servers() {
+    fn init_leaves_existing_mcp_json_untouched() {
         let dir = TempDir::new().unwrap();
         let _g = EnvGuard::new(dir.path());
+        let original = r#"{"mcpServers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"],"env":{"FOO":"bar"}}}}"#;
+        fs::write(dir.path().join(".mcp.json"), original).unwrap();
+
+        run("claude-code").unwrap();
+        // Second run takes the "keypair already exists" path.
+        run("claude-code").unwrap();
+
+        let after = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+        assert_eq!(
+            after, original,
+            ".mcp.json must be byte-identical after init"
+        );
+    }
+
+    /// `init` writes a key the CLI's own loader accepts, prints the
+    /// identity the key derives, and a second run reports the same
+    /// identity without touching the key. Atomic creation and modes are
+    /// covered by the identity crate's key-file tests.
+    #[test]
+    fn init_creates_loadable_key_and_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run("claude-code").unwrap();
+        let key_dir = dir.path().join(".agentcordon");
+        let first = crate::signing::load_keypair().unwrap();
+        assert!(agentcordon_identity::workspace_key_exists(&key_dir));
+        // The identity is written once, into AGENTS.md; CLAUDE.md imports it.
+        let agents_md = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(
+            agents_md.contains(&format!("AC_IDENTITY: {}", first.identity())),
+            "AGENTS.md must carry the key's identity"
+        );
+        let claude_md = fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+        assert!(
+            claude_md.contains("@AGENTS.md"),
+            "CLAUDE.md must import AGENTS.md rather than repeat it"
+        );
+
+        run("claude-code").unwrap();
+        let second = crate::signing::load_keypair().unwrap();
+        assert_eq!(second.seed_hex(), first.seed_hex());
+    }
+
+    /// `AGENTS.md` is the only documentation an agent working in this
+    /// workspace ever sees, so what it says about the broker and about
+    /// picking an MCP server is load-bearing.
+    ///
+    /// It used to give `AGTCRDN_BROKER_URL` a default of
+    /// `http://localhost:3141`. The broker's default port is `0` — it
+    /// auto-selects and writes the URL to `~/.agentcordon/broker.port` — so an
+    /// agent that believed the table and exported the variable broke its own
+    /// connection. It also offered no rule for choosing between several MCP
+    /// servers, and its only selection advice ("prefer least privilege")
+    /// pointed at the unauthenticated one, which cannot answer a question
+    /// about identity.
+    #[test]
+    fn agents_md_describes_broker_discovery_and_mcp_selection() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run("claude-code").unwrap();
+        let agents_md = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+
+        // No invented broker default anywhere in the file.
+        assert!(
+            !agents_md.contains("3141"),
+            "AGENTS.md must not name a default broker port; the broker auto-selects one"
+        );
+        assert!(
+            agents_md.contains("broker.port"),
+            "AGENTS.md must say the broker is discovered through the port file"
+        );
+        assert!(
+            agents_md.contains("Override only"),
+            "AGTCRDN_BROKER_URL must be presented as an override, not a default"
+        );
+
+        // A rule for choosing among MCP servers.
+        assert!(
+            agents_md.contains("Match the service the task is about"),
+            "AGENTS.md must tell the agent to match the task's service"
+        );
+        assert!(
+            agents_md.contains("authenticated identity fits the question"),
+            "AGENTS.md must prefer the server whose auth identity fits the question"
+        );
+        assert!(
+            agents_md.contains("Never pick an unauthenticated server"),
+            "AGENTS.md must forbid an unauthenticated server for identity questions"
+        );
+
+        // Learn a tool's arguments instead of guessing them.
+        assert!(
+            agents_md.contains("agentcordon mcp-tools --schema"),
+            "AGENTS.md must point at `mcp-tools --schema` for a tool's arguments"
+        );
+        assert!(
+            agents_md.contains("Never guess argument names"),
+            "AGENTS.md must tell the agent not to guess argument names"
+        );
+    }
+
+    /// The AgentCordon block is delimited and replaced in place, so a rerun
+    /// after the template changes must not leave two copies or clobber the
+    /// user's own content.
+    #[test]
+    fn agents_md_section_is_replaced_not_duplicated() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
         fs::write(
-            dir.path().join(".mcp.json"),
-            r#"{"mcpServers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"],"env":{"FOO":"bar"}}}}"#,
+            dir.path().join("AGENTS.md"),
+            "# My Instructions\n\nKeep this line.\n",
         )
         .unwrap();
 
-        ensure_agentcordon_mcp_entry().unwrap();
+        run("claude-code").unwrap();
+        run("claude-code").unwrap();
 
-        let json = read_mcp(dir.path());
-        let servers = json["mcpServers"].as_object().unwrap();
-        assert!(servers.contains_key("agentcordon"));
-        let fs_entry = &servers["filesystem"];
-        assert_eq!(fs_entry["command"], "npx");
-        assert_eq!(fs_entry["env"]["FOO"], "bar");
+        let agents_md = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert_eq!(
+            agents_md.matches("<!-- BEGIN AGENTCORDON -->").count(),
+            1,
+            "the AgentCordon section must appear exactly once"
+        );
+        assert!(
+            agents_md.contains("Keep this line."),
+            "the user's own content must survive"
+        );
     }
 
+    /// The identity belongs in exactly one generated file.
+    ///
+    /// `AGENTS.md`'s block is delimited and replaced on every run; `CLAUDE.md`
+    /// carried a second copy and was skipped whenever it merely mentioned
+    /// "AgentCordon", so after a key regeneration the two files named
+    /// different identities and the agent read both
+    /// (uat/artifacts/reviews/UI-REVIEW-static.md G1).
     #[test]
-    fn ensure_entry_is_idempotent() {
+    fn only_agents_md_carries_the_identity() {
         let dir = TempDir::new().unwrap();
         let _g = EnvGuard::new(dir.path());
 
-        ensure_agentcordon_mcp_entry().unwrap();
-        let first = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
-        ensure_agentcordon_mcp_entry().unwrap();
-        let second = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
-        assert_eq!(first, second);
+        run("all").unwrap();
 
-        let json = read_mcp(dir.path());
-        let servers = json["mcpServers"].as_object().unwrap();
-        assert_eq!(servers.len(), 1);
-        assert!(servers.contains_key("agentcordon"));
+        let agents_md = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(
+            agents_md.contains("AC_IDENTITY: sha256:"),
+            "AGENTS.md is where the identity lives"
+        );
+
+        for other in [
+            "CLAUDE.md",
+            ".codex/instructions.md",
+            ".openclaw/instructions.md",
+        ] {
+            let content = fs::read_to_string(dir.path().join(other)).unwrap();
+            assert!(
+                !content.contains("AC_IDENTITY"),
+                "{other} must not carry a second copy of the identity — it goes stale when \
+                 the key is regenerated"
+            );
+        }
     }
 
+    /// Every file `init` writes into carries the same BEGIN/END markers, so a
+    /// rerun replaces its own block in place. Detection by substring left a
+    /// project whose `CLAUDE.md` said "we don't use AgentCordon here"
+    /// untouched forever (uat/artifacts/reviews/UI-REVIEW-static.md G5).
     #[test]
-    fn create_new_file_writes_exact_body() {
+    fn every_generated_file_is_delimited_by_markers_and_replaced_in_place() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("key");
+        let _g = EnvGuard::new(dir.path());
 
-        create_new_file(&path, 0o600, b"hello world", "private key").unwrap();
+        // A pre-existing file that merely mentions AgentCordon still gets the
+        // block appended, because the markers are what `init` looks for.
+        fs::write(
+            dir.path().join("CLAUDE.md"),
+            "# House rules\n\nWe do not use AgentCordon for anything else.\n",
+        )
+        .unwrap();
 
-        let body = fs::read_to_string(&path).unwrap();
-        assert_eq!(body, "hello world");
+        run("all").unwrap();
+        run("all").unwrap();
+
+        for generated in [
+            "AGENTS.md",
+            "CLAUDE.md",
+            ".codex/instructions.md",
+            ".openclaw/instructions.md",
+        ] {
+            let content = fs::read_to_string(dir.path().join(generated)).unwrap();
+            assert_eq!(
+                content.matches("<!-- BEGIN AGENTCORDON -->").count(),
+                1,
+                "{generated}: exactly one delimited AgentCordon block"
+            );
+            assert_eq!(
+                content.matches("<!-- END AGENTCORDON -->").count(),
+                1,
+                "{generated}: the block is closed exactly once"
+            );
+        }
+
+        let claude_md = fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+        assert!(
+            claude_md.contains("We do not use AgentCordon for anything else."),
+            "the user's own content survives"
+        );
+        assert!(
+            claude_md.contains("@AGENTS.md"),
+            "CLAUDE.md's block is the import of AGENTS.md and nothing else"
+        );
     }
 
+    /// The Codex and OpenClaw stubs promised a skills directory `init` never
+    /// writes, and OpenClaw's promised hot-reload of skills that do not exist
+    /// (uat/artifacts/reviews/UI-REVIEW-static.md G4).
     #[test]
-    fn create_new_file_rejects_existing_path() {
+    fn the_agent_stubs_do_not_promise_a_skills_directory() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("key");
-        fs::write(&path, b"pre-existing").unwrap();
+        let _g = EnvGuard::new(dir.path());
 
-        let err = create_new_file(&path, 0o600, b"new content", "private key").unwrap_err();
+        run("all").unwrap();
 
-        assert_eq!(err.code, crate::error::ExitCode::GeneralError);
+        for stub in [".codex/instructions.md", ".openclaw/instructions.md"] {
+            let content = fs::read_to_string(dir.path().join(stub)).unwrap();
+            assert!(
+                !content.contains(".agents/skills/"),
+                "{stub}: init writes no skill, so the discovery path is a dangling promise"
+            );
+            assert!(
+                !content.contains("hot-reload"),
+                "{stub}: nothing to hot-reload"
+            );
+        }
         assert!(
-            err.message.contains("appeared concurrently"),
-            "message was: {}",
-            err.message
+            !dir.path().join(".agents/skills").exists(),
+            "init writes no skills directory"
         );
-        // The pre-existing content must be untouched — TOCTOU hardening
-        // means we never overwrite on race.
-        assert_eq!(fs::read_to_string(&path).unwrap(), "pre-existing");
     }
 
-    #[cfg(unix)]
+    /// One sentence about `AGTCRDN_PROXY_ALLOW_LOOPBACK`, in the one file that
+    /// explains the broker.
+    ///
+    /// `crates/broker/src/config.rs:31` reads it as a clap `env` argument, so
+    /// it is read once, when the broker process starts. Putting it in front of
+    /// an `agentcordon proxy` command — which this repository's own `CLAUDE.md`
+    /// told the reader to do — sets it on the CLI, which never looks at it,
+    /// and the proxy is refused anyway (uat/artifacts/reviews/UI-REVIEW-static.md G2).
     #[test]
-    fn create_new_file_sets_mode_atomically() {
+    fn one_sentence_explains_the_loopback_flag() {
         let dir = TempDir::new().unwrap();
-        let key_path = dir.path().join("workspace.key");
-        let pub_path = dir.path().join("workspace.pub");
+        let _g = EnvGuard::new(dir.path());
 
-        create_new_file(&key_path, 0o600, b"seed", "private key").unwrap();
-        create_new_file(&pub_path, 0o644, b"pk", "public key").unwrap();
+        run("all").unwrap();
 
-        let key_mode = fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
-        let pub_mode = fs::metadata(&pub_path).unwrap().permissions().mode() & 0o777;
-        // The active umask masks off group/world bits; just assert the
-        // file never got broader perms than we asked for.
-        assert!(
-            key_mode & !0o600 == 0,
-            "private key mode {key_mode:o} wider than 0o600"
+        let agents_md = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert_eq!(
+            agents_md.matches("AGTCRDN_PROXY_ALLOW_LOOPBACK").count(),
+            1,
+            "AGENTS.md explains the loopback flag exactly once"
         );
         assert!(
-            pub_mode & !0o644 == 0,
-            "public key mode {pub_mode:o} wider than 0o644"
+            agents_md.contains("AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker"),
+            "the sentence shows the flag where it is read: in front of the broker, at start"
         );
-        // And that owner-read is set on both (sanity).
-        assert_eq!(key_mode & 0o400, 0o400);
-        assert_eq!(pub_mode & 0o400, 0o400);
+        assert!(
+            !agents_md.contains("AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon proxy"),
+            "the CLI never reads the flag; prefixing a proxy call with it does nothing"
+        );
+
+        for other in [
+            "CLAUDE.md",
+            ".codex/instructions.md",
+            ".openclaw/instructions.md",
+        ] {
+            let content = fs::read_to_string(dir.path().join(other)).unwrap();
+            assert!(
+                !content.contains("AGTCRDN_PROXY_ALLOW_LOOPBACK"),
+                "{other} must not carry a second, divergent explanation of the flag"
+            );
+        }
     }
 }

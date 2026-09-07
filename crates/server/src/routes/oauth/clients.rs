@@ -4,20 +4,13 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
-use agent_cordon_core::oauth2::types::OAuthClient;
-use agent_cordon_core::oauth2::types::OAuthScope;
 
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::oauth::RegisterClient;
 use crate::state::AppState;
-
-use super::{generate_client_secret, is_localhost_uri};
 
 // ---------------------------------------------------------------------------
 // POST /api/v1/oauth/clients — Register client
@@ -58,110 +51,32 @@ pub(crate) async fn register_client(
     ),
     ApiError,
 > {
-    if !auth.is_root {
-        return Err(ApiError::Forbidden("admin access required".into()));
-    }
-
-    // Validate workspace_name
-    if req.workspace_name.is_empty() || req.workspace_name.len() > 255 {
-        return Err(ApiError::BadRequest(
-            "workspace_name must be 1-255 characters".into(),
-        ));
-    }
-
-    // Validate public_key_hash format (64 hex chars = SHA-256)
-    if req.public_key_hash.len() != 64
-        || !req.public_key_hash.chars().all(|c| c.is_ascii_hexdigit())
-    {
-        return Err(ApiError::BadRequest(
-            "public_key_hash must be a 64-char hex string".into(),
-        ));
-    }
-
-    // Validate redirect URIs are localhost-only
-    if req.redirect_uris.is_empty() {
-        return Err(ApiError::BadRequest(
-            "at least one redirect_uri is required".into(),
-        ));
-    }
-    for uri in &req.redirect_uris {
-        if !is_localhost_uri(uri) {
-            return Err(ApiError::BadRequest(format!(
-                "redirect_uri must be localhost: {uri}"
-            )));
-        }
-    }
-
-    // Parse and validate scopes
-    let scopes: Vec<OAuthScope> = req
-        .scopes
-        .iter()
-        .map(|s| s.parse::<OAuthScope>())
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(ApiError::BadRequest)?;
-
-    // Check for existing client with this public_key_hash
-    if let Some(existing) = state
-        .store
-        .get_oauth_client_by_public_key_hash(&req.public_key_hash)
-        .await?
-    {
-        if existing.revoked_at.is_none() {
-            return Err(ApiError::Conflict(
-                "client already registered for this public_key_hash".into(),
-            ));
-        }
-    }
-
-    // Generate client_id and client_secret
-    let client_id = agent_cordon_core::oauth2::tokens::generate_client_id();
-    let (client_secret, client_secret_hash) = generate_client_secret();
-
-    let now = Utc::now();
-    let client = OAuthClient {
-        id: Uuid::new_v4(),
-        client_id: client_id.clone(),
-        client_secret_hash: Some(client_secret_hash),
-        workspace_name: req.workspace_name.clone(),
-        public_key_hash: req.public_key_hash.clone(),
-        redirect_uris: req.redirect_uris.clone(),
-        allowed_scopes: scopes.clone(),
-        created_by_user: auth.user.id.clone(),
-        created_at: now,
-        revoked_at: None,
-    };
-
-    state.store.create_oauth_client(&client).await?;
-
-    // Audit event
-    let event = AuditEvent::builder(AuditEventType::Oauth2TokenAcquired)
-        .action("oauth_client_registered")
-        .user_actor(&auth.user)
-        .resource("oauth_client", &client.id.to_string())
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some("admin-registered client"))
-        .details(serde_json::json!({
-            "client_id": client_id,
-            "workspace_name": req.workspace_name,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "failed to write audit event");
-    }
-
-    tracing::info!(
-        client_id = %client_id,
-        workspace_name = %req.workspace_name,
-        "OAuth client registered (admin)"
-    );
+    let (client, client_secret) = state
+        .services
+        .oauth
+        .register_client(
+            &auth,
+            &corr.0,
+            RegisterClient {
+                workspace_name: req.workspace_name,
+                redirect_uris: req.redirect_uris,
+                scopes: req.scopes,
+                public_key_hash: req.public_key_hash,
+            },
+        )
+        .await?;
 
     let response = RegisterClientResponse {
-        client_id,
+        client_id: client.client_id,
         client_secret: Some(client_secret),
-        workspace_name: req.workspace_name,
-        redirect_uris: req.redirect_uris,
-        allowed_scopes: scopes.iter().map(|s| s.to_string()).collect(),
-        created_at: now.to_rfc3339(),
+        workspace_name: client.workspace_name,
+        redirect_uris: client.redirect_uris,
+        allowed_scopes: client
+            .allowed_scopes
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        created_at: client.created_at.to_rfc3339(),
     };
 
     Ok((
@@ -229,44 +144,11 @@ pub(crate) async fn revoke_client(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<RevokeResponse>>, ApiError> {
-    if !auth.is_root {
-        return Err(ApiError::Forbidden("admin access required".into()));
-    }
-
-    // Look up client by UUID id to find client_id
-    let clients = state.store.list_oauth_clients().await?;
-    let client = clients
-        .iter()
-        .find(|c| c.id.to_string() == id)
-        .ok_or_else(|| ApiError::NotFound("OAuth client not found".into()))?;
-
-    let client_id = client.client_id.clone();
-
-    // Revoke client and all its tokens
-    let revoked = state.store.revoke_oauth_client(&client_id).await?;
-    state
-        .store
-        .revoke_access_tokens_for_client(&client_id)
+    let revoked = state
+        .services
+        .oauth
+        .revoke_client(&auth, &corr.0, &id)
         .await?;
-    state
-        .store
-        .revoke_refresh_tokens_for_client(&client_id)
-        .await?;
-
-    // Audit event
-    let event = AuditEvent::builder(AuditEventType::Oauth2TokenFailed)
-        .action("oauth_client_revoked")
-        .user_actor(&auth.user)
-        .resource("oauth_client", &id)
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some("client revoked by admin"))
-        .details(serde_json::json!({
-            "client_id": client_id,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "failed to write audit event");
-    }
 
     Ok(Json(ApiResponse::ok(RevokeResponse { revoked })))
 }

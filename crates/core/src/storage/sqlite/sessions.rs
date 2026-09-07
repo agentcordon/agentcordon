@@ -4,6 +4,7 @@ use super::helpers::*;
 use super::SqliteStore;
 
 use crate::domain::session::Session;
+use crate::domain::time::format_timestamp;
 use crate::domain::user::UserId;
 use crate::error::StoreError;
 use crate::storage::SessionStore;
@@ -16,9 +17,9 @@ impl SqliteStore {
         self.conn()
             .call(move |conn| {
                 let user_id_str = session.user_id.0.hyphenated().to_string();
-                let created_at = session.created_at.to_rfc3339();
-                let expires_at = session.expires_at.to_rfc3339();
-                let last_seen_at = session.last_seen_at.to_rfc3339();
+                let created_at = format_timestamp(&session.created_at);
+                let expires_at = format_timestamp(&session.expires_at);
+                let last_seen_at = format_timestamp(&session.last_seen_at);
 
                 conn.execute(
                     "INSERT INTO sessions (id, user_id, created_at, expires_at, last_seen_at) \
@@ -35,7 +36,7 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_session(&self, id_hash: &str) -> Result<Option<Session>, StoreError> {
@@ -61,7 +62,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn delete_session(&self, id_hash: &str) -> Result<bool, StoreError> {
@@ -78,7 +79,7 @@ impl SqliteStore {
                 Ok(changed > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn delete_user_sessions(&self, user_id: &UserId) -> Result<u32, StoreError> {
@@ -95,12 +96,12 @@ impl SqliteStore {
                 Ok(changed as u32)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn touch_session(&self, id_hash: &str) -> Result<(), StoreError> {
         let id_hash = id_hash.to_string();
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
 
         self.conn()
             .call(move |conn| {
@@ -119,11 +120,11 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn cleanup_expired_sessions(&self) -> Result<u32, StoreError> {
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
 
         self.conn()
             .call(move |conn| {
@@ -136,7 +137,7 @@ impl SqliteStore {
                 Ok(changed as u32)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }
 

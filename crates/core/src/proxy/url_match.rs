@@ -1,30 +1,159 @@
-use regex::Regex;
+//! Structural matching of a target URL against a credential's allowed
+//! URL pattern.
+//!
+//! The pattern is parsed like a URL. Scheme, host, and port are compared
+//! as values, so `https://api.github.com/*` cannot be satisfied by a
+//! different scheme or port, or by a host that merely contains the text.
+//! A `*` in the host stands for exactly one DNS label. A `*` in the path
+//! (and query) stands for any run of characters. A textual glob over the
+//! whole URL let `https://*.github.com/*` match any URL whose query string
+//! happened to contain `.github.com/`.
 
-/// Check whether a URL matches a glob-style pattern.
+use url::Url;
+
+/// Check whether `url` is allowed by `pattern`.
 ///
-/// Behavior:
-/// - If `pattern` is empty, returns `true` (any URL allowed -- backward compat).
-/// - `*` matches any sequence of characters (greedy, including `/`).
-/// - No wildcard means exact match.
-/// - Scheme is significant: `https://` does not match `http://`.
-///
-/// The function converts the glob pattern to a regex internally:
-/// all regex metacharacters are escaped, then `*` is replaced with `.*`.
-/// The resulting regex is anchored at both ends.
+/// - An empty pattern allows any URL (no restriction was configured).
+/// - Scheme must match exactly. Port must match the effective port.
+/// - Host labels are compared one to one; a pattern label `*` matches any
+///   single label. `*.example.com` matches `api.example.com` and not
+///   `example.com` or `a.b.example.com`.
+/// - Path plus query is matched by a glob where `*` matches any sequence,
+///   anchored at both ends. No wildcard means an exact match. A pattern
+///   with no path matches only the root path.
+/// - Anything that does not parse as a URL is refused.
 pub fn url_matches_pattern(url: &str, pattern: &str) -> bool {
     if pattern.is_empty() {
         return true;
     }
-
-    let escaped = regex::escape(pattern);
-    // regex::escape will turn `*` into `\*`; undo that to get `.*`.
-    let regex_str = format!("^{}$", escaped.replace(r"\*", ".*"));
-
-    match Regex::new(&regex_str) {
-        Ok(re) => re.is_match(url),
-        // If the pattern somehow produces invalid regex, deny by default.
-        Err(_) => false,
+    let (Ok(target), Ok(pat)) = (Url::parse(url), Url::parse(pattern)) else {
+        return false;
+    };
+    if target.scheme() != pat.scheme() {
+        return false;
     }
+    if target.port_or_known_default() != pat.port_or_known_default() {
+        return false;
+    }
+    let (Some(target_host), Some(pat_host)) = (target.host_str(), pat.host_str()) else {
+        return false;
+    };
+    if !host_matches(target_host, pat_host) {
+        return false;
+    }
+    glob_matches(&path_and_query(&target), &path_and_query(&pat))
+}
+
+/// The grammar [`validate_url_pattern`] enforces, in one line, for help text
+/// and for the message a refusal carries.
+pub const URL_PATTERN_GRAMMAR: &str =
+    "scheme://host[:port]/path — http or https, a `*` in the host stands for exactly one DNS \
+     label (https://*.example.com/*), and a `*` in the path or query stands for any run of \
+     characters (https://api.example.com/repos/*/pulls)";
+
+/// Check that `pattern` is a pattern [`url_matches_pattern`] could ever
+/// satisfy, and say what is wrong when it is not.
+///
+/// The matcher answers `false` for anything it cannot parse, so an
+/// unparseable pattern is not a lax restriction — it is a credential that
+/// can never be vended. That failure used to surface only at vend time, on
+/// the far side of the console, which is why this is checked where the
+/// pattern is written.
+///
+/// An empty pattern is "no restriction configured" and is accepted; the
+/// caller decides whether to store it as `NULL`.
+pub fn validate_url_pattern(pattern: &str) -> Result<(), String> {
+    if pattern.is_empty() {
+        return Ok(());
+    }
+    if pattern.trim() != pattern {
+        return Err("must not begin or end with whitespace".to_string());
+    }
+    let parsed = Url::parse(pattern)
+        .map_err(|e| format!("is not a URL ({e}); expected {URL_PATTERN_GRAMMAR}"))?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(format!(
+                "has scheme '{other}'; only http and https can be proxied"
+            ))
+        }
+    }
+
+    let Some(host) = parsed.host_str() else {
+        return Err(format!("names no host; expected {URL_PATTERN_GRAMMAR}"));
+    };
+    if host.is_empty() {
+        return Err(format!("names no host; expected {URL_PATTERN_GRAMMAR}"));
+    }
+    let labels: Vec<&str> = host.trim_end_matches('.').split('.').collect();
+    for label in &labels {
+        if label.contains('*') && *label != "*" {
+            return Err(format!(
+                "has a partial wildcard in the host label '{label}'; a `*` in the host stands for \
+                 exactly one whole DNS label"
+            ));
+        }
+    }
+    // `https://*/` parses, but a host made only of wildcards restricts
+    // nothing a reader would recognise as a restriction.
+    if labels.iter().all(|l| *l == "*") {
+        return Err(format!(
+            "names no literal host label; expected {URL_PATTERN_GRAMMAR}"
+        ));
+    }
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("must not carry a username or password".to_string());
+    }
+    if parsed.fragment().is_some() {
+        return Err("must not carry a fragment; only the path and query are matched".to_string());
+    }
+    Ok(())
+}
+
+fn path_and_query(u: &Url) -> String {
+    match u.query() {
+        Some(q) => format!("{}?{}", u.path(), q),
+        None => u.path().to_string(),
+    }
+}
+
+fn host_matches(host: &str, pattern: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let pattern = pattern.trim_end_matches('.').to_ascii_lowercase();
+    let h: Vec<&str> = host.split('.').collect();
+    let p: Vec<&str> = pattern.split('.').collect();
+    h.len() == p.len() && h.iter().zip(&p).all(|(hl, pl)| *pl == "*" || hl == pl)
+}
+
+/// Anchored glob where `*` matches any (possibly empty) run of characters.
+fn glob_matches(text: &str, pattern: &str) -> bool {
+    let t: Vec<char> = text.chars().collect();
+    let p: Vec<char> = pattern.chars().collect();
+    let (mut ti, mut pi) = (0usize, 0usize);
+    let (mut star_p, mut star_t): (Option<usize>, usize) = (None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == t[ti]) {
+            ti += 1;
+            pi += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star_p = Some(pi);
+            star_t = ti;
+            pi += 1;
+        } else if let Some(sp) = star_p {
+            pi = sp + 1;
+            star_t += 1;
+            ti = star_t;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 #[cfg(test)]
@@ -38,15 +167,11 @@ mod tests {
     }
 
     #[test]
-    fn exact_match() {
+    fn exact_match_and_mismatch() {
         assert!(url_matches_pattern(
             "https://api.github.com/repos/foo",
             "https://api.github.com/repos/foo"
         ));
-    }
-
-    #[test]
-    fn exact_mismatch() {
         assert!(!url_matches_pattern(
             "https://api.github.com/repos/bar",
             "https://api.github.com/repos/foo"
@@ -54,19 +179,11 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_at_end() {
-        assert!(url_matches_pattern(
-            "https://api.github.com/repos/foo",
-            "https://api.github.com/*"
-        ));
+    fn path_wildcards() {
         assert!(url_matches_pattern(
             "https://api.github.com/repos/foo/bar/baz",
             "https://api.github.com/*"
         ));
-    }
-
-    #[test]
-    fn wildcard_in_middle() {
         assert!(url_matches_pattern(
             "https://api.github.com/repos/myrepo/pulls",
             "https://api.github.com/repos/*/pulls"
@@ -75,44 +192,78 @@ mod tests {
             "https://api.github.com/repos/myrepo/issues",
             "https://api.github.com/repos/*/pulls"
         ));
+        assert!(url_matches_pattern(
+            "https://api.github.com/repos/owner/repo/pulls/42",
+            "https://api.github.com/repos/*/repo/pulls/*"
+        ));
+        assert!(!url_matches_pattern(
+            "https://api.github.com/repos/foo/bar",
+            "https://api.github.com/repos/foo"
+        ));
     }
 
     #[test]
-    fn scheme_mismatch() {
+    fn scheme_and_port_are_compared_as_values() {
         assert!(!url_matches_pattern(
             "http://api.github.com/repos/foo",
             "https://api.github.com/*"
         ));
+        assert!(url_matches_pattern(
+            "http://localhost:3000/api/v1/data",
+            "http://localhost:3000/*"
+        ));
+        assert!(!url_matches_pattern(
+            "http://localhost:8080/api/v1/data",
+            "http://localhost:3000/*"
+        ));
+        assert!(
+            url_matches_pattern("https://example.com:443/x", "https://example.com/*"),
+            "explicit default port is the same port"
+        );
+        assert!(!url_matches_pattern(
+            "https://api.github.com:8443/repos",
+            "https://*.github.com/*"
+        ));
     }
 
     #[test]
-    fn special_regex_characters_in_url_are_handled() {
-        // The `.` in `api.github.com` should not match arbitrary characters.
+    fn host_wildcard_is_one_label() {
+        let p = "https://*.github.com/*";
+        assert!(url_matches_pattern("https://api.github.com/repos", p));
+        assert!(url_matches_pattern("https://API.GitHub.com/repos", p));
+        assert!(!url_matches_pattern("https://github.com/repos", p));
+        assert!(!url_matches_pattern("https://a.b.github.com/repos", p));
+        assert!(!url_matches_pattern(
+            "https://api.github.com.attacker.example/repos",
+            p
+        ));
+    }
+
+    #[test]
+    fn host_text_inside_the_query_does_not_match() {
+        assert!(!url_matches_pattern(
+            "https://attacker.example/?u=.github.com/",
+            "https://*.github.com/*"
+        ));
         assert!(!url_matches_pattern(
             "https://apiXgithubYcom/repos/foo",
             "https://api.github.com/*"
         ));
+    }
 
-        // Query strings with `?` should be matched literally.
+    #[test]
+    fn query_strings_and_fragments() {
         assert!(url_matches_pattern(
             "https://api.example.com/search?q=test",
             "https://api.example.com/search?q=test"
         ));
-    }
-
-    #[test]
-    fn wildcard_matches_query_strings() {
         assert!(url_matches_pattern(
             "https://api.example.com/search?q=hello&limit=10",
             "https://api.example.com/*"
         ));
-    }
-
-    #[test]
-    fn multiple_wildcards() {
         assert!(url_matches_pattern(
-            "https://api.github.com/repos/owner/repo/pulls/42",
-            "https://api.github.com/repos/*/repo/pulls/*"
+            "https://example.com/page#section",
+            "https://example.com/*"
         ));
     }
 
@@ -129,31 +280,60 @@ mod tests {
     }
 
     #[test]
-    fn pattern_with_port() {
-        assert!(url_matches_pattern(
-            "http://localhost:3000/api/v1/data",
-            "http://localhost:3000/*"
-        ));
+    fn unparseable_input_is_refused() {
+        assert!(!url_matches_pattern("not a url", "https://example.com/*"));
+        assert!(!url_matches_pattern("https://example.com/x", "*"));
+    }
+
+    // -- validate_url_pattern --------------------------------------------
+
+    #[test]
+    fn the_documented_patterns_validate() {
+        for pattern in [
+            "",
+            "https://api.github.com/*",
+            "https://*.amazonaws.com/*",
+            "https://api.example.com/repos/*/pulls",
+            "http://localhost:8080/*",
+            "https://api.example.com/v1/x?tenant=*",
+        ] {
+            assert!(
+                validate_url_pattern(pattern).is_ok(),
+                "{pattern:?} should validate: {:?}",
+                validate_url_pattern(pattern)
+            );
+        }
+    }
+
+    /// Every pattern the validator refuses is one `url_matches_pattern` can
+    /// never satisfy, so the two must not disagree.
+    #[test]
+    fn a_refused_pattern_would_never_have_matched() {
+        for pattern in [
+            "not a url",
+            "api.github.com/*",
+            "ftp://example.com/*",
+            "https:///*",
+            "*",
+            "https://api-*.github.com/*",
+        ] {
+            assert!(
+                validate_url_pattern(pattern).is_err(),
+                "{pattern:?} should be refused"
+            );
+        }
+        // The partial wildcard parses as a URL, so only the validator catches
+        // it — the matcher just answers "no" to every URL forever.
         assert!(!url_matches_pattern(
-            "http://localhost:8080/api/v1/data",
-            "http://localhost:3000/*"
+            "https://api-v3.github.com/x",
+            "https://api-*.github.com/*"
         ));
     }
 
     #[test]
-    fn fragment_in_url() {
-        assert!(url_matches_pattern(
-            "https://example.com/page#section",
-            "https://example.com/*"
-        ));
-    }
-
-    #[test]
-    fn pattern_must_match_entire_url() {
-        // Pattern without wildcard should not match a longer URL.
-        assert!(!url_matches_pattern(
-            "https://api.github.com/repos/foo/bar",
-            "https://api.github.com/repos/foo"
-        ));
+    fn credentials_and_fragments_are_refused() {
+        assert!(validate_url_pattern("https://user:pw@example.com/*").is_err());
+        assert!(validate_url_pattern("https://example.com/*#frag").is_err());
+        assert!(validate_url_pattern(" https://example.com/*").is_err());
     }
 }

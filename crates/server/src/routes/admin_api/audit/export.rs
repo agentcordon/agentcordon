@@ -27,14 +27,22 @@ pub(super) struct AuditExportQuery {
 
 /// Escape a field value for CSV output.
 ///
-/// If the value contains a comma, double-quote, or newline, the entire field
-/// is wrapped in double quotes and any internal double-quotes are doubled.
+/// A value beginning with `=`, `+`, `-`, `@`, tab, or carriage return is a
+/// formula to a spreadsheet and would execute when the export is opened, so
+/// it is prefixed with an apostrophe, which spreadsheets read as "text".
+/// Then, if the value contains a comma, double-quote, or newline, the field
+/// is wrapped in double quotes with internal double-quotes doubled.
 pub(super) fn csv_escape(value: &str) -> String {
+    let value: std::borrow::Cow<'_, str> = if value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{value}").into()
+    } else {
+        value.into()
+    };
     if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
         let escaped = value.replace('"', "\"\"");
         format!("\"{}\"", escaped)
     } else {
-        value.to_string()
+        value.into_owned()
     }
 }
 
@@ -99,6 +107,7 @@ pub(super) async fn export_audit_csv(
             limit: CSV_EXPORT_MAX_ROWS + 1,
             resource_type: q.resource_type,
             resource_id: q.resource_id,
+            user_id: super::scoped_user_id(&actor, None),
             ..Default::default()
         })
         .await?;
@@ -251,6 +260,7 @@ pub(super) async fn export_audit_syslog(
             limit: EXPORT_MAX_ROWS,
             resource_type: q.resource_type,
             resource_id: q.resource_id,
+            user_id: super::scoped_user_id(&actor, None),
             ..Default::default()
         })
         .await?;
@@ -307,6 +317,7 @@ pub(super) async fn export_audit_jsonl(
             limit: EXPORT_MAX_ROWS,
             resource_type: q.resource_type,
             resource_id: q.resource_id,
+            user_id: super::scoped_user_id(&actor, None),
             ..Default::default()
         })
         .await?;

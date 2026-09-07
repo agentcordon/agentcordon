@@ -35,7 +35,6 @@ async fn create_workspace_in_db(
     let ws = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,

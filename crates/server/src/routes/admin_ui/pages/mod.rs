@@ -9,7 +9,6 @@ pub mod auth;
 pub mod credentials;
 pub mod dashboard;
 pub mod mcp_servers;
-pub mod panels;
 pub mod policies;
 pub mod settings;
 pub mod special;
@@ -27,7 +26,7 @@ use axum::{
 };
 
 use agent_cordon_core::crypto::session::hash_session_token_hmac;
-use agent_cordon_core::domain::user::{User, UserRole};
+use agent_cordon_core::domain::user::User;
 use askama::Template;
 
 use crate::state::AppState;
@@ -80,15 +79,10 @@ impl From<&User> for UserContext {
             username: user.username.clone(),
             display_name: user.display_name.clone(),
             role: format!("{:?}", user.role).to_lowercase(),
-            is_admin: user.role == UserRole::Admin || user.is_root,
+            is_admin: user.is_admin(),
             user_id: user.id.0.to_string(),
         }
     }
-}
-
-/// Returns true if the user has admin privileges (Admin role or root flag).
-pub fn is_admin_user(user: &User) -> bool {
-    user.role == UserRole::Admin || user.is_root
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +117,31 @@ pub fn extract_page_user(request: &Request) -> Result<User, Response> {
         .ok_or_else(|| Redirect::to("/login").into_response())
 }
 
+/// What every authenticated page shell renders: the signed-in user and the
+/// session's CSRF token. A page adds at most the entity id from its URL;
+/// every list and record it shows is fetched by its script from the admin
+/// API, so the page can never show more than the (Cedar-filtered) API does.
+pub struct PageShell {
+    pub user: UserContext,
+    pub csrf_token: String,
+}
+
+/// Read the shell context `page_auth` placed in the request extensions, or
+/// the redirect to `/login` when the session is missing.
+#[allow(clippy::result_large_err)]
+pub fn page_shell(request: &Request) -> Result<PageShell, Response> {
+    let user = extract_page_user(request)?;
+    let csrf_token = request
+        .extensions()
+        .get::<CsrfToken>()
+        .map(|t| t.0.clone())
+        .unwrap_or_default();
+    Ok(PageShell {
+        user: UserContext::from(&user),
+        csrf_token,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Page auth middleware
 // ---------------------------------------------------------------------------
@@ -150,7 +169,7 @@ pub async fn page_auth(
         None => return redirect_to_login(&request),
     };
 
-    let token_hash = hash_session_token_hmac(&session_token, &state.session_hash_key);
+    let token_hash = hash_session_token_hmac(&session_token, &state.crypto.session_hash_key);
 
     let session = match state.store.get_session(&token_hash).await {
         Ok(Some(s)) if s.expires_at >= chrono::Utc::now() => s,
@@ -165,7 +184,7 @@ pub async fn page_auth(
     };
 
     // Touch session
-    let _ = state.store.touch_session(&token_hash).await;
+    state.services.users.touch_session(&token_hash).await;
 
     // Extract CSRF token from cookie for templates
     let csrf_token = parse_cookie(cookie_header, CSRF_COOKIE_NAME)
@@ -229,21 +248,13 @@ pub fn page_routes(app_state: AppState) -> Router<AppState> {
         )
         .route(
             "/credentials/{id}/view",
-            get(credentials::credential_detail_view_page),
-        )
-        .route(
-            "/credentials/{id}/detail-partial",
-            get(credentials::credential_detail_partial),
+            get(credentials::credential_detail_view_redirect),
         )
         .route("/workspaces", get(workspaces::workspace_list_page))
         .route("/workspaces/{id}", get(workspaces::workspace_detail_page))
         .route(
             "/workspaces/{id}/view",
-            get(workspaces::workspace_detail_view_page),
-        )
-        .route(
-            "/workspaces/{id}/detail-partial",
-            get(workspaces::workspace_detail_partial),
+            get(workspaces::workspace_detail_view_redirect),
         )
         // Security pages (renamed from policies)
         .route("/security", get(policies::policy_list_page_security))
@@ -266,33 +277,43 @@ pub fn page_routes(app_state: AppState) -> Router<AppState> {
         .route("/marketplace", get(redirect_marketplace_to_mcp_servers))
         .route("/mcp-servers", get(mcp_servers::mcp_server_list_page))
         .route(
+            "/mcp-servers/marketplace",
+            get(mcp_servers::mcp_marketplace_page),
+        )
+        .route(
             "/mcp-servers/{id}",
             get(mcp_servers::mcp_server_detail_page),
         )
         .route("/audit", get(audit::audit_page))
         .route("/audit/{id}", get(audit::audit_page))
-        .route(
-            "/audit/{id}/detail-partial",
-            get(audit::audit_detail_partial),
-        )
-        // User management under settings
-        .route("/settings/users", get(users::user_list_page_settings))
+        // User management is a Settings section, not a page. The table, the
+        // rail and the one "Add User" button all live at
+        // `/settings#users-section`; the create form is the one screen of its
+        // own, because it is a form (uat/artifacts/fresh-user-docker-2.md F5).
+        .route("/settings/users", get(redirect_users_to_settings))
         .route("/settings/users/new", get(users::user_new_page_settings))
-        // Legacy redirects: /users → /settings/users
         .route("/users", get(redirect_users_to_settings))
         .route("/users/new", get(redirect_users_new_to_settings))
         .route("/settings", get(settings::settings_page))
-        // Slide-in panel partials (HTML fragments for AJAX)
-        .route("/workspaces/{id}/partial", get(panels::workspace_partial))
-        .route("/credentials/{id}/partial", get(panels::credential_partial))
-        .route("/security/{id}/partial", get(panels::policy_partial))
         .route("/register", get(special::agent_registration_page))
         // RFC 8628 device-flow activation page. `GET` renders the consent
         // form; `POST` records the approve/deny decision via
         // `DeviceCodeService` (which emits the audit event). Both routes
         // require an authenticated session because the approving user's
         // identity is the whole point of the step.
-        .route("/activate", get(activate::get).post(activate::post))
+        // The form is a user-code guessing surface like the JSON approve
+        // route, so it shares that route's per-(address, session) limiter.
+        // `page_auth` wraps this whole router, so only signed-in requests
+        // reach the limiter.
+        .route(
+            "/activate",
+            get(activate::get)
+                .post(activate::post)
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    crate::middleware::rate_limit_device_approve::rate_limit_device_approve,
+                )),
+        )
         .route("/activate/success", get(activate::success_page))
         .route("/activate/denied", get(activate::denied_page))
         .route("/activate/expired", get(activate::expired_page))
@@ -321,9 +342,13 @@ async fn redirect_policies_detail_to_security(Path(id): Path<String>) -> Redirec
     Redirect::permanent(&format!("/security/{}", id))
 }
 
-/// GET /users → 301 redirect to /settings/users
+/// GET /users and GET /settings/users → 301 redirect to the Settings section.
+///
+/// There was a standalone Users page here with no rail and a **New User**
+/// button beside Settings' **Add User** — three ways to one function and two
+/// labels for one action.
 async fn redirect_users_to_settings() -> Redirect {
-    Redirect::permanent("/settings/users")
+    Redirect::permanent("/settings#users-section")
 }
 
 /// GET /users/new → 301 redirect to /settings/users/new
@@ -346,7 +371,9 @@ async fn redirect_mcp_to_mcp_servers() -> Redirect {
     Redirect::to("/mcp-servers")
 }
 
-/// GET /marketplace and /mcp-marketplace → 302 redirect to /mcp-servers
+/// GET /marketplace and /mcp-marketplace → 302 redirect to the marketplace
+/// page. They used to point at the list's `#marketplace` anchor, which is the
+/// half of the page that moved (uat/artifacts/reviews/DESIGN-REVIEW.md §2.5).
 async fn redirect_marketplace_to_mcp_servers() -> Redirect {
-    Redirect::to("/mcp-servers#marketplace")
+    Redirect::to("/mcp-servers/marketplace")
 }

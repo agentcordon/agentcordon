@@ -48,7 +48,8 @@ async fn store_test_credential(
     let now = chrono::Utc::now();
     let cred_id = CredentialId(Uuid::new_v4());
     let (encrypted, nonce) = state
-        .encryptor
+        .crypto
+        .key_ring
         .encrypt(b"test-secret-value", cred_id.0.to_string().as_bytes())
         .expect("encrypt");
     let cred = StoredCredential {
@@ -67,7 +68,8 @@ async fn store_test_credential(
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -87,13 +89,28 @@ async fn store_test_credential(
     cred_id
 }
 
-/// Store a credential with a specific vault and user owner.
+/// A vault owned by `owner`, named `name`. Returns its id — every vault
+/// route names a vault by id, because a name identifies nothing on its own.
+async fn seed_vault(store: &(dyn Store + Send + Sync), owner: &User, name: &str) -> String {
+    let now = chrono::Utc::now();
+    let vault = agent_cordon_core::domain::vault::Vault {
+        id: Uuid::new_v4().to_string(),
+        name: name.to_string(),
+        owner_user_id: Some(owner.id.clone()),
+        created_at: now,
+        updated_at: now,
+    };
+    store.create_vault(&vault).await.expect("create vault");
+    vault.id
+}
+
+/// Store a credential in a specific vault, owned by a user.
 async fn store_credential_in_vault(
     store: &(dyn Store + Send + Sync),
     encryptor: &AesGcmEncryptor,
     owner_user: &User,
     name: &str,
-    vault: &str,
+    vault_id: &str,
 ) -> CredentialId {
     let now = chrono::Utc::now();
     let cred_id = CredentialId(Uuid::new_v4());
@@ -116,7 +133,8 @@ async fn store_credential_in_vault(
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: vault.to_string(),
+        vault_id: vault_id.to_string(),
+        vault_name: String::new(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -1084,12 +1102,13 @@ async fn root_user_sees_all_vault_credentials() {
     .await;
 
     // Other admin creates a credential in "secret-vault"
+    let vault_id = seed_vault(&*store, &other_admin, "secret-vault").await;
     let _cred_id = store_credential_in_vault(
         &*store,
         &encryptor,
         &other_admin,
         "other-secret-cred",
-        "secret-vault",
+        &vault_id,
     )
     .await;
 
@@ -1098,7 +1117,7 @@ async fn root_user_sees_all_vault_credentials() {
     let (status, body) = send_json(
         &app,
         Method::GET,
-        "/api/v1/vaults/secret-vault/credentials",
+        &format!("/api/v1/vaults/{vault_id}/credentials"),
         None,
         Some(&cookie),
         None,
@@ -1124,14 +1143,15 @@ async fn user_sees_own_vault_credentials() {
     .await;
 
     // Admin creates a credential in "my-vault"
+    let vault_id = seed_vault(&*store, &admin, "my-vault").await;
     let _cred_id =
-        store_credential_in_vault(&*store, &encryptor, &admin, "my-cred", "my-vault").await;
+        store_credential_in_vault(&*store, &encryptor, &admin, "my-cred", &vault_id).await;
 
     let cookie = login_user_combined(&app, "admin-own", TEST_PASSWORD).await;
     let (status, body) = send_json(
         &app,
         Method::GET,
-        "/api/v1/vaults/my-vault/credentials",
+        &format!("/api/v1/vaults/{vault_id}/credentials"),
         None,
         Some(&cookie),
         None,
@@ -1166,15 +1186,16 @@ async fn user_with_share_sees_shared_vault_credentials() {
     .await;
 
     // Admin creates a credential in "shared-vault"
+    let vault_id = seed_vault(&*store, &admin, "shared-vault").await;
     let _cred_id =
-        store_credential_in_vault(&*store, &encryptor, &admin, "shared-cred", "shared-vault").await;
+        store_credential_in_vault(&*store, &encryptor, &admin, "shared-cred", &vault_id).await;
 
     // Admin shares the vault with viewer
     let admin_cookie = login_user_combined(&app, "sharer", TEST_PASSWORD).await;
     let (status, _) = send_json(
         &app,
         Method::POST,
-        "/api/v1/vaults/shared-vault/shares",
+        &format!("/api/v1/vaults/{vault_id}/shares"),
         None,
         Some(&admin_cookie),
         Some(json!({
@@ -1190,7 +1211,7 @@ async fn user_with_share_sees_shared_vault_credentials() {
     let (status, body) = send_json(
         &app,
         Method::GET,
-        "/api/v1/vaults/shared-vault/credentials",
+        &format!("/api/v1/vaults/{vault_id}/credentials"),
         None,
         Some(&viewer_cookie),
         None,
@@ -1225,16 +1246,16 @@ async fn non_root_user_without_share_sees_no_vault_credentials() {
     .await;
 
     // Admin creates a credential in "private-vault"
+    let vault_id = seed_vault(&*store, &admin, "private-vault").await;
     let _cred_id =
-        store_credential_in_vault(&*store, &encryptor, &admin, "private-cred", "private-vault")
-            .await;
+        store_credential_in_vault(&*store, &encryptor, &admin, "private-cred", &vault_id).await;
 
     // Other user (no share) tries to list
     let other_cookie = login_user_combined(&app, "vault-outsider", TEST_PASSWORD).await;
     let (status, body) = send_json(
         &app,
         Method::GET,
-        "/api/v1/vaults/private-vault/credentials",
+        &format!("/api/v1/vaults/{vault_id}/credentials"),
         None,
         Some(&other_cookie),
         None,
@@ -1268,19 +1289,22 @@ async fn non_root_user_vault_list_excludes_unshared() {
         true,
     )
     .await;
+    // An operator, not an admin: `manage_vaults` is an admin grant, and a
+    // holder of it sees every vault by design.
     let _other = create_user_in_db(
         &*store,
         "vault-lister-other",
         TEST_PASSWORD,
-        UserRole::Admin,
+        UserRole::Operator,
         false,
         true,
     )
     .await;
 
     // Admin creates a credential in "hidden-vault"
+    let vault_id = seed_vault(&*store, &admin, "hidden-vault").await;
     let _cred_id =
-        store_credential_in_vault(&*store, &encryptor, &admin, "hidden-cred", "hidden-vault").await;
+        store_credential_in_vault(&*store, &encryptor, &admin, "hidden-cred", &vault_id).await;
 
     // Other user lists vaults — should not see "hidden-vault"
     let other_cookie = login_user_combined(&app, "vault-lister-other", TEST_PASSWORD).await;
@@ -1295,7 +1319,7 @@ async fn non_root_user_vault_list_excludes_unshared() {
     .await;
     assert_eq!(status, StatusCode::OK, "list vaults: {:?}", body);
     let vaults = body["data"].as_array().expect("data should be array");
-    let vault_names: Vec<&str> = vaults.iter().filter_map(|v| v.as_str()).collect();
+    let vault_names: Vec<&str> = vaults.iter().filter_map(|v| v["name"].as_str()).collect();
     assert!(
         !vault_names.contains(&"hidden-vault"),
         "other user should not see hidden-vault in vault list, got: {:?}",
@@ -1331,23 +1355,33 @@ async fn root_sees_all_vaults_non_root_limited() {
     let (app, store, encryptor, _state) = setup_test_app().await;
     let root_user =
         create_user_in_db(&*store, "root", TEST_PASSWORD, UserRole::Admin, true, true).await;
+    // An operator: an admin holds `manage_vaults`, which is exactly the
+    // grant that shows every vault.
     let admin = create_user_in_db(
         &*store,
         "limited-admin",
         TEST_PASSWORD,
-        UserRole::Admin,
+        UserRole::Operator,
         false,
         true,
     )
     .await;
 
     // Root creates a credential in "root-vault"
+    let root_vault = seed_vault(&*store, &root_user, "root-vault").await;
     let _cred1 =
-        store_credential_in_vault(&*store, &encryptor, &root_user, "root-cred", "root-vault").await;
+        store_credential_in_vault(&*store, &encryptor, &root_user, "root-cred", &root_vault).await;
 
-    // Admin creates a credential in "admin-vault"
-    let _cred2 =
-        store_credential_in_vault(&*store, &encryptor, &admin, "admin-cred", "admin-vault").await;
+    // Operator creates a credential in "operator-vault"
+    let operator_vault = seed_vault(&*store, &admin, "operator-vault").await;
+    let _cred2 = store_credential_in_vault(
+        &*store,
+        &encryptor,
+        &admin,
+        "operator-cred",
+        &operator_vault,
+    )
+    .await;
 
     // Root sees both vaults
     let root_cookie = login_user_combined(&app, "root", TEST_PASSWORD).await;
@@ -1365,15 +1399,15 @@ async fn root_sees_all_vaults_non_root_limited() {
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|v| v.as_str())
+        .filter_map(|v| v["name"].as_str())
         .collect();
     assert!(
         root_vaults.contains(&"root-vault"),
         "root should see root-vault"
     );
     assert!(
-        root_vaults.contains(&"admin-vault"),
-        "root should see admin-vault"
+        root_vaults.contains(&"operator-vault"),
+        "root should see operator-vault"
     );
 
     // Admin sees only admin-vault
@@ -1388,20 +1422,20 @@ async fn root_sees_all_vaults_non_root_limited() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let admin_vaults: Vec<&str> = body["data"]
+    let operator_vaults: Vec<&str> = body["data"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|v| v.as_str())
+        .filter_map(|v| v["name"].as_str())
         .collect();
     assert!(
-        admin_vaults.contains(&"admin-vault"),
-        "admin should see admin-vault"
+        operator_vaults.contains(&"operator-vault"),
+        "the operator should see their own vault"
     );
     assert!(
-        !admin_vaults.contains(&"root-vault"),
-        "admin should NOT see root-vault, got: {:?}",
-        admin_vaults
+        !operator_vaults.contains(&"root-vault"),
+        "the operator should NOT see root's vault, got: {:?}",
+        operator_vaults
     );
 }
 

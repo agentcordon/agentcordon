@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}MCP Server Detail — Agent Cordon{% endblock %}
 {% block content %}
-<div x-data="mcpServerDetailPage()" x-init="init()">
+<div x-data="mcpServerDetailPage()">
     <a href="/mcp-servers" class="back-link">&larr; MCP Servers</a>
 
     <!-- Loading -->
@@ -35,8 +35,27 @@
                 <div class="detail-header-actions">
                     <template x-if="!editing">
                         <div class="inline-actions-group">
+                            <!-- Same state, same affordance everywhere: a
+                                 secondary button in the detail header, not an
+                                 edit-mode checkbox (uat/artifacts/reviews/DESIGN-REVIEW.md §2.1). -->
+                            <button class="btn btn-secondary btn-sm"
+                                    data-testid="mcp-toggle"
+                                    @click="askToggleEnabled()"
+                                    x-text="server && server.enabled ? 'Disable' : 'Enable'"></button>
                             <button class="btn btn-secondary btn-sm" @click="startEdit()">Edit</button>
-                            <button class="btn btn-danger btn-sm" @click="deleteModal = true">Delete</button>
+                            <div class="overflow-menu" x-data="acOverflowMenu()"
+                                 @click.outside="close()" @keydown.escape.stop="close()">
+                                <button type="button" class="btn btn-secondary btn-sm overflow-menu-btn"
+                                        aria-haspopup="menu" :aria-expanded="open ? 'true' : 'false'"
+                                        aria-label="More actions" title="More actions" @click="toggle()"><svg class="icon" aria-hidden="true"><use href="/icons.svg#more-horizontal"></use></svg><span class="overflow-menu-btn-label" aria-hidden="true">More</span></button>
+                                <div class="overflow-menu-items" role="menu" x-ref="acMenu"
+                                     x-show="open" x-cloak>
+                                    <button type="button" role="menuitem"
+                                            data-testid="mcp-delete"
+                                            class="overflow-menu-item overflow-menu-item-danger"
+                                            @click="close(); askDelete()">Delete</button>
+                                </div>
+                            </div>
                         </div>
                     </template>
                     <template x-if="editing">
@@ -50,6 +69,17 @@
                     </template>
                 </div>
             </div>
+            <!-- Created and ID were titled rows competing with the server
+                 itself; one small line under the title says the same
+                 (uat/artifacts/reviews/DESIGN-REVIEW.md §1.14). -->
+            <p class="detail-meta-line">
+                <span>Created <span x-text="formatDateTime(server && server.created_at)"></span></span>
+                <span class="mono-sm detail-meta-id" x-text="server && server.id"></span>
+                <button type="button" class="btn-icon btn-icon-xs detail-meta-copy"
+                        @click="copyId()" aria-label="Copy MCP server ID" title="Copy MCP server ID">
+                    <svg class="icon" aria-hidden="true"><use href="/icons.svg#copy"></use></svg>
+                </button>
+            </p>
             <div class="detail-body">
                 <div class="detail-row">
                     <div class="detail-label">URL</div>
@@ -62,12 +92,9 @@
                     </div>
                 </div>
                 <div class="detail-row">
-                    <div class="detail-label">Enabled</div>
-                    <div class="detail-value" x-show="!editing">
+                    <div class="detail-label">Status</div>
+                    <div class="detail-value">
                         <span class="pill" :class="server && server.enabled ? 'pill-ok' : 'pill-warn'" x-text="server && server.enabled ? 'Active' : 'Disabled'"></span>
-                    </div>
-                    <div class="detail-value" x-show="editing">
-                        <label><input type="checkbox" x-model="editForm.enabled"> Enabled</label>
                     </div>
                 </div>
                 <div class="detail-row" x-show="server && server.workspace_name">
@@ -79,33 +106,58 @@
                         </span>
                     </div>
                 </div>
-                <div class="detail-row">
-                    <div class="detail-label">Created</div>
-                    <div class="detail-value timestamp" x-text="formatDateTime(server && server.created_at)"></div>
-                </div>
-                <div class="detail-row">
-                    <div class="detail-label">ID</div>
-                    <div class="detail-value mono-sm" x-text="server && server.id"></div>
-                </div>
             </div>
         </div>
 
         <!-- Tabs -->
         <div class="detail-tabs mcp-tabs-container">
-            <div class="tab-bar">
-                <button class="tab-btn" :class="{ 'tab-active': activeTab === 'tools' }" @click="activeTab = 'tools'">Tools</button>
-                <button class="tab-btn" :class="{ 'tab-active': activeTab === 'workspaces' }" @click="activeTab = 'workspaces'">Workspaces</button>
-                <button class="tab-btn" :class="{ 'tab-active': activeTab === 'permissions' }" @click="activeTab = 'permissions'; loadRsop(); loadPermissions()">Permissions</button>
-                <button class="tab-btn" :class="{ 'tab-active': activeTab === 'history' }" @click="activeTab = 'history'; loadHistory()">History</button>
-            </div>
-
-            {% include "partials/mcp_permissions_tab.html" %}
+            <!--
+              A tab bar is a `tablist` of `tab`s that own their panels, with one
+              arrow-key helper shared by every bar in the console
+              (`acTabKeydown` in base.html). Tools/Access/History were announced
+              as three plain buttons (uat/artifacts/fresh-user-docker-2.md, UI
+              impressions 2).
+            -->
+            <nav class="tab-bar" role="tablist" aria-label="MCP server detail tabs"
+                 @keydown="acTabKeydown($event)">
+                <button class="tab-btn" role="tab" id="mcp-tab-tools"
+                        aria-controls="mcp-panel-tools"
+                        :aria-selected="activeTab === 'tools' ? 'true' : 'false'"
+                        :tabindex="activeTab === 'tools' ? 0 : -1"
+                        :class="{ 'tab-active': activeTab === 'tools' }" @click="activeTab = 'tools'">Tools</button>
+                <!-- "Which workspaces are bound" and "what may they do" are
+                     one question, and the Permissions copy already sent the
+                     reader here (uat/artifacts/reviews/DESIGN-REVIEW.md §1.14). -->
+                <button class="tab-btn" role="tab" id="mcp-tab-access"
+                        aria-controls="mcp-panel-access"
+                        :aria-selected="activeTab === 'access' ? 'true' : 'false'"
+                        :tabindex="activeTab === 'access' ? 0 : -1"
+                        :class="{ 'tab-active': activeTab === 'access' }" @click="activeTab = 'access'; loadRsop(); loadPermissions()">Access</button>
+                <button class="tab-btn" role="tab" id="mcp-tab-history"
+                        aria-controls="mcp-panel-history"
+                        :aria-selected="activeTab === 'history' ? 'true' : 'false'"
+                        :tabindex="activeTab === 'history' ? 0 : -1"
+                        :class="{ 'tab-active': activeTab === 'history' }" @click="activeTab = 'history'; loadHistory()">History</button>
+            </nav>
 
             <!-- Tools Tab -->
-            <div class="tab-content" x-show="activeTab === 'tools'">
-            <h3>Tools</h3>
+            <div class="tab-content" role="tabpanel" id="mcp-panel-tools"
+                 aria-labelledby="mcp-tab-tools" x-show="activeTab === 'tools'">
+            <div class="mcp-ws-header">
+                <h3>Tools</h3>
+                <!-- Install-time discovery is best-effort: a server installed
+                     while its upstream was unreachable has no tools, and before
+                     this control the only way back was delete and reinstall. -->
+                <button class="btn btn-secondary btn-sm"
+                        @click="rediscoverTools()"
+                        :disabled="rediscovering"
+                        data-testid="rediscover-tools">
+                    <span x-show="rediscovering" class="spinner" aria-hidden="true"></span>
+                    <span x-text="rediscovering ? 'Rediscovering...' : 'Rediscover tools'"></span>
+                </button>
+            </div>
             <div x-show="!server || !server.tools || server.tools.length === 0" class="empty-state empty-state-sm">
-                <p>No tools registered for this server.</p>
+                <p>No tools registered for this server. If the upstream was unreachable when it was installed, use <strong>Rediscover tools</strong>.</p>
             </div>
             <table x-show="server && server.tools && server.tools.length > 0" class="tbl">
                 <thead><tr><th>Name</th><th>Description</th></tr></thead>
@@ -120,10 +172,11 @@
             </table>
             </div>
 
-            <!-- Workspaces Tab -->
-            <div class="tab-content" x-show="activeTab === 'workspaces'">
+            <!-- Access Tab: two sections, one question -->
+            <div class="tab-content" role="tabpanel" id="mcp-panel-access"
+                 aria-labelledby="mcp-tab-access" x-show="activeTab === 'access'">
             <div class="mcp-ws-header">
-                <h3>Workspaces with access</h3>
+                <h3 class="tab-section-title">Workspaces with access</h3>
                 <button x-show="canShare()"
                         class="btn btn-primary btn-sm"
                         @click="openShareModal()"
@@ -159,7 +212,7 @@
                                 <button class="btn btn-ghost btn-sm"
                                         @click="unshareWorkspace(w)"
                                         :aria-label="'Unshare ' + w.name"
-                                        title="Unshare this workspace">&times;</button>
+                                        title="Unshare this workspace"><svg class="icon" aria-hidden="true"><use href="/icons.svg#x"></use></svg></button>
                             </td>
                         </tr>
                     </template>
@@ -196,7 +249,7 @@
                             </label>
                         </template>
                     </div>
-                    <div x-show="shareError" x-cloak class="install-form-error" role="alert" aria-live="polite" x-text="shareError"></div>
+                    <div x-show="shareError" x-cloak class="install-form-error" role="alert" x-text="shareError"></div>
                     <div class="modal-actions">
                         <button type="button" class="btn btn-secondary" @click="closeShareModal()">Cancel</button>
                         <button type="button"
@@ -210,10 +263,13 @@
                     </div>
                 </div>
             </div>
+
+            {% include "partials/mcp_permissions_tab.html" %}
         </div>
 
             <!-- History Tab -->
-            <div class="tab-content" x-show="activeTab === 'history'">
+            <div class="tab-content" role="tabpanel" id="mcp-panel-history"
+                 aria-labelledby="mcp-tab-history" x-show="activeTab === 'history'">
                 <h3>History</h3>
                 <div x-show="historyLoading" class="page-loader page-loader-sm">
                     <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
@@ -227,7 +283,7 @@
                         <template x-for="evt in history" :key="evt.id">
                             <tr>
                                 <td class="timestamp" x-text="formatDateTime(evt.timestamp)"></td>
-                                <td><span class="pill pill-type" x-text="evt.action || evt.event_type"></span></td>
+                                <td><span class="pill pill-type" x-text="eventTypeLabel(evt.event_type || evt.action)"></span></td>
                                 <td>
                                     <span class="pill pill-sm" :class="evt.decision === 'permit' ? 'pill-ok' : evt.decision === 'forbid' ? 'pill-danger' : 'pill-muted'" x-text="evt.decision || 'n/a'"></span>
                                 </td>
@@ -239,8 +295,6 @@
             </div>
     </div>
 
-    <!-- Delete Modal -->
-    {% include "partials/delete_modal.html" %}
 </div>
 {% endblock %}
 {% block scripts %}
@@ -311,7 +365,6 @@ function mcpServerDetailPage() {
         saving: false,
         editing: false,
         editForm: { name: '', enabled: true },
-        deleteModal: false,
         deleteTargetName: '',
         activeTab: 'tools',
         rsop: { matrix: [], conditional_policies: [], loading: false },
@@ -342,9 +395,10 @@ function mcpServerDetailPage() {
         shareSubmitting: false,
         shareSelection: {},
         shareError: '',
+        rediscovering: false,
         async init() {
             try {
-                const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}');
+                const resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}');
                 if (resp.ok) {
                     const json = await resp.json();
                     this.server = json.data;
@@ -370,7 +424,7 @@ function mcpServerDetailPage() {
         },
         async refreshServer() {
             try {
-                const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}');
+                const resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}');
                 if (resp.ok) {
                     const json = await resp.json();
                     this.server = json.data;
@@ -383,10 +437,75 @@ function mcpServerDetailPage() {
                 }
             } catch(e) { showToast('Failed to refresh MCP server', 'error'); }
         },
+        /**
+         * Re-run tool discovery against the upstream. Reports what came back,
+         * or the reason the probe failed — a 502 here is the upstream's
+         * answer, not an AgentCordon fault.
+         */
+        async rediscoverTools() {
+            if (this.rediscovering) return;
+            this.rediscovering = true;
+            try {
+                const resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}/discover-tools', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() }
+                });
+                const json = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                    const count = (json.data && json.data.tool_count) || 0;
+                    showToast(count > 0 ? 'Discovered ' + count + ' tool' + (count === 1 ? '' : 's') : 'The server reported no tools', count > 0 ? 'success' : 'info');
+                    await this.refreshServer();
+                } else {
+                    showToast((json.error && json.error.message) || 'Tool discovery failed', 'error');
+                }
+            } catch(e) {
+                showToast((e && e.message) || 'Network error', 'error');
+            }
+            this.rediscovering = false;
+        },
         startEdit() {
             this.editForm.name = this.server.name;
             this.editForm.enabled = this.server.enabled;
             this.editing = true;
+        },
+
+        /*
+         * Disabling a server stops every workspace bound to it from calling a
+         * tool, so the control asks first and names the consequence — the same
+         * grammar the workspace and policy detail headers use.
+         */
+        async askToggleEnabled() {
+            var next = !this.server.enabled;
+            var ok = await AC.confirm({
+                title: (next ? 'Enable ' : 'Disable ') + this.server.name,
+                message: next
+                    ? 'Workspaces bound to this server can call its tools again.'
+                    : 'Every workspace bound to this server stops being able to call its tools. The bindings and grants are kept, so enabling restores them.',
+                confirmLabel: next ? 'Enable server' : 'Disable server'
+            });
+            if (!ok) return;
+            try {
+                const resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ name: this.server.name, enabled: next }),
+                });
+                if (resp.ok) {
+                    this.server.enabled = next;
+                    this.editForm.enabled = next;
+                    showToast('Server ' + (next ? 'enabled' : 'disabled'), 'success');
+                } else {
+                    await AC.reportError(resp, 'Failed to update server');
+                }
+            } catch(e) { showToast('Failed to update server', 'error'); }
+        },
+
+        async copyId() {
+            if (!this.server) return;
+            try {
+                await navigator.clipboard.writeText(this.server.id);
+                showToast('MCP server ID copied', 'success');
+            } catch(e) { showToast('Could not copy the MCP server ID', 'error'); }
         },
         cancelEdit() {
             this.editing = false;
@@ -394,7 +513,7 @@ function mcpServerDetailPage() {
         async saveServer() {
             this.saving = true;
             try {
-                const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}', {
+                const resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                     body: JSON.stringify({
@@ -418,7 +537,7 @@ function mcpServerDetailPage() {
         async loadPermissions() {
             this.permissionsLoading = true;
             try {
-                var resp = await fetch('/api/v1/mcp-servers/{{ server_id }}/permissions');
+                var resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}/permissions');
                 if (resp.ok) {
                     var data = await resp.json();
                     var inner = data.data || data || {};
@@ -432,7 +551,7 @@ function mcpServerDetailPage() {
             if (this.historyLoaded) return;
             this.historyLoading = true;
             try {
-                var resp = await fetch('/api/v1/audit?resource_id={{ server_id }}&resource_type=mcp_server&limit=50');
+                var resp = await AC.fetch('/api/v1/audit?resource_id={{ server_id }}&resource_type=mcp_server&limit=50');
                 if (resp.ok) {
                     var data = await resp.json();
                     this.history = data.data || data || [];
@@ -445,7 +564,7 @@ function mcpServerDetailPage() {
         async loadWorkspaces() {
             if (this.workspaces.length > 0) return;
             try {
-                var resp = await fetch('/api/v1/workspaces');
+                var resp = await AC.fetch('/api/v1/workspaces');
                 if (resp.ok) {
                     var data = await resp.json();
                     this.workspaces = data.data || data || [];
@@ -466,14 +585,28 @@ function mcpServerDetailPage() {
                     }
                 }
             }
+            /* One POST per permission, and the loop used to ignore every
+               response: "Vend + List + Update" could land as "Vend" and still
+               look like it had worked. Count what landed and say so. */
+            var granted = 0;
+            var failed = null;
             for (var p of perms) {
                 try {
-                    await fetch('/api/v1/mcp-servers/{{ server_id }}/permissions', {
+                    var resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}/permissions', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ workspace_id: this.grantWorkspace, permission: p, mode: this.grantMode })
                     });
-                } catch(e) { showToast('Failed to grant permission', 'error'); }
+                    if (resp.ok) { granted++; } else { failed = resp; break; }
+                } catch(e) { showToast('Failed to grant permission', 'error'); break; }
+            }
+            if (failed) {
+                await AC.reportError(failed, 'Failed to grant permission');
+                if (granted > 0) {
+                    showToast(granted + ' of ' + perms.length + ' permissions were applied.', 'info');
+                }
+            } else if (granted > 0) {
+                showToast(granted === 1 ? 'Permission granted' : granted + ' permissions granted', 'success');
             }
             await this.loadPermissions();
             this.rsop.matrix = [];
@@ -490,10 +623,11 @@ function mcpServerDetailPage() {
 
         async revokePermission(agentId, permission) {
             try {
-                await fetch('/api/v1/mcp-servers/{{ server_id }}/permissions/' + agentId + '/' + permission, {
-                    method: 'DELETE',
-                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                var resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}/permissions/' + agentId + '/' + permission, {
+                    method: 'DELETE'
                 });
+                /* A 403 used to reload the same list and look like a success. */
+                if (!resp.ok) return AC.reportError(resp, 'Failed to revoke permission');
                 await this.loadPermissions();
                 this.rsop.matrix = [];
                 await this.loadRsop();
@@ -511,7 +645,7 @@ function mcpServerDetailPage() {
             if (this.rsop.matrix.length > 0) return;
             this.rsop.loading = true;
             try {
-                var resp = await fetch('/api/v1/policies/rsop', {
+                var resp = await AC.fetch('/api/v1/policies/rsop', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                     body: JSON.stringify({ resource_type: 'McpServer', resource_id: '{{ server_id }}' })
@@ -528,7 +662,7 @@ function mcpServerDetailPage() {
         },
         async loadCedarActions() {
             try {
-                var resp = await fetch('/api/v1/policies/schema/reference');
+                var resp = await AC.fetch('/api/v1/policies/schema/reference');
                 if (resp.ok) {
                     var data = await resp.json();
                     var actions = (data.data || data).actions || [];
@@ -615,7 +749,7 @@ function mcpServerDetailPage() {
             this.shareSubmitting = true;
             this.shareError = '';
             try {
-                var resp = await fetch('/api/v1/mcp-servers/{{ server_id }}/workspaces', {
+                var resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}/workspaces', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                     body: JSON.stringify({ workspace_ids: ids })
@@ -654,9 +788,15 @@ function mcpServerDetailPage() {
 
         async unshareWorkspace(w) {
             if (!w || !w.id) return;
-            if (!window.confirm('Unshare "' + w.name + '" from this MCP server?')) return;
+            var ok = await AC.confirm({
+                title: 'Unshare MCP server',
+                message: 'Unshare "' + w.name + '" from this MCP server? Its agents lose access to these tools.',
+                confirmLabel: 'Unshare',
+                danger: true
+            });
+            if (!ok) return;
             try {
-                var resp = await fetch('/api/v1/mcp-servers/{{ server_id }}/workspaces/' + encodeURIComponent(w.id), {
+                var resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}/workspaces/' + encodeURIComponent(w.id), {
                     method: 'DELETE',
                     headers: { 'X-CSRF-Token': getCsrfToken() }
                 });
@@ -673,15 +813,24 @@ function mcpServerDetailPage() {
             }
         },
 
+        async askDelete() {
+            var ok = await AC.confirm({
+                title: 'Delete ' + (this.deleteTargetName || 'this MCP server'),
+                message: 'Every workspace this server is shared with loses its tools, and the grants that named them are removed. This cannot be undone.',
+                confirmLabel: 'Delete server',
+                danger: true
+            });
+            if (ok) await this.confirmDelete();
+        },
         async confirmDelete() {
             try {
-                const resp = await fetch('/api/v1/mcp-servers/{{ server_id }}', {
-                    method: 'DELETE',
-                    headers: { 'X-CSRF-Token': getCsrfToken() },
+                const resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}', {
+                    method: 'DELETE'
                 });
-                if (resp.ok) {
-                    window.location.href = '/mcp-servers';
-                }
+                /* A non-OK fell through here: the dialog closed and nothing
+                   said why the server was still in the list. */
+                if (!resp.ok) return AC.reportError(resp, 'Failed to delete MCP server');
+                window.location.href = '/mcp-servers';
             } catch(e) { showToast('Failed to delete MCP server', 'error'); }
         }
     };

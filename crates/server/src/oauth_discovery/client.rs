@@ -15,38 +15,75 @@ use uuid::Uuid;
 
 use super::error::DiscoveryError;
 use super::metadata::{
-    fetch_authorization_server_metadata, fetch_protected_resource, normalize_as_url,
-    validate_endpoint_origin,
+    fetch_authorization_server_metadata, fetch_protected_resource_metadata_url, guard_fetch_target,
+    normalize_as_url, probe_resource_metadata_url, protected_resource_metadata_url,
+    validate_endpoint_origin, validate_issuer, ProtectedResourceMetadata,
 };
 use super::registration::register_client;
-use crate::routes::admin_api::mcp_templates::McpServerTemplate;
 use crate::state::AppState;
+use crate::templates::McpServerTemplate;
 
-/// Ensure an `OAuthProviderClient` exists for the given MCP template.
+/// Locate and fetch the resource's RFC 9728 protected-resource metadata.
 ///
-/// Flow:
-/// 1. Read `template.oauth2_resource_url` — required.
-/// 2. Fetch protected-resource metadata to find the authorization server URL.
-/// 3. Normalize the AS URL to its origin.
-/// 4. If a row already exists for this AS URL and is enabled, return it.
-/// 5. Otherwise, fetch authorization-server metadata.
-/// 6. Validate discovered endpoints share the resource URL's origin.
-/// 7. If DCR is supported and the template prefers DCR, register a new client.
-/// 8. Encrypt secrets, persist the row, emit an audit event, return it.
-/// 9. If DCR is unavailable, return `DiscoveryError::NoDcrSupport` so the
-///    caller can surface a "configure manually" message to the admin.
-pub async fn ensure_provider_client(
-    state: &AppState,
+/// A template that names `oauth2_resource_url` fixes the document's location.
+/// Otherwise the MCP endpoint is asked directly: an unauthenticated request
+/// draws a `401` whose `WWW-Authenticate: Bearer` challenge carries
+/// `resource_metadata="<url>"`, which is where the server itself says its
+/// metadata lives.
+async fn fetch_resource_metadata(
     template: &McpServerTemplate,
-) -> Result<OAuthProviderClient, DiscoveryError> {
-    let resource_url = template
+    allow_loopback: bool,
+) -> Result<ProtectedResourceMetadata, DiscoveryError> {
+    let metadata_url = match template
         .oauth2_resource_url
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or(DiscoveryError::MissingResourceUrl)?;
+    {
+        Some(resource_url) => protected_resource_metadata_url(resource_url),
+        None => {
+            let mcp_url = template.upstream_url.trim();
+            if mcp_url.is_empty() {
+                return Err(DiscoveryError::MissingResourceUrl);
+            }
+            guard_fetch_target(mcp_url, allow_loopback).await?;
+            probe_resource_metadata_url(mcp_url)
+                .await
+                .ok_or(DiscoveryError::MissingResourceUrl)?
+        }
+    };
 
-    let pr_meta = fetch_protected_resource(resource_url).await?;
+    guard_fetch_target(&metadata_url, allow_loopback).await?;
+    fetch_protected_resource_metadata_url(&metadata_url).await
+}
+
+/// Ensure an `OAuthProviderClient` exists for the given MCP template.
+///
+/// Flow:
+/// 1. Locate the resource's RFC 9728 metadata — from `oauth2_resource_url`, or
+///    from the `resource_metadata` hint on the MCP endpoint's own 401.
+/// 2. Read `authorization_servers[0]`; that server may live on any origin.
+/// 3. Normalize the AS URL to its origin.
+/// 4. If a row already exists for this AS URL and is enabled, return it.
+/// 5. Otherwise, fetch authorization-server metadata.
+/// 6. Check the AS metadata against itself: `issuer` must identify the URL the
+///    metadata came from (RFC 8414), and every endpoint it advertises must be
+///    same-origin with that issuer.
+/// 7. If DCR is supported and the template prefers DCR, register a new client.
+/// 8. Encrypt secrets, persist the row, emit an audit event, return it.
+/// 9. If DCR is unavailable, return `DiscoveryError::NoDcrSupport` so the
+///    caller can surface a "configure manually" message to the admin.
+///
+/// Every URL fetched along the way — the metadata documents, the MCP probe —
+/// passes [`guard_fetch_target`] first, so a hostile resource server cannot
+/// steer discovery onto the internal network.
+pub async fn ensure_provider_client(
+    state: &AppState,
+    template: &McpServerTemplate,
+) -> Result<OAuthProviderClient, DiscoveryError> {
+    let allow_loopback = state.config.proxy_allow_loopback;
+
+    let pr_meta = fetch_resource_metadata(template, allow_loopback).await?;
     let as_url_raw = pr_meta
         .authorization_servers
         .first()
@@ -64,12 +101,23 @@ pub async fn ensure_provider_client(
         }
     }
 
+    guard_fetch_target(
+        &format!("{as_url}/.well-known/oauth-authorization-server"),
+        allow_loopback,
+    )
+    .await?;
     let as_meta = fetch_authorization_server_metadata(&as_url).await?;
 
-    validate_endpoint_origin(resource_url, &as_meta.authorization_endpoint)?;
-    validate_endpoint_origin(resource_url, &as_meta.token_endpoint)?;
+    // The authorization server is allowed to be somewhere else entirely — that
+    // is what RFC 9728 `authorization_servers` is for. What it may not do is
+    // hand out endpoints belonging to a third party: the token exchange, the
+    // consent redirect and the DCR POST all stay on the issuer's own origin,
+    // and the issuer has to be the server we just read the metadata from.
+    validate_issuer(&as_url, &as_meta.issuer)?;
+    validate_endpoint_origin(&as_meta.issuer, &as_meta.authorization_endpoint)?;
+    validate_endpoint_origin(&as_meta.issuer, &as_meta.token_endpoint)?;
     if let Some(reg_endpoint) = &as_meta.registration_endpoint {
-        validate_endpoint_origin(resource_url, reg_endpoint)?;
+        validate_endpoint_origin(&as_meta.issuer, reg_endpoint)?;
     }
 
     let prefer_dcr = template.oauth2_prefer_dcr.unwrap_or(true);
@@ -100,7 +148,8 @@ pub async fn ensure_provider_client(
     let (encrypted_client_secret, secret_nonce) =
         if let Some(secret) = dcr_resp.client_secret.as_deref() {
             let (enc, nonce) = state
-                .encryptor
+                .crypto
+                .key_ring
                 .encrypt(secret.as_bytes(), aad_bytes)
                 .map_err(|e| DiscoveryError::RequestFailed(format!("encryption: {e}")))?;
             (Some(enc), Some(nonce))
@@ -110,7 +159,8 @@ pub async fn ensure_provider_client(
 
     let (rat_enc, rat_nonce) = if let Some(rat) = dcr_resp.registration_access_token.as_deref() {
         let (enc, nonce) = state
-            .encryptor
+            .crypto
+            .key_ring
             .encrypt(rat.as_bytes(), aad_bytes)
             .map_err(|e| DiscoveryError::RequestFailed(format!("encryption: {e}")))?;
         (Some(enc), Some(nonce))

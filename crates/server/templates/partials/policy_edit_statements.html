@@ -7,14 +7,24 @@
             <template x-for="(stmt, idx) in editStatements" :key="idx">
                 <div class="cedar-stmt-card" :class="stmt.effect === 'forbid' ? 'cedar-stmt-forbid' : 'cedar-stmt-permit'">
                     <div class="cedar-stmt-header">
-                        <select x-model="stmt.effect" class="form-input form-input-sm cedar-effect-select">
+                        <select x-model="stmt.effect" class="form-input form-input-sm cedar-effect-select"
+                                :aria-label="'Effect of statement ' + (idx + 1)">
                             <option value="permit">PERMIT</option>
                             <option value="forbid">FORBID</option>
                         </select>
+                        <!-- The glyph is the whole label, and an arrow read
+                             aloud says nothing about which statement it moves;
+                             each control names its statement. -->
                         <div class="cedar-stmt-controls">
-                            <button class="btn btn-ghost btn-sm" @click="moveStatement(idx, -1)" :disabled="idx === 0" title="Move up">&uarr;</button>
-                            <button class="btn btn-ghost btn-sm" @click="moveStatement(idx, 1)" :disabled="idx === editStatements.length - 1" title="Move down">&darr;</button>
-                            <button class="btn btn-ghost btn-sm" @click="removeStatement(idx)" title="Remove">&times;</button>
+                            <button class="btn btn-ghost btn-sm" @click="moveStatement(idx, -1)" :disabled="idx === 0"
+                                    :aria-label="'Move statement ' + (idx + 1) + ' up'"
+                                    :title="'Move statement ' + (idx + 1) + ' up'"><svg class="icon" aria-hidden="true"><use href="/icons.svg#arrow-up"></use></svg></button>
+                            <button class="btn btn-ghost btn-sm" @click="moveStatement(idx, 1)" :disabled="idx === editStatements.length - 1"
+                                    :aria-label="'Move statement ' + (idx + 1) + ' down'"
+                                    :title="'Move statement ' + (idx + 1) + ' down'"><svg class="icon" aria-hidden="true"><use href="/icons.svg#arrow-down"></use></svg></button>
+                            <button class="btn btn-ghost btn-sm" @click="removeStatement(idx)"
+                                    :aria-label="'Remove statement ' + (idx + 1)"
+                                    :title="'Remove statement ' + (idx + 1)"><svg class="icon" aria-hidden="true"><use href="/icons.svg#x"></use></svg></button>
                         </div>
                     </div>
                     <div class="cedar-stmt-body">

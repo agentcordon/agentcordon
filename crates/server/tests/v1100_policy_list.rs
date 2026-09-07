@@ -32,36 +32,6 @@ async fn setup() -> (agent_cordon_server::test_helpers::TestContext, String) {
     (ctx, cookie)
 }
 
-#[allow(dead_code)]
-async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, String) {
-    let ctx = TestAppBuilder::new()
-        .with_config(|c| {
-            c.seed_demo = true;
-        })
-        .build()
-        .await;
-
-    agent_cordon_server::seed::seed_demo_data(
-        &ctx.store,
-        &ctx.encryptor,
-        &ctx.state.config,
-        &ctx.jwt_issuer,
-    )
-    .await
-    .expect("seed demo data");
-
-    let _user = common::create_test_user(
-        &*ctx.store,
-        "policy-list-seed-user",
-        common::TEST_PASSWORD,
-        UserRole::Admin,
-    )
-    .await;
-    let cookie =
-        common::login_user_combined(&ctx.app, "policy-list-seed-user", common::TEST_PASSWORD).await;
-    (ctx, cookie)
-}
-
 async fn get_html(app: &axum::Router, uri: &str, cookie: &str) -> (StatusCode, String) {
     let resp = app
         .clone()
@@ -159,8 +129,9 @@ async fn test_policy_list_returns_200() {
 
     assert_eq!(status, StatusCode::OK);
     assert!(
-        body.contains("Security Policies"),
-        "policy list page should have 'Security Policies' heading"
+        body.contains("<h2>Policies</h2>"),
+        "policy list page should have the 'Policies' heading (renamed from \
+         'Security Policies' in uat/artifacts/reviews/DESIGN-REVIEW.md §1.1)"
     );
 }
 
@@ -182,7 +153,8 @@ async fn test_policy_list_has_new_button() {
     );
 }
 
-/// With policies created, the list page should show them in a table.
+/// The list page is a shell: its table rows come from `GET /api/v1/policies`
+/// (the page never embeds policy data), and each row links to `/security/{id}`.
 #[tokio::test]
 async fn test_policy_list_shows_policies_in_table() {
     let (ctx, cookie) = setup().await;
@@ -200,20 +172,33 @@ async fn test_policy_list_shows_policies_in_table() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.contains("<table"),
-        "policy list page should contain a table when policies exist"
+        "policy list page should contain the policies table"
     );
     assert!(
-        body.contains("list-table-test-policy"),
-        "policy list should contain the policy name"
+        !body.contains("list-table-test-policy"),
+        "policy list page must not embed policy data; it comes from the API"
     );
-    // Policy name should be a link to the detail page
-    let expected_href = format!("/security/{}", policy_id);
     assert!(
-        body.contains(&expected_href),
-        "policy name should link to /security/{}: body did not contain '{}'",
-        policy_id,
-        expected_href,
+        body.contains("/api/v1/policies") && body.contains("'/security/' + policy.id"),
+        "rows come from the policies API and link to /security/{{id}}"
     );
+
+    let (status, api) = common::send_json_auto_csrf(
+        &ctx.app,
+        Method::GET,
+        "/api/v1/policies",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = api["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["id"] == policy_id.as_str() && p["name"] == "list-table-test-policy");
+    assert!(listed, "the policies API lists the policy: {api}");
 }
 
 /// The table should have expected column headers.
@@ -234,26 +219,45 @@ async fn test_policy_list_table_headers() {
     assert!(body.contains("Enabled"), "table should have Enabled column");
 }
 
-/// Enabled/disabled status should show as pills.
+/// Enabled/disabled status shows as pills bound to the API's `enabled` flag.
 #[tokio::test]
 async fn test_policy_list_status_pills() {
     let (ctx, cookie) = setup().await;
-    let _enabled_id =
+    let enabled_id =
         create_test_policy(&ctx.app, &cookie, "enabled-pill-test", SIMPLE_CEDAR, true).await;
-    let _disabled_id =
+    let disabled_id =
         create_test_policy(&ctx.app, &cookie, "disabled-pill-test", SIMPLE_CEDAR, false).await;
 
     let (status, body) = get_html(&ctx.app, "/security", &cookie).await;
 
     assert_eq!(status, StatusCode::OK);
     assert!(
-        body.contains("pill-ok"),
-        "enabled policy should have pill-ok class"
+        body.contains("policy.enabled ? 'pill-ok' : 'pill-warn'"),
+        "the status pill class follows the API's enabled flag"
     );
     assert!(
-        body.contains("pill-warn"),
-        "disabled policy should have pill-warn class"
+        body.contains("policy.enabled ? 'Enabled' : 'Disabled'"),
+        "the status pill text follows the API's enabled flag"
     );
-    assert!(body.contains("Enabled"), "should show 'Enabled' text");
-    assert!(body.contains("Disabled"), "should show 'Disabled' text");
+
+    let (status, api) = common::send_json_auto_csrf(
+        &ctx.app,
+        Method::GET,
+        "/api/v1/policies",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let enabled_of = |id: &str| {
+        api["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .map(|p| p["enabled"].as_bool().unwrap())
+    };
+    assert_eq!(enabled_of(&enabled_id), Some(true), "{api}");
+    assert_eq!(enabled_of(&disabled_id), Some(false), "{api}");
 }

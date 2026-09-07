@@ -58,13 +58,39 @@ pub fn save(
     output.extend_from_slice(&nonce_bytes);
     output.extend_from_slice(&ciphertext);
 
-    // Atomic write: write to temp file, then rename into place.
-    // This prevents data loss if the process crashes mid-write.
+    // Atomic write: write to a temp file created owner-only, then rename
+    // into place. This prevents data loss if the process crashes mid-write
+    // and never leaves the ciphertext readable by other users.
     let tmp_path = path.with_extension("tmp");
-    std::fs::write(&tmp_path, &output).map_err(|e| format!("write failed: {}", e))?;
+    write_private_file(&tmp_path, &output).map_err(|e| format!("write failed: {}", e))?;
     std::fs::rename(&tmp_path, path).map_err(|e| format!("rename failed: {}", e))?;
 
     Ok(())
+}
+
+/// Create (or truncate) `path` with mode `0600` and write `contents`.
+///
+/// The mode is passed to `open(2)` so the file never exists with wider
+/// permissions; an existing file is also chmod'ed to `0600` because
+/// `open` does not change the mode of a file that already exists. Every
+/// artifact the broker writes goes through here.
+pub fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(contents)?;
+    file.flush()
 }
 
 /// Load and decrypt workspace states from disk.
@@ -74,9 +100,13 @@ pub fn save(
 pub fn load(
     path: &Path,
     p256_key: &p256::SecretKey,
-) -> Result<HashMap<String, WorkspaceState>, String> {
+) -> Result<Option<HashMap<String, WorkspaceState>>, String> {
+    // A broker that has never registered a workspace has no store yet. That
+    // is the first run, not a failure, and the caller must be able to tell
+    // the two apart: a missing file needs no recovery and no warning, while
+    // an unreadable one needs both.
     if !path.exists() {
-        return Err("token store file not found".to_string());
+        return Ok(None);
     }
 
     let data = std::fs::read(path).map_err(|e| format!("read failed: {}", e))?;
@@ -101,7 +131,7 @@ pub fn load(
     let workspaces: HashMap<String, WorkspaceState> =
         serde_json::from_slice(&plaintext).map_err(|e| format!("deserialize failed: {}", e))?;
 
-    Ok(workspaces)
+    Ok(Some(workspaces))
 }
 
 // ---------------------------------------------------------------------------
@@ -206,65 +236,81 @@ mod tests {
     use chrono::Utc;
     use p256::elliptic_curve::rand_core::OsRng;
 
+    #[cfg(unix)]
     #[test]
-    fn test_round_trip() {
+    fn token_store_is_written_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
         let key = p256::SecretKey::random(&mut OsRng);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tokens.enc");
 
-        let mut workspaces = HashMap::new();
-        workspaces.insert(
-            "abc123".to_string(),
-            WorkspaceState {
-                client_id: "client1".to_string(),
-                access_token: "access1".to_string(),
-                refresh_token: "refresh1".to_string(),
-                scopes: vec!["credentials:discover".to_string()],
-                token_expires_at: Utc::now(),
-                workspace_name: "test-ws".to_string(),
-                token_status: crate::state::TokenStatus::Valid,
-            },
-        );
+        save(&path, &HashMap::new(), &key).unwrap();
 
-        save(&path, &workspaces, &key).unwrap();
-        let loaded = load(&path, &key).unwrap();
-
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded["abc123"].client_id, "client1");
-        assert_eq!(loaded["abc123"].access_token, "access1");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "tokens.enc mode {mode:o}");
+        assert!(!dir.path().join("tokens.tmp").exists());
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_load_missing_file_returns_empty() {
+    fn write_private_file_tightens_an_existing_wider_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_private_file(&path, b"new").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
+
+    /// A broker starting for the first time has no `tokens.enc` yet. That is
+    /// the normal first run, not a failure: reporting it as one made the
+    /// daemon warn "encrypted token store failed, attempting recovery" at
+    /// the very first command a new user ran, which reads like data loss.
+    #[test]
+    fn a_token_store_that_does_not_exist_yet_is_not_a_failure() {
         let key = p256::SecretKey::random(&mut OsRng);
-        let path = std::path::PathBuf::from("/tmp/nonexistent_token_store_test");
+        // A private temp dir, so the file is guaranteed absent: a fixed
+        // /tmp path could be occupied by another run and the assertion
+        // would then hold for the wrong reason.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent-token-store");
+
         let result = load(&path, &key);
-        assert!(result.is_err(), "load() should return Err for missing file");
+
+        assert!(
+            matches!(result, Ok(None)),
+            "an absent store is `Ok(None)`, not an error: {result:?}"
+        );
     }
 
+    /// A store that exists but cannot be opened *is* a failure, and stays
+    /// one: a wrong key or a truncated file is exactly what recovery is for.
     #[test]
-    fn test_wrong_key_fails() {
-        let key1 = p256::SecretKey::random(&mut OsRng);
-        let key2 = p256::SecretKey::random(&mut OsRng);
+    fn a_token_store_that_cannot_be_read_is_still_a_failure() {
+        let key = p256::SecretKey::random(&mut OsRng);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tokens.enc");
+        std::fs::write(&path, b"not an encrypted token store").unwrap();
 
-        let mut workspaces = HashMap::new();
-        workspaces.insert(
-            "abc".to_string(),
-            WorkspaceState {
-                client_id: "c".to_string(),
-                access_token: "a".to_string(),
-                refresh_token: "r".to_string(),
-                scopes: vec![],
-                token_expires_at: Utc::now(),
-                workspace_name: "ws".to_string(),
-                token_status: crate::state::TokenStatus::Valid,
-            },
-        );
+        assert!(load(&path, &key).is_err());
+    }
 
-        save(&path, &workspaces, &key1).unwrap();
-        assert!(load(&path, &key2).is_err());
+    /// A store that is there and readable comes back as itself.
+    #[test]
+    fn a_saved_token_store_loads_back() {
+        let key = p256::SecretKey::random(&mut OsRng);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens.enc");
+        save(&path, &HashMap::new(), &key).unwrap();
+
+        let loaded = load(&path, &key).expect("load");
+
+        assert!(loaded.is_some_and(|w| w.is_empty()));
     }
 
     #[test]
@@ -295,7 +341,10 @@ mod tests {
 
     #[test]
     fn test_recovery_load_missing_file() {
-        let path = std::path::PathBuf::from("/tmp/nonexistent_recovery_test_12345.json");
+        // Private temp dir for the same reason as above: an existing file at
+        // a fixed /tmp path makes this assert pass or fail on leftovers.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent-workspaces.json");
         let result = load_recovery(&path);
         assert!(result.is_empty());
     }

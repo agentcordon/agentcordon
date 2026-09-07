@@ -22,6 +22,12 @@ use tokio_rusqlite::Connection;
 use crate::error::StoreError;
 
 use super::Store;
+use helpers::map_store_error;
+
+/// The driver, for tests that need a second connection to a file-backed
+/// store (to inspect rows or inject a failing trigger) without taking a
+/// dependency on the driver version themselves.
+pub use rusqlite;
 
 /// Default connection pool size for file-backed databases.
 const DEFAULT_FILE_POOL_SIZE: usize = 4;
@@ -49,16 +55,14 @@ impl SqliteStore {
         let mut pool = Vec::with_capacity(pool_size);
 
         for _ in 0..pool_size {
-            let conn = Connection::open(path)
-                .await
-                .map_err(|e| StoreError::Database(e.to_string()))?;
+            let conn = Connection::open(path).await.map_err(map_store_error)?;
 
             conn.call(|c| {
                 c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
                     .map_err(tokio_rusqlite::Error::Rusqlite)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+            .map_err(map_store_error)?;
 
             pool.push(conn);
         }
@@ -76,14 +80,14 @@ impl SqliteStore {
     pub async fn new_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+            .map_err(map_store_error)?;
 
         conn.call(|c| {
             c.execute_batch("PRAGMA foreign_keys=ON;")
                 .map_err(tokio_rusqlite::Error::Rusqlite)
         })
         .await
-        .map_err(|e| StoreError::Database(e.to_string()))?;
+        .map_err(map_store_error)?;
 
         Ok(Self {
             pool: vec![conn],
@@ -110,7 +114,7 @@ impl Store for SqliteStore {
                 super::migrations::run_migrations(conn).map_err(helpers::store_err_to_tokio)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }
 

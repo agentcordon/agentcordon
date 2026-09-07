@@ -1,20 +1,8 @@
-mod auth;
-mod config;
-mod credential_transform;
-mod daemon;
-mod mcp_sync;
-mod oauth2_refresh;
-mod routes;
-mod server_client;
-mod state;
-mod token_refresh;
-mod token_store;
-mod vend;
-
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use config::BrokerConfig;
+use agentcordon_broker::config::BrokerConfig;
+use agentcordon_broker::daemon;
 
 #[tokio::main]
 async fn main() {

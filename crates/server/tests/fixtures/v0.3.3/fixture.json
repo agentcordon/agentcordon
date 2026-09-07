@@ -1,0 +1,61 @@
+{
+  "note": "Manifest for the genuine v0.3.3 database in this directory. Every value here was produced by the v0.3.3 server itself; see README.md.",
+  "master_secret": "fixture-secret-v033!",
+  "master_secret_strength": "weak — 20 raw bytes, below the 32-byte strong threshold, so the upgrade must take the LegacyWeak path and derive the key from the secret unchanged",
+  "kdf_salt_source": "derived by AppConfig from the master secret (AGTCRDN_KDF_SALT was unset)",
+  "db_path": "agent-cordon.db",
+  "schema_version": 12,
+  "users": {
+    "root": { "username": "root", "password": "fixture-root-pw-2026", "role": "admin", "is_root": true },
+    "admin": { "username": "fixture-admin", "password": "fixture-admin-pw-2026", "role": "admin", "is_root": false },
+    "viewer": { "username": "fixture-viewer", "password": "fixture-viewer-pw-26", "role": "viewer", "is_root": false }
+  },
+  "workspace": {
+    "name": "fixture-workspace",
+    "id": "77e9d109-8cc4-4a01-a69f-80947814f856",
+    "pk_hash": "5b85af63eaf910609b65a93414b4ca567e6a0ed0be439874d0bed953ffbd874d",
+    "ed25519_seed_hex": "bc1869c1a7ee369ca865a8d995892e07982dece53a8e0bc0b0543374d0a5ddec",
+    "ed25519_public_hex": "4cf2333e87ad6227429eea92ac4e13d36a03672744e59f89d1e39788f9dfa426",
+    "key_file": "workspace-ed25519.pem"
+  },
+  "oauth": {
+    "bootstrap_client_id": "agentcordon-broker",
+    "client_id": "ac_cli_e517943953f8bdc3",
+    "client_id_note": "the per-workspace public client the device-flow approval provisioned; both tokens below are bound to it",
+    "access_token": "Zs3NOOi-VeaCKm7HgRsVf5eFjPW5n-UB592-asF7DG4",
+    "refresh_token": "fqXs6AN2qHMuxX8gnN9Mwilh1zOFG_Ywog9i7QE2EaY",
+    "scopes": "credentials:discover credentials:vend mcp:discover mcp:invoke",
+    "access_token_ttl_secs": 900,
+    "refresh_token_ttl_secs": 2592000,
+    "ttl_note": "v0.3.3 hard-codes both lifetimes (ACCESS_TOKEN_TTL_SECS / REFRESH_TOKEN_TTL_SECS in crates/server/src/routes/oauth/token.rs) with no env override, so the tokens stored here expired 15 minutes after the fixture was made. The test shifts every token timestamp by the fixture's age before booting, preserving these exact lifetimes; see the README."
+  },
+  "credentials": {
+    "plain": {
+      "id": "bb202f47-86e4-449c-92ce-eaf0cb01c3bd",
+      "name": "fixture-api-key",
+      "secret": "sk-fixture-plain-0001",
+      "allowed_url_pattern": "https://api.example.com/*"
+    },
+    "rotated": {
+      "id": "05d98bcd-dbac-44f1-b84d-512f5618a1cb",
+      "name": "fixture-rotated-key",
+      "secret": "sk-fixture-rotated-v3",
+      "history_newest_first": ["sk-fixture-rotated-v2", "sk-fixture-rotated-v1"]
+    }
+  },
+  "mcp_server": { "name": "fixture-mcp", "url": "https://mcp.example.com/sse" },
+  "row_counts": {
+    "users": 3,
+    "workspaces": 1,
+    "credentials": 2,
+    "credential_secret_history": 2,
+    "policies": 3,
+    "mcp_servers": 1,
+    "mcp_server_workspaces": 1,
+    "oauth_clients": 2,
+    "oauth_access_tokens": 1,
+    "oauth_refresh_tokens": 1,
+    "audit_events": 29,
+    "audit_events_excluding_policy_evaluated": 15
+  }
+}

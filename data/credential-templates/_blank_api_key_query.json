@@ -1,0 +1,22 @@
+{
+  "key": "_blank_api_key_query",
+  "name": "Custom (API Key, query parameter)",
+  "service": "",
+  "credential_type": "api_key_query",
+  "auth_type": "api_key",
+  "header": "",
+  "allowed_url_pattern": "",
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "Secret value",
+      "placeholder": "API key or token",
+      "help": "Appended to the request URL as the value of the query parameter named above.",
+      "required": true,
+      "secret": true
+    }
+  ],
+  "description": "Default fields for an API-key credential appended as a query parameter.",
+  "tags": [],
+  "sort_order": 9999
+}

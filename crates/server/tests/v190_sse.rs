@@ -99,14 +99,17 @@ async fn test_sse_endpoint_returns_event_stream() {
 async fn test_sse_receives_workspace_created_event() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     // Subscribe to UI event bus before emitting
-    let mut rx = ctx.state.ui_event_bus.subscribe();
+    let mut rx = ctx.state.realtime.ui_event_bus.subscribe();
 
     // Emit a workspace_created event
     let workspace_id = Uuid::new_v4();
-    ctx.state.ui_event_bus.emit(UiEvent::WorkspaceCreated {
-        workspace_id,
-        workspace_name: "test-sse-workspace".to_string(),
-    });
+    ctx.state
+        .realtime
+        .ui_event_bus
+        .emit(UiEvent::WorkspaceCreated {
+            workspace_id,
+            workspace_name: "test-sse-workspace".to_string(),
+        });
 
     // Verify the event was received on the bus
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
@@ -130,13 +133,16 @@ async fn test_sse_receives_workspace_created_event() {
 async fn test_sse_receives_credential_created_event() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
-    let mut rx = ctx.state.ui_event_bus.subscribe();
+    let mut rx = ctx.state.realtime.ui_event_bus.subscribe();
 
     let cred_id = Uuid::new_v4();
-    ctx.state.ui_event_bus.emit(UiEvent::CredentialCreated {
-        credential_id: cred_id,
-        credential_name: "test-cred".to_string(),
-    });
+    ctx.state
+        .realtime
+        .ui_event_bus
+        .emit(UiEvent::CredentialCreated {
+            credential_id: cred_id,
+            credential_name: "test-cred".to_string(),
+        });
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
         .await
@@ -155,13 +161,16 @@ async fn test_sse_receives_credential_created_event() {
 async fn test_sse_receives_workspace_created_event_for_device() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
-    let mut rx = ctx.state.ui_event_bus.subscribe();
+    let mut rx = ctx.state.realtime.ui_event_bus.subscribe();
 
     let workspace_id = Uuid::new_v4();
-    ctx.state.ui_event_bus.emit(UiEvent::WorkspaceCreated {
-        workspace_id,
-        workspace_name: "test-device".to_string(),
-    });
+    ctx.state
+        .realtime
+        .ui_event_bus
+        .emit(UiEvent::WorkspaceCreated {
+            workspace_id,
+            workspace_name: "test-device".to_string(),
+        });
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
         .await
@@ -182,11 +191,14 @@ async fn test_sse_receives_workspace_created_event_for_device() {
 async fn test_sse_receives_policy_changed_event() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
-    let mut rx = ctx.state.ui_event_bus.subscribe();
+    let mut rx = ctx.state.realtime.ui_event_bus.subscribe();
 
-    ctx.state.ui_event_bus.emit(UiEvent::PolicyChanged {
-        policy_name: "test-policy".to_string(),
-    });
+    ctx.state
+        .realtime
+        .ui_event_bus
+        .emit(UiEvent::PolicyChanged {
+            policy_name: "test-policy".to_string(),
+        });
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
         .await
@@ -210,14 +222,17 @@ async fn test_sse_multiple_subscribers() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     // Two subscribers
-    let mut rx1 = ctx.state.ui_event_bus.subscribe();
-    let mut rx2 = ctx.state.ui_event_bus.subscribe();
+    let mut rx1 = ctx.state.realtime.ui_event_bus.subscribe();
+    let mut rx2 = ctx.state.realtime.ui_event_bus.subscribe();
 
     let workspace_id = Uuid::new_v4();
-    ctx.state.ui_event_bus.emit(UiEvent::WorkspaceCreated {
-        workspace_id,
-        workspace_name: "multi-sub-workspace".to_string(),
-    });
+    ctx.state
+        .realtime
+        .ui_event_bus
+        .emit(UiEvent::WorkspaceCreated {
+            workspace_id,
+            workspace_name: "multi-sub-workspace".to_string(),
+        });
 
     // Both should receive the event
     let e1 = tokio::time::timeout(std::time::Duration::from_secs(2), rx1.recv())
@@ -277,17 +292,26 @@ async fn test_sse_no_subscribers_no_error() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
 
     // Emit events with no subscribers — should not panic or error
-    ctx.state.ui_event_bus.emit(UiEvent::WorkspaceCreated {
-        workspace_id: Uuid::new_v4(),
-        workspace_name: "no-sub-workspace".to_string(),
-    });
-    ctx.state.ui_event_bus.emit(UiEvent::CredentialCreated {
-        credential_id: Uuid::new_v4(),
-        credential_name: "no-sub-cred".to_string(),
-    });
-    ctx.state.ui_event_bus.emit(UiEvent::PolicyChanged {
-        policy_name: "no-sub-policy".to_string(),
-    });
+    ctx.state
+        .realtime
+        .ui_event_bus
+        .emit(UiEvent::WorkspaceCreated {
+            workspace_id: Uuid::new_v4(),
+            workspace_name: "no-sub-workspace".to_string(),
+        });
+    ctx.state
+        .realtime
+        .ui_event_bus
+        .emit(UiEvent::CredentialCreated {
+            credential_id: Uuid::new_v4(),
+            credential_name: "no-sub-cred".to_string(),
+        });
+    ctx.state
+        .realtime
+        .ui_event_bus
+        .emit(UiEvent::PolicyChanged {
+            policy_name: "no-sub-policy".to_string(),
+        });
 
     // If we got here without panicking, the test passes
 }
@@ -323,7 +347,7 @@ async fn test_sse_no_secrets_in_events() {
 }
 
 #[tokio::test]
-async fn test_sse_device_events_not_exposed_to_ui() {
+async fn test_sse_ui_endpoint_serves_event_stream() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let _user = common::create_test_user(
         &*ctx.store,
@@ -334,9 +358,7 @@ async fn test_sse_device_events_not_exposed_to_ui() {
     .await;
     let cookie = common::login_user_combined(&ctx.app, "sse-sep-user", common::TEST_PASSWORD).await;
 
-    // The UI SSE endpoint is /api/v1/events/ui
-    // The device SSE endpoint is different (/api/v1/devices/events or similar)
-    // Verify UI endpoint exists and returns event-stream
+    // Verify the UI endpoint exists and returns event-stream
     let resp = ctx
         .app
         .clone()
@@ -358,16 +380,6 @@ async fn test_sse_device_events_not_exposed_to_ui() {
         .to_str()
         .unwrap();
     assert!(ct.contains("text/event-stream"));
-
-    // Verify that UiEvent and DeviceEvent are separate types
-    // (compile-time check — if this test compiles, they're separate)
-    let _ui_event = UiEvent::WorkspaceCreated {
-        workspace_id: Uuid::new_v4(),
-        workspace_name: "test".to_string(),
-    };
-    let _device_event = agent_cordon_server::events::DeviceEvent::PolicyChanged {
-        policy_name: "test".to_string(),
-    };
 }
 
 // ===========================================================================

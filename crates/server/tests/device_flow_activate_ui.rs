@@ -105,7 +105,7 @@ async fn ui_activate_approve_provisions_workspace_and_tokenizes() {
 
     // 2. Approve via the UI POST /activate path (what the browser does
     //    when the user clicks Approve on `/activate?user_code=XXX`).
-    let csrf = compute_consent_csrf(&session_cookie, &state.session_hash_key);
+    let csrf = compute_consent_csrf(&session_cookie, &state.crypto.session_hash_key);
     let activate_body = format!(
         "csrf_token={}&user_code={}&decision=approve",
         urlencoding::encode(&csrf),
@@ -243,6 +243,234 @@ async fn api_approve_provisions_workspace_and_tokenizes() {
     assert!(body.get("access_token").and_then(Value::as_str).is_some());
 }
 
+/// Workspace names are not unique; the key hash is the identity. When two
+/// workspaces share a name, a device flow approved for the second key hash
+/// must issue a token for that workspace, not for whichever row the name
+/// finds first.
+#[tokio::test]
+async fn device_grant_binds_token_to_the_approved_key_hash_not_the_name() {
+    const OTHER_PK_HASH: &str = "9999999999999999999999999999999999999999999999999999999999999999";
+    let ctx = TestAppBuilder::new().build().await;
+    create_user_in_db(
+        &*ctx.store,
+        "op2",
+        TEST_PASSWORD,
+        UserRole::Operator,
+        false,
+        true,
+    )
+    .await;
+    let (session_cookie, csrf_token) = login_user(&ctx.app, "op2", TEST_PASSWORD).await;
+    let cookie_header = combined_cookie(&session_cookie, &csrf_token);
+    let shared_name = "same-display-name";
+
+    // First workspace with this name, on OTHER_PK_HASH, complete with a client.
+    let (device_code_1, user_code_1) = {
+        let issue_body = format!(
+            "client_id={BOOTSTRAP_CLIENT_ID}&scope=credentials:discover&\
+             workspace_name={shared_name}&public_key_hash={OTHER_PK_HASH}"
+        );
+        let (_, body, _) = post_form(&ctx.app, "/api/v1/oauth/device/code", &issue_body).await;
+        (
+            body["device_code"].as_str().unwrap().to_string(),
+            body["user_code"].as_str().unwrap().to_string(),
+        )
+    };
+    approve(
+        &ctx,
+        &cookie_header,
+        &csrf_token,
+        &user_code_1,
+        OTHER_PK_HASH,
+    )
+    .await;
+    let token_body = format!(
+        "grant_type={DEVICE_GRANT_TYPE}&client_id={BOOTSTRAP_CLIENT_ID}&device_code={device_code_1}"
+    );
+    let (s, body, _) = post_form(&ctx.app, "/api/v1/oauth/token", &token_body).await;
+    assert_eq!(s, StatusCode::OK, "first exchange: {body}");
+
+    // Second workspace, same name, on TEST_PK_HASH.
+    let (device_code_2, user_code_2) = {
+        let issue_body = format!(
+            "client_id={BOOTSTRAP_CLIENT_ID}&scope=credentials:discover&\
+             workspace_name={shared_name}&public_key_hash={TEST_PK_HASH}"
+        );
+        let (_, body, _) = post_form(&ctx.app, "/api/v1/oauth/device/code", &issue_body).await;
+        (
+            body["device_code"].as_str().unwrap().to_string(),
+            body["user_code"].as_str().unwrap().to_string(),
+        )
+    };
+    approve(
+        &ctx,
+        &cookie_header,
+        &csrf_token,
+        &user_code_2,
+        TEST_PK_HASH,
+    )
+    .await;
+    let token_body = format!(
+        "grant_type={DEVICE_GRANT_TYPE}&client_id={BOOTSTRAP_CLIENT_ID}&device_code={device_code_2}"
+    );
+    let (s, body, _) = post_form(&ctx.app, "/api/v1/oauth/token", &token_body).await;
+    assert_eq!(s, StatusCode::OK, "second exchange: {body}");
+    let token = body["access_token"].as_str().unwrap().to_string();
+
+    // The token must authenticate as the TEST_PK_HASH workspace and not as
+    // the same-named other one: the binding the bearer extractor resolves
+    // is the approved key hash's workspace.
+    let second_ws = ctx
+        .store
+        .get_workspace_by_pk_hash(TEST_PK_HASH)
+        .await
+        .unwrap()
+        .expect("second workspace exists");
+    let first_ws = ctx
+        .store
+        .get_workspace_by_pk_hash(OTHER_PK_HASH)
+        .await
+        .unwrap()
+        .expect("first workspace exists");
+    assert_ne!(
+        first_ws.id, second_ws.id,
+        "two distinct workspaces share the name"
+    );
+
+    let resolved = ctx
+        .store
+        .resolve_bearer(&agent_cordon_core::oauth2::tokens::hash_token(&token))
+        .await
+        .expect("resolve bearer")
+        .expect("the issued token resolves");
+    let bound = resolved
+        .workspace
+        .expect("the token is bound to a workspace");
+    assert_eq!(
+        bound.id, second_ws.id,
+        "token belongs to the approved key hash's workspace"
+    );
+    assert_ne!(
+        bound.id, first_ws.id,
+        "and not to the same-named other workspace"
+    );
+}
+
+/// Approving a device code binds its key hash to a workspace. When that
+/// hash already belongs to someone else's workspace, approving would hand
+/// the approver that workspace; only its owner or an admin may. A revoked
+/// workspace's hash cannot be approved by anyone. A refused approval leaves
+/// the code pending for the rightful owner.
+#[tokio::test]
+async fn approving_a_code_for_another_users_workspace_is_refused() {
+    use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
+    const OWNED_PK_HASH: &str = "7777777777777777777777777777777777777777777777777777777777777777";
+
+    let ctx = TestAppBuilder::new().build().await;
+    let owner = create_user_in_db(
+        &*ctx.store,
+        "hash-owner",
+        TEST_PASSWORD,
+        UserRole::Operator,
+        false,
+        true,
+    )
+    .await;
+    create_user_in_db(
+        &*ctx.store,
+        "other-op",
+        TEST_PASSWORD,
+        UserRole::Operator,
+        false,
+        true,
+    )
+    .await;
+    let now = chrono::Utc::now();
+    ctx.store
+        .create_workspace(&Workspace {
+            id: WorkspaceId(uuid::Uuid::new_v4()),
+            name: "owned-ws".to_string(),
+            status: WorkspaceStatus::Active,
+            pk_hash: Some(OWNED_PK_HASH.to_string()),
+            encryption_public_key: None,
+            tags: vec![],
+            owner_id: Some(owner.id.clone()),
+            parent_id: None,
+            tool_name: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("create workspace");
+
+    let issue_body = format!(
+        "client_id={BOOTSTRAP_CLIENT_ID}&scope=credentials:discover&\
+         workspace_name=owned-ws&public_key_hash={OWNED_PK_HASH}"
+    );
+    let (_, body, _) = post_form(&ctx.app, "/api/v1/oauth/device/code", &issue_body).await;
+    let user_code = body["user_code"].as_str().unwrap().to_string();
+
+    // The other operator is refused.
+    let (session, csrf) = login_user(&ctx.app, "other-op", TEST_PASSWORD).await;
+    let cookie_header = combined_cookie(&session, &csrf);
+    let status = try_approve(&ctx, &cookie_header, &csrf, &user_code, OWNED_PK_HASH).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "non-owner cannot approve");
+
+    // The owner still can: the code was left pending.
+    let (session, csrf) = login_user(&ctx.app, "hash-owner", TEST_PASSWORD).await;
+    let cookie_header = combined_cookie(&session, &csrf);
+    let status = try_approve(&ctx, &cookie_header, &csrf, &user_code, OWNED_PK_HASH).await;
+    assert_eq!(status, StatusCode::OK, "owner approves the pending code");
+}
+
+async fn try_approve(
+    ctx: &agent_cordon_server::test_helpers::TestContext,
+    cookie_header: &str,
+    csrf_token: &str,
+    user_code: &str,
+    pk_hash: &str,
+) -> StatusCode {
+    let approve_body = serde_json::json!({
+        "user_code": user_code,
+        "public_key_hash": pk_hash,
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/oauth/device/approve")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, cookie_header)
+        .header("x-csrf-token", csrf_token)
+        .body(Body::from(serde_json::to_vec(&approve_body).unwrap()))
+        .unwrap();
+    ctx.app.clone().oneshot(req).await.unwrap().status()
+}
+
+async fn approve(
+    ctx: &agent_cordon_server::test_helpers::TestContext,
+    cookie_header: &str,
+    csrf_token: &str,
+    user_code: &str,
+    pk_hash: &str,
+) {
+    let approve_body = serde_json::json!({
+        "user_code": user_code,
+        "public_key_hash": pk_hash,
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/oauth/device/approve")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, cookie_header)
+        .header("x-csrf-token", csrf_token)
+        .body(Body::from(serde_json::to_vec(&approve_body).unwrap()))
+        .unwrap();
+    let resp = ctx.app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "approve {user_code}: {body}");
+}
+
 // ---------------------------------------------------------------------------
 // Cedar `manage_workspaces` gate on POST /activate
 // ---------------------------------------------------------------------------
@@ -323,7 +551,7 @@ async fn ui_activate_approve_denied_for_viewer() {
 
     let forbid_before = count_policy_forbid_evals(&ctx, "manage_workspaces").await;
 
-    let csrf = compute_consent_csrf(&session_cookie, &state.session_hash_key);
+    let csrf = compute_consent_csrf(&session_cookie, &state.crypto.session_hash_key);
     let activate_body = format!(
         "csrf_token={}&user_code={}&decision=approve",
         urlencoding::encode(&csrf),
@@ -406,7 +634,7 @@ async fn ui_activate_deny_denied_for_viewer() {
 
     let forbid_before = count_policy_forbid_evals(&ctx, "manage_workspaces").await;
 
-    let csrf = compute_consent_csrf(&session_cookie, &state.session_hash_key);
+    let csrf = compute_consent_csrf(&session_cookie, &state.crypto.session_hash_key);
     let activate_body = format!(
         "csrf_token={}&user_code={}&decision=deny",
         urlencoding::encode(&csrf),
@@ -618,5 +846,95 @@ async fn ui_activate_get_omits_workspace_name_when_no_user_code() {
         !html.contains("You are authorizing"),
         "bare /activate (no user_code) must not render the workspace-authorization \
          line because there's no device_code row to look up"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Device-code issuance: rate limit and existing-key warning
+// ---------------------------------------------------------------------------
+
+async fn get_activate_html(app: &Router, session_cookie: &str, user_code: &str) -> String {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/activate?user_code={}",
+            urlencoding::encode(user_code)
+        ))
+        .header(header::COOKIE, session_cookie)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "GET /activate should render");
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8(bytes.to_vec()).expect("utf-8 html")
+}
+
+/// Issuance is unauthenticated, so one source can fill the `device_codes`
+/// table and hand out unlimited user codes for approvers to mis-approve.
+/// The 31st request in a minute from one address for one client is refused
+/// with a Retry-After.
+#[tokio::test]
+async fn issuing_device_codes_is_rate_limited_per_address_and_client() {
+    let ctx = TestAppBuilder::new().build().await;
+    let issue_body = format!("client_id={BOOTSTRAP_CLIENT_ID}&scope=credentials:discover");
+
+    for i in 0..30 {
+        let (s, body, _) = post_form(&ctx.app, "/api/v1/oauth/device/code", &issue_body).await;
+        assert_eq!(s, StatusCode::OK, "issue #{i}: {body}");
+    }
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/oauth/device/code")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(issue_body.clone()))
+        .unwrap();
+    let resp = ctx.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        resp.headers().get("retry-after").is_some(),
+        "429 must carry Retry-After"
+    );
+}
+
+/// The approver sees the key hash the code will bind, and a warning when
+/// that key already belongs to a workspace, so re-binding is a deliberate
+/// choice rather than a surprise.
+#[tokio::test]
+async fn activate_page_shows_the_key_hash_and_warns_when_it_is_already_registered() {
+    let ctx = TestAppBuilder::new().build().await;
+    create_user_in_db(
+        &*ctx.store,
+        "warn-op",
+        TEST_PASSWORD,
+        UserRole::Operator,
+        false,
+        true,
+    )
+    .await;
+    let (session_cookie, csrf) = login_user(&ctx.app, "warn-op", TEST_PASSWORD).await;
+    let cookie = combined_cookie(&session_cookie, &csrf);
+
+    // A fresh key: hash shown, no warning.
+    let (_dc, first_code) = issue_prefilled_device_code(&ctx.app, "first-ws").await;
+    let html = get_activate_html(&ctx.app, &session_cookie, &first_code).await;
+    assert!(html.contains(TEST_PK_HASH), "page must show the key hash");
+    assert!(
+        !html.contains("already registered"),
+        "no warning for an unregistered key"
+    );
+
+    // Register it, then issue a second code for the same key.
+    approve(&ctx, &cookie, &csrf, &first_code, TEST_PK_HASH).await;
+    let (_dc, second_code) = issue_prefilled_device_code(&ctx.app, "second-ws").await;
+    let html = get_activate_html(&ctx.app, &session_cookie, &second_code).await;
+    assert!(html.contains(TEST_PK_HASH), "page must show the key hash");
+    assert!(
+        html.contains("already registered"),
+        "page must warn that the key is already registered"
+    );
+    assert!(
+        html.contains("<strong>first-ws</strong>"),
+        "warning must name the existing workspace"
     );
 }

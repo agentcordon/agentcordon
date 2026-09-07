@@ -1,13 +1,28 @@
-{# Workspace detail pane — loaded via AJAX into the split-view right pane.
-   No base.html wrapper. Contains full detail + tabs + inline scripts. #}
-<div x-data="workspaceDetailPane()" x-init="init()">
+{# The workspace detail surface. There is one: the split-pane list loads it
+   over AJAX into its right pane, and `pages/workspaces/detail.html` — the
+   standalone page a narrow viewport is sent to — includes it. It carried a
+   second copy for a while and the two drifted (uat/artifacts/reviews/UI-REVIEW-static.md B1):
+   the History tab existed only here, so a phone could not see a workspace's
+   events at all. No base.html wrapper: the styles and the script are inline so
+   the AJAX load brings its own. #}
+<div x-data="workspaceDetailPane()">
     <div class="content-body">
         <div x-show="loading" class="page-loader">
             <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
             <span class="page-loader-label">Loading workspace...</span>
         </div>
 
-        <div x-show="notFound && !loading" class="empty-state">
+        <!--
+          A refusal and an absence are different answers and the reader is owed
+          the difference. Neither offers an action: there is nothing a caller
+          without permission can usefully press (uat/artifacts/reviews/UI-REVIEW-live.md M3).
+        -->
+        <div x-show="accessDenied && !loading" class="empty-state">
+            <h3>Not permitted</h3>
+            <p>You do not have permission to view this workspace.</p>
+        </div>
+
+        <div x-show="notFound && !loading && !accessDenied" class="empty-state">
             <h3>Workspace not found</h3>
         </div>
 
@@ -16,46 +31,100 @@
             <div class="detail-header">
                 <h3 x-text="workspace.name"></h3>
                 <div class="detail-header-actions">
+                    {# Disabling, revoking and deleting a workspace are all
+                       `update`/`delete` on it, which a viewer never holds: the
+                       server refuses each one, and offering them was how a
+                       viewer found that out (uat/artifacts/reviews/UI-REVIEW-live.md M3). #}
+                    {% if user.role != "viewer" %}
                     <div class="inline-actions-group">
-                        <button class="btn btn-sm"
-                                :class="workspace.enabled ? 'btn-secondary' : 'btn-primary'"
+                        {# Three buttons, two of them red, was the header this
+                           page shipped. Enable/Disable is the one an operator
+                           reaches for; Revoke and Delete are final and live in
+                           the overflow (uat/artifacts/reviews/DESIGN-REVIEW.md §2.1). #}
+                        {# Enable is not the page's primary action, so it stops
+                           flipping to `btn-primary` when the workspace is off
+                           (uat/artifacts/reviews/DESIGN-REVIEW.md §1.8). #}
+                        <button class="btn btn-secondary btn-sm"
+                                data-testid="workspace-toggle"
+                                :disabled="isRevoked()"
+                                :title="isRevoked() ? 'This workspace is revoked; revocation is final' : ''"
                                 @click="toggleEnabled()"
                                 x-text="workspace.enabled ? 'Disable' : 'Enable'"></button>
-                        <button class="btn btn-danger btn-sm" @click="openDelete()">Delete</button>
+                        <div class="overflow-menu" x-data="acOverflowMenu()"
+                             @click.outside="close()" @keydown.escape.stop="close()">
+                            <button type="button" class="btn btn-secondary btn-sm overflow-menu-btn"
+                                    aria-haspopup="menu" :aria-expanded="open ? 'true' : 'false'"
+                                    aria-label="More actions" title="More actions" @click="toggle()"><svg class="icon" aria-hidden="true"><use href="/icons.svg#more-horizontal"></use></svg><span class="overflow-menu-btn-label" aria-hidden="true">More</span></button>
+                            <div class="overflow-menu-items" role="menu" x-ref="acMenu"
+                                 x-show="open" x-cloak>
+                                <button id="ws-revoke-btn" type="button" role="menuitem"
+                                        class="overflow-menu-item overflow-menu-item-danger"
+                                        x-show="!isRevoked()"
+                                        @click="close(); openRevoke()">Revoke</button>
+                                <button type="button" role="menuitem"
+                                        data-testid="workspace-delete"
+                                        class="overflow-menu-item overflow-menu-item-danger"
+                                        @click="close(); openDelete()">Delete</button>
+                            </div>
+                        </div>
                     </div>
+                    {% endif %}
                 </div>
             </div>
 
+            {# Created / Updated / ID were three titled rows at the bottom of the
+               Details tab. One small line under the title says the same, and
+               the uuid gets a copy affordance instead of a row
+               (uat/artifacts/reviews/DESIGN-REVIEW.md §1.8). #}
+            <p class="detail-meta-line">
+                <span>Created <span x-text="formatDateTime(workspace.created_at)"></span></span>
+                <span>Updated <span x-text="formatDateTime(workspace.updated_at)"></span></span>
+                <span x-show="workspace.owner_username">Owner <span x-text="workspace.owner_username"></span></span>
+                <span class="mono-sm detail-meta-id" x-text="workspace.id"></span>
+                <button type="button" class="btn-icon btn-icon-xs detail-meta-copy"
+                        @click="copyId()" aria-label="Copy workspace ID" title="Copy workspace ID">
+                    <svg class="icon" aria-hidden="true"><use href="/icons.svg#copy"></use></svg>
+                </button>
+            </p>
+
             <!-- Tab bar -->
             <div class="detail-tabs">
-                <nav class="tab-bar" role="tablist" aria-label="Workspace detail tabs">
-                    <button class="tab-btn" role="tab"
+                <nav class="tab-bar" role="tablist" aria-label="Workspace detail tabs"
+                     @keydown="acTabKeydown($event)">
+                    <button class="tab-btn" role="tab" id="ws-tab-details"
+                            aria-controls="ws-panel-details"
                             :class="{ 'tab-active': activeTab === 'details' }"
-                            :aria-selected="activeTab === 'details'"
+                            :aria-selected="activeTab === 'details' ? 'true' : 'false'"
+                            :tabindex="activeTab === 'details' ? 0 : -1"
                             @click="activeTab = 'details'">Details</button>
-                    <button class="tab-btn" role="tab"
+                    <!-- "What MCP servers is this bound to" and "who consented
+                         to what" are one question - what can this workspace
+                         reach - and each rendered one centred sentence in a tab
+                         of its own (uat/artifacts/reviews/DESIGN-REVIEW.md 1.8). -->
+                    <button class="tab-btn" role="tab" id="ws-tab-access"
+                            aria-controls="ws-panel-access"
+                            :class="{ 'tab-active': activeTab === 'access' }"
+                            :aria-selected="activeTab === 'access' ? 'true' : 'false'"
+                            :tabindex="activeTab === 'access' ? 0 : -1"
+                            @click="activeTab = 'access'; loadMcpServers(); loadConsents()">Access</button>
+                    <button class="tab-btn" role="tab" id="ws-tab-history"
+                            aria-controls="ws-panel-history"
                             :class="{ 'tab-active': activeTab === 'history' }"
-                            :aria-selected="activeTab === 'history'"
+                            :aria-selected="activeTab === 'history' ? 'true' : 'false'"
+                            :tabindex="activeTab === 'history' ? 0 : -1"
                             @click="activeTab = 'history'; loadHistory()">History</button>
-                    <button class="tab-btn" role="tab"
-                            :class="{ 'tab-active': activeTab === 'mcp' }"
-                            :aria-selected="activeTab === 'mcp'"
-                            @click="activeTab = 'mcp'; loadMcpServers()">MCP Servers</button>
-                    <button class="tab-btn" role="tab"
-                            :class="{ 'tab-active': activeTab === 'consents' }"
-                            :aria-selected="activeTab === 'consents'"
-                            @click="activeTab = 'consents'; loadConsents()">Consents</button>
                 </nav>
 
                 <!-- Details tab -->
-                <div class="tab-content" role="tabpanel" x-show="activeTab === 'details'">
+                <div class="tab-content" role="tabpanel" id="ws-panel-details"
+                     aria-labelledby="ws-tab-details" x-show="activeTab === 'details'">
                     <div class="detail-body">
                         <div class="detail-row">
                             <div class="detail-label">Status</div>
                             <div class="detail-value">
-                                <span class="pill" :class="workspace.enabled ? 'pill-ok' : 'pill-warn'">
+                                <span class="pill" :class="isRevoked() ? 'pill-bad' : (workspace.enabled ? 'pill-ok' : 'pill-warn')">
                                     <span class="pill-dot"></span>
-                                    <span x-text="workspace.enabled ? 'Active' : 'Disabled'"></span>
+                                    <span x-text="statusLabel(workspace.status)"></span>
                                 </span>
                             </div>
                         </div>
@@ -85,7 +154,8 @@
                                             <template x-for="(tag, idx) in editTags" :key="idx">
                                                 <span class="chip">
                                                     <span x-text="tag"></span>
-                                                    <span class="chip-remove" @click="editTags.splice(idx, 1)">&times;</span>
+                                                    <button type="button" class="chip-remove" @click="editTags.splice(idx, 1)"
+                                                            :aria-label="'Remove tag ' + tag"><svg class="icon" aria-hidden="true"><use href="/icons.svg#x"></use></svg></button>
                                                 </span>
                                             </template>
                                             <input x-ref="editTagInput"
@@ -94,6 +164,7 @@
                                                    @keydown.comma.prevent="addEditTag()"
                                                    @blur="addEditTag()"
                                                    placeholder="Type a tag and press Enter"
+                                                   aria-label="Add tag"
                                                    class="tag-input-field">
                                         </div>
                                         <div class="tag-edit-actions">
@@ -104,23 +175,12 @@
                                 </template>
                             </div>
                         </div>
-                        <div class="detail-row">
-                            <div class="detail-label">Created</div>
-                            <div class="detail-value timestamp" x-text="formatDateTime(workspace.created_at)"></div>
-                        </div>
-                        <div class="detail-row">
-                            <div class="detail-label">Updated</div>
-                            <div class="detail-value timestamp" x-text="formatDateTime(workspace.updated_at)"></div>
-                        </div>
-                        <div class="detail-row">
-                            <div class="detail-label">ID</div>
-                            <div class="detail-value mono-sm" x-text="workspace.id"></div>
-                        </div>
                     </div>
                 </div>
 
                 <!-- History tab -->
-                <div class="tab-content" role="tabpanel" x-show="activeTab === 'history'">
+                <div class="tab-content" role="tabpanel" id="ws-panel-history"
+                     aria-labelledby="ws-tab-history" x-show="activeTab === 'history'">
                     <div x-show="historyLoading" class="page-loader page-loader-sm">
                         <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
                     </div>
@@ -142,7 +202,7 @@
                                     role="link" :aria-label="'View audit event ' + ev.event_type">
                                     <td class="timestamp" :title="formatDateTime(ev.timestamp)"
                                         x-text="timeAgo(ev.timestamp)"></td>
-                                    <td><span class="pill pill-type" x-text="ev.event_type"></span></td>
+                                    <td><span class="pill pill-type" x-text="eventTypeLabel(ev.event_type)"></span></td>
                                     <td>
                                         <span class="pill"
                                               :class="ev.decision === 'permit' ? 'pill-ok' : (ev.decision === 'forbid' ? 'pill-bad' : 'pill-warn')"
@@ -155,8 +215,10 @@
                     </table>
                 </div>
 
-                <!-- MCP Servers tab -->
-                <div class="tab-content" role="tabpanel" x-show="activeTab === 'mcp'">
+                <!-- Access tab: two sections, one question -->
+                <div class="tab-content" role="tabpanel" id="ws-panel-access"
+                     aria-labelledby="ws-tab-access" x-show="activeTab === 'access'">
+                    <h3 class="tab-section-title">MCP servers this workspace can reach</h3>
                     <div x-show="mcpLoading" class="page-loader page-loader-sm">
                         <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
                     </div>
@@ -185,10 +247,8 @@
                             </template>
                         </tbody>
                     </table>
-                </div>
 
-                <!-- Consents tab (issue #10) -->
-                <div class="tab-content" role="tabpanel" x-show="activeTab === 'consents'">
+                    <h3 class="tab-section-title tab-section-title-next">Consent grants</h3>
                     <div x-show="consentsLoading" class="page-loader page-loader-sm">
                         <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
                     </div>
@@ -216,7 +276,7 @@
                                     <td class="timestamp" x-text="formatDateTime(c.granted_at)"></td>
                                     <td>
                                         <button class="btn btn-danger btn-sm"
-                                                @click="revokeConsent(c)">Revoke</button>
+                                                @click="revokeConsent(c)">Revoke consent</button>
                                     </td>
                                 </tr>
                             </template>
@@ -228,14 +288,29 @@
         </template>
     </div>
 
-    <!-- Delete modal (inline for partial) -->
-    <div x-show="deleteModal" x-cloak x-transition.opacity.duration.150ms class="modal-overlay" @click.self="deleteModal = false" @keydown.escape.window="deleteModal && (deleteModal = false)">
-        <div class="modal">
-            <h3>Delete Workspace</h3>
-            <p>Are you sure you want to delete <strong x-text="deleteTargetName"></strong>? This action cannot be undone.</p>
+    <!-- Revoke modal (inline for partial) -->
+    <div x-show="revokeModal" x-cloak x-transition.opacity.duration.150ms class="modal-overlay"
+         @click.self="revokeModal = false"
+         @keydown.escape.window="revokeModal && (revokeModal = false)">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ws-revoke-title">
+            <h3 id="ws-revoke-title">Revoke workspace</h3>
+            <p>
+                Revoking <strong x-text="workspace ? workspace.name : ''"></strong> is
+                <strong>final</strong>. Its OAuth clients and every access and refresh token
+                are revoked in one transaction, and the workspace can never be enabled again
+                — re-enabling a revoked workspace is refused.
+            </p>
+            <p class="text-faint">
+                There is no undo. The only way back is to register a new identity
+                (<code>agentcordon init</code> then <code>agentcordon register</code>) and approve it.
+                To stop access temporarily, use <strong>Disable</strong> instead.
+            </p>
             <div class="modal-actions">
-                <button class="btn btn-secondary" @click="deleteModal = false">Cancel</button>
-                <button class="btn btn-danger" @click="confirmDelete()">Delete</button>
+                <button class="btn btn-secondary" @click="revokeModal = false">Cancel</button>
+                <button id="ws-revoke-confirm" class="btn btn-danger"
+                        :disabled="revoking"
+                        @click="confirmRevoke()"
+                        x-text="revoking ? 'Revoking...' : 'Revoke permanently'"></button>
             </div>
         </div>
     </div>
@@ -253,6 +328,7 @@ function workspaceDetailPane() {
         workspace: null,
         loading: true,
         notFound: false,
+        accessDenied: false,
         activeTab: 'details',
         editingTags: false,
         editTags: [],
@@ -267,20 +343,45 @@ function workspaceDetailPane() {
         consents: [],
         consentsLoading: false,
         consentsLoaded: false,
-        deleteModal: false,
-        deleteTargetName: '',
+        revokeModal: false,
+        revoking: false,
+
+        _onWorkspaceUpdated: null,
+        _onAuditEvent: null,
 
         async init() {
             var id = '{{ workspace_id }}';
+            // The split view replaces this pane on every selection, so the
+            // listeners it adds have to come off again in destroy(); a kept
+            // reference is what makes that possible
+            // (uat/artifacts/reviews/UI-REVIEW-static.md J2).
+            this._onWorkspaceUpdated = () => this.loadWorkspace(id);
+            this._onAuditEvent = () => this.refreshHistory();
+            window.addEventListener('ac:workspace_updated', this._onWorkspaceUpdated);
+            window.addEventListener('ac:audit_event', this._onAuditEvent);
             await this.loadWorkspace(id);
-            window.addEventListener('ac:workspace_updated', () => this.loadWorkspace(id));
-            window.addEventListener('ac:audit_event', () => this.refreshHistory());
+        },
+
+        /* Alpine calls this from `Alpine.destroyTree`, which the list page runs
+         * before it drops the outgoing pane. Without it one SSE event cost a
+         * fetch for every pane the reader had ever opened. */
+        destroy() {
+            if (this._onWorkspaceUpdated) {
+                window.removeEventListener('ac:workspace_updated', this._onWorkspaceUpdated);
+                this._onWorkspaceUpdated = null;
+            }
+            if (this._onAuditEvent) {
+                window.removeEventListener('ac:audit_event', this._onAuditEvent);
+                this._onAuditEvent = null;
+            }
         },
 
         async loadWorkspace(id) {
             try {
-                var resp = await fetch('/api/v1/workspaces/' + id);
-                if (resp.ok) {
+                var resp = await AC.fetch('/api/v1/workspaces/' + id);
+                if (resp.status === 403) {
+                    this.accessDenied = true;
+                } else if (resp.ok) {
                     var data = await resp.json();
                     this.workspace = data.data || data;
                 } else if (resp.status === 404) {
@@ -295,7 +396,7 @@ function workspaceDetailPane() {
             this.historyLoading = true;
             try {
                 var id = '{{ workspace_id }}';
-                var resp = await fetch('/api/v1/audit?workspace_id=' + id + '&limit=50');
+                var resp = await AC.fetch('/api/v1/audit?workspace_id=' + id + '&limit=50');
                 if (resp.ok) {
                     var data = await resp.json();
                     this.history = data.data || [];
@@ -303,6 +404,14 @@ function workspaceDetailPane() {
             } catch(e) { showToast('Failed to load history', 'error'); }
             this.historyLoading = false;
             this.historyLoaded = true;
+        },
+
+        async copyId() {
+            if (!this.workspace) return;
+            try {
+                await navigator.clipboard.writeText(this.workspace.id);
+                showToast('Workspace ID copied', 'success');
+            } catch(e) { showToast('Could not copy the workspace ID', 'error'); }
         },
 
         async refreshHistory() {
@@ -319,7 +428,7 @@ function workspaceDetailPane() {
             this.mcpLoading = true;
             try {
                 var id = '{{ workspace_id }}';
-                var resp = await fetch('/api/v1/mcp-servers?workspace_id=' + id);
+                var resp = await AC.fetch('/api/v1/mcp-servers?workspace_id=' + id);
                 if (resp.ok) {
                     var data = await resp.json();
                     var items = data.data || [];
@@ -343,7 +452,7 @@ function workspaceDetailPane() {
             this.consentsLoading = true;
             try {
                 var id = '{{ workspace_id }}';
-                var resp = await fetch('/api/v1/workspaces/' + id + '/consents');
+                var resp = await AC.fetch('/api/v1/workspaces/' + id + '/consents');
                 if (resp.ok) {
                     var data = await resp.json();
                     this.consents = (data.data || []).slice().sort(function(a, b) {
@@ -356,12 +465,17 @@ function workspaceDetailPane() {
         },
 
         async revokeConsent(c) {
-            if (!confirm('Revoke ' + (c.username || c.user_id) + "'s consent? This deletes the grant and revokes all of their tokens for this workspace.")) {
-                return;
-            }
+            var ok = await AC.confirm({
+                title: 'Revoke consent',
+                message: 'Revoke ' + (c.username || c.user_id) + "'s consent? This deletes the " +
+                         'grant and revokes every token they hold for this workspace.',
+                confirmLabel: 'Revoke consent',
+                danger: true
+            });
+            if (!ok) return;
             try {
                 var id = '{{ workspace_id }}';
-                var resp = await fetch('/api/v1/workspaces/' + id + '/consents/' + encodeURIComponent(c.user_id), {
+                var resp = await AC.fetch('/api/v1/workspaces/' + id + '/consents/' + encodeURIComponent(c.user_id), {
                     method: 'DELETE',
                     headers: { 'X-CSRF-Token': getCsrfToken() }
                 });
@@ -375,15 +489,70 @@ function workspaceDetailPane() {
             } catch(e) { showToast('Failed to revoke consent', 'error'); }
         },
 
-        async toggleEnabled() {
+        isRevoked() {
+            return !!this.workspace && this.workspace.status === 'revoked';
+        },
+
+        openRevoke() {
+            this.revokeModal = true;
+        },
+
+        // POST /api/v1/workspaces/{id}/revoke — final; the server refuses a
+        // later enable with 409.
+        async confirmRevoke() {
+            this.revoking = true;
             try {
                 var id = '{{ workspace_id }}';
-                await fetch('/api/v1/workspaces/' + id, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
-                    body: JSON.stringify({ enabled: !this.workspace.enabled })
+                var resp = await AC.fetch('/api/v1/workspaces/' + id + '/revoke', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
                 });
+                if (resp.ok) {
+                    this.revokeModal = false;
+                    await this.loadWorkspace(id);
+                    showToast('Workspace revoked', 'success');
+                } else {
+                    var err = await resp.json().catch(function() { return {}; });
+                    showToast((err.error && err.error.message) || 'Failed to revoke workspace', 'error');
+                }
+            } catch(e) { showToast('Failed to revoke workspace', 'error'); }
+            this.revoking = false;
+        },
+
+        /*
+         * Disabling was one unconfirmed click that took access away from every
+         * agent holding this workspace's identity, while Revoke — the same
+         * thing, permanently — had a full warning (uat/artifacts/reviews/UI-REVIEW-live.md M14).
+         * Enabling needs no confirmation: it gives access back.
+         */
+        async toggleEnabled() {
+            var turningOff = this.workspace.enabled;
+            if (turningOff) {
+                var ok = await AC.confirm({
+                    title: 'Disable workspace',
+                    message: 'Disable "' + this.workspace.name + '"? Every agent using this ' +
+                             'workspace will lose access immediately — credential vends and ' +
+                             'MCP calls stop working until it is enabled again.',
+                    confirmLabel: 'Disable',
+                    danger: true
+                });
+                if (!ok) return;
+            }
+            try {
+                var id = '{{ workspace_id }}';
+                var resp = await AC.fetch('/api/v1/workspaces/' + id, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: !turningOff })
+                });
+                if (!resp.ok) {
+                    // Enabling a revoked workspace answers 409, which the page
+                    // used to swallow whole.
+                    await AC.reportError(resp, 'Failed to update workspace');
+                    return;
+                }
                 await this.loadWorkspace(id);
+                showToast(turningOff ? 'Workspace disabled' : 'Workspace enabled', 'success');
             } catch(e) { showToast('Failed to update workspace', 'error'); }
         },
 
@@ -405,11 +574,16 @@ function workspaceDetailPane() {
             this.savingTags = true;
             try {
                 var id = '{{ workspace_id }}';
-                await fetch('/api/v1/workspaces/' + id, {
+                var resp = await AC.fetch('/api/v1/workspaces/' + id, {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ tags: this.editTags })
                 });
+                if (!resp.ok) {
+                    await AC.reportError(resp, 'Failed to save tags');
+                    this.savingTags = false;
+                    return;
+                }
                 await this.loadWorkspace(id);
                 this.editingTags = false;
             } catch(e) { showToast('Failed to save tags', 'error'); }
@@ -444,15 +618,21 @@ function workspaceDetailPane() {
             return formatDateTime(ts);
         },
 
-        openDelete() {
-            this.deleteTargetName = this.workspace.name;
-            this.deleteModal = true;
+        async openDelete() {
+            var ok = await AC.confirm({
+                title: 'Delete workspace',
+                message: 'Delete "' + this.workspace.name + '"? Its identity, grants and MCP ' +
+                         'bindings go with it, and no agent registered to it can connect again.',
+                confirmLabel: 'Delete',
+                danger: true
+            });
+            if (ok) await this.confirmDelete();
         },
 
         async confirmDelete() {
             try {
                 var id = '{{ workspace_id }}';
-                var resp = await fetch('/api/v1/workspaces/' + id, {
+                var resp = await AC.fetch('/api/v1/workspaces/' + id, {
                     method: 'DELETE',
                     headers: { 'X-CSRF-Token': getCsrfToken() }
                 });
@@ -463,7 +643,6 @@ function workspaceDetailPane() {
                     showToast((err.error && err.error.message) || 'Failed to delete workspace', 'error');
                 }
             } catch(e) { showToast('Failed to delete workspace', 'error'); }
-            this.deleteModal = false;
         },
 
         statusClass: statusClass,

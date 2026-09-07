@@ -4,6 +4,7 @@ use super::helpers::*;
 use super::SqliteStore;
 
 use crate::domain::mcp::{McpServer, McpServerId};
+use crate::domain::time::format_timestamp;
 use crate::domain::user::UserId;
 use crate::domain::workspace::WorkspaceId;
 use crate::error::StoreError;
@@ -55,8 +56,8 @@ impl SqliteStore {
                         tools_json,
                         server.enabled as i32,
                         created_by_str,
-                        server.created_at.to_rfc3339(),
-                        server.updated_at.to_rfc3339(),
+                        format_timestamp(&server.created_at),
+                        format_timestamp(&server.updated_at),
                         tags_json,
                         req_creds_json,
                         server.auth_method.to_string(),
@@ -65,21 +66,11 @@ impl SqliteStore {
                         created_by_user_str,
                     ],
                 )
-                .map_err(|e| {
-                    if let rusqlite::Error::SqliteFailure(ref err, _) = e {
-                        if err.code == rusqlite::ErrorCode::ConstraintViolation {
-                            return store_err_to_tokio(StoreError::Conflict {
-                                message: format!("MCP server with name '{}' already exists on this workspace", server.name),
-                                existing_id: None,
-                            });
-                        }
-                    }
-                    tokio_rusqlite::Error::Rusqlite(e)
-                })?;
+                .map_err(tokio_rusqlite::Error::Rusqlite)?;
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_mcp_server(
@@ -102,7 +93,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_mcp_server_by_workspace_and_name(
@@ -141,7 +132,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn list_mcp_servers(&self) -> Result<Vec<McpServer>, StoreError> {
@@ -161,7 +152,7 @@ impl SqliteStore {
                 Ok(servers)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn list_mcp_servers_by_user(
@@ -188,7 +179,7 @@ impl SqliteStore {
                 Ok(servers)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn update_mcp_server(&self, server: &McpServer) -> Result<(), StoreError> {
@@ -224,7 +215,7 @@ impl SqliteStore {
                         "[]", // legacy column — always write empty array
                         tools_json,
                         server.enabled as i32,
-                        server.updated_at.to_rfc3339(),
+                        format_timestamp(&server.updated_at),
                         tags_json,
                         req_creds_json,
                         server.auth_method.to_string(),
@@ -238,7 +229,7 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn delete_mcp_server(&self, id: &McpServerId) -> Result<bool, StoreError> {
@@ -254,7 +245,7 @@ impl SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }
 

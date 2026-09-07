@@ -1,0 +1,13 @@
+{
+  "key": "uat-apikey",
+  "name": "UAT Mock MCP (API key)",
+  "description": "UAT harness: the mock MCP server's API-key mount.",
+  "upstream_url": "http://server:9100/apikey",
+  "transport": "http",
+  "auth_method": "api_key",
+  "api_key_header": "X-API-Key",
+  "category": "uat",
+  "tags": ["uat", "mock"],
+  "icon": "uat",
+  "sort_order": 2
+}

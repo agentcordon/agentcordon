@@ -1,9 +1,13 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use super::helpers::map_store_error;
 use super::SqliteStore;
+use crate::domain::time::{format_timestamp, parse_timestamp};
 use crate::error::StoreError;
-use crate::oauth2::types::{DeviceCode, DeviceCodeStatus, OAuthScope};
+use crate::oauth2::types::{
+    DeviceCode, DeviceCodeStatus, OAuthAccessToken, OAuthRefreshToken, OAuthScope,
+};
 use crate::storage::traits::DeviceCodeStore;
 
 const DEVICE_CODE_COLUMNS: &str = "device_code, user_code, client_id, scopes, status, \
@@ -26,11 +30,9 @@ fn string_to_scopes(s: &str) -> Vec<OAuthScope> {
 }
 
 fn parse_dt(s: &str, col: usize) -> Result<DateTime<Utc>, rusqlite::Error> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
-        })
+    parse_timestamp(s).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 fn parse_dt_opt(s: Option<String>, col: usize) -> Result<Option<DateTime<Utc>>, rusqlite::Error> {
@@ -71,9 +73,9 @@ impl DeviceCodeStore for SqliteStore {
         let code = code.clone();
         let scopes_str = scopes_to_string(&code.scopes);
         let status_str = code.status.as_str().to_string();
-        let created_at = code.created_at.to_rfc3339();
-        let expires_at = code.expires_at.to_rfc3339();
-        let last_polled_at = code.last_polled_at.map(|dt| dt.to_rfc3339());
+        let created_at = format_timestamp(&code.created_at);
+        let expires_at = format_timestamp(&code.expires_at);
+        let last_polled_at = code.last_polled_at.map(|dt| format_timestamp(&dt));
         self.conn()
             .call(move |conn| {
                 conn.execute(
@@ -101,7 +103,7 @@ impl DeviceCodeStore for SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+            .map_err(map_store_error)?;
         // Audit emission belongs at this layer per CLAUDE.md. The AuditStore
         // sink is registered on SqliteStore; emit the DeviceCodeIssued event
         // here so handlers don't have to remember.
@@ -138,7 +140,7 @@ impl DeviceCodeStore for SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn get_device_code_by_user_code(
@@ -167,7 +169,7 @@ impl DeviceCodeStore for SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn approve_device_code(
@@ -189,7 +191,7 @@ impl DeviceCodeStore for SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn deny_device_code(&self, user_code: &str) -> Result<bool, StoreError> {
@@ -206,7 +208,7 @@ impl DeviceCodeStore for SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn consume_device_code(&self, device_code: &str) -> Result<bool, StoreError> {
@@ -224,7 +226,38 @@ impl DeviceCodeStore for SqliteStore {
                 Ok(count == 1)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
+    }
+
+    async fn consume_device_code_and_issue_tokens(
+        &self,
+        device_code: &str,
+        access: &OAuthAccessToken,
+        refresh: &OAuthRefreshToken,
+    ) -> Result<bool, StoreError> {
+        let device_code = device_code.to_string();
+        let access = access.clone();
+        let refresh = refresh.clone();
+        self.conn()
+            .call(move |conn| {
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                // Same compare-and-swap as `consume_device_code`: only
+                // 'approved' -> 'consumed', and only one caller changes the row.
+                let count = tx.execute(
+                    "UPDATE device_codes SET status = 'consumed' \
+                     WHERE device_code = ?1 AND status = 'approved'",
+                    rusqlite::params![device_code],
+                )?;
+                if count != 1 {
+                    return Ok(false);
+                }
+                super::oauth::mint_token_pair(&tx, &access, &refresh)?;
+                tx.commit()?;
+                Ok(true)
+            })
+            .await
+            .map_err(map_store_error)
     }
 
     async fn update_device_code_poll(
@@ -233,7 +266,7 @@ impl DeviceCodeStore for SqliteStore {
         new_interval_secs: Option<i64>,
     ) -> Result<(), StoreError> {
         let device_code = device_code.to_string();
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
         self.conn()
             .call(move |conn| {
                 match new_interval_secs {
@@ -257,11 +290,11 @@ impl DeviceCodeStore for SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn sweep_expired_device_codes(&self) -> Result<u32, StoreError> {
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
         self.conn()
             .call(move |conn| {
                 let count = conn
@@ -274,6 +307,6 @@ impl DeviceCodeStore for SqliteStore {
                 Ok(count as u32)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }

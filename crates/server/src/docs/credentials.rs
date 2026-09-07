@@ -26,7 +26,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                 "expires_at": { "type": "string", "format": "date-time", "description": "Optional expiry date (ISO 8601). Null or absent means never expires." },
                 "transform_script": { "type": "string", "description": "Optional Rhai script for transforming the decrypted secret before proxy injection. The script receives variables: secret, method, url, headers (map), body. Must return a string." },
                 "transform_name": { "type": "string", "description": "Optional named built-in transform. Available: 'identity' (passthrough), 'basic-auth' (base64-encodes 'user:pass' as 'Basic ...'), 'bearer' (prefixes with 'Bearer '), 'aws-sigv4' (AWS SigV4 signing). If both transform_script and transform_name are provided, script takes precedence." },
-                "vault": { "type": "string", "description": "Optional vault name for organizational grouping. Defaults to 'default' if not specified." },
+                "vault_id": { "type": "string", "format": "uuid", "description": "Optional vault, by id. Defaults to the system default vault. A vault is named by id, never by display name." },
                 "credential_type": { "type": "string", "enum": ["generic", "aws", "oauth2_client_credentials"], "description": "Credential type. Defaults to 'generic'. When 'aws', provide aws_access_key_id + aws_secret_access_key fields (preferred) or secret_value as JSON with access_key_id and secret_access_key. When 'oauth2_client_credentials', provide oauth2_client_id + oauth2_token_endpoint + secret_value (client secret). Auto-defaults transform_name to 'aws-sigv4' for AWS." },
                 "aws_access_key_id": { "type": "string", "description": "AWS Access Key ID. Used with credential_type='aws' instead of raw JSON in secret_value." },
                 "aws_secret_access_key": { "type": "string", "description": "AWS Secret Access Key. Used with credential_type='aws' instead of raw JSON in secret_value." },
@@ -50,7 +50,8 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                 "expired": { "type": "boolean", "description": "True if the credential has expired" },
                 "transform_script": { "type": "string", "nullable": true, "description": "Rhai transform script (if set)" },
                 "transform_name": { "type": "string", "nullable": true, "description": "Named built-in transform (if set)" },
-                "vault": { "type": "string", "description": "Vault name this credential belongs to (default: 'default')" },
+                "vault_id": { "type": "string", "format": "uuid", "description": "The vault this credential belongs to" },
+                "vault_name": { "type": "string", "description": "The vault's display name, for showing next to the credential" },
                 "credential_type": { "type": "string", "description": "Credential type: 'generic', 'aws', or 'oauth2_client_credentials'" },
                 "owner_username": { "type": "string", "nullable": true, "description": "Display name of the credential owner (resolved from agent or user)" }
             }
@@ -83,7 +84,8 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                     "expired": { "type": "boolean", "description": "True if the credential has expired" },
                     "transform_script": { "type": "string", "nullable": true },
                     "transform_name": { "type": "string", "nullable": true },
-                    "vault": { "type": "string", "description": "Vault name this credential belongs to" },
+                    "vault_id": { "type": "string", "format": "uuid", "description": "The vault this credential belongs to" },
+                "vault_name": { "type": "string", "description": "The vault's display name" },
                     "credential_type": { "type": "string", "description": "Credential type: 'generic', 'aws', or 'oauth2_client_credentials'" }
                 }
             }
@@ -114,7 +116,8 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                 "expired": { "type": "boolean", "description": "True if the credential has expired" },
                 "transform_script": { "type": "string", "nullable": true },
                 "transform_name": { "type": "string", "nullable": true },
-                "vault": { "type": "string", "description": "Vault name this credential belongs to" },
+                "vault_id": { "type": "string", "format": "uuid", "description": "The vault this credential belongs to" },
+                "vault_name": { "type": "string", "description": "The vault's display name" },
                 "credential_type": { "type": "string", "description": "Credential type: 'generic', 'aws', or 'oauth2_client_credentials'" }
             }
         })),
@@ -139,7 +142,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                 "expires_at": { "type": "string", "format": "date-time", "description": "Updated expiry date (ISO 8601)" },
                 "transform_script": { "type": "string", "description": "Updated Rhai transform script" },
                 "transform_name": { "type": "string", "description": "Updated named built-in transform" },
-                "vault": { "type": "string", "description": "Updated vault grouping" }
+                "vault_id": { "type": "string", "format": "uuid", "description": "Move the credential to another vault, by id" }
             },
             "description": "All fields are optional. Only provided fields are updated."
         })),
@@ -158,7 +161,8 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                 "expired": { "type": "boolean", "description": "True if the credential has expired" },
                 "transform_script": { "type": "string", "nullable": true },
                 "transform_name": { "type": "string", "nullable": true },
-                "vault": { "type": "string" },
+                "vault_id": { "type": "string" },
+                "vault_name": { "type": "string" },
                 "credential_type": { "type": "string" }
             }
         })),

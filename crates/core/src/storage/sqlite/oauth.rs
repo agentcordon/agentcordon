@@ -2,13 +2,20 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use super::helpers::map_store_error;
 use super::SqliteStore;
+use crate::domain::time::{format_timestamp, parse_timestamp};
 use crate::domain::user::UserId;
+use crate::domain::workspace::WorkspaceId;
 use crate::error::StoreError;
 use crate::oauth2::types::{
-    OAuthAccessToken, OAuthAuthCode, OAuthClient, OAuthConsent, OAuthRefreshToken, OAuthScope,
+    BearerResolution, OAuthAccessToken, OAuthAuthCode, OAuthClient, OAuthConsent,
+    OAuthRefreshToken, OAuthScope,
 };
+use crate::storage::shared::WORKSPACE_COLUMNS;
+use crate::storage::sqlite::helpers::row_to_workspace;
 use crate::storage::traits::OAuthStore;
+use rusqlite::OptionalExtension;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,11 +45,9 @@ fn string_to_redirect_uris(s: &str) -> Vec<String> {
 }
 
 fn parse_datetime(s: &str, col: usize) -> Result<DateTime<Utc>, rusqlite::Error> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
-        })
+    parse_timestamp(s).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 fn parse_optional_datetime(
@@ -56,7 +61,7 @@ fn parse_optional_datetime(
 }
 
 const CLIENT_COLUMNS: &str = "id, client_id, client_secret_hash, workspace_name, public_key_hash, \
-     redirect_uris, allowed_scopes, created_by_user, created_at, revoked_at";
+     redirect_uris, allowed_scopes, created_by_user, created_at, revoked_at, workspace_id";
 
 fn row_to_oauth_client(row: &rusqlite::Row<'_>) -> Result<OAuthClient, rusqlite::Error> {
     let id_str: String = row.get(0)?;
@@ -69,6 +74,7 @@ fn row_to_oauth_client(row: &rusqlite::Row<'_>) -> Result<OAuthClient, rusqlite:
     let created_by_user_str: String = row.get(7)?;
     let created_at_str: String = row.get(8)?;
     let revoked_at_str: Option<String> = row.get(9)?;
+    let workspace_id_str: Option<String> = row.get(10)?;
 
     let id = Uuid::parse_str(&id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -76,6 +82,12 @@ fn row_to_oauth_client(row: &rusqlite::Row<'_>) -> Result<OAuthClient, rusqlite:
     let created_by_user_uuid = Uuid::parse_str(&created_by_user_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
     })?;
+    let workspace_id = workspace_id_str
+        .map(|s| Uuid::parse_str(&s).map(WorkspaceId))
+        .transpose()
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
+        })?;
 
     Ok(OAuthClient {
         id,
@@ -83,6 +95,7 @@ fn row_to_oauth_client(row: &rusqlite::Row<'_>) -> Result<OAuthClient, rusqlite:
         client_secret_hash,
         workspace_name,
         public_key_hash,
+        workspace_id,
         redirect_uris: string_to_redirect_uris(&redirect_uris_json),
         allowed_scopes: string_to_scopes(&scopes_str),
         created_by_user: UserId(created_by_user_uuid),
@@ -151,7 +164,7 @@ fn row_to_access_token(row: &rusqlite::Row<'_>) -> Result<OAuthAccessToken, rusq
 }
 
 const REFRESH_TOKEN_COLUMNS: &str =
-    "token_hash, client_id, user_id, scopes, access_token_hash, created_at, expires_at, revoked_at";
+    "token_hash, client_id, user_id, scopes, access_token_hash, created_at, expires_at, revoked_at, family_id";
 
 fn row_to_refresh_token(row: &rusqlite::Row<'_>) -> Result<OAuthRefreshToken, rusqlite::Error> {
     let token_hash: String = row.get(0)?;
@@ -162,6 +175,11 @@ fn row_to_refresh_token(row: &rusqlite::Row<'_>) -> Result<OAuthRefreshToken, ru
     let created_at_str: String = row.get(5)?;
     let expires_at_str: String = row.get(6)?;
     let revoked_at_str: Option<String> = row.get(7)?;
+    // Migration 015 backfills family_id = token_hash; the fallback only
+    // matters for a row inserted between the ALTER and the UPDATE.
+    let family_id: String = row
+        .get::<_, Option<String>>(8)?
+        .unwrap_or_else(|| token_hash.clone());
 
     let user_id = Uuid::parse_str(&user_id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
@@ -173,6 +191,7 @@ fn row_to_refresh_token(row: &rusqlite::Row<'_>) -> Result<OAuthRefreshToken, ru
         user_id: UserId(user_id),
         scopes: string_to_scopes(&scopes_str),
         access_token_hash,
+        family_id,
         created_at: parse_datetime(&created_at_str, 5)?,
         expires_at: parse_datetime(&expires_at_str, 6)?,
         revoked_at: parse_optional_datetime(revoked_at_str, 7)?,
@@ -198,6 +217,125 @@ fn row_to_consent(row: &rusqlite::Row<'_>) -> Result<OAuthConsent, rusqlite::Err
 }
 
 // ---------------------------------------------------------------------------
+// Row writers shared by the single-statement methods and the transactions
+// that mint or replace several rows at once. Each takes a `Connection`; a
+// `Transaction` derefs to one.
+// ---------------------------------------------------------------------------
+
+fn insert_oauth_client(conn: &rusqlite::Connection, client: &OAuthClient) -> rusqlite::Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT INTO oauth_clients ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            CLIENT_COLUMNS
+        ),
+        rusqlite::params![
+            client.id.hyphenated().to_string(),
+            client.client_id,
+            client.client_secret_hash,
+            client.workspace_name,
+            client.public_key_hash,
+            redirect_uris_to_string(&client.redirect_uris),
+            scopes_to_string(&client.allowed_scopes),
+            client.created_by_user.0.hyphenated().to_string(),
+            format_timestamp(&client.created_at),
+            client.revoked_at.map(|dt| format_timestamp(&dt)),
+            client
+                .workspace_id
+                .as_ref()
+                .map(|w| w.0.hyphenated().to_string()),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Delete a client and every row that refers to it. Returns whether the
+/// client existed.
+fn delete_oauth_client_rows(
+    conn: &rusqlite::Connection,
+    client_id: &str,
+) -> rusqlite::Result<bool> {
+    for table in [
+        "oauth_access_tokens",
+        "oauth_refresh_tokens",
+        "oauth_auth_codes",
+        "oauth_consents",
+    ] {
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE client_id = ?1"),
+            rusqlite::params![client_id],
+        )?;
+    }
+    let count = conn.execute(
+        "DELETE FROM oauth_clients WHERE client_id = ?1",
+        rusqlite::params![client_id],
+    )?;
+    Ok(count > 0)
+}
+
+/// The token inherits its client's workspace binding.
+fn insert_access_token(
+    conn: &rusqlite::Connection,
+    token: &OAuthAccessToken,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT INTO oauth_access_tokens ({}, workspace_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
+                     (SELECT workspace_id FROM oauth_clients WHERE client_id = ?2))",
+            ACCESS_TOKEN_COLUMNS
+        ),
+        rusqlite::params![
+            token.token_hash,
+            token.client_id,
+            token.user_id.0.hyphenated().to_string(),
+            scopes_to_string(&token.scopes),
+            format_timestamp(&token.created_at),
+            format_timestamp(&token.expires_at),
+            token.revoked_at.map(|dt| format_timestamp(&dt)),
+        ],
+    )?;
+    Ok(())
+}
+
+/// The token inherits its client's workspace binding.
+fn insert_refresh_token(
+    conn: &rusqlite::Connection,
+    token: &OAuthRefreshToken,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT INTO oauth_refresh_tokens ({}, workspace_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, \
+                     (SELECT workspace_id FROM oauth_clients WHERE client_id = ?2))",
+            REFRESH_TOKEN_COLUMNS
+        ),
+        rusqlite::params![
+            token.token_hash,
+            token.client_id,
+            token.user_id.0.hyphenated().to_string(),
+            scopes_to_string(&token.scopes),
+            token.access_token_hash,
+            format_timestamp(&token.created_at),
+            format_timestamp(&token.expires_at),
+            token.revoked_at.map(|dt| format_timestamp(&dt)),
+            token.family_id,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Mint an access token and its refresh token, inside the transaction that
+/// consumes the device code or auth code paying for them.
+pub(super) fn mint_token_pair(
+    conn: &rusqlite::Connection,
+    access: &OAuthAccessToken,
+    refresh: &OAuthRefreshToken,
+) -> rusqlite::Result<()> {
+    insert_access_token(conn, access)?;
+    insert_refresh_token(conn, refresh)
+}
+
+// ---------------------------------------------------------------------------
 // OAuthStore implementation
 // ---------------------------------------------------------------------------
 
@@ -205,38 +343,10 @@ fn row_to_consent(row: &rusqlite::Row<'_>) -> Result<OAuthConsent, rusqlite::Err
 impl OAuthStore for SqliteStore {
     async fn create_oauth_client(&self, client: &OAuthClient) -> Result<(), StoreError> {
         let client = client.clone();
-        let id_str = client.id.hyphenated().to_string();
-        let redirect_uris_json = redirect_uris_to_string(&client.redirect_uris);
-        let scopes_str = scopes_to_string(&client.allowed_scopes);
-        let created_by_str = client.created_by_user.0.hyphenated().to_string();
-        let created_at = client.created_at.to_rfc3339();
-        let revoked_at = client.revoked_at.map(|dt| dt.to_rfc3339());
-
         self.conn()
-            .call(move |conn| {
-                conn.execute(
-                    &format!(
-                        "INSERT INTO oauth_clients ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                        CLIENT_COLUMNS
-                    ),
-                    rusqlite::params![
-                        id_str,
-                        client.client_id,
-                        client.client_secret_hash,
-                        client.workspace_name,
-                        client.public_key_hash,
-                        redirect_uris_json,
-                        scopes_str,
-                        created_by_str,
-                        created_at,
-                        revoked_at,
-                    ],
-                )
-                .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                Ok(())
-            })
+            .call(move |conn| Ok(insert_oauth_client(conn, &client)?))
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn get_oauth_client_by_client_id(
@@ -262,7 +372,7 @@ impl OAuthStore for SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn get_oauth_client_by_public_key_hash(
@@ -288,7 +398,7 @@ impl OAuthStore for SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn list_oauth_clients(&self) -> Result<Vec<OAuthClient>, StoreError> {
@@ -310,12 +420,12 @@ impl OAuthStore for SqliteStore {
                 Ok(clients)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn revoke_oauth_client(&self, client_id: &str) -> Result<bool, StoreError> {
         let client_id = client_id.to_string();
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
         self.conn()
             .call(move |conn| {
                 let count = conn
@@ -328,56 +438,56 @@ impl OAuthStore for SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn delete_oauth_client(&self, client_id: &str) -> Result<bool, StoreError> {
         let client_id = client_id.to_string();
         self.conn()
             .call(move |conn| {
-                let tx = conn
-                    .transaction()
-                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                tx.execute(
-                    "DELETE FROM oauth_access_tokens WHERE client_id = ?1",
-                    rusqlite::params![client_id],
-                )
-                .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                tx.execute(
-                    "DELETE FROM oauth_refresh_tokens WHERE client_id = ?1",
-                    rusqlite::params![client_id],
-                )
-                .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                tx.execute(
-                    "DELETE FROM oauth_auth_codes WHERE client_id = ?1",
-                    rusqlite::params![client_id],
-                )
-                .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                tx.execute(
-                    "DELETE FROM oauth_consents WHERE client_id = ?1",
-                    rusqlite::params![client_id],
-                )
-                .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                let count = tx
-                    .execute(
-                        "DELETE FROM oauth_clients WHERE client_id = ?1",
-                        rusqlite::params![client_id],
-                    )
-                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                tx.commit().map_err(tokio_rusqlite::Error::Rusqlite)?;
-                Ok(count > 0)
+                let tx = conn.transaction()?;
+                let existed = delete_oauth_client_rows(&tx, &client_id)?;
+                tx.commit()?;
+                Ok(existed)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
+    }
+
+    async fn replace_oauth_client(
+        &self,
+        client: &OAuthClient,
+    ) -> Result<Option<String>, StoreError> {
+        let client = client.clone();
+        self.conn()
+            .call(move |conn| {
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let previous: Option<String> = tx
+                    .query_row(
+                        "SELECT client_id FROM oauth_clients WHERE public_key_hash = ?1",
+                        rusqlite::params![client.public_key_hash],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(previous) = previous.as_deref() {
+                    delete_oauth_client_rows(&tx, previous)?;
+                }
+                insert_oauth_client(&tx, &client)?;
+                tx.commit()?;
+                Ok(previous)
+            })
+            .await
+            .map_err(map_store_error)
     }
 
     async fn create_oauth_auth_code(&self, code: &OAuthAuthCode) -> Result<(), StoreError> {
         let code = code.clone();
         let user_id_str = code.user_id.0.hyphenated().to_string();
         let scopes_str = scopes_to_string(&code.scopes);
-        let created_at = code.created_at.to_rfc3339();
-        let expires_at = code.expires_at.to_rfc3339();
-        let consumed_at = code.consumed_at.map(|dt| dt.to_rfc3339());
+        let created_at = format_timestamp(&code.created_at);
+        let expires_at = format_timestamp(&code.expires_at);
+        let consumed_at = code.consumed_at.map(|dt| format_timestamp(&dt));
 
         self.conn()
             .call(move |conn| {
@@ -402,7 +512,7 @@ impl OAuthStore for SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn get_oauth_auth_code(
@@ -428,12 +538,12 @@ impl OAuthStore for SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn consume_oauth_auth_code(&self, code_hash: &str) -> Result<bool, StoreError> {
         let code_hash = code_hash.to_string();
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
         self.conn()
             .call(move |conn| {
                 let count = conn
@@ -446,39 +556,146 @@ impl OAuthStore for SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
+    }
+
+    async fn consume_oauth_auth_code_and_issue_tokens(
+        &self,
+        code_hash: &str,
+        access: &OAuthAccessToken,
+        refresh: &OAuthRefreshToken,
+    ) -> Result<bool, StoreError> {
+        let code_hash = code_hash.to_string();
+        let now = format_timestamp(&Utc::now());
+        let access = access.clone();
+        let refresh = refresh.clone();
+        self.conn()
+            .call(move |conn| {
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                // Compare-and-swap on `consumed_at IS NULL`: a second caller
+                // changes no row and the transaction ends without a mint.
+                let count = tx.execute(
+                    "UPDATE oauth_auth_codes SET consumed_at = ?1 \
+                     WHERE code_hash = ?2 AND consumed_at IS NULL",
+                    rusqlite::params![now, code_hash],
+                )?;
+                if count == 0 {
+                    return Ok(false);
+                }
+                mint_token_pair(&tx, &access, &refresh)?;
+                tx.commit()?;
+                Ok(true)
+            })
+            .await
+            .map_err(map_store_error)
     }
 
     async fn create_oauth_access_token(&self, token: &OAuthAccessToken) -> Result<(), StoreError> {
         let token = token.clone();
-        let user_id_str = token.user_id.0.hyphenated().to_string();
-        let scopes_str = scopes_to_string(&token.scopes);
-        let created_at = token.created_at.to_rfc3339();
-        let expires_at = token.expires_at.to_rfc3339();
-        let revoked_at = token.revoked_at.map(|dt| dt.to_rfc3339());
+        self.conn()
+            .call(move |conn| Ok(insert_access_token(conn, &token)?))
+            .await
+            .map_err(map_store_error)
+    }
 
+    async fn resolve_bearer(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<BearerResolution>, StoreError> {
+        let token_hash = token_hash.to_string();
         self.conn()
             .call(move |conn| {
-                conn.execute(
-                    &format!(
-                        "INSERT INTO oauth_access_tokens ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        ACCESS_TOKEN_COLUMNS
-                    ),
-                    rusqlite::params![
-                        token.token_hash,
-                        token.client_id,
-                        user_id_str,
-                        scopes_str,
-                        created_at,
-                        expires_at,
-                        revoked_at,
-                    ],
+                // One round trip to the store thread: token, its client, and
+                // the bound workspace. The token's own binding wins; a token
+                // issued before the binding existed falls back to its client's.
+                let found = conn
+                    .query_row(
+                        &format!(
+                            "SELECT {}, workspace_id FROM oauth_access_tokens WHERE token_hash = ?1",
+                            ACCESS_TOKEN_COLUMNS
+                        ),
+                        rusqlite::params![token_hash],
+                        |row| {
+                            let token = row_to_access_token(row)?;
+                            let workspace_id: Option<String> = row.get(7)?;
+                            Ok((token, workspace_id))
+                        },
+                    )
+                    .optional()
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                let Some((token, token_workspace_id)) = found else {
+                    return Ok(None);
+                };
+                let Some(client) = conn
+                    .query_row(
+                        &format!(
+                            "SELECT {} FROM oauth_clients WHERE client_id = ?1",
+                            CLIENT_COLUMNS
+                        ),
+                        rusqlite::params![token.client_id],
+                        row_to_oauth_client,
+                    )
+                    .optional()
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?
+                else {
+                    return Ok(None);
+                };
+                let workspace_id = token_workspace_id
+                    .or_else(|| client.workspace_id.as_ref().map(|w| w.0.hyphenated().to_string()));
+                let workspace = match workspace_id {
+                    Some(id) => conn
+                        .query_row(
+                            &format!("SELECT {} FROM workspaces WHERE id = ?1", WORKSPACE_COLUMNS),
+                            rusqlite::params![id],
+                            row_to_workspace,
+                        )
+                        .optional()
+                        .map_err(tokio_rusqlite::Error::Rusqlite)?,
+                    None => None,
+                };
+                Ok(Some(BearerResolution {
+                    token,
+                    client,
+                    workspace,
+                }))
+            })
+            .await
+            .map_err(map_store_error)
+    }
+
+    async fn bind_oauth_client_workspace(
+        &self,
+        client_id: &str,
+        workspace_id: &WorkspaceId,
+    ) -> Result<(), StoreError> {
+        let client_id = client_id.to_string();
+        let workspace_id = workspace_id.0.hyphenated().to_string();
+        self.conn()
+            .call(move |conn| {
+                let tx = conn
+                    .transaction()
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.execute(
+                    "UPDATE oauth_clients SET workspace_id = ?1 WHERE client_id = ?2",
+                    rusqlite::params![workspace_id, client_id],
                 )
                 .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.execute(
+                    "UPDATE oauth_access_tokens SET workspace_id = ?1 WHERE client_id = ?2",
+                    rusqlite::params![workspace_id, client_id],
+                )
+                .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.execute(
+                    "UPDATE oauth_refresh_tokens SET workspace_id = ?1 WHERE client_id = ?2",
+                    rusqlite::params![workspace_id, client_id],
+                )
+                .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.commit().map_err(tokio_rusqlite::Error::Rusqlite)?;
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn get_oauth_access_token(
@@ -504,12 +721,12 @@ impl OAuthStore for SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn revoke_oauth_access_token(&self, token_hash: &str) -> Result<bool, StoreError> {
         let token_hash = token_hash.to_string();
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
         self.conn()
             .call(move |conn| {
                 let count = conn
@@ -522,12 +739,12 @@ impl OAuthStore for SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn revoke_access_tokens_for_client(&self, client_id: &str) -> Result<u32, StoreError> {
         let client_id = client_id.to_string();
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
         self.conn()
             .call(move |conn| {
                 let count = conn
@@ -540,7 +757,7 @@ impl OAuthStore for SqliteStore {
                 Ok(count as u32)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn create_oauth_refresh_token(
@@ -548,36 +765,40 @@ impl OAuthStore for SqliteStore {
         token: &OAuthRefreshToken,
     ) -> Result<(), StoreError> {
         let token = token.clone();
-        let user_id_str = token.user_id.0.hyphenated().to_string();
-        let scopes_str = scopes_to_string(&token.scopes);
-        let created_at = token.created_at.to_rfc3339();
-        let expires_at = token.expires_at.to_rfc3339();
-        let revoked_at = token.revoked_at.map(|dt| dt.to_rfc3339());
+        self.conn()
+            .call(move |conn| Ok(insert_refresh_token(conn, &token)?))
+            .await
+            .map_err(map_store_error)
+    }
 
+    async fn revoke_oauth_refresh_token_family(&self, family_id: &str) -> Result<u32, StoreError> {
+        let family_id = family_id.to_string();
+        let now = format_timestamp(&Utc::now());
         self.conn()
             .call(move |conn| {
-                conn.execute(
-                    &format!(
-                        "INSERT INTO oauth_refresh_tokens ({}) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                        REFRESH_TOKEN_COLUMNS
-                    ),
-                    rusqlite::params![
-                        token.token_hash,
-                        token.client_id,
-                        user_id_str,
-                        scopes_str,
-                        token.access_token_hash,
-                        created_at,
-                        expires_at,
-                        revoked_at,
-                    ],
+                let tx = conn
+                    .transaction()
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                // Access tokens minted alongside any member of the family.
+                tx.execute(
+                    "UPDATE oauth_access_tokens SET revoked_at = ?1 \
+                     WHERE revoked_at IS NULL AND token_hash IN \
+                       (SELECT access_token_hash FROM oauth_refresh_tokens WHERE family_id = ?2)",
+                    rusqlite::params![now, family_id],
                 )
                 .map_err(tokio_rusqlite::Error::Rusqlite)?;
-                Ok(())
+                let count = tx
+                    .execute(
+                        "UPDATE oauth_refresh_tokens SET revoked_at = ?1 \
+                         WHERE family_id = ?2 AND revoked_at IS NULL",
+                        rusqlite::params![now, family_id],
+                    )
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                tx.commit().map_err(tokio_rusqlite::Error::Rusqlite)?;
+                Ok(count as u32)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn get_oauth_refresh_token(
@@ -603,12 +824,12 @@ impl OAuthStore for SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn revoke_oauth_refresh_token(&self, token_hash: &str) -> Result<bool, StoreError> {
         let token_hash = token_hash.to_string();
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
         self.conn()
             .call(move |conn| {
                 let count = conn
@@ -621,12 +842,12 @@ impl OAuthStore for SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn revoke_refresh_tokens_for_client(&self, client_id: &str) -> Result<u32, StoreError> {
         let client_id = client_id.to_string();
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
         self.conn()
             .call(move |conn| {
                 let count = conn
@@ -639,7 +860,7 @@ impl OAuthStore for SqliteStore {
                 Ok(count as u32)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn revoke_access_tokens_for_refresh_token(
@@ -647,7 +868,7 @@ impl OAuthStore for SqliteStore {
         refresh_token_hash: &str,
     ) -> Result<u32, StoreError> {
         let refresh_token_hash = refresh_token_hash.to_string();
-        let now = Utc::now().to_rfc3339();
+        let now = format_timestamp(&Utc::now());
         self.conn()
             .call(move |conn| {
                 let access_hash: Option<String> = conn
@@ -673,7 +894,7 @@ impl OAuthStore for SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn get_oauth_consent(
@@ -701,14 +922,14 @@ impl OAuthStore for SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn upsert_oauth_consent(&self, consent: &OAuthConsent) -> Result<(), StoreError> {
         let consent = consent.clone();
         let user_id_str = consent.user_id.0.hyphenated().to_string();
         let scopes_str = scopes_to_string(&consent.scopes);
-        let granted_at = consent.granted_at.to_rfc3339();
+        let granted_at = format_timestamp(&consent.granted_at);
 
         self.conn()
             .call(move |conn| {
@@ -721,7 +942,7 @@ impl OAuthStore for SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn delete_consent_and_revoke_tokens(
@@ -731,7 +952,7 @@ impl OAuthStore for SqliteStore {
     ) -> Result<Option<crate::storage::traits::ConsentRevocationCounts>, StoreError> {
         let client_id = client_id.to_string();
         let user_id_str = user_id.0.hyphenated().to_string();
-        let revoked_at = chrono::Utc::now().to_rfc3339();
+        let revoked_at = format_timestamp(&chrono::Utc::now());
         self.conn()
             .call(move |conn| {
                 let tx = conn
@@ -768,7 +989,7 @@ impl OAuthStore for SqliteStore {
                 }))
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn list_oauth_consents_for_client(
@@ -794,6 +1015,6 @@ impl OAuthStore for SqliteStore {
                 Ok(out)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }

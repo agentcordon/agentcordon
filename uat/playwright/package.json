@@ -1,0 +1,12 @@
+{
+  "name": "agentcordon-uat",
+  "private": true,
+  "version": "0.0.0",
+  "description": "AgentCordon release UAT: browser (admin UI) + docker exec (CLI) end-to-end scenarios",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

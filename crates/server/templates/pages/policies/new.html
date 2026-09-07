@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}New Security Policy — Agent Cordon{% endblock %}
 {% block content %}
-<div x-data="policyNewPage()" x-init="init()">
+<div x-data="policyNewPage()">
     <a href="/security" class="back-link">&larr; Security</a>
     <h2 class="page-title">Create Security Policy</h2>
 
@@ -23,6 +23,22 @@
                     <textarea id="policy-cedar" x-model="form.cedar_policy" class="form-input cedar-editor" rows="14" required
                         placeholder="permit(principal, action, resource) when { ... };"></textarea>
                     <div class="form-hint">Write a Cedar policy expression. Use the template buttons on the right to get started.</div>
+                    <!--
+                      Cedar validation detail. The API answers 400 with the
+                      validator's own messages under `error.details.errors`;
+                      before this they were dropped and the author was told
+                      only "Policy validation failed" (UI review M9).
+                    -->
+                    <div x-show="cedarErrors.length > 0" class="cedar-error-list" id="policy-cedar-errors" role="alert" aria-live="assertive">
+                        <template x-for="(err, i) in cedarErrors" :key="i">
+                            <div class="cedar-error-item">
+                                <span class="pill pill-bad pill-sm" x-text="err.severity || 'error'"></span>
+                                <span class="cedar-error-message" x-text="err.message"></span>
+                                <span class="cedar-error-where" x-show="err.policy_index !== null && err.policy_index !== undefined"
+                                      x-text="'statement ' + ((err.policy_index || 0) + 1)"></span>
+                            </div>
+                        </template>
+                    </div>
                 </div>
 
                 <div class="form-group">
@@ -63,7 +79,9 @@
                 <div x-show="previewKey" class="new-policy-tpl-preview" x-transition>
                     <div class="new-policy-tpl-preview-header">
                         <span class="text-sm">Preview</span>
-                        <button type="button" class="btn btn-ghost btn-sm" @click="previewKey = ''">&times;</button>
+                        <!-- "×" is not a name; say what it closes. -->
+                        <button type="button" class="btn btn-ghost btn-sm" @click="previewKey = ''"
+                                aria-label="Close template preview" title="Close template preview"><svg class="icon" aria-hidden="true"><use href="/icons.svg#x"></use></svg></button>
                     </div>
                     <pre class="new-policy-tpl-preview-code" x-text="previewCedar"></pre>
                     <button type="button" class="btn btn-primary btn-sm new-policy-tpl-use-btn" @click="usePreviewedTemplate()">Use this template</button>
@@ -147,6 +165,28 @@
     overflow-y: auto;
 }
 .new-policy-tpl-use-btn { width: 100%; }
+
+/* The Cedar validator's own messages, under the editor. */
+.cedar-error-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--danger);
+    border-radius: 8px;
+    background: var(--danger-bg);
+}
+.cedar-error-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+.cedar-error-message { font-family: var(--font-mono, monospace); }
+.cedar-error-where { opacity: 0.7; }
 </style>
 <script>
 function policyNewPage() {
@@ -160,11 +200,13 @@ function policyNewPage() {
         },
         policyTemplates: [],
         policyTemplateMap: {},
+        /* The validator's own messages for the Cedar text last submitted. */
+        cedarErrors: [],
         previewKey: '',
         previewCedar: '',
 
         init() {
-            fetch('/api/v1/policy-templates', { credentials: 'same-origin' })
+            AC.fetch('/api/v1/policy-templates', { credentials: 'same-origin' })
                 .then(r => r.ok ? r.json() : Promise.reject(r))
                 .then(data => {
                     this.policyTemplates = data.data || [];
@@ -186,12 +228,10 @@ function policyNewPage() {
             this.previewCedar = '';
         },
 
-        useTemplate(type) {
-            this.form.cedar_policy = this.policyTemplateMap[type] || '';
-        },
 
         async submitPolicy() {
             this.form.submitting = true;
+            this.cedarErrors = [];
             var body = {
                 name: this.form.name,
                 cedar_policy: this.form.cedar_policy,
@@ -201,7 +241,7 @@ function policyNewPage() {
                 body.description = this.form.description;
             }
             try {
-                var resp = await fetch('/api/v1/policies', {
+                var resp = await AC.fetch('/api/v1/policies', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                     body: JSON.stringify(body)
@@ -212,6 +252,7 @@ function policyNewPage() {
                     window.location.href = '/security/' + id;
                 } else {
                     var err = await resp.json().catch(function() { return {}; });
+                    this.cedarErrors = (err.error && err.error.details && err.error.details.errors) || [];
                     showToast((err.error && err.error.message) || 'Failed to create policy', 'error');
                 }
             } catch(e) {

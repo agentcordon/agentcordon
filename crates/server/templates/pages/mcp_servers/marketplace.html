@@ -1,0 +1,479 @@
+{% extends "base.html" %}
+{% block title %}Add an MCP Server — Agent Cordon{% endblock %}
+{% block content %}
+{#
+  The marketplace, on a page of its own.
+
+  It used to be the bottom half of `/mcp-servers`: two `content-header`s, two
+  searches and two fetches of `/api/v1/mcp-servers` on one screen, with the
+  installed table's own primary action missing entirely
+  (uat/artifacts/reviews/DESIGN-REVIEW.md §2.5). `/marketplace` and `/mcp-marketplace` redirect
+  here, and the list's "Add server" button links here.
+#}
+<a href="/mcp-servers" class="back-link">&larr; MCP Servers</a>
+<nav class="breadcrumb" aria-label="Breadcrumb">
+    <a href="/mcp-servers">MCP Servers</a>
+    <span class="breadcrumb-sep" aria-hidden="true">/</span>
+    <span class="breadcrumb-current" aria-current="page">Add a server</span>
+</nav>
+{#
+  Installing an MCP server posts to `/api/v1/mcp-servers`, which needs `create`
+  on System. A viewer holds none, so every card in here is a 403 waiting to
+  happen; the section is not rendered for them (uat/artifacts/reviews/UI-REVIEW-live.md M3).
+  The API refuses a viewer regardless — this only stops offering the control.
+#}
+{% if user.role != "viewer" %}
+<style>
+.marketplace-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
+.marketplace-card { padding: 1rem 1.25rem; border: 1px solid var(--border, #e0e0e0); border-radius: var(--radius-md); cursor: pointer; text-align: left; background: var(--bg, #fff); transition: border-color 0.15s, background 0.15s, box-shadow 0.15s; display: flex; flex-direction: column; gap: 0.5rem; }
+.marketplace-card:hover { border-color: var(--accent, #5b6ef5); background: var(--wash, #f8f8fa); box-shadow: var(--shadow-sm); }
+.marketplace-card-header { display: flex; align-items: center; gap: 0.5rem; }
+.marketplace-card-icon { width: 28px; height: 28px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.marketplace-card-icon img { width: 28px; height: 28px; object-fit: contain; }
+.marketplace-card-icon .logo-fallback { width: 28px; height: 28px; border-radius: var(--radius-sm, 6px); background: var(--accent-glow, #eef0ff); color: var(--accent, #d4551a); font-weight: 600; font-size: 0.9rem; display: flex; align-items: center; justify-content: center; text-transform: uppercase; }
+.marketplace-card-name { font-weight: 600; font-size: 0.95em; line-height: 1.3; }
+.marketplace-card-desc { font-size: 0.8em; color: var(--ink-soft, #555); line-height: 1.5; flex: 1; }
+.marketplace-card-badges { display: flex; gap: 0.375rem; flex-wrap: wrap; }
+.marketplace-card-badges .pill { font-size: 0.7em; }
+.category-filters { display: flex; gap: 0.375rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.category-filters button { font-size: 0.8em; }
+.category-filters button.selected { background: var(--accent); color: #fff; border-color: var(--accent); }
+.install-modal-wide { max-width: 520px; }
+.install-modal-wide .form-group { margin-bottom: 1rem; }
+.install-modal-wide .form-group label { display: block; font-weight: 500; margin-bottom: 0.375rem; font-size: 0.875rem; }
+.install-form-error { background: var(--danger-bg); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); color: var(--danger); padding: 0.625rem 0.875rem; border-radius: var(--radius-sm, 6px); font-size: 0.85rem; margin-bottom: 0.75rem; }
+.install-form-warning { background: var(--warn-bg, #fff7e6); border: 1px solid color-mix(in srgb, var(--warn, #b26a00) 30%, transparent); color: var(--warn, #b26a00); padding: 0.625rem 0.875rem; border-radius: var(--radius-sm, 6px); font-size: 0.85rem; margin-bottom: 0.75rem; }
+.marketplace-subtitle { color: var(--ink-soft); font-size: 0.9em; margin-top: 0.25rem; }
+</style>
+<div id="marketplace" x-data="mcpMarketplaceSection()">
+    <div class="content-header">
+        <div>
+            <h2>Add a server</h2>
+            <p class="marketplace-subtitle">Browse and install remote MCP servers for your workspaces</p>
+        </div>
+        <div class="actions">
+            <div class="search-input">
+                <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input x-model="searchQuery" type="text" placeholder="Search templates..." aria-label="Search MCP templates">
+            </div>
+        </div>
+    </div>
+
+    <div class="category-filters">
+        <button class="pill" :class="!activeCategory ? 'selected' : ''"
+                :aria-pressed="!activeCategory ? 'true' : 'false'"
+                @click="activeCategory = ''">All</button>
+        <template x-for="cat in categories" :key="cat">
+            <button class="pill" :class="activeCategory === cat ? 'selected' : ''"
+                    :aria-pressed="activeCategory === cat ? 'true' : 'false'"
+                    @click="activeCategory = activeCategory === cat ? '' : cat" x-text="cat"></button>
+        </template>
+    </div>
+
+    <div x-show="filteredTemplates.length > 0" class="marketplace-grid">
+        <template x-for="tpl in filteredTemplates" :key="tpl.key">
+            <button class="marketplace-card" @click="selectTemplate(tpl)">
+                <div class="marketplace-card-header">
+                    <!--
+                      `docs/granting-mcp-server-access.md` promises that a key
+                      with no bundled logo draws the name's first letter. A key
+                      the logo map *claims* to have but the tree does not is
+                      the same situation, and it drew the browser's broken-image
+                      placeholder plus a 404 per page load
+                      (uat/artifacts/fresh-user-native-2.md F8). A load failure
+                      hands the card back to the first-letter tile.
+                    -->
+                    <span class="marketplace-card-icon" x-data="{ broken: false }">
+                        <template x-if="!broken && serviceLogoUrl(tpl.icon || tpl.key)">
+                            <img :src="serviceLogoUrl(tpl.icon || tpl.key)" :class="logoDarkClass(tpl.icon || tpl.key)" :alt="tpl.name + ' logo'" loading="lazy" @error="broken = true">
+                        </template>
+                        <template x-if="broken || !serviceLogoUrl(tpl.icon || tpl.key)">
+                            <span class="logo-fallback" x-text="(tpl.name || '?')[0]"></span>
+                        </template>
+                    </span>
+                    <span class="marketplace-card-name" x-text="tpl.name"></span>
+                </div>
+                <div class="marketplace-card-desc" x-text="tpl.description"></div>
+                <div class="marketplace-card-badges">
+                    <span class="pill pill-type" x-text="tpl.category"></span>
+                    <!-- Auth mode is a category; colour is for state (3.8). -->
+                    <span class="pill pill-neutral"
+                          x-text="tpl.auth_method === 'api_key' ? 'API Key' : tpl.auth_method === 'oauth2' ? 'OAuth' : 'No Auth'"></span>
+                    <span x-show="isConnected(tpl)" class="pill pill-ok" title="You are already connected to this service">Connected</span>
+                </div>
+            </button>
+        </template>
+    </div>
+
+    <div x-show="filteredTemplates.length === 0 && templates.length > 0" class="empty-state">
+        <h3>No templates match your search</h3>
+        <p>Try a different search term or clear the filters.</p>
+    </div>
+
+    <div x-show="templates.length === 0" class="empty-state">
+        <h3>No MCP templates available</h3>
+        <p>Templates will appear here once configured by your administrator.</p>
+    </div>
+
+    <!-- Install modal -->
+    <div x-show="selectedTemplate" x-cloak x-transition.opacity.duration.150ms
+         class="modal-overlay"
+         @click.self="dismissModal()"
+         @keydown.escape.window="selectedTemplate && dismissModal()"
+         role="dialog" aria-modal="true" aria-labelledby="install-modal-title">
+        <div class="modal install-modal-wide">
+            <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
+                <!-- The same fallback, remembering *which* icon failed so a
+                     later selection is not tarred with it. -->
+                <span class="marketplace-card-icon" x-show="selectedTemplate" x-data="{ brokenIcon: null }">
+                    <template x-if="selectedTemplate && brokenIcon !== (selectedTemplate.icon || selectedTemplate.key) && serviceLogoUrl(selectedTemplate.icon || selectedTemplate.key)">
+                        <img :src="serviceLogoUrl(selectedTemplate.icon || selectedTemplate.key)" :class="logoDarkClass(selectedTemplate.icon || selectedTemplate.key)" :alt="(selectedTemplate && selectedTemplate.name || '') + ' logo'" loading="lazy" @error="brokenIcon = (selectedTemplate.icon || selectedTemplate.key)">
+                    </template>
+                    <template x-if="selectedTemplate && (brokenIcon === (selectedTemplate.icon || selectedTemplate.key) || !serviceLogoUrl(selectedTemplate.icon || selectedTemplate.key))">
+                        <span class="logo-fallback" x-text="selectedTemplate ? (selectedTemplate.name || '?')[0] : ''"></span>
+                    </template>
+                </span>
+                <h3 id="install-modal-title" style="margin:0;">
+                    Install <span x-text="selectedTemplate ? selectedTemplate.name : ''"></span>
+                </h3>
+            </div>
+            <p x-text="selectedTemplate ? selectedTemplate.description : ''"></p>
+
+            <div class="form-group">
+                <label for="install-workspace">Workspace</label>
+                <select id="install-workspace" x-model="installForm.workspaceId" class="form-input">
+                    <option value="">Select a workspace...</option>
+                    <template x-for="ws in workspaces" :key="ws.id">
+                        <option :value="ws.id" x-text="ws.name"></option>
+                    </template>
+                </select>
+            </div>
+
+            <template x-if="selectedTemplate && selectedTemplate.auth_method === 'api_key'">
+                <div>
+                    <div class="form-group">
+                        <label for="install-credential">Credential</label>
+                        <select id="install-credential" x-model="installForm.credentialMode" class="form-input">
+                            <option value="new">Create new credential</option>
+                            <option value="existing">Use existing credential</option>
+                        </select>
+                    </div>
+                    <div x-show="installForm.credentialMode === 'existing'" class="form-group">
+                        <label for="install-cred-picker">Existing credential</label>
+                        <select id="install-cred-picker" x-model="installForm.credentialId" class="form-input">
+                            <option value="">Select a credential...</option>
+                            <template x-for="cred in credentials" :key="cred.id">
+                                <option :value="cred.id" x-text="cred.name + ' (' + cred.service + ')'"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <div x-show="installForm.credentialMode === 'new'" class="form-group">
+                        <label for="install-secret">API Key / Secret</label>
+                        <div class="secret-wrapper">
+                            <input id="install-secret" x-model="installForm.secretValue"
+                                   :type="installForm.showSecret ? 'text' : 'password'"
+                                   class="form-input" placeholder="Paste your API key or token" autocomplete="off">
+                            <button type="button" class="secret-toggle" @click="installForm.showSecret = !installForm.showSecret"
+                                    x-text="installForm.showSecret ? 'Hide' : 'Show'"></button>
+                        </div>
+                        <div class="form-hint">Encrypted at rest. You won't see this again.</div>
+                        <div class="form-hint" id="install-secret-placement" x-text="apiKeyPlacementHint()"></div>
+                    </div>
+                </div>
+            </template>
+
+            <template x-if="selectedTemplate && selectedTemplate.auth_method === 'oauth2'">
+                <div>
+                    <p class="form-help">Clicking <strong>Connect</strong> will create a Connection to <span x-text="selectedTemplate.name"></span>. You'll be redirected to authorize AgentCordon on your behalf. AgentCordon will automatically register itself as an OAuth client if needed (RFC 7591 Dynamic Client Registration).</p>
+                </div>
+            </template>
+
+            <div x-show="installForm.error" x-cloak class="install-form-error" role="alert" x-text="installForm.error"></div>
+            <!-- Tool discovery is best-effort: the install stands, but a server with
+                 no tools and no explanation reads as a broken install. Say what
+                 happened and name the control that retries it. -->
+            <div x-show="installForm.warning" x-cloak class="install-form-warning" role="alert" x-text="installForm.warning"></div>
+
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" @click="dismissModal()" x-text="installForm.warning ? 'Close' : 'Cancel'"></button>
+                <button type="button" class="btn btn-primary"
+                        x-show="!installForm.warning"
+                        :disabled="!canInstall || installForm.submitting"
+                        @click="install()">
+                    <span x-show="installForm.submitting" class="spinner"></span>
+                    <span x-text="installForm.submitting
+                        ? (selectedTemplate && selectedTemplate.auth_method === 'oauth2' ? 'Connecting...' : 'Installing...')
+                        : (selectedTemplate && selectedTemplate.auth_method === 'oauth2'
+                            ? 'Connect with ' + selectedTemplate.name
+                            : 'Install')"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="empty-state">
+    <h3>Not permitted</h3>
+    <p>Installing an MCP server needs permission to create one. Ask an administrator to add it, or a workspace can register one on startup.</p>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{# The component is only ever mounted by the grid above, which a viewer is not
+   shown; there is no reason to ship them the install flow. #}
+{% if user.role != "viewer" %}
+<script>
+// SERVICE_LOGOS, logoDarkClass(), serviceLogoUrl() provided by /js/service-icons.js
+
+function mcpMarketplaceSection() {
+    return {
+        templates: [],
+        workspaces: [],
+        credentials: [],
+        connectedTemplateKeys: {},
+        searchQuery: '',
+        activeCategory: '',
+        selectedTemplate: null,
+        installForm: {
+            workspaceId: '',
+            credentialMode: 'new',
+            credentialId: '',
+            secretValue: '',
+            showSecret: false,
+            submitting: false,
+            error: '',
+            // Set when the install succeeded but its tool-discovery probe
+            // did not: the modal stays open to say so rather than
+            // redirecting to a list row that looks like a clean install.
+            warning: '',
+            installedId: ''
+        },
+
+        serviceLogoUrl: serviceLogoUrl,
+
+        get categories() {
+            var cats = [];
+            this.templates.forEach(function(t) {
+                if (t.category && cats.indexOf(t.category) < 0) cats.push(t.category);
+            });
+            return cats.sort();
+        },
+
+        get filteredTemplates() {
+            var self = this;
+            var q = (self.searchQuery || '').toLowerCase();
+            return self.templates.filter(function(t) {
+                if (self.activeCategory && t.category !== self.activeCategory) return false;
+                if (!q) return true;
+                return t.name.toLowerCase().indexOf(q) >= 0
+                    || t.description.toLowerCase().indexOf(q) >= 0
+                    || t.category.toLowerCase().indexOf(q) >= 0
+                    || (t.tags || []).some(function(tag) { return tag.toLowerCase().indexOf(q) >= 0; });
+            });
+        },
+
+        /**
+         * How this template says its API key reaches the upstream. A template
+         * naming `api_key_header` (or `api_key_query`) is provisioned as the
+         * matching typed credential; naming neither means the historical
+         * `Authorization: Bearer <key>`.
+         */
+        apiKeyPlacementHint() {
+            var t = this.selectedTemplate;
+            if (!t) return '';
+            if (t.api_key_header) {
+                return 'Sent to the server as the ' + t.api_key_header + ' header.';
+            }
+            if (t.api_key_query) {
+                return 'Sent to the server as the ?' + t.api_key_query + '= query parameter.';
+            }
+            return 'Sent to the server as Authorization: Bearer <key>.';
+        },
+
+        get canInstall() {
+            if (!this.selectedTemplate) return false;
+            if (!this.installForm.workspaceId) return false;
+            if (this.selectedTemplate.auth_method === 'oauth2') {
+                return !!this.installForm.workspaceId;
+            }
+            if (this.selectedTemplate.auth_method === 'api_key') {
+                if (this.installForm.credentialMode === 'new' && !this.installForm.secretValue) return false;
+                if (this.installForm.credentialMode === 'existing' && !this.installForm.credentialId) return false;
+            }
+            return true;
+        },
+
+        init() {
+            var self = this;
+
+            var params = new URLSearchParams(window.location.search);
+            if (params.get('oauth') === 'success') {
+                showToast('MCP server connected successfully via OAuth.', 'success');
+                window.history.replaceState({}, '', window.location.pathname);
+            } else if (params.get('oauth') === 'error') {
+                var reason = params.get('reason') || 'Unknown error';
+                showToast('OAuth connection failed: ' + reason, 'error');
+                window.history.replaceState({}, '', window.location.pathname);
+            }
+
+            AC.fetch('/api/v1/mcp-templates', { credentials: 'same-origin' })
+                .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+                .then(function(data) { self.templates = data.data || []; self.recomputeConnected(); })
+                .catch(function() { showToast('Failed to load MCP templates', 'error'); });
+
+            // The install picker offers the workspaces the API lists for this user.
+            AC.fetch('/api/v1/workspaces', { credentials: 'same-origin' })
+                .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+                .then(function(data) {
+                    self.workspaces = (data.data || []).map(function(w) { return { id: w.id, name: w.name }; });
+                })
+                .catch(function() { showToast('Failed to load workspaces', 'error'); });
+
+            AC.fetch('/api/v1/credentials', { credentials: 'same-origin' })
+                .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+                .then(function(data) {
+                    self.credentials = (data.data || []).map(function(c) {
+                        return { id: c.id, name: c.name, service: c.service, credential_type: c.credential_type };
+                    });
+                    self.recomputeConnected();
+                })
+                .catch(function() {});
+
+            AC.fetch('/api/v1/mcp-servers', { credentials: 'same-origin' })
+                .then(function(r) { return r.ok ? r.json() : Promise.reject(r); })
+                .then(function(data) {
+                    var servers = data.data || data || [];
+                    var connected = Object.assign({}, self.connectedTemplateKeys);
+                    servers.forEach(function(s) {
+                        if (s.template_key) connected[s.template_key] = true;
+                    });
+                    self.connectedTemplateKeys = connected;
+                })
+                .catch(function() {});
+        },
+
+        recomputeConnected() {
+            // An OAuth template is "connected" when the current user already
+            // holds an oauth2_user_authorization credential whose service
+            // matches the template's key (or credential_template_key). This is
+            // the more reliable signal than just looking at MCP servers.
+            var connected = Object.assign({}, this.connectedTemplateKeys);
+            var self = this;
+            this.credentials.forEach(function(c) {
+                if (c.credential_type === 'oauth2_user_authorization') {
+                    self.templates.forEach(function(t) {
+                        var k = t.credential_template_key || t.key;
+                        if (c.service === k || c.service === t.key) {
+                            connected[t.key] = true;
+                        }
+                    });
+                }
+            });
+            this.connectedTemplateKeys = connected;
+        },
+
+        isConnected(tpl) {
+            return !!(tpl && this.connectedTemplateKeys[tpl.key]);
+        },
+
+        selectTemplate(tpl) {
+            this.selectedTemplate = tpl;
+            this.installForm.workspaceId = this.workspaces.length === 1 ? this.workspaces[0].id : '';
+            this.installForm.credentialMode = 'new';
+            this.installForm.credentialId = '';
+            this.installForm.secretValue = '';
+            this.installForm.showSecret = false;
+            this.installForm.submitting = false;
+            this.installForm.error = '';
+            this.installForm.warning = '';
+            this.installForm.installedId = '';
+        },
+
+        /**
+         * Close the modal. After an install whose tool discovery failed the
+         * modal is the only place the reason exists, so closing it lands on
+         * the server's own page — where Rediscover tools is.
+         */
+        dismissModal() {
+            if (this.installForm.warning) {
+                window.location.href = this.installForm.installedId
+                    ? '/mcp-servers/' + this.installForm.installedId
+                    : '/mcp-servers';
+                return;
+            }
+            this.selectedTemplate = null;
+        },
+
+        async install() {
+            if (!this.canInstall || this.installForm.submitting) return;
+            this.installForm.submitting = true;
+            this.installForm.error = '';
+
+            try {
+                if (this.selectedTemplate.auth_method === 'oauth2') {
+                    var oauthResp = await AC.fetch('/api/v1/mcp-servers/oauth/initiate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                        body: JSON.stringify({
+                            template_key: this.selectedTemplate.key,
+                            workspace_id: this.installForm.workspaceId
+                        })
+                    });
+                    var oauthData = await oauthResp.json().catch(function() { return {}; });
+                    if (!oauthResp.ok) {
+                        this.installForm.error = (oauthData.error && oauthData.error.message) || oauthData.error || ('Failed to start OAuth flow (HTTP ' + oauthResp.status + ')');
+                        this.installForm.submitting = false;
+                        return;
+                    }
+                    window.location.href = oauthData.data.authorize_url;
+                    return;
+                }
+
+                var body = {
+                    template_key: this.selectedTemplate.key,
+                    workspace_id: this.installForm.workspaceId
+                };
+                if (this.selectedTemplate.auth_method === 'api_key') {
+                    if (this.installForm.credentialMode === 'existing') {
+                        body.credential_id = this.installForm.credentialId;
+                    } else {
+                        body.secret_value = this.installForm.secretValue;
+                    }
+                }
+                var resp = await AC.fetch('/api/v1/mcp-servers/provision', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify(body)
+                });
+                if (resp.ok) {
+                    var installed = await resp.json().catch(function() { return {}; });
+                    var data = installed.data || {};
+                    if (data.tool_discovery_error) {
+                        // Best-effort discovery failed. The install stands; say
+                        // why and point at the retry rather than dropping the
+                        // reason on the way to the list page.
+                        this.installForm.installedId = data.id || '';
+                        this.installForm.warning = 'Installed; tool discovery failed: '
+                            + data.tool_discovery_error
+                            + '. No tools are registered yet — use Rediscover tools on the server page.';
+                        this.installForm.submitting = false;
+                        return;
+                    }
+                    var key = this.selectedTemplate.key;
+                    this.selectedTemplate = null;
+                    window.location.href = '/mcp-servers?installed=' + encodeURIComponent(key);
+                    return;
+                } else {
+                    var err = await resp.json().catch(function() { return {}; });
+                    this.installForm.error = (err.error && err.error.message) || err.error || ('Failed to install MCP server (HTTP ' + resp.status + ')');
+                }
+            } catch(e) {
+                this.installForm.error = (e && e.message) || 'Network error';
+            }
+            this.installForm.submitting = false;
+        }
+    };
+}
+</script>
+{% endif %}
+{% endblock %}

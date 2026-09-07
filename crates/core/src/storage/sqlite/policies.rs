@@ -4,6 +4,7 @@ use super::helpers::*;
 use super::SqliteStore;
 
 use crate::domain::policy::{PolicyId, StoredPolicy};
+use crate::domain::time::format_timestamp;
 use crate::error::StoreError;
 use crate::storage::PolicyStore;
 
@@ -14,8 +15,8 @@ impl SqliteStore {
         self.conn()
             .call(move |conn| {
                 let id_str = policy.id.0.hyphenated().to_string();
-                let created_at = policy.created_at.to_rfc3339();
-                let updated_at = policy.updated_at.to_rfc3339();
+                let created_at = format_timestamp(&policy.created_at);
+                let updated_at = format_timestamp(&policy.updated_at);
 
                 conn.execute(
                     "INSERT INTO policies (id, name, description, cedar_policy, enabled, is_system, created_at, updated_at) \
@@ -35,7 +36,7 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_policy(
@@ -64,7 +65,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn list_policies(&self) -> Result<Vec<StoredPolicy>, StoreError> {
@@ -88,7 +89,7 @@ impl SqliteStore {
                 Ok(policies)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn update_policy(&self, policy: &StoredPolicy) -> Result<(), StoreError> {
@@ -97,7 +98,7 @@ impl SqliteStore {
         self.conn()
             .call(move |conn| {
                 let id_str = policy.id.0.hyphenated().to_string();
-                let updated_at = policy.updated_at.to_rfc3339();
+                let updated_at = format_timestamp(&policy.updated_at);
 
                 let changed = conn
                     .execute(
@@ -124,7 +125,7 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn delete_policy(&self, id: &PolicyId) -> Result<bool, StoreError> {
@@ -141,7 +142,7 @@ impl SqliteStore {
                 Ok(changed > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_all_enabled_policies(&self) -> Result<Vec<StoredPolicy>, StoreError> {
@@ -165,7 +166,7 @@ impl SqliteStore {
                 Ok(policies)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn delete_policies_by_name_prefix(
@@ -185,7 +186,7 @@ impl SqliteStore {
                 Ok(changed as u64)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn delete_policy_by_name(&self, name: &str) -> Result<bool, StoreError> {
@@ -201,7 +202,7 @@ impl SqliteStore {
                 Ok(changed > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }
 

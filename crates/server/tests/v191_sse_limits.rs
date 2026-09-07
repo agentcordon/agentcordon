@@ -78,13 +78,16 @@ async fn test_sse_single_connection_works() {
 async fn test_sse_connection_receives_events() {
     let (ctx, _cookie) = setup().await;
 
-    let mut rx = ctx.state.ui_event_bus.subscribe();
+    let mut rx = ctx.state.realtime.ui_event_bus.subscribe();
 
     let workspace_id = Uuid::new_v4();
-    ctx.state.ui_event_bus.emit(UiEvent::WorkspaceCreated {
-        workspace_id,
-        workspace_name: "sse-limit-test-agent".to_string(),
-    });
+    ctx.state
+        .realtime
+        .ui_event_bus
+        .emit(UiEvent::WorkspaceCreated {
+            workspace_id,
+            workspace_name: "sse-limit-test-agent".to_string(),
+        });
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
         .await

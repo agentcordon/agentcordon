@@ -1,151 +1,47 @@
-//! Workspace-authenticated sync endpoints for devices.
+//! Workspace-authenticated sync endpoints for the broker.
 //!
-//! These endpoints allow authenticated devices (workspace identity JWT) to
-//! sync Cedar policies and receive server-push events.
+//! The broker lists the MCP servers and tools bound to its workspace here,
+//! optionally receiving ECIES-encrypted credential envelopes. OAuth-backed
+//! credentials are exchanged for upstream access tokens on the server
+//! (`crate::services::upstream_tokens`) before they are sealed.
 
+use agent_cordon_core::domain::policy::PolicyDecisionResult;
+use agent_cordon_core::policy::{actions, PolicyPrincipal, PolicyResource};
 use axum::{
     extract::{Query, State},
     Json,
 };
-use serde::{Deserialize, Serialize};
 
-use agent_cordon_core::crypto::SecretEncryptor;
-
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::policy::{actions, PolicyPrincipal, PolicyResource};
-
-use crate::events::UiEvent;
 use crate::extractors::AuthenticatedWorkspace;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::credentials::SealError;
 use crate::state::AppState;
-
-/// A single Cedar policy entry for device sync.
-#[derive(Serialize)]
-pub(super) struct PolicySyncEntry {
-    id: String,
-    name: String,
-    cedar_policy: String,
-}
-
-/// Response for `GET /api/v1/workspaces/policies`.
-#[derive(Serialize)]
-pub(super) struct PolicySyncResponse {
-    policies: Vec<PolicySyncEntry>,
-}
-
-/// GET /api/v1/workspaces/policies -- sync enabled Cedar policies relevant to this workspace.
-///
-/// Auth: workspace identity JWT (Authorization: Bearer).
-/// Returns only policies the requesting workspace needs for local evaluation:
-/// - System/default policies (not per-entity grants or denies)
-/// - Per-entity grant/deny policies that specifically reference this workspace
-///
-/// Per-entity policies follow the naming conventions:
-/// - `grant:{cred_id}:{workspace_id}:{action}`
-/// - `deny:{cred_id}:{workspace_id}:{action}`
-/// - `grant:mcp:{server_id}:{workspace_id}:{action}`
-/// - `deny:mcp:{server_id}:{workspace_id}:{action}`
-pub(super) async fn sync_policies(
-    State(state): State<AppState>,
-    workspace: AuthenticatedWorkspace,
-) -> Result<Json<ApiResponse<PolicySyncResponse>>, ApiError> {
-    let policies = state.store.get_all_enabled_policies().await?;
-    let workspace_id_str = workspace.workspace.id.0.to_string();
-
-    let entries: Vec<PolicySyncEntry> = policies
-        .into_iter()
-        .filter(|p| is_policy_relevant_to_workspace(p, &workspace_id_str))
-        .map(|p| PolicySyncEntry {
-            id: p.id.0.to_string(),
-            name: p.name,
-            cedar_policy: p.cedar_policy,
-        })
-        .collect();
-
-    Ok(Json(ApiResponse::ok(PolicySyncResponse {
-        policies: entries,
-    })))
-}
-
-/// Determine whether a policy is relevant to a specific workspace.
-///
-/// A policy is relevant if:
-/// 1. It is NOT a per-entity grant/deny (i.e., its name does not start with
-///    `grant:` or `deny:`), meaning it is a system/default policy, OR
-/// 2. It IS a per-entity grant/deny that references the workspace, checked via
-///    the policy name containing the workspace UUID or the Cedar text containing
-///    the `Workspace::"{workspace_id}"` entity reference.
-fn is_policy_relevant_to_workspace(
-    policy: &agent_cordon_core::domain::policy::StoredPolicy,
-    workspace_id: &str,
-) -> bool {
-    let is_per_entity = policy.name.starts_with("grant:") || policy.name.starts_with("deny:");
-    if !is_per_entity {
-        // System/default policy -- always include
-        return true;
-    }
-    // Per-entity grant/deny: include only if it references this workspace.
-    // Check the policy name (contains the workspace UUID as a segment) and
-    // the Cedar text (contains the Workspace entity reference).
-    policy.name.contains(workspace_id) || policy.cedar_policy.contains(workspace_id)
-}
 
 // ---------------------------------------------------------------------------
 // MCP server sync
 // ---------------------------------------------------------------------------
 
-/// Optional query parameters for `GET /api/v1/workspaces/mcp-servers`.
-#[derive(Deserialize, Default)]
-pub(super) struct McpSyncQuery {
-    /// When true, include ECIES-encrypted credential envelopes in the response.
-    #[serde(default)]
-    pub include_credentials: bool,
-    /// Base64url-encoded uncompressed P-256 public key (65 bytes).
-    /// Required when `include_credentials` is true.
-    pub broker_public_key: Option<String>,
-}
-
-/// A single MCP server entry for device sync.
-#[derive(Serialize)]
-pub(super) struct McpServerSyncEntry {
-    pub id: String,
-    pub name: String,
-    pub transport: String,
-    pub url: Option<String>,
-    pub tools: Vec<String>,
-    pub enabled: bool,
-    pub required_credentials: Option<Vec<String>>,
-    pub auth_method: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub credential_envelopes: Option<Vec<McpCredentialEnvelope>>,
-}
-
-/// An ECIES-encrypted credential envelope for a single credential.
-#[derive(Serialize)]
-pub(super) struct McpCredentialEnvelope {
-    pub credential_name: String,
-    pub credential_type: String,
-    pub transform_name: Option<String>,
-    pub encrypted_envelope: EncryptedEnvelopeResponse,
-}
-
-/// Wire format for an ECIES encrypted envelope.
-#[derive(Serialize)]
-pub(super) struct EncryptedEnvelopeResponse {
-    pub version: u8,
-    pub ephemeral_public_key: String,
-    pub ciphertext: String,
-    pub nonce: String,
-    pub aad: String,
-}
-
-/// Response for `GET /api/v1/workspaces/mcp-servers`.
-#[derive(Serialize)]
-pub(super) struct McpServerSyncResponse {
-    pub servers: Vec<McpServerSyncEntry>,
-}
+pub(super) use agent_cordon_core::wire::mcp::{
+    McpCredentialEnvelope, McpServerSyncEntry, McpServerSyncResponse, McpSyncQuery,
+    McpToolSyncEntry,
+};
+use agent_cordon_core::wire::EncryptedEnvelopeWire;
 
 use crate::crypto_helpers::parse_broker_public_key;
+
+/// The one-line description of the catalog template a server was
+/// provisioned from. An MCP server record carries no description of its
+/// own; the template it came from is the only place one exists, so this is
+/// what the broker (and `agentcordon mcp-servers`) can show.
+fn template_description(state: &AppState, template_key: Option<&str>) -> Option<String> {
+    let key = template_key?;
+    state
+        .catalog
+        .mcp_templates
+        .iter()
+        .find(|t| t.key == key)
+        .map(|t| t.description.clone())
+}
 
 /// Cedar policy check: can this workspace see this MCP server?
 ///
@@ -225,21 +121,22 @@ pub(super) async fn sync_mcp_servers(
 
     let mut entries = Vec::new();
     for s in servers {
-        let credential_envelopes = if let Some(ref pub_bytes) = broker_pub_bytes {
+        let (credential_envelopes, credential_error) = if let Some(ref pub_bytes) = broker_pub_bytes
+        {
             // Encrypt each required credential for the broker
-            let envelopes = encrypt_server_credentials(&state, &workspace, &s, pub_bytes).await?;
-            if envelopes.is_empty() {
-                None
-            } else {
-                Some(envelopes)
-            }
+            let sealed = encrypt_server_credentials(&state, &workspace, &s, pub_bytes).await?;
+            (
+                (!sealed.envelopes.is_empty()).then_some(sealed.envelopes),
+                (!sealed.errors.is_empty()).then(|| sealed.errors.join("; ")),
+            )
         } else {
-            None
+            (None, None)
         };
 
         entries.push(McpServerSyncEntry {
             id: s.id.0.to_string(),
             name: s.name.clone(),
+            description: template_description(&state, s.template_key.as_deref()),
             transport: s.transport.to_string(),
             url: if s.upstream_url.is_empty() {
                 None
@@ -253,6 +150,7 @@ pub(super) async fn sync_mcp_servers(
                 .map(|creds| creds.iter().map(|c| c.0.to_string()).collect()),
             auth_method: s.auth_method.to_string(),
             credential_envelopes,
+            credential_error,
         });
     }
 
@@ -261,23 +159,32 @@ pub(super) async fn sync_mcp_servers(
     })))
 }
 
+/// The credentials sealed for one MCP server, and the ones that could not be.
+struct SealedCredentials {
+    envelopes: Vec<McpCredentialEnvelope>,
+    /// One entry per credential the server could not produce a token for.
+    errors: Vec<String>,
+}
+
 /// For a given MCP server, look up each required credential, check Cedar
-/// authorization, decrypt (AES-GCM), re-encrypt (ECIES) to the broker's
-/// public key, and return the envelopes. Unauthorized or missing credentials
-/// are silently excluded.
+/// authorization, produce the material the broker may hold, and seal it
+/// (ECIES) to the broker's public key. Unauthorized or missing credentials
+/// are silently excluded; an upstream token exchange that fails is reported
+/// in `errors` so the rest of the sync still lands.
 async fn encrypt_server_credentials(
     state: &AppState,
     workspace: &AuthenticatedWorkspace,
     server: &agent_cordon_core::domain::mcp::McpServer,
     broker_pub_bytes: &[u8],
-) -> Result<Vec<McpCredentialEnvelope>, ApiError> {
+) -> Result<SealedCredentials, ApiError> {
+    let mut sealed = SealedCredentials {
+        envelopes: Vec::new(),
+        errors: Vec::new(),
+    };
     let cred_ids = match &server.required_credentials {
         Some(ids) if !ids.is_empty() => ids,
-        _ => return Ok(Vec::new()),
+        _ => return Ok(sealed),
     };
-
-    let mut envelopes = Vec::new();
-    let ws_id_str = workspace.workspace.id.0.to_string();
 
     for cred_id in cred_ids {
         // Look up credential
@@ -318,100 +225,34 @@ async fn encrypt_server_credentials(
             continue;
         }
 
-        // For oauth2_user_authorization credentials, include token exchange
-        // metadata inside the ECIES envelope so the broker can refresh tokens.
-        let (envelope, _vend_id) = if cred.credential_type == "oauth2_user_authorization" {
-            let mut meta = std::collections::HashMap::new();
-            if let Some(token_url) = cred
-                .metadata
-                .get("oauth2_token_url")
-                .and_then(|v| v.as_str())
-            {
-                meta.insert("oauth2_token_url".to_string(), token_url.to_string());
+        // OAuth-backed credentials: the broker gets an upstream access
+        // token, never the refresh token or client secret behind it. An
+        // exchange that fails is reported so the rest of the sync lands.
+        let (envelope, _vend_id) = match state
+            .services
+            .credentials
+            .seal_for_broker(&cred, &workspace.workspace, broker_pub_bytes, "sync")
+            .await
+        {
+            Ok(sealed) => sealed,
+            Err(SealError::Upstream(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    credential_id = %cred_id.0,
+                    server = %server.name,
+                    "upstream token exchange failed during MCP sync"
+                );
+                sealed.errors.push(e.to_string());
+                continue;
             }
-            if let Some(cid) = cred
-                .metadata
-                .get("oauth2_client_id")
-                .and_then(|v| v.as_str())
-            {
-                meta.insert("oauth2_client_id".to_string(), cid.to_string());
-            }
-            // Include client_secret from the OAuth provider client row that
-            // owns this credential. Look up by authorization_server_url stored
-            // in credential metadata at provisioning time.
-            if let Some(as_url) = cred
-                .metadata
-                .get("authorization_server_url")
-                .and_then(|v| v.as_str())
-            {
-                let lookup = state
-                    .store
-                    .get_oauth_provider_client_by_authorization_server_url(as_url)
-                    .await;
-                match lookup {
-                    Ok(Some(app))
-                        if app.enabled
-                            && app.encrypted_client_secret.is_some()
-                            && app.nonce.is_some() =>
-                    {
-                        let enc = app.encrypted_client_secret.as_ref().unwrap();
-                        let n = app.nonce.as_ref().unwrap();
-                        match state
-                            .encryptor
-                            .decrypt(enc, n, app.id.0.to_string().as_bytes())
-                        {
-                            Ok(secret_bytes) => {
-                                if let Ok(secret) = String::from_utf8(secret_bytes) {
-                                    meta.insert("oauth2_client_secret".to_string(), secret);
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    authorization_server_url = %as_url,
-                                    "failed to decrypt OAuth provider client secret for sync"
-                                );
-                            }
-                        }
-                    }
-                    Ok(_) => {
-                        tracing::debug!(
-                            authorization_server_url = %as_url,
-                            "no enabled OAuth provider client for credential sync"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            authorization_server_url = %as_url,
-                            "failed to look up OAuth provider client for credential sync"
-                        );
-                    }
-                }
-            }
-            crate::crypto_helpers::reencrypt_credential_with_metadata(
-                state.encryptor.as_ref(),
-                &cred,
-                &ws_id_str,
-                broker_pub_bytes,
-                meta,
-            )
-            .await?
-        } else {
-            crate::crypto_helpers::reencrypt_credential_for_device(
-                state.encryptor.as_ref(),
-                &cred,
-                &ws_id_str,
-                broker_pub_bytes,
-            )
-            .await?
+            Err(SealError::Api(e)) => return Err(e),
         };
 
-        envelopes.push(McpCredentialEnvelope {
+        sealed.envelopes.push(McpCredentialEnvelope {
             credential_name: cred.name.clone(),
             credential_type: cred.credential_type.clone(),
             transform_name: cred.transform_name.clone(),
-            encrypted_envelope: EncryptedEnvelopeResponse {
+            encrypted_envelope: EncryptedEnvelopeWire {
                 version: envelope.version,
                 ephemeral_public_key: envelope.ephemeral_public_key,
                 ciphertext: envelope.ciphertext,
@@ -421,21 +262,12 @@ async fn encrypt_server_credentials(
         });
     }
 
-    Ok(envelopes)
+    Ok(sealed)
 }
 
 // ---------------------------------------------------------------------------
 // MCP tool sync
 // ---------------------------------------------------------------------------
-
-/// A single MCP tool entry for device sync.
-#[derive(Serialize)]
-pub(super) struct McpToolSyncEntry {
-    pub server: String,
-    pub tool: String,
-    pub description: Option<String>,
-    pub input_schema: Option<serde_json::Value>,
-}
 
 /// GET /api/v1/workspaces/mcp-tools -- list MCP tools from all enabled servers.
 ///
@@ -486,68 +318,4 @@ pub(super) async fn sync_mcp_tools(
         .collect();
 
     Ok(Json(ApiResponse::ok(entries)))
-}
-
-// ---------------------------------------------------------------------------
-// MCP tool reporting
-// ---------------------------------------------------------------------------
-
-/// Request body for `POST /api/v1/workspaces/mcp-report-tools`.
-#[derive(Deserialize)]
-pub(super) struct ReportToolsRequest {
-    server_name: String,
-    tools: Vec<ReportedTool>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct ReportedTool {
-    name: String,
-    #[allow(dead_code)]
-    description: Option<String>,
-}
-
-/// POST /api/v1/workspaces/mcp-report-tools -- workspace reports discovered tools for an MCP server.
-///
-/// Auth: workspace identity JWT (Authorization: Bearer).
-/// Updates `allowed_tools` on the matching MCP server record so the web UI
-/// and policy engine know which tools are available.
-pub(super) async fn report_tools(
-    State(state): State<AppState>,
-    workspace: AuthenticatedWorkspace,
-    Json(req): Json<ReportToolsRequest>,
-) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let ws_id = &workspace.workspace.id;
-
-    // Look up by name, scoped to MCPs bound to the requesting workspace via
-    // the junction (#37: junction is the single source of truth).
-    let bound_servers = state.store.list_mcp_servers_for_workspace(ws_id).await?;
-    let server = bound_servers
-        .into_iter()
-        .find(|s| s.name == req.server_name)
-        .ok_or_else(|| ApiError::NotFound(format!("MCP server '{}' not found", req.server_name)))?;
-
-    let tool_names: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();
-    let tool_count = tool_names.len();
-
-    let mut updated = server.clone();
-    updated.allowed_tools = Some(tool_names);
-    updated.updated_at = chrono::Utc::now();
-    state.store.update_mcp_server(&updated).await?;
-
-    // Notify UI of updated tools
-    state.ui_event_bus.emit(UiEvent::McpServerChanged {
-        server_name: req.server_name.clone(),
-    });
-
-    tracing::info!(
-        server = %req.server_name,
-        workspace = %ws_id.0,
-        tools = tool_count,
-        "workspace reported MCP tools"
-    );
-
-    Ok(Json(ApiResponse::ok(serde_json::json!({
-        "server_name": req.server_name,
-        "tools_updated": tool_count,
-    }))))
 }

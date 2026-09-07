@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Audit Log — Agent Cordon{% endblock %}
 {% block content %}
-<div x-data="auditListPage()" x-init="init()">
+<div x-data="auditListPage()">
     <div class="content-header">
         <h2>Audit Log</h2>
         <p class="audit-page-subtitle">Complete security audit trail — every policy evaluation, credential access, and authorization decision.</p>
@@ -10,34 +10,60 @@
                 <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 <input x-model="search" type="text" placeholder="Search events..." aria-label="Search audit events">
             </div>
-            <button class="btn btn-secondary btn-sm" @click="exportCsv()">Export CSV</button>
+            <!--
+              The API serves CSV, JSONL and syslog and the page exposed one of
+              them (uat/artifacts/reviews/DESIGN-REVIEW.md 1.17). One trigger, three formats, and
+              the filters the reader set travel with each.
+            -->
+            <div class="overflow-menu" x-data="acOverflowMenu()"
+                 @click.outside="close()" @keydown.escape.stop="close()">
+                <button type="button" class="btn btn-secondary btn-sm"
+                        aria-haspopup="menu" :aria-expanded="open ? 'true' : 'false'"
+                        @click="toggle()">Export</button>
+                <div class="overflow-menu-items" role="menu" x-ref="acMenu" x-show="open" x-cloak>
+                    <button type="button" role="menuitem" class="overflow-menu-item"
+                            @click="close(); exportAs('csv')">CSV</button>
+                    <button type="button" role="menuitem" class="overflow-menu-item"
+                            @click="close(); exportAs('jsonl')">JSONL</button>
+                    <button type="button" role="menuitem" class="overflow-menu-item"
+                            @click="close(); exportAs('syslog')">Syslog</button>
+                </div>
+            </div>
         </div>
     </div>
 
-    <!-- Filter pills -->
+    <!--
+      The filter bar. Seventeen event types wrapped the pill row onto two lines
+      and reflowed it on every load, because the row is built from the types
+      present in the page of events just fetched (uat/artifacts/reviews/DESIGN-REVIEW.md §2.6).
+      Seventeen values is a menu; three is a segmented control, so the decision
+      filter keeps its pills.
+    -->
     <div class="audit-filters">
         <div class="audit-filter-group">
-            <span class="audit-filter-label">Type:</span>
-            <button class="pill audit-filter-pill"
-                    :class="typeFilter.length === 0 ? 'pill-ok' : 'pill-type'"
-                    @click="typeFilter = []; typeFilterSingle = ''">All</button>
-            <template x-for="t in allEventTypes" :key="t">
-                <button class="pill audit-filter-pill"
-                        :class="typeFilter.includes(t) ? 'pill-ok' : 'pill-type'"
-                        @click="toggleTypeFilter(t)"
-                        x-text="humanEventType(t)"></button>
-            </template>
+            <label class="audit-filter-label" for="audit-type-filter">Type:</label>
+            <select id="audit-type-filter" class="form-input form-input-sm audit-type-select"
+                    aria-label="Event type"
+                    @change="selectEventType($event.target.value)">
+                <option value="">All event types</option>
+                <template x-for="t in allEventTypes" :key="t">
+                    <option :value="t" :selected="typeFilter[0] === t" x-text="humanEventType(t)"></option>
+                </template>
+            </select>
         </div>
         <div class="audit-filter-group">
             <span class="audit-filter-label">Decision:</span>
             <button class="pill audit-filter-pill"
                     :class="!decisionFilter ? 'pill-ok' : 'pill-type'"
-                    @click="decisionFilter = ''">All</button>
+                    :aria-pressed="!decisionFilter"
+                    @click="decisionFilter = ''">All decisions</button>
             <button class="pill audit-filter-pill"
                     :class="decisionFilter === 'permit' ? 'pill-decision-permit' : 'pill-type'"
+                    :aria-pressed="decisionFilter === 'permit'"
                     @click="decisionFilter = decisionFilter === 'permit' ? '' : 'permit'">Permit</button>
             <button class="pill audit-filter-pill"
                     :class="decisionFilter === 'forbid' ? 'pill-decision-forbid' : 'pill-type'"
+                    :aria-pressed="decisionFilter === 'forbid'"
                     @click="decisionFilter = decisionFilter === 'forbid' ? '' : 'forbid'">Forbid</button>
         </div>
     </div>
@@ -47,17 +73,19 @@
         <span x-text="'Showing ' + filteredEvents.length + (hasMore ? '+' : '') + ' events'"></span>
     </div>
 
-    {% if events.is_empty() %}
-    <div class="empty-state">
+    <div x-show="loading" class="page-loader page-loader-sm">
+        <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+    </div>
+
+    <div x-show="!loading && events.length === 0" class="empty-state">
         <div class="empty-glyph" aria-hidden="true">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
         </div>
         <h3>No audit events yet</h3>
         <p>Audit events will appear here as actions are performed in the system.</p>
     </div>
-    {% else %}
-    <!-- Full-width audit table with expandable rows -->
-    <table class="tbl audit-tbl" aria-label="Audit event log">
+    <!-- Full-width audit table with expandable rows (rows from GET /api/v1/audit) -->
+    <table x-show="events.length > 0" class="tbl audit-tbl" aria-label="Audit event log">
         <thead>
             <tr>
                 <th class="audit-col-ts">Timestamp</th>
@@ -65,7 +93,7 @@
                 <th class="audit-col-principal">Principal</th>
                 <th class="audit-col-resource">Resource</th>
                 <th class="audit-col-decision">Decision</th>
-                <th class="audit-col-toggle" aria-hidden="true"></th>
+                <th class="audit-col-toggle" scope="col"><span class="sr-only">Details</span></th>
             </tr>
         </thead>
         <!-- One tbody per event allows data row + expandable detail row -->
@@ -105,8 +133,8 @@
                     <td class="audit-col-decision">
                         <span class="pill" :class="ev.decision_class" x-text="ev.decision"></span>
                     </td>
-                    <td class="audit-col-toggle" aria-hidden="true">
-                        <svg class="audit-chevron"
+                    <td class="audit-col-toggle">
+                        <svg class="audit-chevron" aria-hidden="true"
                              :class="{ 'audit-chevron-open': selectedId === ev.id }"
                              width="14" height="14" viewBox="0 0 24 24" fill="none"
                              stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -128,7 +156,7 @@
                                 <div class="audit-kv-grid">
                                     <div class="audit-kv-item">
                                         <div class="audit-kv-label">Principal</div>
-                                        <div class="audit-kv-value" x-text="detailEvent ? (detailEvent.agent_name || detailEvent.workspace_name || detailEvent.user_name || detailEvent.device_name || detailEvent.principal || '\u2014') : ''"></div>
+                                        <div class="audit-kv-value" x-text="detailEvent ? eventPrincipal(detailEvent) : ''"></div>
                                     </div>
                                     <div class="audit-kv-item">
                                         <div class="audit-kv-label">Action</div>
@@ -208,38 +236,37 @@
         </template>
     </table>
 
-    <div x-show="filteredEvents.length === 0" class="audit-tbl-empty">
+    <div x-show="events.length > 0 && filteredEvents.length === 0" class="audit-tbl-empty">
         <p>No events match your filters.</p>
     </div>
 
     <!-- Load more -->
-    <div x-show="hasMore" class="audit-tbl-loadmore">
+    <div x-show="events.length > 0 && hasMore" class="audit-tbl-loadmore">
         <button class="btn btn-secondary btn-sm" @click="loadMore()" :disabled="loadingMore">
             <span x-text="loadingMore ? 'Loading...' : 'Load more'"></span>
         </button>
     </div>
-    {% endif %}
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
 function auditListPage() {
     return {
-        events: {{ events_json|safe }},
+        events: [],
+        loading: true,
         search: '',
         typeFilter: [],
-        typeFilterSingle: '',
         decisionFilter: '',
         selectedId: null,
         detailEvent: null,
         detailLoading: false,
         metadataExpanded: false,
-        hasMore: true,
+        hasMore: false,
         loadingMore: false,
         pageSize: 50,
 
         init() {
-            if (this.events.length < this.pageSize) this.hasMore = false;
+            this.refreshEvents();
             var match = window.location.pathname.match(/\/audit\/([0-9a-f-]+)$/);
             if (match) this.toggleEvent(match[1]);
             window.addEventListener('popstate', () => {
@@ -268,7 +295,7 @@ function auditListPage() {
 
         async loadDetail(id) {
             try {
-                var resp = await fetch('/api/v1/audit/' + id);
+                var resp = await AC.fetch('/api/v1/audit/' + id);
                 if (resp.ok) {
                     var data = await resp.json();
                     this.detailEvent = data.data || data;
@@ -313,20 +340,21 @@ function auditListPage() {
 
         async refreshEvents() {
             try {
-                var resp = await fetch('/api/v1/audit?limit=' + this.pageSize);
+                var resp = await AC.fetch('/api/v1/audit?limit=' + this.pageSize);
                 if (resp.ok) {
                     var data = await resp.json();
                     this.events = (data.data || []).map(ev => this.normalizeApiEvent(ev));
                     this.hasMore = this.events.length >= this.pageSize;
                 }
             } catch(e) { showToast('Failed to refresh events', 'error'); }
+            this.loading = false;
         },
 
         async loadMore() {
             this.loadingMore = true;
             try {
                 var offset = this.events.length;
-                var resp = await fetch('/api/v1/audit?limit=' + this.pageSize + '&offset=' + offset);
+                var resp = await AC.fetch('/api/v1/audit?limit=' + this.pageSize + '&offset=' + offset);
                 if (resp.ok) {
                     var data = await resp.json();
                     var newEvents = (data.data || []).map(ev => this.normalizeApiEvent(ev));
@@ -344,7 +372,7 @@ function auditListPage() {
             var m = ev.metadata || {};
             return {
                 id: ev.id, timestamp: ev.timestamp, event_type: ev.event_type || '',
-                principal: ev.workspace_name || ev.user_name || '\u2014',
+                principal: eventPrincipal(ev),
                 action: ev.action || '', resource_type: ev.resource_type || '',
                 resource_id: rid,
                 resource_id_short: rid.length > 8 ? rid.substring(0, 8) + '...' : rid,
@@ -352,7 +380,9 @@ function auditListPage() {
                 correlation_id: ev.correlation_id || '',
                 decision_reason: ev.decision_reason || '',
                 metadata_json: JSON.stringify(m, null, 2),
-                summary: m.credential_name || m.tool || m.tool_name || m.name || m.resource_name || ''
+                summary: m.credential_name || m.tool || m.tool_name || m.name || m.resource_name || '',
+                // Credential lifecycle rows (credential_*) show a key glyph.
+                icon: /^credential_/.test(ev.event_type || '') ? 'credential' : ''
             };
         },
 
@@ -379,51 +409,43 @@ function auditListPage() {
             });
         },
 
-        toggleTypeFilter(val) {
-            var idx = this.typeFilter.indexOf(val);
-            if (idx >= 0) {
-                this.typeFilter.splice(idx, 1);
-            } else {
-                this.typeFilter.push(val);
-            }
+        /*
+         * The dropdown names one type or none. `typeFilter` stays a list
+         * because the export and the `event_type` query parameter both take a
+         * comma-separated set, and the API has always accepted more than one.
+         */
+        selectEventType(val) {
+            this.typeFilter = val ? [val] : [];
         },
-
-        setTypeFilter(val) { this.typeFilter = val ? [val] : []; },
 
         humanEventType(t) {
             return eventTypeLabel(t || '');
         },
 
-        timeAgo(ts) {
-            if (!ts) return '';
-            var now = Date.now();
-            var then = new Date(ts).getTime();
-            var diff = Math.max(0, Math.floor((now - then) / 1000));
-            if (diff < 60) return 'just now';
-            if (diff < 3600) {
-                var m = Math.floor(diff / 60);
-                return m + 'm ago';
-            }
-            if (diff < 86400) {
-                var h = Math.floor(diff / 3600);
-                return h + 'h ago';
-            }
-            if (diff < 604800) {
-                var d = Math.floor(diff / 86400);
-                return d + 'd ago';
-            }
-            return formatDateTime(ts);
-        },
-
-        exportCsv() {
+        /* The filters the reader set, as the export API spells them. */
+        exportParams() {
             var params = new URLSearchParams();
-            params.set('format', 'csv');
             if (this.typeFilter.length > 0) params.set('event_type', this.typeFilter.join(','));
             if (this.decisionFilter) params.set('decision', this.decisionFilter);
             if (this.search) params.set('search', this.search);
-            window.open('/api/v1/audit/export?' + params.toString(), '_blank');
+            return params.toString();
         },
 
+        /*
+         * One route per format; `/audit/export` is the CSV one, and the other
+         * two hang off it (routes/admin_api/audit/mod.rs).
+         */
+        exportAs(format) {
+            var path = format === 'jsonl' ? '/api/v1/audit/export/jsonl' :
+                       format === 'syslog' ? '/api/v1/audit/export/syslog' :
+                       '/api/v1/audit/export';
+            var qs = this.exportParams();
+            window.open(path + (qs ? '?' + qs : ''), '_blank');
+        },
+
+        /* Relative time is one helper in base.html; the dashboard reads the
+           same rows the same way (uat/artifacts/fresh-user-native-2.md F15). */
+        timeAgo: timeAgo,
         formatDateTime: formatDateTime
     };
 }
@@ -508,11 +530,14 @@ function auditListPage() {
 .audit-tbl-empty { padding: 32px 16px; text-align: center; color: var(--ink-faint); font-size: 14px; }
 .audit-tbl-loadmore { padding: 12px; text-align: center; }
 
-/* Mobile */
+/* Mobile
+   The table itself is not restyled here. `static/js/ac.js` wraps every
+   `table.tbl` in a `.tbl-scroll` box that scrolls horizontally, so the audit
+   log stays a table with its header row on a phone. The rules that used to
+   live here hid `thead` and made each `td` a block, which is what dropped the
+   header and left the decision and principal cells unlabelled
+   (uat/artifacts/reviews/UI-REVIEW-live.md B4, static C8). Only the expanded detail restacks. */
 @media (max-width: 768px) {
-    .audit-tbl thead { display: none; }
-    .audit-row td { display: block; white-space: normal; padding: 4px 8px !important; }
-    .audit-col-toggle { display: none; }
     .audit-expand-detail { padding: 8px; }
     .audit-kv-grid { grid-template-columns: 1fr; }
     .audit-kv-ids { grid-template-columns: 1fr; }

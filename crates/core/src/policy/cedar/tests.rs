@@ -14,8 +14,11 @@ fn make_agent(name: &str, roles: Vec<&str>, enabled: bool) -> Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
         tags: roles.into_iter().map(String::from).collect(),
-        enabled,
-        status: WorkspaceStatus::Active,
+        status: if enabled {
+            WorkspaceStatus::Active
+        } else {
+            WorkspaceStatus::Disabled
+        },
         pk_hash: None,
         encryption_public_key: None,
         owner_id: None,
@@ -32,8 +35,11 @@ fn make_agent_with_owner(name: &str, roles: Vec<&str>, enabled: bool, owner: &Us
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
         tags: roles.into_iter().map(String::from).collect(),
-        enabled,
-        status: WorkspaceStatus::Active,
+        status: if enabled {
+            WorkspaceStatus::Active
+        } else {
+            WorkspaceStatus::Disabled
+        },
         pk_hash: None,
         encryption_public_key: None,
         owner_id: Some(owner.id.clone()),
@@ -84,7 +90,8 @@ fn make_credential_owned_by(
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -111,7 +118,8 @@ fn make_credential(name: &str, service: &str, scopes: Vec<&str>) -> StoredCreden
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -144,7 +152,8 @@ fn make_credential_for_user(
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -1195,21 +1204,42 @@ fn operator_user_cannot_manage_permissions() {
 }
 
 #[test]
-fn operator_user_can_manage_agents() {
+fn operator_user_can_manage_workspaces_they_own() {
     let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
     let operator = make_user("ops-user", UserRole::Operator, false);
-    let agent = make_agent("some-agent", vec![], true);
+    let owned = make_agent_with_owner("mine", vec![], true, &operator);
 
     let result = engine
         .evaluate(
             &PolicyPrincipal::User(&operator),
             "manage_workspaces",
-            &PolicyResource::WorkspaceResource { workspace: agent },
+            &PolicyResource::WorkspaceResource { workspace: owned },
             &empty_ctx(),
         )
         .expect("evaluate");
 
     assert_eq!(result.decision, PolicyDecisionResult::Permit);
+}
+
+#[test]
+fn operator_user_cannot_manage_workspaces_they_do_not_own() {
+    let engine = CedarPolicyEngine::new(default_policies()).expect("engine init");
+    let operator = make_user("ops-user", UserRole::Operator, false);
+    let someone_else = make_user("other", UserRole::Operator, false);
+    let theirs = make_agent_with_owner("theirs", vec![], true, &someone_else);
+    let ownerless = make_agent("ownerless", vec![], true);
+
+    for workspace in [theirs, ownerless] {
+        let result = engine
+            .evaluate(
+                &PolicyPrincipal::User(&operator),
+                "manage_workspaces",
+                &PolicyResource::WorkspaceResource { workspace },
+                &empty_ctx(),
+            )
+            .expect("evaluate");
+        assert_eq!(result.decision, PolicyDecisionResult::Forbid);
+    }
 }
 
 #[test]
@@ -2146,8 +2176,11 @@ fn make_device(id: &str, name: &str, enabled: bool) -> Workspace {
     Workspace {
         id: WorkspaceId(Uuid::parse_str(id).unwrap_or_else(|_| Uuid::new_v4())),
         name: name.to_string(),
-        enabled,
-        status: WorkspaceStatus::Active,
+        status: if enabled {
+            WorkspaceStatus::Active
+        } else {
+            WorkspaceStatus::Disabled
+        },
         pk_hash: None,
         encryption_public_key: None,
         tags: vec![],
@@ -2528,4 +2561,139 @@ fn permit_match_has_non_empty_reasons() {
         !result.reasons.is_empty(),
         "permit match should have non-empty reasons (permit policy ID)"
     );
+}
+
+/// Cedar skips a policy that errors during evaluation, so a `forbid` that
+/// errors would silently stop forbidding. The engine must treat any
+/// evaluation error as a deny. Schema validation now catches unknown
+/// attributes up front, so this uses an integer overflow, which the
+/// validator accepts and evaluation rejects.
+#[test]
+fn a_forbid_that_errors_during_evaluation_still_denies() {
+    let mut policies = default_policies();
+    policies.push((
+        "broken_forbid".to_string(),
+        r#"forbid(principal, action == AgentCordon::Action::"access", resource)
+           when { 9223372036854775807 + 1 > 0 };"#
+            .to_string(),
+    ));
+    let engine = CedarPolicyEngine::new(policies).expect("engine init");
+    let admin = make_agent("admin-bot", vec!["admin"], true);
+    let cred = make_credential("slack-token", "slack", vec!["chat:write"]);
+
+    let result = engine
+        .evaluate(
+            &PolicyPrincipal::Workspace(&admin),
+            "access",
+            &PolicyResource::Credential { credential: cred },
+            &empty_ctx().with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(vec!["chat:write".to_string()]),
+            ),
+        )
+        .expect("evaluate");
+
+    assert!(
+        !result.errors.is_empty(),
+        "the broken forbid must surface as an evaluation error"
+    );
+    assert_eq!(
+        result.decision,
+        PolicyDecisionResult::Forbid,
+        "an evaluation error is a deny, never a permit"
+    );
+}
+
+// -----------------------------------------------------------------------
+// POLICY FILES AND SCHEMA VALIDATION
+// -----------------------------------------------------------------------
+
+/// A policy that parses but names an entity type the schema does not
+/// define. Startup loads policies through `new`, so `new` must validate.
+#[test]
+fn engine_construction_refuses_a_policy_that_fails_schema_validation() {
+    let bad = r#"permit(principal is AgentCordon::Agent, action, resource);"#;
+    let result = CedarPolicyEngine::new(vec![("bad".to_string(), bad.to_string())]);
+    assert!(
+        matches!(result, Err(PolicyError::Validation(_))),
+        "expected a validation error, got {:?}",
+        result.map(|_| ())
+    );
+}
+
+/// Every shipped `policies/*.cedar` file loads through the same path the
+/// server uses at startup. A file that fails here cannot be seeded.
+#[test]
+fn shipped_policy_files_validate_against_the_schema() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../policies");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("policies dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("cedar") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read policy file");
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        CedarPolicyEngine::new(vec![(name.clone(), source)])
+            .unwrap_or_else(|e| panic!("{name} failed to load: {e}"));
+        checked += 1;
+    }
+    assert!(checked >= 1, "no .cedar files found in {}", dir.display());
+}
+
+fn default_and_shared_tag_policies() -> Vec<(String, String)> {
+    let mut policies = default_policies();
+    policies.push((
+        "shared-tag-access".to_string(),
+        include_str!("../../../../../policies/shared-tag-access.cedar").to_string(),
+    ));
+    policies
+}
+
+fn tagged_credential(tag: &str) -> StoredCredential {
+    let mut cred = make_credential("ci-token", "ci", vec![]);
+    cred.tags = vec![tag.to_string()];
+    cred
+}
+
+#[test]
+fn enabled_workspace_sharing_a_tag_can_vend_under_shared_tag_policy() {
+    let engine = CedarPolicyEngine::new(default_and_shared_tag_policies()).expect("engine init");
+    let ws = make_agent("ci-bot", vec!["ci"], true);
+    let result = engine
+        .evaluate(
+            &PolicyPrincipal::Workspace(&ws),
+            "vend_credential",
+            &PolicyResource::Credential {
+                credential: tagged_credential("ci"),
+            },
+            &empty_ctx(),
+        )
+        .expect("evaluate");
+    assert_eq!(result.decision, PolicyDecisionResult::Permit);
+}
+
+/// Every permit in the shipped policies checks `principal.enabled`; the
+/// shared-tag sample must too, or disabling a workspace stops nothing.
+#[test]
+fn disabled_workspace_sharing_a_tag_is_denied_under_shared_tag_policy() {
+    let engine = CedarPolicyEngine::new(default_and_shared_tag_policies()).expect("engine init");
+    let ws = make_agent("ci-bot", vec!["ci"], false);
+    for action in ["access", "vend_credential", "list"] {
+        let result = engine
+            .evaluate(
+                &PolicyPrincipal::Workspace(&ws),
+                action,
+                &PolicyResource::Credential {
+                    credential: tagged_credential("ci"),
+                },
+                &empty_ctx(),
+            )
+            .expect("evaluate");
+        assert_eq!(
+            result.decision,
+            PolicyDecisionResult::Forbid,
+            "disabled workspace must be denied {action}"
+        );
+    }
 }

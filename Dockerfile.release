@@ -1,6 +1,19 @@
 FROM debian:trixie-slim
 
 ARG TARGETARCH
+# Passed by .github/workflows/release.yml from the tag being built. The
+# binary's own `--version` comes from `[workspace.package] version`; these
+# only label the image.
+ARG VERSION=dev
+ARG VCS_REF=unknown
+
+LABEL org.opencontainers.image.title="AgentCordon" \
+      org.opencontainers.image.description="Credential brokering and policy enforcement for autonomous AI agents" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.source="https://github.com/agentcordon/agentcordon" \
+      org.opencontainers.image.url="https://agentcordon.dev" \
+      org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

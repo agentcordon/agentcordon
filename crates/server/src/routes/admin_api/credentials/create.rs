@@ -2,16 +2,12 @@ use axum::{extract::State, Json};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::CredentialSummary;
-use agent_cordon_core::policy::actions;
-use agent_cordon_core::policy::PolicyResource;
-use agent_cordon_core::transform::MAX_TRANSFORM_SCRIPT_SIZE;
 
-use crate::credential_service::{self, NewCredentialParams};
 use crate::extractors::AuthenticatedActor;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::credentials::{validate_credential_type, NewCredentialParams};
 use crate::state::AppState;
 
 use super::enrich_owner_usernames;
@@ -32,8 +28,8 @@ pub(crate) struct StoreCredentialRequest {
     pub transform_script: Option<String>,
     /// Optional named built-in transform (e.g., "identity", "basic-auth", "bearer", "aws-sigv4").
     pub transform_name: Option<String>,
-    /// Optional vault grouping. Defaults to "default" if not provided.
-    pub vault: Option<String>,
+    /// Optional vault, by id. Defaults to the system default vault.
+    pub vault_id: Option<String>,
     /// Credential type: "generic" (default), "aws".
     pub credential_type: Option<String>,
     /// Optional AWS Access Key ID. Used when credential_type is "aws" instead of raw JSON.
@@ -69,28 +65,6 @@ pub(crate) async fn store_credential(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<StoreCredentialRequest>,
 ) -> Result<Json<ApiResponse<CredentialSummary>>, ApiError> {
-    // Policy check: can this actor create credentials?
-    state
-        .authz
-        .request(
-            crate::authz::PolicyCaller::Principal {
-                principal: actor.policy_principal(),
-                oauth_claims: None,
-            },
-            &uuid::Uuid::new_v4().to_string(),
-        )
-        .check(actions::CREATE, &PolicyResource::System)
-        .await?; // Validate transform_script size
-    if let Some(ref script) = req.transform_script {
-        if script.len() > MAX_TRANSFORM_SCRIPT_SIZE {
-            return Err(ApiError::BadRequest(format!(
-                "transform_script exceeds maximum size of {} bytes ({} bytes provided)",
-                MAX_TRANSFORM_SCRIPT_SIZE,
-                script.len()
-            )));
-        }
-    }
-
     // Resolve credential type (default: "generic")
     let credential_type = req
         .credential_type
@@ -98,7 +72,7 @@ pub(crate) async fn store_credential(
         .unwrap_or_else(|| "generic".to_string());
 
     // Validate credential_type against known types
-    credential_service::validate_credential_type(&credential_type)?;
+    validate_credential_type(&credential_type)?;
 
     // Resolve the secret_value and validate credential_type-specific constraints
     let mut transform_name = req.transform_name.clone();
@@ -195,13 +169,21 @@ pub(crate) async fn store_credential(
             ApiError::BadRequest("oauth2_token_endpoint must be a valid URL".to_string())
         })?;
         // Enforce HTTPS to prevent client secrets from being sent in plaintext.
-        // Allow http:// only for localhost/127.0.0.1 (dev convenience).
+        // Allow http:// only on the server's own loopback (dev convenience).
+        // `Url::host()` yields the parsed address, so an IPv6 literal such as
+        // `[::1]` is recognised; `host_str()` would carry the brackets.
         if parsed_endpoint.scheme() != "https" {
-            let host = parsed_endpoint.host_str().unwrap_or("");
-            let is_loopback = host == "localhost" || host == "127.0.0.1" || host == "::1";
+            let is_loopback = match parsed_endpoint.host() {
+                Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                None => false,
+            };
             if !is_loopback {
                 return Err(ApiError::BadRequest(
-                    "oauth2_token_endpoint must use HTTPS".to_string(),
+                    "oauth2_token_endpoint must use HTTPS; plain http is accepted only for a \
+                     token endpoint on the server's own loopback (localhost, 127.0.0.1 or [::1])"
+                        .to_string(),
                 ));
             }
         }
@@ -233,8 +215,7 @@ pub(crate) async fn store_credential(
                             .to_string(),
                     ));
                 }
-                // Auth prefix stripping is now handled by build_credential()
-                // in credential_service.rs — no need to strip here.
+                // Auth prefix stripping is handled by the credential service.
                 sv.clone()
             }
             None => {
@@ -272,49 +253,32 @@ pub(crate) async fn store_credential(
         meta
     };
 
-    // Build credential via shared service (generates ID, encrypts secret)
-    let cred = credential_service::build_credential(
-        state.encryptor.as_ref(),
-        NewCredentialParams {
-            name: req.name.clone(),
-            service: req.service.clone(),
-            secret_value: resolved_secret,
-            credential_type,
-            scopes: req.scopes.unwrap_or_default(),
-            metadata,
-            tags: req.tags.clone().unwrap_or_default(),
-            vault: req.vault.clone().unwrap_or_else(|| "default".to_string()),
-            created_by: created_by.clone(),
-            created_by_user: created_by_user.clone(),
-            allowed_url_pattern: allowed_url_pattern.clone(),
-            expires_at: req.expires_at,
-            transform_script: req.transform_script.clone(),
-            transform_name,
-            description: req.description.clone(),
-            target_identity: req.target_identity.clone(),
-        },
-    )?;
-    state.store.store_credential(&cred).await?;
-
-    // Audit log
-    let (ws_id, ws_name, u_id, u_name) = actor.audit_actor_fields();
-    let event = AuditEvent::builder(AuditEventType::CredentialCreated)
-        .action("create")
-        .actor_fields(ws_id, ws_name, u_id, u_name)
-        .resource("credential", &cred.id.0.to_string())
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, None)
-        .details(serde_json::json!({
-            "credential_name": req.name,
-            "service": req.service,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
-
-    // Emit UI event for browser auto-refresh
-    credential_service::emit_credential_created(&state, cred.id.0, cred.name.clone());
+    let cred = state
+        .services
+        .credentials
+        .create(
+            &actor,
+            &corr.0,
+            NewCredentialParams {
+                name: req.name,
+                service: req.service,
+                secret_value: resolved_secret,
+                credential_type,
+                scopes: req.scopes.unwrap_or_default(),
+                metadata,
+                tags: req.tags.unwrap_or_default(),
+                vault_id: req.vault_id,
+                created_by,
+                created_by_user,
+                allowed_url_pattern,
+                expires_at: req.expires_at,
+                transform_script: req.transform_script,
+                transform_name,
+                description: req.description,
+                target_identity: req.target_identity,
+            },
+        )
+        .await?;
 
     let mut summary: CredentialSummary = cred.into();
     enrich_owner_usernames(state.store.as_ref(), std::slice::from_mut(&mut summary)).await;

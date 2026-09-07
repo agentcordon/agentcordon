@@ -1,9 +1,10 @@
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use super::helpers::map_store_error;
 use super::SqliteStore;
 use crate::domain::mcp_oauth::McpOAuthState;
+use crate::domain::time::{format_timestamp, parse_timestamp};
 use crate::domain::user::UserId;
 use crate::domain::workspace::WorkspaceId;
 use crate::error::StoreError;
@@ -28,8 +29,8 @@ impl SqliteStore {
                         state.user_id.0.to_string(),
                         state.redirect_uri,
                         state.code_verifier,
-                        state.created_at.to_rfc3339(),
-                        state.expires_at.to_rfc3339(),
+                        format_timestamp(&state.created_at),
+                        format_timestamp(&state.expires_at),
                         state.authorization_server_url,
                     ],
                 )
@@ -37,7 +38,7 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn consume_mcp_oauth_state(
@@ -82,11 +83,11 @@ impl SqliteStore {
                 Ok(result)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn cleanup_expired_mcp_oauth_states(&self) -> Result<u32, StoreError> {
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = format_timestamp(&chrono::Utc::now());
         self.conn()
             .call(move |conn| {
                 let count = conn
@@ -98,7 +99,7 @@ impl SqliteStore {
                 Ok(count as u32)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }
 
@@ -136,16 +137,12 @@ fn row_to_mcp_oauth_state(row: &rusqlite::Row<'_>) -> Result<McpOAuthState, rusq
     let user_id = Uuid::parse_str(&user_id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
     })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let expires_at = DateTime::parse_from_rfc3339(&expires_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let expires_at = parse_timestamp(&expires_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     Ok(McpOAuthState {
         state,

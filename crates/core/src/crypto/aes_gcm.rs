@@ -16,8 +16,6 @@ use crate::error::CryptoError;
 const WARN_THRESHOLD: u64 = 1 << 31;
 /// Hard limit at which encryption is refused (2^32 encryptions).
 const FAIL_THRESHOLD: u64 = 1 << 32;
-/// How often the counter is flushed to persistent storage.
-pub const FLUSH_INTERVAL: u64 = 100;
 
 /// AES-256-GCM encryptor backed by a 256-bit key.
 ///
@@ -39,25 +37,9 @@ impl AesGcmEncryptor {
         }
     }
 
-    /// Create a new encryptor with a pre-loaded encryption count (from DB).
-    pub fn new_with_count(key: &[u8; 32], initial_count: u64) -> Self {
-        let cipher =
-            Aes256Gcm::new_from_slice(key).expect("32-byte key is always valid for AES-256");
-        Self {
-            cipher,
-            encryption_count: AtomicU64::new(initial_count),
-        }
-    }
-
     /// Get the current encryption count.
     pub fn encryption_count(&self) -> u64 {
         self.encryption_count.load(Ordering::Relaxed)
-    }
-
-    /// Returns `true` if the counter should be flushed to persistent storage.
-    pub fn should_flush(&self) -> bool {
-        let count = self.encryption_count.load(Ordering::Relaxed);
-        count > 0 && count.is_multiple_of(FLUSH_INTERVAL)
     }
 }
 
@@ -298,21 +280,13 @@ mod tests {
     }
 
     #[test]
-    fn new_with_count_preserves_initial_count() {
-        let key = derive_master_key("test-secret", b"sixteen-byte-sal")
-            .expect("key derivation should succeed");
-        let encryptor = AesGcmEncryptor::new_with_count(&key, 500);
-        assert_eq!(encryptor.encryption_count(), 500);
-
-        encryptor.encrypt(b"data", b"").expect("encrypt");
-        assert_eq!(encryptor.encryption_count(), 501);
-    }
-
-    #[test]
     fn nonce_exhaustion_at_threshold() {
         let key = derive_master_key("test-secret", b"sixteen-byte-sal")
             .expect("key derivation should succeed");
-        let encryptor = AesGcmEncryptor::new_with_count(&key, FAIL_THRESHOLD);
+        let encryptor = AesGcmEncryptor::new(&key);
+        encryptor
+            .encryption_count
+            .store(FAIL_THRESHOLD, Ordering::Relaxed);
 
         let result = encryptor.encrypt(b"data", b"");
         assert!(
@@ -323,18 +297,6 @@ mod tests {
             CryptoError::NonceExhaustion => {}
             other => panic!("expected NonceExhaustion, got: {:?}", other),
         }
-    }
-
-    #[test]
-    fn should_flush_at_intervals() {
-        let key = derive_master_key("test-secret", b"sixteen-byte-sal")
-            .expect("key derivation should succeed");
-        let encryptor = AesGcmEncryptor::new_with_count(&key, 99);
-        assert!(!encryptor.should_flush());
-
-        encryptor.encrypt(b"data", b"").expect("encrypt");
-        assert_eq!(encryptor.encryption_count(), 100);
-        assert!(encryptor.should_flush());
     }
 
     #[test]

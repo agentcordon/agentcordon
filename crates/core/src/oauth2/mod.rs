@@ -1,12 +1,12 @@
 //! OAuth 2.0 modules for AgentCordon.
 //!
-//! - `client_credentials`: Token manager for upstream OAuth2 client_credentials grants.
+//! - `token_manager`: Token manager for upstream OAuth2 client_credentials and refresh_token grants.
 //! - `types`: Domain types for the AgentCordon OAuth 2.0 Authorization Server.
 //! - `tokens`: Token generation and PKCE validation utilities.
 //! - `storage`: Re-exports the `OAuthStore` trait.
 
 #[cfg(feature = "http-client")]
-pub mod client_credentials;
+pub mod token_manager;
 
 pub mod eff_wordlist;
 pub mod storage;
@@ -15,7 +15,9 @@ pub mod types;
 
 // Re-exports for convenience.
 #[cfg(feature = "http-client")]
-pub use client_credentials::{OAuth2Error, OAuth2TokenManager, TokenResult};
+pub use token_manager::{
+    OAuth2Error, OAuth2Grant, OAuth2TokenManager, OAuth2TokenRequest, TokenResult,
+};
 
 pub use storage::OAuthStore;
 pub use tokens::{

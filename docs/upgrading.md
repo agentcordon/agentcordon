@@ -7,7 +7,7 @@ How to update the AgentCordon server and CLI client to a new version. Both compo
 ---
 
 **On this page:**
-[What Persists](#what-persists-across-upgrades) | [Server Upgrade](#upgrading-the-server) | [Database Migrations](#database-migrations) | [CLI Upgrade](#upgrading-the-cli-client) | [Client Compatibility](#client-compatibility) | [Pre-Upgrade Checklist](#pre-upgrade-checklist) | [Post-Upgrade Verification](#post-upgrade-verification) | [Upgrade Scenarios](#upgrade-scenarios)
+[What Persists](#what-persists-across-upgrades) | [Server Upgrade](#upgrading-the-server) | [Database Migrations](#database-migrations) | [CLI Upgrade](#upgrading-the-cli-client) | [Client Compatibility](#client-compatibility) | [Upgrading from 0.3.x](#upgrading-from-03x) | [Pre-Upgrade Checklist](#pre-upgrade-checklist) | [Post-Upgrade Verification](#post-upgrade-verification) | [Upgrade Scenarios](#upgrade-scenarios)
 
 ---
 
@@ -52,7 +52,7 @@ The server startup sequence is:
 1. Load configuration from environment variables
 2. Initialize tracing/logging
 3. Resolve the master secret (env var `AGTCRDN_MASTER_SECRET` > persisted `.secret` file next to the database > auto-generate and persist)
-4. Derive cryptographic keys (AES-256-GCM encryptor, ES256 JWT signing keypair, session hash key)
+4. Derive cryptographic keys (the AES-256-GCM key ring and the session hash key; no signing keypair is derived -- the ES256 JWT issuer is gone)
 5. Open the database and run any pending migrations automatically
 6. Seed the default Cedar policy if the `policies` table is empty (first boot only -- skipped on upgrades)
 7. Load all enabled policies into the Cedar engine
@@ -111,28 +111,21 @@ curl http://localhost:3140/health
 
 Migrations run automatically on startup -- no manual migration step is needed.
 
----
+### Notable migrations in this release
 
-### PostgreSQL (Experimental)
+| Version | What it does | What to know |
+|---------|--------------|--------------|
+| 016 | Adds `workspace_id` to OAuth clients, access tokens, and refresh tokens, backfilled through the key hash each row was issued against. | A client whose key hash matches no workspace stays unbound and cannot authenticate, as before. Tokens now follow their workspace even if its key hash changes. |
+| 017 | Folds the `enabled` flag into `status`: switched-off workspaces become `disabled`. | The `enabled` column is kept in step for older readers; the API still returns `enabled` (true only when `active`). Revoked workspaces cannot be re-enabled. |
+| 018 | Indexes `credentials.name`. | None. |
+| 019 | Rebuilds `credential_secret_history` so `key_version` exists on every install, backfilled to 1. | Runs with foreign keys off around the rebuild. After upgrading, `key_version` means "which master key sealed this row"; see `docs/master-key.md` for the new rotation procedure and the `AGTCRDN_MASTER_KEY_VERSION` / `AGTCRDN_PREVIOUS_MASTER_SECRET` variables. |
+| 020 | Drops `workspace_used_jtis`, `workspace_registrations`, `provisioning_tokens`, and `crypto_state`. | Rows in those tables are discarded; nothing read them. |
 
-PostgreSQL support exists as a compile-time feature (`--features postgres`) but is **incomplete**. Many store operations (OAuth, provider clients, device codes) return "not yet implemented" errors. The SQLite backend is the production-ready path.
+Also on first start after this upgrade:
 
-If you are testing the PostgreSQL backend:
+- The server takes an advisory lock on `<db path>.lock` and refuses to start a second instance against the same database. Set `AGTCRDN_REPLICA_MODE=unsafe-shared` only if you knowingly run replicas.
+- If `AGTCRDN_MASTER_SECRET` is a short or low-entropy passphrase, the server keeps deriving the key exactly as before (your data stays readable) and logs a warning. Rotate to a strong secret through the key-ring procedure in `docs/master-key.md`; a fresh install with a weak secret is stretched with Argon2id and a persisted `.master-salt` instead.
 
-```bash
-export AGTCRDN_DB_TYPE=postgres
-export AGTCRDN_DB_URL="postgres://user:pass@localhost:5432/agentcordon"
-```
-
-> [!IMPORTANT]
-> Back up the database first:
-> ```bash
-> pg_dump -h localhost -U agentcordon agentcordon > backup-$(date +%Y%m%d).sql
-> ```
-> Then upgrade the server:
-> ```bash
-> docker compose pull && docker compose up -d
-> ```
 
 ---
 
@@ -172,30 +165,27 @@ migrations/
   004_mcp_user_ownership.sql                    # Add user ownership to MCP servers
   005_oauth_provider_clients.sql                # Rename mcp_oauth_apps -> oauth_provider_clients, restructure by authorization_server_url
   006_device_codes.sql                          # RFC 8628 device authorization grant + bootstrap client seed
-  007_credential_name_unique.sql                # Enforce globally unique credential names (UNIQUE INDEX)
+  007_credential_name_unique.sql                # No-op (originally a UNIQUE INDEX on credentials.name; see below)
   008_bootstrap_client_mcp_discover_scope.sql   # Add mcp:discover to bootstrap client's allowed_scopes
   009_device_code_pk_hash.sql                   # Bind workspace public_key_hash at device_code issue time
   010_mcp_server_workspaces.sql                 # M:N junction — one MCP can be bound to many workspaces owned by the same user
+  011_drop_credential_name_unique.sql           # Drop the 007 index on databases that applied it
+  012_relax_mcp_servers_workspace_id.sql        # Make mcp_servers.workspace_id nullable (table rebuild, foreign keys off)
+  013_restore_mcp_server_workspace_bindings.sql # Repair bindings lost by the original 012
+  014_user_oidc_identities.sql                  # (provider, subject) → user links for OIDC login
+  015_refresh_token_families.sql                # family_id on refresh tokens for reuse detection
+  016_oauth_workspace_id.sql                    # workspace_id on OAuth clients and tokens, backfilled via key hash
+  017_workspace_status_disabled.sql             # fold `enabled` into `status`
+  018_credential_name_index.sql                 # index credentials.name
+  019_secret_history_key_version.sql            # key_version on credential_secret_history (table rebuild, foreign keys off)
+  020_drop_dead_tables.sql                      # drop workspace_used_jtis, workspace_registrations, provisioning_tokens, crypto_state
 ```
+
+A migration whose first line is `-- migration-mode: foreign_keys_off` rebuilds a table. The runner applies it with foreign-key enforcement disabled, in one transaction, runs `PRAGMA foreign_key_check` before committing, and re-enables enforcement. Without this, `DROP TABLE` on a parent cascades into every child table.
 
 ### Migration Details (v0.3.0)
 
-**007 -- Credential name uniqueness.** Adds a `UNIQUE INDEX` on `credentials(name)`. If your database already contains duplicate credential names, this migration will fail on startup and you must resolve duplicates manually before upgrading. The store layer already maps constraint violations to `409 Conflict`.
-
-Before upgrading, run the pre-flight scanner to detect existing duplicates:
-
-```bash
-# SQLite (default path)
-scripts/migration-007-precheck.sh --db-url sqlite:///data/agent-cordon.db
-
-# PostgreSQL
-scripts/migration-007-precheck.sh --db-url "postgres://user:pass@host:5432/agentcordon"
-
-# Or pass via env var
-AGTCRDN_DB_URL=sqlite:///data/agent-cordon.db scripts/migration-007-precheck.sh
-```
-
-The script is read-only (no auto-dedup). Exit status `0` means safe to upgrade; non-zero means duplicates were found and are printed by name. Resolve them (rename or delete) in the running v0.3.x deployment before replacing the binary.
+**007 -- No-op.** This migration originally added a `UNIQUE INDEX` on `credentials(name)` and failed at startup on any database that already held two credentials with the same name. Credential names are not unique by design (011 dropped the index), so 007 is now empty. Version 7 stays in the sequence for databases that recorded it. No pre-upgrade check is needed.
 
 **008 -- Bootstrap client mcp:discover scope.** The bootstrap client (`agentcordon-broker`) seeded by migration 006 was missing the `mcp:discover` scope. Without it, the broker's device authorization grant request was rejected with `400 invalid_scope`. This migration updates `allowed_scopes` to include `credentials:discover,credentials:vend,mcp:discover,mcp:invoke`.
 
@@ -255,11 +245,7 @@ is lost; re-upgrading restores the full binding set.
 ### Backup Before Upgrading
 
 ```bash
-# SQLite
 cp /data/agent-cordon.db /data/agent-cordon.db.backup-$(date +%Y%m%d)
-
-# PostgreSQL (if using experimental postgres backend)
-pg_dump agentcordon > agentcordon-backup-$(date +%Y%m%d).sql
 ```
 
 ---
@@ -273,10 +259,16 @@ The CLI client (`agentcordon`) is a **single static binary**. Upgrading is a fil
 The AgentCordon server hosts an install script that auto-detects your platform:
 
 ```bash
-curl -fsSL https://your-server:3140/install.sh | sh
+curl -fsSL https://agentcordon.example.com/install.sh | sh
 ```
 
-This downloads the latest binary for your OS/architecture to `~/.local/bin/agentcordon`.
+The script is POSIX `sh`, so `| sh`, `| bash`, `| dash` and `| zsh` all work, and it never
+re-fetches itself from a second URL -- the address you pipe from is the only one it uses.
+It downloads `agentcordon` and `agentcordon-broker` for your OS/architecture into
+`~/.local/bin`, fetches the release's `SHA256SUMS`, and **verifies both binaries against it
+before installing them**. A checksum mismatch aborts the install and leaves nothing behind.
+Set `AGENTCORDON_SKIP_CHECKSUM=1` only if you are installing from a release that predates
+`SHA256SUMS`.
 
 **Supported platforms:**
 
@@ -323,28 +315,247 @@ agentcordon status
 
 ## Client Compatibility
 
+> [!IMPORTANT]
+> Upgrade the server, every broker, and every CLI together for this release. The CLI-to-broker signature now includes a nonce (`X-AC-Nonce`) and the register body carries a timestamp and nonce, so an old CLI is refused by a new broker and vice versa. The broker now receives short-lived upstream access tokens from the server instead of refresh tokens and client secrets, sends the proxied request's method and target URL when it vends, parses response headers as a list, and no longer calls `POST /api/v1/workspaces/mcp/rotate-refresh-token` (removed). An old broker against a new server fails MCP calls and vends for pattern-bound credentials; a new broker against an old server cannot sync MCP credentials.
+
 ### No Re-Registration Required
 
 The CLI state in `.agentcordon/` is **forward-compatible**:
 
 - **Keypairs** (`.agentcordon/workspace.key`, `.agentcordon/workspace.pub`) -- Ed25519 signing keypair, unchanged across versions. The private key is a hex-encoded seed (mode 0600), the public key is hex-encoded (mode 0644).
 - **Broker token store** -- encrypted with a P-256 key derived at broker startup. Tokens are re-negotiated automatically when expired.
-- **JWT** -- automatically re-negotiated when expired (default 15-minute TTL, configurable via `AGTCRDN_JWT_TTL`). The client refreshes transparently on the next command.
+- **OAuth access token** -- the broker refreshes it with the refresh grant at `/api/v1/oauth/token` when it expires; no user action is needed.
 
 > [!TIP]
 > After upgrading the binary, existing workspaces continue working immediately. No `init` or `register` is needed.
 
-### No Version Pinning
+### Version compatibility
 
-The CLI does not enforce a version match with the server. As long as the API contract is compatible, any client version works with any server version. The API is designed to be **additive** -- new endpoints are added without removing old ones.
+Nothing enforces a version match at runtime -- there is no handshake, and `--version` will
+not warn you. Within a major line the API is additive and any client works with any server.
+**Across the 0.3.x to 0.4.0 boundary it does not**, because the CLI-to-broker and
+broker-to-server wire formats both changed with no dual-accept window. See
+[Upgrading from 0.3.x](#upgrading-from-03x); the failure mode is
+`401 signature verification failed` (CLI/broker) or failing MCP calls and pattern-bound
+vends (broker/server), not a clear version error.
 
 ---
 
 ## Breaking Changes
 
+### Upgrading from 0.3.x
+
+> [!CAUTION]
+> **The server, every broker, and every CLI move together.** This release changes the
+> CLI-to-broker wire format and the broker-to-server wire format. There is no dual-accept
+> window in either direction and no version negotiation: a 0.3.x CLI against a 0.4.0 broker
+> (or the reverse) gets `401 signature verification failed` on every signed command, and a
+> 0.3.x broker against a 0.4.0 server fails MCP calls and vends for any credential that
+> carries an `allowed_url_pattern`. Plan the upgrade as one change, not three.
+
+Upgrade in this order: **server, then each broker, then the CLI on the same machine as that
+broker.** A broker and its CLI are almost always co-located, so in practice you replace both
+binaries in one step:
+
+```bash
+curl -fsSL https://agentcordon.example.com/install.sh | sh   # replaces both binaries
+pkill -f agentcordon-broker && agentcordon-broker --server-url https://agentcordon.example.com &
+agentcordon status
+```
+
+The installer the server serves is pinned to **that server's own version** rather than to the
+newest published release, so it either installs the matching pair or stops and tells you no
+release exists for that version yet and to build from source ([README, Building from
+Source](../README.md#building-from-source)) -- which is exactly the lockstep this section
+requires. `agentcordon status` warns if the broker it finds is a different version from the
+CLI.
+
+Nothing needs re-enrolling. The Ed25519 keypair in `.agentcordon/`, the broker's encrypted
+token store, and every workspace's OAuth tokens all survive.
+
+Releases from 0.4.0 on are cut by one tagged command and published by CI ([Releasing](releasing.md)):
+each one publishes a multi-arch (`linux/amd64` and `linux/arm64`) server image tagged by version --
+`ghcr.io/agentcordon/agentcordon:0.4.0` as well as `0.4`, `latest` and `sha-<commit>` -- alongside
+binaries whose checksums are in the release's `SHA256SUMS`, and the installer served by a running
+server resolves the release matching that server's own version.
+
+#### Wire-format changes (the lockstep requirement)
+
+| What | Before | Now |
+|------|--------|-----|
+| CLI-to-broker signed payload | `METHOD\nPATH\nTIMESTAMP\nBODY` | `METHOD\nPATH_WITH_QUERY\nTIMESTAMP\nNONCE\nBODY`, with a fresh 16-byte `X-AC-Nonce` per request; the broker refuses a `(key, nonce)` pair it has already seen inside the 30-second window |
+| `POST /register` body | name, key, scopes, signature | plus `timestamp` and `nonce`, both covered by the signature |
+| Broker vend request | credential name only | plus the proxied request's `method` and `target_url`, so the server can enforce `allowed_url_pattern` |
+| Vend / MCP-sync envelope for OAuth credentials | upstream refresh token + provider client secret | a short-lived upstream access token and its `expires_at`; the refresh token and client secret never leave the server |
+| Proxy response headers | single-valued map | list of pairs |
+| `POST /api/v1/workspaces/mcp/rotate-refresh-token` | called by the broker | **removed** -- the server rotates and persists refresh tokens itself |
+
+#### Routes removed
+
+| Route | Replacement |
+|-------|-------------|
+| `GET /.well-known/jwks.json`, the ES256 JWT issuer | None needed. Nothing verified those JWTs anywhere a client could reach; workspace bearer credentials are opaque OAuth 2.0 access tokens. |
+| `GET /api/v1/workspaces/{id}/permissions` (permissions token) | None. Authorization is decided server-side per request. |
+| `/api/v1/workspace-identities/*`, including its two revoke routes | `POST /api/v1/workspaces/{id}/revoke`, which authorizes `manage_workspaces` against the workspace and its owner |
+| `POST /api/v1/mcp/proxy` | Never worked; it only returned a "moved" error |
+| Policy-sync, audit-stream WebSocket, audit-ingest and tool-report control-plane routes | None had a caller in the broker or the CLI |
+| `POST /api/v1/workspaces/mcp/rotate-refresh-token` | Server-side rotation |
+| `agentcordon setup <url>` | `agentcordon init && agentcordon register --server-url <url>` |
+
+#### Operator-visible behaviour changes
+
+- **A second server on the same database is refused.** Startup takes an advisory lock on
+  `<db path>.lock`. If you knowingly run replicas over one SQLite file, set
+  `AGTCRDN_REPLICA_MODE=unsafe-shared` before upgrading, and accept split-brain enforcement.
+- **A weak `AGTCRDN_MASTER_SECRET` now warns.** An install that already holds credentials
+  keeps deriving its key exactly as before -- your data stays readable -- and logs a warning
+  naming the rotation procedure. Only a *fresh* install stretches a weak secret with
+  Argon2id and persists `<db dir>/.master-salt`.
+- **Argon2 cost is configuration, not a cargo feature.** The `test-crypto` feature is gone.
+  `AGTCRDN_ARGON2_M_COST_KIB` / `_T_COST` / `_P_COST` (65536 / 3 / 4) carry it, and an
+  invalid value stops startup rather than silently lowering cost.
+- **`key_version` changed meaning.** It was a count of re-encryptions; it now names *which
+  master-key version sealed that row*. Migration 019 backfills every
+  `credential_secret_history` row to 1. Rotation is now a key-ring procedure --
+  `AGTCRDN_MASTER_KEY_VERSION` plus `AGTCRDN_PREVIOUS_MASTER_SECRET` -- and
+  `POST /api/v1/admin/rotate-key` re-seals history as well as credentials, reporting
+  `key_version`, `history_re_encrypted_count` and `total_history_entries` alongside the
+  credential counts. Follow [Master Key -- Key Rotation](master-key.md#key-rotation); the
+  old "change the secret and restart" runbook lost every credential.
+- **A workspace has one lifecycle field.** `enabled` and `status` could disagree; migration
+  017 folds them together. The API still returns a derived `enabled` (`status == Active`).
+  Re-enabling a revoked workspace answers `409 workspace is revoked; cannot enable`.
+- **Revoking a workspace now really revokes access.** `POST /api/v1/workspaces/{id}/revoke`
+  revokes the workspace's OAuth clients and every access and refresh token in one
+  transaction, and there is a **Revoke** button on the workspace detail page. It is final.
+- **`allowed_url_pattern` is enforced.** It was stored and displayed but never checked. The
+  server now refuses a vend whose `target_url` does not match, for every credential type,
+  and the broker re-checks before injecting. A credential whose pattern does not actually
+  cover the URLs your agents call will start failing with `403` at this upgrade -- audit
+  your patterns first.
+- **Proxied and MCP calls no longer follow redirects**, do not forward hop-by-hop headers,
+  send request bodies byte for byte, cap the response at
+  `AGTCRDN_PROXY_MAX_RESPONSE_BYTES`, and redact every injected header and query value out
+  of the response before it reaches the agent.
+- **The SSRF guard covers the full reserved address set** and checks the *resolved* address,
+  including on the broker's `tools/list` probe. Targets that used to slip through (0/8,
+  192.0.0/24, 198.18/15, the TEST-NETs, multicast, 240/4, NAT64, 6to4) are now refused.
+  `AGTCRDN_PROXY_ALLOW_LOOPBACK=true` disables the guard entirely.
+- **A non-loopback broker bind is refused** without `--shared-secret`/
+  `AGTCRDN_BROKER_SHARED_SECRET` or a `--tls-cert`/`--tls-key` pair. A container running
+  `agentcordon-broker --bind 0.0.0.0` will not start until you add one. The broker can now
+  terminate TLS itself, and one broker per `--data-dir` is enforced with `broker.lock`.
+- **The CLI pins the broker's key.** `agentcordon register` writes
+  `.agentcordon/broker.fingerprint` and every later connection compares it to the broker's
+  `/health`. Rebuilding a broker's key directory makes existing workspaces refuse it until
+  `agentcordon register --force` re-pins. A workspace enrolled before pinning has its pin
+  written on first use, with a notice on stderr.
+- **The broker's port file records a URL**, not a bare port, so a TLS broker is discoverable
+  locally. Old bare-port files are still accepted.
+- **OIDC logins bind to the provider's `subject`**, not to a username claim. Existing
+  accounts are linked on the next successful login through `user_oidc_identities`
+  (migration 014).
+- **Audit exports are tenant-scoped** and CSV-injection-safe, and `GET /api/v1/audit?limit=`
+  is clamped at 500 -- use `offset` to page. Scripts that asked for everything in one
+  request need to page.
+- **Operators manage only the workspaces they own.** Default policy 2e no longer grants
+  `manage_workspaces` on any resource. If you relied on that, add an explicit policy.
+- **Login lockout is keyed by (address, username)**, and the device-approve limiter keys on
+  the real peer address. Behind a reverse proxy, set `AGTCRDN_TRUST_FORWARDED_HEADERS=true`
+  or every client counts as one.
+- **Only root can change root's password.**
+- **`agentcordon init` no longer writes `.mcp.json`.** It used to insert
+  `{"command":"agentcordon","args":["mcp-serve"]}` for a subcommand that does not exist.
+  Existing files are left byte-identical; delete that entry by hand if you have one.
+- **A vault is now a row, not a string on the credential.** Until 0.4.0 "owning" a vault
+  meant owning any credential that happened to carry the name, so two users who each called
+  a vault `team` were, to the server, in the same vault. Migration 021 gives every vault an
+  id, a display name with no uniqueness constraint, and an owner; the placement rule is one
+  vault per distinct **(name, owning user)** pair among your existing credentials, where the
+  owning user is the credential's creator (for a workspace-created credential, the
+  workspace's owner, falling back to root), and everything named `default` lands in the one
+  system vault (`00000000-0000-0000-0000-000000000001`), which nobody may rename, share or
+  delete. In the API the credential's `vault` field is replaced by **`vault_id`** on create
+  and update, with `vault_id` and `vault_name` on every response; the share routes move from
+  `/api/v1/vaults/{name}/shares` to **`/api/v1/vaults/{id}/shares`**, and there are now
+  `POST /api/v1/vaults`, `PATCH /api/v1/vaults/{id}` and `DELETE /api/v1/vaults/{id}`
+  (409 while the vault still holds credentials). Sharing is the **owner's** act at any role
+  and no longer something `manage_vaults` can do -- an admin reads any share list and
+  revokes, but never grants -- and `write` and `admin` shares are refused with 400, `read`
+  being the only level the authorization model keeps; pre-existing `write`/`admin` share
+  rows are carried over untouched but grant read. Scripts that posted a vault **name**
+  anywhere need to create the vault and use its id; the CLI's `VAULT` column is unchanged
+  (it was always the display name). Manage all of this from **Settings -> Vaults**.
+- **OAuth provider clients are admin-only to change.** Creating, editing, re-registering and
+  deleting one needs `manage_oauth_provider_clients`, which the default policy grants to
+  admins; an operator still sees the listing on **Settings -> MCP Identity** so they can
+  tell which client an origin uses, without the write controls. Deleting a client that
+  anything still authenticates with answers `409`, naming both counts -- the
+  `oauth2_user_authorization` credentials issued against that authorization server and the
+  OAuth2 MCP servers that authenticate with them.
+- **Migration 013 restores MCP-to-workspace bindings** that migration 012 destroyed in
+  v0.3.2/v0.3.3. It restores each MCP's *original* workspace; bindings added with **Share
+  with workspace** after v0.3.2 must be re-created by the owner.
+- **The compose files parse again** (an empty `environment:` key made `docker compose up -d`
+  fail on `docker-compose.yml`, `docker-compose.dev.yml` and `docker-compose.tailscale.yml`),
+  and the from-source `Dockerfile` builds again.
+
+#### Admin UI changes
+
+The console was reorganised in 0.4.0. Nothing was removed from the product, but
+several things an operator reaches for have moved. Bookmarks and older links
+still work -- every path below that moved kept a redirect. [Admin UI](admin-ui.md)
+maps the whole console.
+
+| You are looking for | Where it is now |
+|---------------------|-----------------|
+| The MCP **marketplace** | Its own page at `/mcp-servers/marketplace`, reached with **Add server** on `/mcp-servers`. It used to be the bottom half of the list page. `/marketplace` and `/mcp-marketplace` redirect there |
+| **Delete**, and workspace **Revoke** | The **&hellip;** overflow menu at the right end of the detail page header, on every detail page. They are no longer loose beside Edit; each still confirms |
+| **Enable / Disable** for a policy or an MCP server | A button in that record's detail header. It left the policy list row and the edit forms' Enabled checkbox, so the state has one affordance everywhere |
+| The workspace **MCP Servers** and **Consents** tabs | One **Access** tab |
+| The MCP server **Workspaces** and **Permissions** tabs | One **Access** tab; **Rediscover tools** stays on **Tools** |
+| A credential or workspace detail | A full page at `/credentials/{id}` and `/workspaces/{id}` -- one URL per record, on every viewport. `/{id}/view` redirects to it, and the HTML-fragment routes the old two-pane layout used are removed |
+| The **theme toggle** and **Sign Out** | The user menu under your name in the top bar, which also holds Settings |
+| The **Security** nav item | Renamed **Policies**. The paths under `/security` are unchanged |
+| The `/users` page | Redirects to `/settings#users-section`; user management is a section of Settings, which now has a section rail (Account, Vaults, Users, Sign-in, Master key, OAuth clients). Only the create form is still its own page, at `/settings/users/new` |
+| The inline **policy tester** on a policy page | Merged into the one tester at `/security/tester`; a policy page links into it prefilled. Its three scenario controls are one **Scenarios** menu |
+| The audit log's export button | An **Export** menu in the page header offering CSV, JSONL and Syslog; the API always served all three |
+| The audit **event-type pills** | A **Type:** dropdown; the three decision values stay pills |
+| The dashboard's health tile and its permanent **Register a Workspace** card | The third tile is an **MCP servers** count, health is a line under the page title, and the card is a first-run checklist shown only while the instance has no workspace |
+
+If you automate against the console with a browser driver, the selectors that
+moved are the overflow-menu items (open the **&hellip;** menu first), the merged
+Access tabs, and the marketplace's new path.
+
+#### The PostgreSQL backend is gone
+
+The `postgres` cargo feature and its store are deleted in 0.4.0. It was never
+finished -- most store operations returned "not yet implemented" -- and SQLite
+was always the production path, so there is nothing to migrate off.
+
+What changes for you: `AGTCRDN_DB_TYPE` and `AGTCRDN_DB_URL` are no longer
+read, and a server started with either of them set **refuses to boot** with a
+message naming the variable. Delete both from your `.env` (and from any
+compose file or unit file) before upgrading. `AGTCRDN_DB_PATH` is unchanged
+and is now the only database setting.
+
+#### Configuration to check before you upgrade
+
+| Variable | Change |
+|----------|--------|
+| `AGTCRDN_PORT` | Never read by the server. If a plain `docker run` relies on it, switch to `AGTCRDN_LISTEN_ADDR`. Compose files still use it for the host side of the port mapping. |
+| `AGTCRDN_OAUTH_AUTH_CODE_TTL` | Not a real variable. The server reads `AGTCRDN_AUTH_CODE_TTL` (default `600`). |
+| `AGTCRDN_BROKER_PORT` | Defaults to `0` (auto-select). There is no default `3141` or `9876`; the CLI discovers the broker through `~/.agentcordon/broker.port`. Drop any `AGTCRDN_BROKER_URL=http://localhost:3141` you exported. |
+| `AGTCRDN_JWT_TTL`, `AGTCRDN_SEED_DEMO` | Removed. Nothing read them once the JWT issuer and demo seeding were gone. |
+| `AGTCRDN_BASE_URL` | Now effectively required. Enrollment prints an activation URL built from it, and `GET /install.sh` is templated from it. |
+| `AGTCRDN_MASTER_KEY_VERSION`, `AGTCRDN_PREVIOUS_MASTER_SECRET` | New; only needed during a master-secret rotation. |
+| `AGTCRDN_ARGON2_*` | New; leave at the defaults unless the hardware forces otherwise. |
+| `AGTCRDN_DB_TYPE`, `AGTCRDN_DB_URL` | Removed with the PostgreSQL backend. The server refuses to start while either is set. Delete them; keep `AGTCRDN_DB_PATH`. |
+
 ### Signing format change (v0.4.0)
 
-The CLI-to-broker Ed25519 signed payload now includes the request's query string. The payload changed from:
+The CLI-to-broker Ed25519 signed payload gained the request's query string and a
+per-request nonce. The payload changed from:
 
 ```
 METHOD\nPATH\nTIMESTAMP\nBODY
@@ -353,7 +564,7 @@ METHOD\nPATH\nTIMESTAMP\nBODY
 to:
 
 ```
-METHOD\nPATH_WITH_QUERY\nTIMESTAMP\nBODY
+METHOD\nPATH_WITH_QUERY\nTIMESTAMP\nNONCE\nBODY
 ```
 
 where `PATH_WITH_QUERY` is canonicalised (trailing `/` stripped unless the path is `/`; query appended verbatim after `?` when present; fragment dropped). The CLI and broker apply byte-identical canonicalisation.
@@ -370,12 +581,18 @@ Details and examples: [CLI Reference -- Authentication](cli-reference.md#authent
 
 ### Server
 
-- [ ] Back up the database (`/data/agent-cordon.db` or PostgreSQL dump)
+- [ ] Back up the database (`/data/agent-cordon.db`)
 - [ ] Back up the `.secret` file (sibling of the database file)
 - [ ] Note the current version (`docker inspect` or check release tag)
 - [ ] Review the release notes for breaking changes
 - [ ] If using custom Cedar policies, verify compatibility with the new schema version
-- [ ] If upgrading to a version with migration 007, run `scripts/migration-007-precheck.sh` (supports SQLite and Postgres via `--db-url` or `AGTCRDN_DB_URL`) to detect duplicate credential names before the migration runs on startup
+- [ ] If upgrading from v0.3.2 or v0.3.3, expect migration 013 to restore MCP-to-workspace bindings from each MCP's original workspace; any bindings added via **Share with workspace** after v0.3.2 must be re-created by the owner
+- [ ] If upgrading from any 0.3.x, read [Upgrading from 0.3.x](#upgrading-from-03x) first and plan server, brokers and CLIs as **one** change
+- [ ] Audit every credential's `allowed_url_pattern` -- it is enforced from this release and a pattern that does not cover the URLs your agents call starts failing with 403
+- [ ] Check for `AGTCRDN_PORT` on a non-compose deployment, `AGTCRDN_OAUTH_AUTH_CODE_TTL`, and any exported `AGTCRDN_BROKER_URL=http://localhost:3141`
+- [ ] Set `AGTCRDN_BASE_URL` if it is not already set
+- [ ] Confirm no second server process shares the database, or set `AGTCRDN_REPLICA_MODE=unsafe-shared` deliberately
+- [ ] If any broker binds a non-loopback address, give it `--shared-secret` or a TLS pair before restarting it
 
 ### Client
 
@@ -454,35 +671,13 @@ curl http://localhost:3140/health
 
 ---
 
-### Migrating from SQLite to PostgreSQL
-
-> [!WARNING]
-> PostgreSQL support is experimental. Many store operations are not yet implemented. Use SQLite for production deployments.
-
-```bash
-# 1. Export data from SQLite (application-level, not raw SQL)
-# 2. Set new environment variables
-export AGTCRDN_DB_TYPE=postgres
-export AGTCRDN_DB_URL="postgres://user:pass@localhost:5432/agentcordon"
-
-# 3. Start the server -- it creates tables and runs PostgreSQL migrations
-docker compose up -d
-
-# 4. Re-import data (policies, credentials, workspaces)
-```
-
-> [!NOTE]
-> There is no built-in SQLite-to-PostgreSQL migration tool. Plan a data migration using the admin API.
-
----
-
 ### Upgrading the CLI on Multiple Workstations
 
 Each workstation's `.agentcordon/` directory is independent. Upgrade the binary on each machine:
 
 ```bash
 # On each workstation
-curl -fsSL https://your-server:3140/install.sh | sh
+curl -fsSL https://agentcordon.example.com/install.sh | sh
 agentcordon status
 ```
 
@@ -497,24 +692,56 @@ All variables have defaults and are backward-compatible. New variables in newer 
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `AGTCRDN_LISTEN_ADDR` | `0.0.0.0:3140` | Server bind address |
-| `AGTCRDN_DB_PATH` | `./data/agent-cordon.db` | SQLite database path |
-| `AGTCRDN_DB_TYPE` | `sqlite` | `sqlite` or `postgres` (experimental) |
-| `AGTCRDN_DB_URL` | -- | Required when `AGTCRDN_DB_TYPE=postgres` |
+| `AGTCRDN_DB_PATH` | `./data/agent-cordon.db` | SQLite database path. SQLite is the only backend; `AGTCRDN_DB_TYPE` and `AGTCRDN_DB_URL` were removed in 0.4.0 and the server refuses to start while either is set. |
 | `AGTCRDN_MASTER_SECRET` | Auto-generated | Persisted to `.secret` file next to DB. Must be >= 16 chars |
 | `AGTCRDN_KDF_SALT` | Auto-derived from master secret | Override HKDF salt (legacy deployments only) |
 | `AGTCRDN_ROOT_USERNAME` | `root` | Bootstrap admin username |
 | `AGTCRDN_ROOT_PASSWORD` | Auto-generated | Docker entrypoint persists to `/data/.root_password` |
-| `AGTCRDN_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, `error` |
+| `AGTCRDN_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, `error`. The CLI defaults to `warn` instead. |
 | `AGTCRDN_LOG_FORMAT` | `json` | `json` or `pretty` |
-| `AGTCRDN_SEED_DEMO` | `true` | Seed demo data on first boot |
-| `AGTCRDN_JWT_TTL` | `900` | Workspace JWT lifetime in seconds (15 min) |
 | `AGTCRDN_SESSION_TTL` | `28800` | User session TTL in seconds (8 hours) |
-| `AGTCRDN_PROXY_ALLOW_LOOPBACK` | `false` | Allow proxying to localhost/private-network URLs |
-| `AGTCRDN_BASE_URL` | -- | Server base URL (required for OAuth2 MCP flows) |
+| `AGTCRDN_PROXY_ALLOW_LOOPBACK` | `false` | **Disables the SSRF guard entirely**, making every private and reserved range a valid proxy target, not just loopback. Read by both the server and the broker. Development only. |
+| `AGTCRDN_BASE_URL` | -- | The URL users reach the server on. The device flow's `verification_uri`, the OAuth2 MCP callback redirect, and `GET /install.sh` are all built from it; it falls back to `http://` + `AGTCRDN_LISTEN_ADDR`, which is unusable in a container. |
 | `AGTCRDN_DEVICE_CODE_TTL_SECS` | `600` | Device code TTL in seconds (clamped 30--3600) |
 | `AGTCRDN_DEVICE_CODE_POLL_INTERVAL_SECS` | `5` | Device flow polling interval (clamped 1--60) |
-| `AGTCRDN_OAUTH_AUTH_CODE_TTL` | `300` | OAuth authorization code TTL in seconds |
-| `AGTCRDN_INSTANCE_LABEL` | -- | Label for OAuth Dynamic Client Registration |
+| `AGTCRDN_AUTH_CODE_TTL` | `600` | OAuth authorization code TTL in seconds. (There is no `AGTCRDN_OAUTH_AUTH_CODE_TTL`; earlier docs named it wrongly.) |
+| `AGTCRDN_INSTANCE_LABEL` | `AgentCordon` | `client_name` used in OAuth Dynamic Client Registration |
+| `AGTCRDN_MASTER_KEY_VERSION` | `1` | Version of the current master secret; every encrypted row records the version that sealed it |
+| `AGTCRDN_PREVIOUS_MASTER_SECRET` | -- | The secret for version N-1, set only for the duration of a rotation |
+| `AGTCRDN_ARGON2_M_COST_KIB` | `65536` | Argon2id memory cost. An invalid value stops startup. |
+| `AGTCRDN_ARGON2_T_COST` | `3` | Argon2id iterations |
+| `AGTCRDN_ARGON2_P_COST` | `4` | Argon2id lanes |
+| `AGTCRDN_REPLICA_MODE` | `single` | `unsafe-shared` skips the single-instance database lock |
+| `AGTCRDN_TRUST_FORWARDED_HEADERS` | `false` | Trust `X-Forwarded-For` for per-address rate limits. Only behind a proxy that overwrites it. |
+| `AGTCRDN_MCP_TEMPLATES_DIR` | -- | Directory of extra MCP marketplace templates, merged at startup. Read once -- restart after editing. |
+| `AGTCRDN_CREDENTIAL_TEMPLATES_DIR` | -- | Same, for credential templates |
+| `AGTCRDN_POLICY_TEMPLATES_DIR` | -- | Same, for policy templates |
+| `AGTCRDN_SESSION_CLEANUP_INTERVAL` | `300` | Expired-session sweep interval, seconds (floor 10) |
+| `AGTCRDN_PROXY_TIMEOUT_SECONDS` | `30` | Upstream request timeout |
+| `AGTCRDN_PROXY_MAX_RESPONSE_BYTES` | `10485760` | Upstream response cap (floor 1 KiB) |
+| `AGTCRDN_LOGIN_MAX_ATTEMPTS` | `5` | Failed logins per (address, username) before lockout |
+| `AGTCRDN_LOGIN_LOCKOUT_SECONDS` | `30` | Lockout duration |
+| `AGTCRDN_OIDC_STATE_TTL` | `600` | OIDC login state TTL, seconds (floor 60) |
+| `AGTCRDN_BOOTSTRAP_TOKEN_TTL` | `900` | Bootstrap token TTL, seconds (clamped 60--86400) |
+
+`AGTCRDN_PORT` is **not** a server variable. It appears in the shipped compose files as the
+host side of the port mapping only.
+
+### Broker and CLI
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `AGTCRDN_SERVER_URL` | `http://localhost:3140` | The server the broker talks to; also read by `agentcordon register --server-url` |
+| `AGTCRDN_BROKER_PORT` | `0` | Broker listen port. `0` means auto-select and write the URL to `~/.agentcordon/broker.port`. **There is no default port 3141 or 9876.** |
+| `AGTCRDN_BROKER_BIND` | `127.0.0.1` | A non-loopback bind is refused without TLS or a shared secret |
+| `AGTCRDN_BROKER_SHARED_SECRET` | -- | Required in `X-AgentCordon-Broker-Secret`; configures the broker and is sent by the CLI |
+| `AGTCRDN_BROKER_TLS_CERT` / `AGTCRDN_BROKER_TLS_KEY` | -- | PEM pair; the broker then serves HTTPS itself |
+| `AGTCRDN_BROKER_CA` | -- | CLI-side extra trust anchor for a broker's own certificate |
+| `AGTCRDN_BROKER_URL` | auto-discovered | CLI-side override of broker discovery. Loopback `http://` or any `https://` only. |
+| `AGTCRDN_DATA_DIR` | `~/.agentcordon` | Broker key, token store, port/pid/lock files |
+| `AGTCRDN_MCP_SYNC_INTERVAL` | `60` | Broker MCP config sync interval, seconds |
+| `AGTCRDN_TOKEN_TTL_BUFFER` | `60` | Seconds before expiry the broker refreshes its access token |
+| `AGTCRDN_WORKSPACE_DIR` | `.` | CLI-side override of where `.agentcordon/` lives |
 
 ---
 

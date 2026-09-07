@@ -14,7 +14,17 @@ struct StaticAssets;
 /// Unlike the previous SPA fallback, unknown paths now return 404 instead of
 /// index.html. Page routing is handled by Askama template routes.
 pub async fn static_handler(uri: Uri) -> impl IntoResponse {
-    let path = uri.path().trim_start_matches('/');
+    let raw = uri.path().trim_start_matches('/');
+
+    // A browser asks for `/favicon.ico` by itself, whatever the page's
+    // `<link rel="icon">` says, so every admin page load logged one 404 in the
+    // console. The site icon is an SVG; serve it under both names rather than
+    // shipping a second copy of the same drawing in a legacy format.
+    let path = if raw == "favicon.ico" {
+        "img/favicon.svg"
+    } else {
+        raw
+    };
 
     // Try the exact path first
     if !path.is_empty() {
@@ -34,8 +44,17 @@ pub async fn static_handler(uri: Uri) -> impl IntoResponse {
         .status(StatusCode::NOT_FOUND)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .body(Body::from(
+            // `vault.css` selects its dark palette on `data-theme` alone —
+            // the page shell resolves the reader's preference before first
+            // paint and stamps it. This page is not rendered through that
+            // shell, so it does the same three lines itself or it is
+            // light-only for a dark-mode reader.
             "<!DOCTYPE html><html><head><title>404 — Agent Cordon</title>\
-             <link rel=\"stylesheet\" href=\"/css/vault.css\"></head>\
+             <link rel=\"stylesheet\" href=\"/css/vault.css\">\
+             <script>document.documentElement.setAttribute('data-theme',\
+             localStorage.getItem('agentcordon-theme')\
+             || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));\
+             </script></head>\
              <body>\
              <nav class=\"top-bar\" style=\"border-bottom:1px solid var(--border,#e5e7eb);\">\
              <a href=\"/dashboard\" class=\"top-bar-logo\" style=\"display:flex;align-items:center;gap:8px;text-decoration:none;color:inherit;\">\

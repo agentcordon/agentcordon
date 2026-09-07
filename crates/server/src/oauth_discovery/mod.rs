@@ -12,7 +12,9 @@ pub use client::ensure_provider_client;
 pub use error::DiscoveryError;
 pub use metadata::{
     discovery_http_client, fetch_authorization_server_metadata, fetch_protected_resource,
-    normalize_as_url, validate_endpoint_origin, AuthorizationServerMetadata,
-    ProtectedResourceMetadata,
+    fetch_protected_resource_metadata_url, guard_fetch_target, normalize_as_url,
+    parse_resource_metadata_challenge, probe_resource_metadata_url,
+    protected_resource_metadata_url, validate_endpoint_origin, validate_issuer,
+    AuthorizationServerMetadata, ProtectedResourceMetadata,
 };
 pub use registration::{register_client, rotate_registration, DcrRequest, DcrResponse};

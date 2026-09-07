@@ -1,44 +1,26 @@
-//! v3.1.2 — MCP Config Sync + Marketplace UI integration tests.
+//! MCP config sync integration tests: the workspace-facing sync endpoint and
+//! its ECIES-encrypted credential envelopes.
 //!
-//! Phase 4: Enhanced config sync with ECIES-encrypted credential envelopes.
-//! Phase 5: Broker MCP cache + credential injection (requires running broker — #[ignore]).
-//! Phase 6: Marketplace UI page tests.
+//! Broker-side behaviour (cache population, credential injection) is tested
+//! in the broker crate's own integration harness (`crates/broker/tests`).
 
 use crate::common;
 
 use agent_cordon_core::crypto::SecretEncryptor;
 use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
 use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
-use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::domain::workspace::WorkspaceId;
 use agent_cordon_core::storage::Store;
 use agent_cordon_server::test_helpers::TestAppBuilder;
-use axum::body::Body;
-use axum::http::{header, Method, Request, StatusCode};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use axum::http::{Method, StatusCode};
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
-use http_body_util::BodyExt;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
-use tower::ServiceExt;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-async fn setup() -> (agent_cordon_server::test_helpers::TestContext, String) {
-    let ctx = TestAppBuilder::new().with_admin().build().await;
-    let _user = common::create_test_user(
-        &*ctx.store,
-        "mcp-sync-user",
-        common::TEST_PASSWORD,
-        UserRole::Admin,
-    )
-    .await;
-    let cookie =
-        common::login_user_combined(&ctx.app, "mcp-sync-user", common::TEST_PASSWORD).await;
-    (ctx, cookie)
-}
 
 /// Create an MCP server with required_credentials and auth_method.
 async fn create_mcp_server_with_creds(
@@ -85,9 +67,11 @@ async fn create_test_credential(
     secret: &str,
 ) -> CredentialId {
     let cred_id = CredentialId(Uuid::new_v4());
+    // Production encrypts with the credential id as associated data
+    // (credential_service::encrypt_secret); the sync path decrypts the same way.
     let (ciphertext, nonce) = ctx
         .encryptor
-        .encrypt(secret.as_bytes(), name.as_bytes())
+        .encrypt(secret.as_bytes(), cred_id.0.to_string().as_bytes())
         .expect("encrypt secret");
     let now = chrono::Utc::now();
     let cred = StoredCredential {
@@ -106,7 +90,8 @@ async fn create_test_credential(
         expires_at: None,
         transform_script: None,
         transform_name: Some("bearer".to_string()),
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: Some(format!("Test credential {}", name)),
@@ -128,55 +113,6 @@ fn generate_broker_keypair() -> (p256::SecretKey, String) {
     let point = public_key.to_encoded_point(false);
     let encoded = URL_SAFE_NO_PAD.encode(point.as_bytes());
     (secret_key, encoded)
-}
-
-/// GET a page as HTML (with auth cookie).
-async fn get_page(app: &axum::Router, uri: &str, cookie: &str) -> (StatusCode, String) {
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri(uri)
-                .header(header::COOKIE, cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = resp.status();
-    let body = String::from_utf8(
-        resp.into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes()
-            .to_vec(),
-    )
-    .unwrap();
-    (status, body)
-}
-
-/// GET a page without auth.
-async fn get_page_unauthed(app: &axum::Router, uri: &str) -> (StatusCode, Vec<(String, String)>) {
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri(uri)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = resp.status();
-    let headers: Vec<(String, String)> = resp
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
-    (status, headers)
 }
 
 // ===========================================================================
@@ -227,7 +163,6 @@ async fn test_mcp_sync_without_credentials_unchanged() {
 
 /// 4.2: GET with ?include_credentials=true&broker_public_key=<key> returns encrypted envelopes.
 #[tokio::test]
-#[ignore = "requires Phase 4 sync endpoint extension (BE-1 in progress)"]
 async fn test_mcp_sync_with_credentials_returns_envelopes() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let ws = ctx.admin_agent.as_ref().unwrap();
@@ -287,8 +222,9 @@ async fn test_mcp_sync_with_credentials_returns_envelopes() {
     assert!(enc["nonce"].is_string(), "must have nonce");
     assert!(enc["aad"].is_string(), "must have aad");
 
-    // Verify ephemeral_public_key decodes to 65 bytes (uncompressed P-256 point)
-    let epk_bytes = URL_SAFE_NO_PAD
+    // Envelope fields are standard base64 (what the broker's vend.rs decodes);
+    // only broker_public_key on the request is base64url.
+    let epk_bytes = STANDARD
         .decode(enc["ephemeral_public_key"].as_str().unwrap())
         .expect("decode ephemeral_public_key");
     assert_eq!(
@@ -300,7 +236,6 @@ async fn test_mcp_sync_with_credentials_returns_envelopes() {
 
 /// 4.3: ECIES envelope can be decrypted with the broker's private key.
 #[tokio::test]
-#[ignore = "requires Phase 4 sync endpoint extension (BE-1 in progress)"]
 async fn test_mcp_sync_envelope_is_decryptable() {
     use agent_cordon_core::crypto::ecies::{
         CredentialEnvelopeDecryptor, EciesEncryptor, EncryptedEnvelope,
@@ -344,18 +279,14 @@ async fn test_mcp_sync_envelope_is_decryptable() {
     // Reconstruct the EncryptedEnvelope from the response
     let envelope = EncryptedEnvelope {
         version: enc["version"].as_u64().unwrap() as u8,
-        ephemeral_public_key: URL_SAFE_NO_PAD
+        ephemeral_public_key: STANDARD
             .decode(enc["ephemeral_public_key"].as_str().unwrap())
             .unwrap(),
-        ciphertext: URL_SAFE_NO_PAD
+        ciphertext: STANDARD
             .decode(enc["ciphertext"].as_str().unwrap())
             .unwrap(),
-        nonce: URL_SAFE_NO_PAD
-            .decode(enc["nonce"].as_str().unwrap())
-            .unwrap(),
-        aad: URL_SAFE_NO_PAD
-            .decode(enc["aad"].as_str().unwrap())
-            .unwrap(),
+        nonce: STANDARD.decode(enc["nonce"].as_str().unwrap()).unwrap(),
+        aad: STANDARD.decode(enc["aad"].as_str().unwrap()).unwrap(),
     };
 
     // Decrypt using broker's private key (raw 32-byte scalar)
@@ -379,7 +310,6 @@ async fn test_mcp_sync_envelope_is_decryptable() {
 
 /// 4.4: Bad broker_public_key → 400.
 #[tokio::test]
-#[ignore = "requires Phase 4 sync endpoint extension (BE-1 in progress)"]
 async fn test_mcp_sync_invalid_broker_key_rejected() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let jwt = common::ctx_admin_jwt(&ctx).await;
@@ -404,7 +334,6 @@ async fn test_mcp_sync_invalid_broker_key_rejected() {
 
 /// 4.5: include_credentials=true without broker_public_key → 400.
 #[tokio::test]
-#[ignore = "requires Phase 4 sync endpoint extension (BE-1 in progress)"]
 async fn test_mcp_sync_include_credentials_without_key_rejected() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let jwt = common::ctx_admin_jwt(&ctx).await;
@@ -423,7 +352,6 @@ async fn test_mcp_sync_include_credentials_without_key_rejected() {
 
 /// 4.6: Servers with auth_method: none → no credential_envelopes.
 #[tokio::test]
-#[ignore = "requires Phase 4 sync endpoint extension (BE-1 in progress)"]
 async fn test_mcp_sync_no_envelopes_for_no_auth_servers() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let ws = ctx.admin_agent.as_ref().unwrap();
@@ -464,7 +392,6 @@ async fn test_mcp_sync_no_envelopes_for_no_auth_servers() {
 
 /// 4.7: Response body does not contain plaintext secret values.
 #[tokio::test]
-#[ignore = "requires Phase 4 sync endpoint extension (BE-1 in progress)"]
 async fn test_mcp_sync_no_plaintext_secrets() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let ws = ctx.admin_agent.as_ref().unwrap();
@@ -498,101 +425,6 @@ async fn test_mcp_sync_no_plaintext_secrets() {
         !body_str.contains(secret),
         "response body must not contain plaintext secret '{}'",
         secret
-    );
-}
-
-// ===========================================================================
-// Phase 5: Broker MCP Cache + Credential Injection
-// ===========================================================================
-
-/// 5.1: Broker populates MCP config cache on startup (requires running broker).
-#[tokio::test]
-#[ignore = "requires running broker binary — broker integration test"]
-async fn test_broker_cache_populated_on_startup() {
-    // This test requires a running server + broker instance.
-    // The broker fetches config from the server's sync endpoint and populates
-    // its local mcp_configs cache. Cannot be validated within a unit test.
-    panic!("broker integration test — run with full broker + server stack");
-}
-
-/// 5.2: Broker call_tool injects bearer credential (requires running broker).
-#[tokio::test]
-#[ignore = "requires running broker binary — broker integration test"]
-async fn test_broker_call_tool_injects_credential() {
-    // This test requires: running server, running broker, mock MCP upstream.
-    // The broker should inject the decrypted credential into the upstream request.
-    panic!("broker integration test — run with full broker + server stack");
-}
-
-/// 5.3: Broker handles server unavailable gracefully (requires running broker).
-#[tokio::test]
-#[ignore = "requires running broker binary — broker integration test"]
-async fn test_broker_cache_handles_server_unavailable() {
-    // Broker should log a warning but retain stale cache entries.
-    panic!("broker integration test — run with full broker + server stack");
-}
-
-// ===========================================================================
-// Phase 6: Marketplace UI
-// ===========================================================================
-
-/// 6.1: GET /mcp-marketplace with auth → 200, HTML contains "MCP Marketplace".
-#[tokio::test]
-#[ignore = "requires marketplace page template (FE in progress)"]
-async fn test_marketplace_page_loads() {
-    let (ctx, cookie) = setup().await;
-
-    let (status, body) = get_page(&ctx.app, "/mcp-marketplace", &cookie).await;
-
-    assert_eq!(status, StatusCode::OK, "marketplace page should return 200");
-    assert!(
-        body.contains("Marketplace") || body.contains("marketplace"),
-        "page should contain 'Marketplace' in the HTML"
-    );
-}
-
-/// 6.2: GET /mcp-marketplace without auth → redirect to login.
-#[tokio::test]
-#[ignore = "requires marketplace page template (FE in progress)"]
-async fn test_marketplace_page_requires_auth() {
-    let ctx = TestAppBuilder::new().with_admin().build().await;
-
-    let (status, headers) = get_page_unauthed(&ctx.app, "/mcp-marketplace").await;
-
-    assert!(
-        status == StatusCode::FOUND
-            || status == StatusCode::SEE_OTHER
-            || status == StatusCode::UNAUTHORIZED,
-        "unauthenticated marketplace should redirect or 401, got {}",
-        status
-    );
-
-    if status == StatusCode::FOUND || status == StatusCode::SEE_OTHER {
-        let location = headers
-            .iter()
-            .find(|(k, _)| k == "location")
-            .map(|(_, v)| v.as_str())
-            .unwrap_or("");
-        assert!(
-            location.contains("/login"),
-            "redirect should point to /login, got: {}",
-            location
-        );
-    }
-}
-
-/// 6.3: Marketplace page HTML references /api/v1/mcp-templates.
-#[tokio::test]
-#[ignore = "requires marketplace page template (FE in progress)"]
-async fn test_marketplace_page_references_templates_api() {
-    let (ctx, cookie) = setup().await;
-
-    let (status, body) = get_page(&ctx.app, "/mcp-marketplace", &cookie).await;
-    assert_eq!(status, StatusCode::OK);
-
-    assert!(
-        body.contains("/api/v1/mcp-templates"),
-        "marketplace page should reference the templates API endpoint"
     );
 }
 

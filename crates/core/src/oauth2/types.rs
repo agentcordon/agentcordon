@@ -65,6 +65,63 @@ impl OAuthScope {
             .collect::<Vec<_>>()
             .join(" ")
     }
+
+    /// Every scope in `requested` is in `allowed`.
+    pub fn is_subset(requested: &[OAuthScope], allowed: &[OAuthScope]) -> bool {
+        requested.iter().all(|s| allowed.contains(s))
+    }
+
+    /// The scope-narrowing rule (RFC 6749 §3.3): the scopes a grant may
+    /// carry are the requested scopes, which must be a subset of `allowed`;
+    /// a request that names no scope gets all of `allowed`.
+    ///
+    /// `allowed` is the client's registered scopes at issuance, or the
+    /// original grant's scopes at refresh. A scope string that parses to
+    /// nothing (empty) narrows to nothing; callers that want whitespace to
+    /// mean "unspecified" pass `None`.
+    pub fn narrow(
+        requested: Option<&str>,
+        allowed: &[OAuthScope],
+    ) -> Result<Vec<OAuthScope>, ScopeNarrowError> {
+        let Some(requested) = requested else {
+            return Ok(allowed.to_vec());
+        };
+        let requested = Self::parse_scope_string(requested).map_err(ScopeNarrowError::Unknown)?;
+        if !Self::is_subset(&requested, allowed) {
+            return Err(ScopeNarrowError::Exceeds);
+        }
+        Ok(requested)
+    }
+}
+
+/// Why a requested scope set could not be narrowed to an allowed set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeNarrowError {
+    /// A requested scope is not one this server knows.
+    Unknown(String),
+    /// A requested scope is outside the allowed set.
+    Exceeds,
+}
+
+impl std::fmt::Display for ScopeNarrowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScopeNarrowError::Unknown(msg) => f.write_str(msg),
+            ScopeNarrowError::Exceeds => f.write_str("requested scope exceeds allowed scopes"),
+        }
+    }
+}
+
+impl std::error::Error for ScopeNarrowError {}
+
+/// Everything the bearer extractor needs, fetched in one store call.
+#[derive(Debug, Clone)]
+pub struct BearerResolution {
+    pub token: OAuthAccessToken,
+    /// The client the token was issued to.
+    pub client: OAuthClient,
+    /// The workspace the token is bound to, when the binding resolves.
+    pub workspace: Option<crate::domain::workspace::Workspace>,
 }
 
 /// An OAuth 2.0 client registration (one per workspace).
@@ -78,6 +135,11 @@ pub struct OAuthClient {
     pub workspace_name: String,
     /// SHA-256 of the workspace Ed25519 public key.
     pub public_key_hash: String,
+    /// The workspace this client authenticates. Tokens inherit it at issue
+    /// time, so a bearer resolves to its workspace by id rather than through
+    /// the key hash. `None` only for rows that predate the binding and match
+    /// no workspace; such a client cannot authenticate.
+    pub workspace_id: Option<crate::domain::workspace::WorkspaceId>,
     /// Allowed redirect URIs (must be localhost).
     pub redirect_uris: Vec<String>,
     pub allowed_scopes: Vec<OAuthScope>,
@@ -125,6 +187,11 @@ pub struct OAuthRefreshToken {
     pub scopes: Vec<OAuthScope>,
     /// Hash of the associated access token.
     pub access_token_hash: String,
+    /// The original grant this token descends from. A freshly issued token
+    /// is the root of its own family (`family_id == token_hash`); a token
+    /// issued by rotation inherits its predecessor's family. Presenting a
+    /// retired token revokes the whole family.
+    pub family_id: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
@@ -257,6 +324,45 @@ mod tests {
         let scopes = vec![OAuthScope::CredentialsVend, OAuthScope::McpInvoke];
         let s = OAuthScope::to_scope_string(&scopes);
         assert_eq!(s, "credentials:vend mcp:invoke");
+    }
+
+    #[test]
+    fn narrow_none_means_all_allowed() {
+        let allowed = vec![OAuthScope::CredentialsVend, OAuthScope::McpInvoke];
+        assert_eq!(OAuthScope::narrow(None, &allowed).unwrap(), allowed);
+    }
+
+    #[test]
+    fn narrow_subset_is_kept_in_requested_order() {
+        let allowed = vec![OAuthScope::CredentialsVend, OAuthScope::McpInvoke];
+        assert_eq!(
+            OAuthScope::narrow(Some("mcp:invoke"), &allowed).unwrap(),
+            vec![OAuthScope::McpInvoke]
+        );
+    }
+
+    #[test]
+    fn narrow_rejects_scope_outside_allowed() {
+        let allowed = vec![OAuthScope::CredentialsVend];
+        assert_eq!(
+            OAuthScope::narrow(Some("mcp:invoke"), &allowed),
+            Err(ScopeNarrowError::Exceeds)
+        );
+    }
+
+    #[test]
+    fn narrow_rejects_unknown_scope() {
+        let allowed = vec![OAuthScope::CredentialsVend];
+        assert!(matches!(
+            OAuthScope::narrow(Some("nope:nope"), &allowed),
+            Err(ScopeNarrowError::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn narrow_empty_string_is_empty_set() {
+        let allowed = vec![OAuthScope::CredentialsVend];
+        assert!(OAuthScope::narrow(Some(""), &allowed).unwrap().is_empty());
     }
 
     #[test]

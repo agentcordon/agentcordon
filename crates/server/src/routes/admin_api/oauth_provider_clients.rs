@@ -11,16 +11,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use agent_cordon_core::crypto::SecretEncryptor;
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::oauth_provider_client::{
     OAuthProviderClient, OAuthProviderClientId, OAuthProviderClientSummary, RegistrationSource,
 };
-use agent_cordon_core::policy::actions;
 
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::identity_providers::{NewOAuthProviderClient, OAuthProviderClientChanges};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -122,37 +120,6 @@ impl From<&OAuthProviderClient> for ClientResponse {
     }
 }
 
-// --- Helpers ---
-
-async fn check_manage(
-    state: &AppState,
-    auth: &AuthenticatedUser,
-) -> Result<agent_cordon_core::domain::policy::PolicyDecision, ApiError> {
-    super::check_cedar_permission(
-        state,
-        auth,
-        actions::MANAGE_MCP_SERVERS,
-        agent_cordon_core::policy::PolicyResource::System,
-    )
-    .await
-}
-
-fn validate_url(url: &str, field_name: &str) -> Result<(), ApiError> {
-    let parsed = reqwest::Url::parse(url.trim())
-        .map_err(|_| ApiError::BadRequest(format!("{field_name} is not a valid URL")))?;
-
-    let scheme = parsed.scheme();
-    let host = parsed.host_str().unwrap_or("");
-
-    if scheme != "https" && host != "localhost" && host != "127.0.0.1" {
-        return Err(ApiError::BadRequest(format!(
-            "{field_name} must use HTTPS (except localhost for development)"
-        )));
-    }
-
-    Ok(())
-}
-
 // --- Handlers ---
 
 async fn create_client(
@@ -161,92 +128,24 @@ async fn create_client(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<CreateClientRequest>,
 ) -> Result<Json<ApiResponse<ClientResponse>>, ApiError> {
-    let policy_decision = check_manage(&state, &auth).await?;
-
-    if req.label.trim().is_empty() {
-        return Err(ApiError::BadRequest("label is required".to_string()));
-    }
-    if req.client_id.trim().is_empty() {
-        return Err(ApiError::BadRequest("client_id is required".to_string()));
-    }
-    validate_url(&req.authorization_server_url, "authorization_server_url")?;
-    validate_url(&req.authorize_endpoint, "authorize_endpoint")?;
-    validate_url(&req.token_endpoint, "token_endpoint")?;
-
-    let as_url = req.authorization_server_url.trim().to_string();
-
-    if state
-        .store
-        .get_oauth_provider_client_by_authorization_server_url(&as_url)
-        .await?
-        .is_some()
-    {
-        return Err(ApiError::Conflict(format!(
-            "An OAuth provider client for '{as_url}' already exists"
-        )));
-    }
-
-    let client_id_val = OAuthProviderClientId(Uuid::new_v4());
-
-    let (encrypted_secret, nonce) = if let Some(secret) = req.client_secret.as_ref() {
-        if secret.is_empty() {
-            (None, None)
-        } else {
-            let (enc, n) = state
-                .encryptor
-                .encrypt(secret.as_bytes(), client_id_val.0.to_string().as_bytes())?;
-            (Some(enc), Some(n))
-        }
-    } else {
-        (None, None)
-    };
-
-    let now = chrono::Utc::now();
-    let client = OAuthProviderClient {
-        id: client_id_val,
-        authorization_server_url: as_url,
-        issuer: None,
-        authorize_endpoint: req.authorize_endpoint.trim().to_string(),
-        token_endpoint: req.token_endpoint.trim().to_string(),
-        registration_endpoint: None,
-        code_challenge_methods_supported: vec![],
-        token_endpoint_auth_methods_supported: vec![],
-        scopes_supported: vec![],
-        client_id: req.client_id.trim().to_string(),
-        encrypted_client_secret: encrypted_secret,
-        nonce,
-        requested_scopes: req.requested_scopes.unwrap_or_default(),
-        registration_source: RegistrationSource::Manual,
-        client_id_issued_at: None,
-        client_secret_expires_at: None,
-        registration_access_token_encrypted: None,
-        registration_access_token_nonce: None,
-        registration_client_uri: None,
-        label: req.label.trim().to_string(),
-        enabled: req.enabled.unwrap_or(true),
-        created_at: now,
-        updated_at: now,
-    };
-
-    state.store.create_oauth_provider_client(&client).await?;
-
-    let event = AuditEvent::builder(AuditEventType::OAuthProviderClientCreated)
-        .action("create")
-        .user_actor(&auth.user)
-        .resource("oauth_provider_client", &client.id.0.to_string())
-        .correlation_id(&corr.0)
-        .decision(
-            AuditDecision::Permit,
-            Some(&policy_decision.reasons.join(", ")),
+    let client = state
+        .services
+        .identity_providers
+        .create_oauth_client(
+            &auth,
+            &corr.0,
+            NewOAuthProviderClient {
+                label: req.label,
+                authorization_server_url: req.authorization_server_url,
+                authorize_endpoint: req.authorize_endpoint,
+                token_endpoint: req.token_endpoint,
+                client_id: req.client_id,
+                client_secret: req.client_secret,
+                requested_scopes: req.requested_scopes,
+                enabled: req.enabled,
+            },
         )
-        .details(serde_json::json!({
-            "authorization_server_url": client.authorization_server_url,
-            "label": client.label,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+        .await?;
 
     let summary = OAuthProviderClientSummary::from(&client);
     Ok(Json(ApiResponse::ok(ClientResponse::from(&summary))))
@@ -256,9 +155,11 @@ async fn list_clients(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
 ) -> Result<Json<ApiResponse<Vec<ClientResponse>>>, ApiError> {
-    if check_manage(&state, &auth).await.is_err() {
-        return Ok(Json(ApiResponse::ok(vec![])));
-    }
+    state
+        .services
+        .identity_providers
+        .check_read_oauth_clients(&auth)
+        .await?;
 
     let clients = state.store.list_oauth_provider_clients().await?;
     let response: Vec<ClientResponse> = clients.iter().map(ClientResponse::from).collect();
@@ -270,14 +171,17 @@ async fn get_client(
     auth: AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<ClientResponse>>, ApiError> {
-    check_manage(&state, &auth).await?;
+    state
+        .services
+        .identity_providers
+        .check_read_oauth_clients(&auth)
+        .await?;
 
-    let client_id = OAuthProviderClientId(id);
-    let client = state
-        .store
-        .get_oauth_provider_client(&client_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("OAuth provider client not found".to_string()))?;
+    let client: OAuthProviderClient = state
+        .services
+        .identity_providers
+        .load_oauth_client(&OAuthProviderClientId(id))
+        .await?;
 
     let summary = OAuthProviderClientSummary::from(&client);
     Ok(Json(ApiResponse::ok(ClientResponse::from(&summary))))
@@ -290,85 +194,24 @@ async fn update_client(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateClientRequest>,
 ) -> Result<Json<ApiResponse<ClientResponse>>, ApiError> {
-    let policy_decision = check_manage(&state, &auth).await?;
-
-    let client_id = OAuthProviderClientId(id);
-    let mut client = state
-        .store
-        .get_oauth_provider_client(&client_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("OAuth provider client not found".to_string()))?;
-
-    // Reject edits on DCR-sourced rows.
-    if client.registration_source == RegistrationSource::Dcr {
-        return Err(ApiError::Conflict(
-            "cannot edit DCR-registered clients — delete and re-register instead".to_string(),
-        ));
-    }
-
-    if let Some(label) = req.label {
-        let trimmed = label.trim().to_string();
-        if trimmed.is_empty() {
-            return Err(ApiError::BadRequest("label cannot be empty".to_string()));
-        }
-        client.label = trimmed;
-    }
-    if let Some(cid) = req.client_id {
-        let trimmed = cid.trim().to_string();
-        if trimmed.is_empty() {
-            return Err(ApiError::BadRequest(
-                "client_id cannot be empty".to_string(),
-            ));
-        }
-        client.client_id = trimmed;
-    }
-    if let Some(secret) = req.client_secret {
-        if secret.is_empty() {
-            return Err(ApiError::BadRequest(
-                "client_secret cannot be empty".to_string(),
-            ));
-        }
-        let (enc, n) = state
-            .encryptor
-            .encrypt(secret.as_bytes(), client_id.0.to_string().as_bytes())?;
-        client.encrypted_client_secret = Some(enc);
-        client.nonce = Some(n);
-    }
-    if let Some(authorize_endpoint) = req.authorize_endpoint {
-        validate_url(&authorize_endpoint, "authorize_endpoint")?;
-        client.authorize_endpoint = authorize_endpoint.trim().to_string();
-    }
-    if let Some(token_endpoint) = req.token_endpoint {
-        validate_url(&token_endpoint, "token_endpoint")?;
-        client.token_endpoint = token_endpoint.trim().to_string();
-    }
-    if let Some(scopes) = req.requested_scopes {
-        client.requested_scopes = scopes;
-    }
-    if let Some(enabled) = req.enabled {
-        client.enabled = enabled;
-    }
-    client.updated_at = chrono::Utc::now();
-
-    state.store.update_oauth_provider_client(&client).await?;
-
-    let event = AuditEvent::builder(AuditEventType::OAuthProviderClientUpdated)
-        .action("update")
-        .user_actor(&auth.user)
-        .resource("oauth_provider_client", &client.id.0.to_string())
-        .correlation_id(&corr.0)
-        .decision(
-            AuditDecision::Permit,
-            Some(&policy_decision.reasons.join(", ")),
+    let client = state
+        .services
+        .identity_providers
+        .update_oauth_client(
+            &auth,
+            &corr.0,
+            &OAuthProviderClientId(id),
+            OAuthProviderClientChanges {
+                label: req.label,
+                client_id: req.client_id,
+                client_secret: req.client_secret,
+                authorize_endpoint: req.authorize_endpoint,
+                token_endpoint: req.token_endpoint,
+                requested_scopes: req.requested_scopes,
+                enabled: req.enabled,
+            },
         )
-        .details(serde_json::json!({
-            "authorization_server_url": client.authorization_server_url,
-            "label": client.label,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+        .await?;
 
     let summary = OAuthProviderClientSummary::from(&client);
     Ok(Json(ApiResponse::ok(ClientResponse::from(&summary))))
@@ -380,35 +223,11 @@ async fn delete_client(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let policy_decision = check_manage(&state, &auth).await?;
-
-    let client_id = OAuthProviderClientId(id);
-
-    let client = state
-        .store
-        .get_oauth_provider_client(&client_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("OAuth provider client not found".to_string()))?;
-
-    state.store.delete_oauth_provider_client(&client_id).await?;
-
-    let event = AuditEvent::builder(AuditEventType::OAuthProviderClientDeleted)
-        .action("delete")
-        .user_actor(&auth.user)
-        .resource("oauth_provider_client", &client.id.0.to_string())
-        .correlation_id(&corr.0)
-        .decision(
-            AuditDecision::Permit,
-            Some(&policy_decision.reasons.join(", ")),
-        )
-        .details(serde_json::json!({
-            "authorization_server_url": client.authorization_server_url,
-            "label": client.label,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+    state
+        .services
+        .identity_providers
+        .delete_oauth_client(&auth, &corr.0, &OAuthProviderClientId(id))
+        .await?;
 
     Ok(Json(ApiResponse::ok(
         serde_json::json!({ "deleted": true }),
@@ -427,131 +246,11 @@ async fn reregister_client(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<ClientResponse>>, ApiError> {
-    use agent_cordon_core::crypto::SecretEncryptor;
-
-    let policy_decision = check_manage(&state, &auth).await?;
-
-    let client_id = OAuthProviderClientId(id);
-    let existing = state
-        .store
-        .get_oauth_provider_client(&client_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("OAuth provider client not found".to_string()))?;
-
-    if existing.registration_source != RegistrationSource::Dcr {
-        return Err(ApiError::BadRequest(
-            "only DCR-registered clients can be re-registered; edit manual clients directly"
-                .to_string(),
-        ));
-    }
-
-    // Re-fetch AS metadata to pick up any endpoint changes.
-    let as_meta = crate::oauth_discovery::fetch_authorization_server_metadata(
-        &existing.authorization_server_url,
-    )
-    .await
-    .map_err(|e| ApiError::BadRequest(format!("failed to re-fetch AS metadata: {e}")))?;
-
-    // Build redirect URI from configured base_url.
-    let base_url = state.config.base_url.as_deref().ok_or_else(|| {
-        ApiError::BadRequest("AGTCRDN_BASE_URL must be configured for DCR".to_string())
-    })?;
-    let redirect_uri = format!(
-        "{}/api/v1/mcp-servers/oauth/callback",
-        base_url.trim_end_matches('/')
-    );
-
-    let client_name = state
-        .config
-        .instance_label
-        .clone()
-        .unwrap_or_else(|| "AgentCordon".to_string());
-
-    let scopes = if existing.requested_scopes.is_empty() {
-        None
-    } else {
-        Some(existing.requested_scopes.as_str())
-    };
-
-    let dcr_resp =
-        crate::oauth_discovery::register_client(&as_meta, &redirect_uri, &client_name, scopes)
-            .await
-            .map_err(|e| ApiError::BadRequest(format!("DCR re-registration failed: {e}")))?;
-
-    // Build the updated row, keeping the same id.
-    let id_bytes = existing.id.0.to_string();
-    let (encrypted_client_secret, secret_nonce) =
-        if let Some(secret) = dcr_resp.client_secret.as_deref() {
-            let (enc, nonce) = state
-                .encryptor
-                .encrypt(secret.as_bytes(), id_bytes.as_bytes())
-                .map_err(|e| ApiError::Internal(format!("encryption: {e}")))?;
-            (Some(enc), Some(nonce))
-        } else {
-            (None, None)
-        };
-    let (rat_enc, rat_nonce) = if let Some(rat) = dcr_resp.registration_access_token.as_deref() {
-        let (enc, nonce) = state
-            .encryptor
-            .encrypt(rat.as_bytes(), id_bytes.as_bytes())
-            .map_err(|e| ApiError::Internal(format!("encryption: {e}")))?;
-        (Some(enc), Some(nonce))
-    } else {
-        (None, None)
-    };
-
-    let updated = OAuthProviderClient {
-        id: existing.id.clone(),
-        authorization_server_url: existing.authorization_server_url.clone(),
-        issuer: Some(as_meta.issuer.clone()),
-        authorize_endpoint: as_meta.authorization_endpoint.clone(),
-        token_endpoint: as_meta.token_endpoint.clone(),
-        registration_endpoint: as_meta.registration_endpoint.clone(),
-        code_challenge_methods_supported: as_meta.code_challenge_methods_supported.clone(),
-        token_endpoint_auth_methods_supported: as_meta
-            .token_endpoint_auth_methods_supported
-            .clone(),
-        scopes_supported: as_meta.scopes_supported.clone(),
-        client_id: dcr_resp.client_id.clone(),
-        encrypted_client_secret,
-        nonce: secret_nonce,
-        requested_scopes: existing.requested_scopes.clone(),
-        registration_source: RegistrationSource::Dcr,
-        client_id_issued_at: dcr_resp
-            .client_id_issued_at
-            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0)),
-        client_secret_expires_at: dcr_resp
-            .client_secret_expires_at
-            .filter(|ts| *ts != 0)
-            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0)),
-        registration_access_token_encrypted: rat_enc,
-        registration_access_token_nonce: rat_nonce,
-        registration_client_uri: dcr_resp.registration_client_uri.clone(),
-        label: existing.label.clone(),
-        enabled: existing.enabled,
-        created_at: existing.created_at,
-        updated_at: chrono::Utc::now(),
-    };
-
-    state.store.update_oauth_provider_client(&updated).await?;
-
-    let event = AuditEvent::builder(AuditEventType::OAuthProviderClientUpdated)
-        .action("reregister")
-        .user_actor(&auth.user)
-        .resource("oauth_provider_client", &updated.id.0.to_string())
-        .correlation_id(&corr.0)
-        .decision(
-            AuditDecision::Permit,
-            Some(&policy_decision.reasons.join(", ")),
-        )
-        .details(serde_json::json!({
-            "authorization_server_url": updated.authorization_server_url,
-            "source": "dcr",
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+    let updated = state
+        .services
+        .identity_providers
+        .reregister_oauth_client(&auth, &corr.0, &OAuthProviderClientId(id))
+        .await?;
 
     Ok(Json(ApiResponse::ok(ClientResponse::from(&updated))))
 }

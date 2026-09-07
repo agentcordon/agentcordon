@@ -1,9 +1,13 @@
-<!-- Permissions Tab — MCP Server Detail -->
-<div class="tab-content" x-show="activeTab === 'permissions'">
+<!-- Permission grants — the second section of the MCP server's Access tab.
+     It used to be a tab of its own whose own copy sent the reader to the
+     Workspaces tab to manage the bindings it was describing
+     (uat/artifacts/reviews/DESIGN-REVIEW.md §1.14). -->
+<div class="mcp-access-permissions">
+    <h3 class="tab-section-title tab-section-title-next">Permission grants</h3>
     <!-- Section 1: Effective Access -->
     <div class="mcp-perm-section">
-        <h3 class="mcp-section-header">Effective Access</h3>
-        <p class="text-sm opacity-muted mcp-section-desc">By default, workspaces owned by the same user as this MCP server &mdash; and currently bound to it &mdash; can call its tools. Manage bindings in the Workspaces tab. Add Cedar forbid rules to restrict further, or permit rules to extend access to other users' workspaces.</p>
+        <h4 class="mcp-section-header">Effective Access</h4>
+        <p class="text-sm opacity-muted mcp-section-desc">By default, workspaces owned by the same user as this MCP server &mdash; and currently bound to it &mdash; can call its tools. Manage bindings in the section above. Add Cedar forbid rules to restrict further, or permit rules to extend access to other users' workspaces.</p>
         <div x-show="rsop.loading" class="page-loader page-loader-sm">
             <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
         </div>
@@ -18,12 +22,15 @@
                         <template x-for="(p, idx) in principalsForAction(action.key).slice(0, 5)" :key="p.principal_id">
                             <span class="pill pill-scope" x-text="p.principal_name"></span>
                         </template>
+                        <!-- One opener, one word (uat/artifacts/reviews/DESIGN-REVIEW.md §1.6). -->
                         <template x-if="principalsForAction(action.key).length > 5">
-                            <button class="btn btn-ghost btn-sm" @click="openEaModal(action.key, action.label)"
-                                    x-text="'... and ' + (principalsForAction(action.key).length - 5) + ' others \u2014 View all'"></button>
+                            <span class="pill pill-neutral pill-sm"
+                                  x-text="'+' + (principalsForAction(action.key).length - 5)"></span>
                         </template>
-                        <template x-if="principalsForAction(action.key).length <= 5 && principalsForAction(action.key).length > 0">
-                            <button class="btn btn-ghost btn-sm" @click="openEaModal(action.key, action.label)" title="View details">Details</button>
+                        <template x-if="principalsForAction(action.key).length > 0">
+                            <button class="btn btn-ghost btn-sm"
+                                    @click="openEaModal(action.key, action.label)"
+                                    :aria-label="'View every principal with ' + action.label">View</button>
                         </template>
                     </div>
                 </div>
@@ -54,7 +61,7 @@
 
     <!-- Section 3: Granted Permissions -->
     <div class="mcp-perm-section">
-        <h3 class="mcp-section-header">Granted Permissions</h3>
+        <h4 class="mcp-section-header">Granted permissions</h4>
         <div x-show="permissionsLoading" class="page-loader page-loader-sm">
             <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
         </div>
@@ -75,7 +82,9 @@
                         <td :title="perm.workspace_id" x-text="perm.workspace_name || perm.workspace_id"></td>
                         <td><span class="pill pill-scope" x-text="permLabel(perm.permission)"></span></td>
                         <td>
-                            <button class="btn btn-ghost btn-sm" @click="revokePermission(perm.workspace_id, perm.permission)" title="Revoke">&#10005;</button>
+                            <button class="btn btn-ghost btn-sm" @click="revokePermission(perm.workspace_id, perm.permission)"
+                                    :aria-label="'Revoke ' + permLabel(perm.permission) + ' from ' + (perm.workspace_name || perm.workspace_id)"
+                                    title="Revoke"><svg class="icon" aria-hidden="true"><use href="/icons.svg#x"></use></svg></button>
                         </td>
                     </tr>
                 </template>
@@ -95,9 +104,16 @@
                     </template>
                 </select>
             </div>
-            <div class="mcp-grant-mode-toggle">
-                <button type="button" class="btn btn-sm" :class="grantMode === 'grant' ? 'btn-primary' : 'btn-ghost'" @click="grantMode = 'grant'">Grant</button>
-                <button type="button" class="btn btn-sm" :class="grantMode === 'deny' ? 'btn-danger' : 'btn-ghost'" @click="grantMode = 'deny'">Deny</button>
+            <!-- One choice with two values (uat/artifacts/reviews/DESIGN-REVIEW.md 1.14). -->
+            <div class="mcp-grant-mode-toggle segmented" role="radiogroup" aria-label="Grant or deny">
+                <button type="button" role="radio" class="segmented-option"
+                        :class="grantMode === 'grant' ? 'is-on' : ''"
+                        :aria-checked="grantMode === 'grant' ? 'true' : 'false'"
+                        @click="grantMode = 'grant'">Grant</button>
+                <button type="button" role="radio" class="segmented-option"
+                        :class="grantMode === 'deny' ? 'is-on is-deny' : ''"
+                        :aria-checked="grantMode === 'deny' ? 'true' : 'false'"
+                        @click="grantMode = 'deny'">Deny</button>
             </div>
             <div class="mcp-grant-checkboxes">
                 <div class="mcp-grant-primary-checks">
@@ -129,7 +145,7 @@
         <div class="modal mcp-ea-modal">
             <div class="mcp-ea-modal-header">
                 <h3 x-text="eaModal.title"></h3>
-                <button class="btn btn-ghost btn-sm" @click="eaModal.open = false" aria-label="Close">&times;</button>
+                <button class="btn btn-ghost btn-sm" @click="eaModal.open = false" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="/icons.svg#x"></use></svg></button>
             </div>
             <table class="tbl tbl-flush">
                 <thead>
@@ -139,7 +155,13 @@
                     <template x-for="entry in eaModal.entries" :key="entry.principal_id">
                         <tr>
                             <td x-text="entry.principal_name"></td>
-                            <td><span class="pill pill-sm" :class="rsopPill(entry.decision)" x-text="rsopIcon(entry.decision)"></span></td>
+                            <!-- The tick is decoration; the word is the answer.
+                                 The credential pane set the pattern. -->
+                            <td>
+                                <span class="pill pill-sm" :class="rsopPill(entry.decision)" aria-hidden="true"
+                                      x-text="rsopIcon(entry.decision)"></span>
+                                <span class="sr-only" x-text="rsopLabel(entry.decision)"></span>
+                            </td>
                             <td class="text-sm opacity-muted">
                                 <template x-for="reason in entry.reasons" :key="reason.reason">
                                     <template x-if="reason.policy_id">

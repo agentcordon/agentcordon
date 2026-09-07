@@ -18,14 +18,15 @@
 
 use std::time::{Duration, Instant};
 
+use agentcordon_identity::VerifyError;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::Utc;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tracing::{error, info, warn};
+
+use agent_cordon_core::wire::oauth::DEFAULT_DEVICE_POLL_INTERVAL_SECS;
 
 use crate::server_client::{DeviceTokenPollResult, ServerClient};
 use crate::state::{PendingDeviceRegistration, SharedState, TokenStatus, WorkspaceState};
@@ -41,6 +42,12 @@ pub struct RegisterRequest {
     pub workspace_name: String,
     pub public_key: String,
     pub scopes: Vec<String>,
+    /// Unix seconds, decimal; checked against the broker clock with the
+    /// same skew window as a signed request.
+    pub timestamp: String,
+    /// 16 random bytes, lowercase hex; refused if this key already used it
+    /// within the window.
+    pub nonce: String,
     pub signature: String,
 }
 
@@ -48,41 +55,36 @@ pub async fn post_register(
     State(state): State<SharedState>,
     axum::Json(body): axum::Json<RegisterRequest>,
 ) -> impl IntoResponse {
-    // 1. Decode & verify the Ed25519 self-signature.
-    let pk_bytes = match hex::decode(&body.public_key) {
-        Ok(b) if b.len() == 32 => b,
-        _ => return bad_request("Invalid public key"),
-    };
-    let pk_array: [u8; 32] = pk_bytes.clone().try_into().unwrap();
-    let verifying_key = match VerifyingKey::from_bytes(&pk_array) {
-        Ok(k) => k,
-        Err(_) => return bad_request("Invalid public key"),
+    // 1. Verify the Ed25519 self-signature over
+    //    `workspace_name \n public_key \n scopes_joined \n timestamp \n nonce`
+    //    (the identity crate's register payload, the same one the CLI
+    //    signs) and take the pk_hash from the verified key. Re-registration
+    //    of an already-approved workspace is allowed — the server handles
+    //    owner replacement on approval.
+    let now = Utc::now().timestamp();
+    let pk_hash = match agentcordon_identity::verify_register(
+        &body.public_key,
+        &body.workspace_name,
+        &body.scopes,
+        &body.timestamp,
+        &body.nonce,
+        &body.signature,
+        now,
+    ) {
+        Ok(hash) => hash,
+        Err(VerifyError::InvalidPublicKey) => return bad_request("Invalid public key"),
+        Err(VerifyError::InvalidSignature) => return bad_request("Invalid signature"),
+        Err(VerifyError::SignatureMismatch) => return bad_request("Signature verification failed"),
+        Err(VerifyError::TimestampOutOfRange | VerifyError::InvalidNonce) => {
+            return unauthorized("Register request timestamp or nonce rejected")
+        }
     };
 
-    // Signed payload: workspace_name \n public_key \n scopes_joined
-    let scopes_joined = body.scopes.join(" ");
-    let signed_payload = format!(
-        "{}\n{}\n{}",
-        body.workspace_name, body.public_key, scopes_joined
-    );
-
-    let sig_bytes = match hex::decode(&body.signature) {
-        Ok(b) if b.len() == 64 => b,
-        _ => return bad_request("Invalid signature"),
-    };
-    let sig_array: [u8; 64] = sig_bytes.try_into().unwrap();
-    let signature = Signature::from_bytes(&sig_array);
-
-    if verifying_key
-        .verify(signed_payload.as_bytes(), &signature)
-        .is_err()
-    {
-        return bad_request("Signature verification failed");
+    // 2. Replay: the same self-signed body presented again within the
+    //    window is refused, exactly like a replayed signed request.
+    if !state.nonces.check_and_insert(&pk_hash, &body.nonce, now) {
+        return unauthorized("Register request timestamp or nonce rejected");
     }
-
-    // 2. Compute pk_hash. Re-registration of an already-approved workspace
-    //    is allowed — the server handles owner replacement on approval.
-    let pk_hash = hex::encode(Sha256::digest(&pk_bytes));
 
     // Clear any stale error from a previous attempt so polling `/status`
     // doesn't surface yesterday's failure.
@@ -122,7 +124,7 @@ pub async fn post_register(
         workspace_name: body.workspace_name.clone(),
         device_code: device.device_code.clone(),
         created_at: Instant::now(),
-        expires_in: Duration::from_secs(device.expires_in),
+        expires_in: Duration::from_secs(device.expires_in.max(0) as u64),
     };
     {
         let mut pending = state.pending.write().await;
@@ -140,7 +142,12 @@ pub async fn post_register(
         state.clone(),
         pk_hash.clone(),
         device.device_code.clone(),
-        Duration::from_secs(device.interval.max(1)),
+        Duration::from_secs(
+            device
+                .interval
+                .unwrap_or(DEFAULT_DEVICE_POLL_INTERVAL_SECS)
+                .max(1) as u64,
+        ),
     ));
 
     (
@@ -313,7 +320,7 @@ fn build_workspace_state(
         access_token: token_resp.access_token,
         refresh_token: token_resp.refresh_token.unwrap_or_default(),
         scopes,
-        token_expires_at: Utc::now() + chrono::Duration::seconds(token_resp.expires_in as i64),
+        token_expires_at: Utc::now() + chrono::Duration::seconds(token_resp.expires_in),
         workspace_name,
         token_status: TokenStatus::Valid,
     }
@@ -324,6 +331,15 @@ fn bad_request(message: &str) -> (StatusCode, axum::Json<serde_json::Value>) {
         StatusCode::BAD_REQUEST,
         axum::Json(serde_json::json!({
             "error": { "code": "bad_request", "message": message }
+        })),
+    )
+}
+
+fn unauthorized(message: &str) -> (StatusCode, axum::Json<serde_json::Value>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(serde_json::json!({
+            "error": { "code": "unauthorized", "message": message }
         })),
     )
 }

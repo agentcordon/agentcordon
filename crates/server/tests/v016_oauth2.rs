@@ -81,8 +81,11 @@ async fn create_agent_in_db(
     let agent = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled,
-        status: WorkspaceStatus::Active,
+        status: if enabled {
+            WorkspaceStatus::Active
+        } else {
+            WorkspaceStatus::Disabled
+        },
         pk_hash: None,
         encryption_public_key: None,
         tags: tags.into_iter().map(String::from).collect(),
@@ -106,7 +109,8 @@ async fn store_test_credential(
     let now = chrono::Utc::now();
     let cred_id = CredentialId(Uuid::new_v4());
     let (encrypted, nonce) = state
-        .encryptor
+        .crypto
+        .key_ring
         .encrypt(secret_value, cred_id.0.to_string().as_bytes())
         .expect("encrypt");
     let cred = StoredCredential {
@@ -125,7 +129,8 @@ async fn store_test_credential(
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -160,7 +165,8 @@ async fn store_oauth2_credential(
     let now = chrono::Utc::now();
     let cred_id = CredentialId(Uuid::new_v4());
     let (encrypted, nonce) = state
-        .encryptor
+        .crypto
+        .key_ring
         .encrypt(client_secret.as_bytes(), cred_id.0.to_string().as_bytes())
         .expect("encrypt");
     let mut metadata = serde_json::json!({
@@ -186,7 +192,8 @@ async fn store_oauth2_credential(
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "oauth2_client_credentials".to_string(),
         tags: vec![],
         description: None,
@@ -1415,6 +1422,7 @@ async fn device_token_exchange_intersects_scopes() {
         client_secret_hash: None,
         workspace_name: workspace_name.to_string(),
         public_key_hash: pk_hash.clone(),
+        workspace_id: None,
         redirect_uris: vec![],
         allowed_scopes: vec![OAuthScope::CredentialsDiscover],
         created_by_user: UserId(admin.id.0),
@@ -1683,5 +1691,69 @@ async fn device_approve_cas_prevents_double_approve() {
         msg.contains("already") || msg.contains("consumed") || msg.contains("not pending"),
         "CAS-loser must indicate already-consumed / not-pending, got: {:?}",
         loser
+    );
+}
+
+// The plain-HTTP exemption for a token endpoint names localhost, 127.0.0.1
+// and ::1, but `Url::host_str()` reports an IPv6 literal with its brackets,
+// so the `::1` arm never matched: `http://[::1]:9400/token` was refused as
+// if it were a remote host. The refusal must also say the exemption exists,
+// so a user with an internal provider learns the way out from the error.
+#[tokio::test]
+async fn oauth2_credential_accepts_plain_http_on_ipv6_loopback_and_names_the_exemption() {
+    let (app, store, _state) = setup_test_app().await;
+    let _admin = create_user_in_db(
+        &*store,
+        "admin",
+        TEST_PASSWORD,
+        UserRole::Admin,
+        false,
+        true,
+    )
+    .await;
+    let cookie = login_user(&app, "admin", TEST_PASSWORD).await;
+
+    let (status, body) = send_json(
+        &app,
+        Method::POST,
+        "/api/v1/credentials",
+        None,
+        Some(&cookie),
+        Some(json!({
+            "name": "oauth2-ipv6-loopback",
+            "service": "example-api",
+            "credential_type": "oauth2_client_credentials",
+            "oauth2_client_id": "client-id-here",
+            "secret_value": "client-secret-here",
+            "oauth2_token_endpoint": "http://[::1]:9400/token"
+        })),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "an IPv6 loopback token endpoint is exempt from the HTTPS rule: {status} {body:?}"
+    );
+
+    let (status, body) = send_json(
+        &app,
+        Method::POST,
+        "/api/v1/credentials",
+        None,
+        Some(&cookie),
+        Some(json!({
+            "name": "oauth2-bridge-host",
+            "service": "example-api",
+            "credential_type": "oauth2_client_credentials",
+            "oauth2_client_id": "client-id-here",
+            "secret_value": "client-secret-here",
+            "oauth2_token_endpoint": "http://idp:9400/token"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+    let message = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("HTTPS") && message.contains("localhost") && message.contains("[::1]"),
+        "the refusal must name the loopback exemption: {message}"
     );
 }

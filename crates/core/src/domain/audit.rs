@@ -82,6 +82,9 @@ pub enum AuditEventType {
     LoginRateLimited,
 
     // Vault
+    VaultCreated,
+    VaultRenamed,
+    VaultDeleted,
     VaultShared,
     VaultUnshared,
 
@@ -122,15 +125,53 @@ pub enum AuditEventType {
     McpToolCalled,
     McpToolDenied,
     McpServerProvisioned,
+    /// A `tools/list` probe against an MCP server's upstream failed.
+    /// Discovery is best-effort — the install still stands — so this row is
+    /// the only durable record of why a server has no tools.
+    McpToolDiscoveryFailed,
     McpServerSharedWithWorkspace,
     McpServerUnsharedFromWorkspace,
 
     // OAuth Provider Clients
+    //
+    // `rename_all = "snake_case"` splits the `OAuth` acronym and would spell
+    // these `o_auth_provider_…`, which is the name nobody writing a filter or
+    // a SIEM rule would guess. Each variant names itself instead, and keeps
+    // the mangled spelling as a read-side alias so rows already on disk still
+    // deserialize.
+    #[serde(
+        rename = "oauth_provider_client_created",
+        alias = "o_auth_provider_client_created"
+    )]
     OAuthProviderClientCreated,
+    #[serde(
+        rename = "oauth_provider_client_updated",
+        alias = "o_auth_provider_client_updated"
+    )]
     OAuthProviderClientUpdated,
+    #[serde(
+        rename = "oauth_provider_client_deleted",
+        alias = "o_auth_provider_client_deleted"
+    )]
     OAuthProviderClientDeleted,
+    #[serde(
+        rename = "oauth_provider_client_rotated",
+        alias = "o_auth_provider_client_rotated"
+    )]
     OAuthProviderClientRotated,
+    #[serde(
+        rename = "oauth_provider_discovery_failed",
+        alias = "o_auth_provider_discovery_failed"
+    )]
     OAuthProviderDiscoveryFailed,
+
+    // Master key
+    /// Every credential and history row was re-sealed under the current
+    /// master-key version (`POST /api/v1/admin/rotate-key`). Distinct from
+    /// `CredentialSecretRotated`, which is one secret changing value: this
+    /// one changes no secret, only the key the store is sealed with, and it
+    /// is the row that answers "has anyone re-sealed this store?".
+    MasterKeyResealed,
 
     // Subprocess
     SubprocessSpawned,

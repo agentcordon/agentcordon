@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/server", "crates/broker", "crates/cli"]
+members = ["crates/identity", "crates/core", "crates/server", "crates/broker", "crates/cli"]
 
 [workspace.package]
-version = "0.3.3"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 homepage = "https://agentcordon.dev"
@@ -18,5 +18,4 @@ thiserror = "2"
 tracing = "0.1"
 tokio = { version = "1", features = ["full"] }
 jsonwebtoken = "9"
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid", "json"] }
 dashmap = "6"

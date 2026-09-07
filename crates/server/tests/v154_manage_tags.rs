@@ -172,7 +172,6 @@ async fn test_admin_can_remove_tag_from_device() {
     let device = Workspace {
         id: device_id.clone(),
         name: "tagged-device".to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -407,7 +406,7 @@ async fn test_tag_value_context_populated_in_policy_evaluation() {
 /// handle `tag_added` / `tag_removed` event types, causing `list_audit_events`
 /// to fail with "unknown event_type: tag_added". The events ARE written to the
 /// DB but cannot be read back through the Store trait. This needs a fix in
-/// `crates/core/src/storage/sqlite.rs` (and postgres.rs).
+/// `crates/core/src/storage/sqlite/`.
 ///
 /// These tests verify the tag operations succeed at the API level. Full audit
 /// verification is blocked by the deserialization bug above.

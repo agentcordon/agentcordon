@@ -11,7 +11,6 @@
 use std::io::{self, Write};
 use std::time::Duration;
 
-use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 
 use crate::broker::BrokerClient;
@@ -23,6 +22,8 @@ struct RegisterRequest {
     workspace_name: String,
     public_key: String,
     scopes: Vec<String>,
+    timestamp: String,
+    nonce: String,
     signature: String,
 }
 
@@ -74,6 +75,27 @@ fn resolve_workspace_name(provided: Option<&str>, cwd_basename: Option<&str>) ->
         .unwrap_or_else(|| "workspace".to_string())
 }
 
+/// How long the user has to approve, in words, from the device-code
+/// response's `expires_in` (seconds).
+///
+/// The only expiry signal a user used to get was the flow timing out: the
+/// server sends `expires_in` on every device-code response and the CLI threw
+/// it away, while README § 4 and `docs/cli-reference.md` both showed an
+/// "(expires in 10 minutes)" the binary never printed.
+///
+/// Rounds down to whole minutes — a code with 90 seconds left says "1
+/// minute", which is the pessimistic direction and the one that gets the user
+/// to the browser.
+fn expiry_phrase(expires_in: u64) -> String {
+    if expires_in < 60 {
+        let unit = if expires_in == 1 { "second" } else { "seconds" };
+        return format!("{expires_in} {unit}");
+    }
+    let minutes = expires_in / 60;
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    format!("{minutes} {unit}")
+}
+
 /// Register this workspace with the broker via device flow.
 ///
 /// If `server_url` is provided (via `--server-url` or `AGTCRDN_SERVER_URL`)
@@ -94,7 +116,7 @@ pub async fn run(
         broker_autostart::ensure_broker_running(url).await?;
     }
 
-    let client = match BrokerClient::connect_for_registration().await {
+    let client = match BrokerClient::connect_for_registration(force).await {
         Ok(c) => c,
         Err(e) if e.code == crate::error::ExitCode::BrokerNotRunning => {
             return Err(CliError::broker_not_running());
@@ -135,18 +157,18 @@ pub async fn run(
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
     let workspace_name = resolve_workspace_name(name.as_deref(), cwd_basename.as_deref());
 
-    let public_key = client.keypair().public_key_hex();
-
-    let scopes_joined = scopes.join(" ");
-    let sign_payload = format!("{workspace_name}\n{public_key}\n{scopes_joined}");
-    let signature = client.keypair().signing_key.sign(sign_payload.as_bytes());
-    let signature_hex = hex::encode(signature.to_bytes());
-
+    // Self-signature over `NAME\nPUBLIC_KEY\nSCOPES\nTIMESTAMP\nNONCE`
+    // (identity crate owns the payload; the broker verifies with the same
+    // function's twin and refuses a replayed timestamp+nonce).
+    let signed = agentcordon_identity::sign_register(client.keypair(), &workspace_name, &scopes)
+        .map_err(|e| CliError::general(format!("system clock error: {e}")))?;
     let req = RegisterRequest {
-        workspace_name: workspace_name.clone(),
-        public_key,
-        scopes: scopes.clone(),
-        signature: signature_hex,
+        workspace_name: signed.workspace_name,
+        public_key: signed.public_key,
+        scopes: signed.scopes,
+        timestamp: signed.timestamp,
+        nonce: signed.nonce,
+        signature: signed.signature,
     };
 
     let resp: RegisterResponse = client.post_unsigned("/register", &req).await?;
@@ -170,7 +192,10 @@ pub async fn run(
         eprintln!("  {activation_url}");
     }
     eprintln!();
-    eprint!("Waiting for approval... ");
+    eprint!(
+        "Waiting for approval... (expires in {}) ",
+        expiry_phrase(resp.data.expires_in)
+    );
     let _ = io::stderr().flush();
 
     // Poll the broker until the background device-code task reports the
@@ -260,7 +285,30 @@ async fn is_already_registered(client: &BrokerClient) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_workspace_name;
+    use super::{expiry_phrase, resolve_workspace_name};
+
+    #[test]
+    fn the_default_ten_minute_code_reads_as_ten_minutes() {
+        // The server's default `AGTCRDN_DEVICE_CODE_TTL_SECS`, and the
+        // number README § 4 shows.
+        assert_eq!(expiry_phrase(600), "10 minutes");
+    }
+
+    #[test]
+    fn one_minute_is_singular() {
+        assert_eq!(expiry_phrase(60), "1 minute");
+    }
+
+    #[test]
+    fn a_partial_minute_rounds_down_rather_than_promising_more_time() {
+        assert_eq!(expiry_phrase(90), "1 minute");
+    }
+
+    #[test]
+    fn under_a_minute_is_reported_in_seconds() {
+        assert_eq!(expiry_phrase(30), "30 seconds");
+        assert_eq!(expiry_phrase(1), "1 second");
+    }
 
     #[test]
     fn provided_name_wins_over_cwd() {

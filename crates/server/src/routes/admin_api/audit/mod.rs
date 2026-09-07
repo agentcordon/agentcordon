@@ -22,6 +22,10 @@ use crate::state::AppState;
 /// Maximum number of rows in an export to prevent OOM.
 pub(crate) const EXPORT_MAX_ROWS: u32 = 10_000;
 
+/// Ceiling on `?limit=` for the audit list. Larger values are clamped, so a
+/// single request cannot pull the whole table; use `offset` to page.
+pub(crate) const AUDIT_LIST_MAX_ROWS: u32 = 500;
+
 /// Backwards-compatible alias used by CSV export.
 pub(crate) const CSV_EXPORT_MAX_ROWS: u32 = EXPORT_MAX_ROWS;
 
@@ -32,6 +36,27 @@ pub fn routes() -> Router<AppState> {
         .route("/audit/export/syslog", get(export::export_audit_syslog))
         .route("/audit/export/jsonl", get(export::export_audit_jsonl))
         .route("/audit/{id}", get(get_audit_event))
+}
+
+/// The tenant rule for reading audit events: a non-admin user sees only
+/// events they performed, whatever `user_id` filter they asked for. Admins
+/// and root see what they ask for. Workspaces are scoped by their own
+/// filters. The list endpoint and every exporter apply this same rule.
+pub(super) fn scoped_user_id(
+    actor: &AuthenticatedActor,
+    requested: Option<String>,
+) -> Option<String> {
+    match actor {
+        AuthenticatedActor::User(user) => {
+            let is_admin = user.is_admin();
+            if is_admin {
+                requested
+            } else {
+                Some(user.id.0.to_string())
+            }
+        }
+        AuthenticatedActor::Workspace { .. } => requested,
+    }
 }
 
 #[derive(Deserialize)]
@@ -125,31 +150,18 @@ async fn list_audit(
     }
 
     // Hide noisy policy_evaluated events from UI panes unless the caller
-    // explicitly filters for that event type.
+    // explicitly filters for that event type. (`scoped_user_id` below is the
+    // tenant rule shared with the exporters.)
     let exclude = if q.event_type.is_none() {
         vec!["policy_evaluated".to_string()]
     } else {
         vec![]
     };
 
-    // Tenant scoping: non-admin users can only see their own audit events.
-    // If a non-admin user doesn't specify a user_id filter, inject their own.
-    let scoped_user_id = match &actor {
-        AuthenticatedActor::User(user) => {
-            let is_admin =
-                user.role == agent_cordon_core::domain::user::UserRole::Admin || user.is_root;
-            if is_admin {
-                q.user_id
-            } else {
-                // Force non-admin users to only see their own events
-                Some(user.id.0.to_string())
-            }
-        }
-        AuthenticatedActor::Workspace { .. } => q.user_id,
-    };
+    let scoped_user_id = scoped_user_id(&actor, q.user_id);
 
     let filter = AuditFilter {
-        limit: q.limit.unwrap_or(50),
+        limit: q.limit.unwrap_or(50).min(AUDIT_LIST_MAX_ROWS),
         offset: q.offset.unwrap_or(0),
         resource_type: q.resource_type,
         resource_id: q.resource_id,
@@ -187,8 +199,7 @@ async fn get_audit_event(
 
     // Tenant scoping: non-admin users can only view their own audit events
     if let AuthenticatedActor::User(user) = &actor {
-        let is_admin =
-            user.role == agent_cordon_core::domain::user::UserRole::Admin || user.is_root;
+        let is_admin = user.is_admin();
         if !is_admin {
             let user_id_str = user.id.0.to_string();
             if event.user_id.as_deref() != Some(&user_id_str) {

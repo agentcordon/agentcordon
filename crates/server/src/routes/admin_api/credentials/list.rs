@@ -1,6 +1,8 @@
 use axum::{extract::State, Json};
 
-use agent_cordon_core::domain::credential::{CredentialId, CredentialSummary, StoredCredential};
+use agent_cordon_core::domain::credential::{
+    CredentialAccess, CredentialId, CredentialSummary, StoredCredential,
+};
 use agent_cordon_core::policy::{actions, PolicyResource};
 
 use crate::extractors::AuthenticatedActor;
@@ -38,16 +40,40 @@ pub(crate) async fn list_credentials(
         .into_iter()
         .filter_map(|s| cred_map.get(&s.id).map(|c| (s, c.clone())))
         .collect();
+    // A read share is the vault owner's own decision and Cedar has no
+    // `Vault` resource to carry it, so the shared vaults are unioned in
+    // after the policy filter rather than folded into it. Everything goes
+    // through the filter first, because a caller may hold both routes to the
+    // same row — an admin the vault was shared with, say — and the row is
+    // `shared_read` only when the share is the *only* thing carrying it.
+    let shared_vaults = state.services.credentials.shared_vault_ids(&actor).await?;
     let kept = state
         .authz
         .request(&actor, &uuid::Uuid::new_v4().to_string())
-        .filter(actions::LIST, pairs, |(_, cred)| {
+        .filter(actions::LIST, pairs.clone(), |(_, cred)| {
             PolicyResource::Credential {
                 credential: cred.clone(),
             }
         })
         .await?;
-    let mut allowed_creds: Vec<CredentialSummary> = kept.into_iter().map(|(s, _)| s).collect();
+    let permitted: std::collections::HashSet<CredentialId> =
+        kept.iter().map(|(s, _)| s.id.clone()).collect();
+
+    let mut allowed_creds: Vec<CredentialSummary> = kept
+        .into_iter()
+        .map(|(mut s, _)| {
+            s.access = Some(CredentialAccess::Full);
+            s
+        })
+        .collect();
+    for (mut summary, _) in pairs {
+        if permitted.contains(&summary.id) || !shared_vaults.contains(&summary.vault_id) {
+            continue;
+        }
+        summary.access = Some(CredentialAccess::SharedRead);
+        allowed_creds.push(summary);
+    }
+    allowed_creds.sort_by(|a, b| a.name.cmp(&b.name));
 
     enrich_owner_usernames(state.store.as_ref(), &mut allowed_creds).await;
     Ok(Json(ApiResponse::ok(allowed_creds)))

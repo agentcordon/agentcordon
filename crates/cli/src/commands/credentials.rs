@@ -9,22 +9,53 @@ struct CreateEnvelope {
     data: serde_json::Value,
 }
 
+/// What the success line says about the new credential's URL fence.
+///
+/// A credential made without `--allowed-url-pattern` can be proxied to any
+/// URL. That used to be both the default and invisible: the safest-looking
+/// command in the CLI produced the least safe credential and said nothing
+/// about it.
+fn creation_summary(name: &str, service: &str, pattern: Option<&str>) -> String {
+    match pattern {
+        Some(p) => format!("Created credential '{name}' (service: {service}, allowed URLs: {p})"),
+        None => format!(
+            "Created credential '{name}' (service: {service}, allowed URLs: UNRESTRICTED \
+             — this credential can be proxied to any URL; narrow it with \
+             --allowed-url-pattern)"
+        ),
+    }
+}
+
 /// Create a credential via the broker passthrough.
-pub async fn create(name: String, service: String, value: String) -> Result<(), CliError> {
+pub async fn create(
+    name: String,
+    service: String,
+    value: String,
+    allowed_url_pattern: Option<String>,
+) -> Result<(), CliError> {
     if name.is_empty() || service.is_empty() || value.is_empty() {
         return Err(CliError::general(
             "--name, --service, and --value must all be non-empty",
         ));
     }
+    // A blank pattern is the same as no pattern; the server normalises it the
+    // same way, and sending it would only look like a fence that isn't one.
+    let pattern = allowed_url_pattern
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+
     let client = BrokerClient::connect().await?;
-    let req_body = serde_json::json!({
+    let mut req_body = serde_json::json!({
         "name": name,
         "service": service,
         "secret_value": value,
         "credential_type": "generic",
     });
+    if let Some(ref p) = pattern {
+        req_body["allowed_url_pattern"] = serde_json::Value::String(p.clone());
+    }
     let _: CreateEnvelope = client.post("/credentials/create", &req_body).await?;
-    println!("Created credential '{name}' (service: {service})");
+    println!("{}", creation_summary(&name, &service, pattern.as_deref()));
     Ok(())
 }
 

@@ -148,7 +148,7 @@ async fn full_oauth_flow(
     let client_secret = body["data"]["client_secret"].as_str().unwrap().to_string();
 
     let (verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     let form = format!(
         "client_id={}&redirect_uri={}&scope={}&state=test-state&code_challenge={}&code_challenge_method=S256&decision=approve&csrf_token={}",
@@ -216,7 +216,6 @@ async fn test_revoked_oauth_token_denied_immediately() {
     let workspace = agent_cordon_core::domain::workspace::Workspace {
         id: agent_cordon_core::domain::workspace::WorkspaceId(uuid::Uuid::new_v4()),
         name: "revoke-immediate-ws".to_string(),
-        enabled: true,
         status: agent_cordon_core::domain::workspace::WorkspaceStatus::Active,
         pk_hash: Some(TEST_PK_HASH.to_string()),
         encryption_public_key: None,
@@ -300,7 +299,7 @@ async fn test_pkce_wrong_verifier_rejected() {
     let client_secret = body["data"]["client_secret"].as_str().unwrap().to_string();
 
     let (_verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     let form = format!(
         "client_id={}&redirect_uri={}&scope=credentials:discover&state=s&code_challenge={}&code_challenge_method=S256&decision=approve&csrf_token={}",
@@ -422,34 +421,50 @@ async fn test_refresh_token_bound_to_client_id() {
     );
 }
 
+/// Sign claims as an ES256 JWT with a key the server has never seen. The
+/// server no longer issues or verifies JWTs, so any such token must be
+/// refused as a bearer.
+fn sign_forged_jwt(claims: &serde_json::Value) -> String {
+    use p256::pkcs8::EncodePrivateKey;
+    let sk = p256::ecdsa::SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    let pem = sk
+        .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
+        .expect("P-256 key to PKCS#8 PEM")
+        .to_string();
+    let key = jsonwebtoken::EncodingKey::from_ec_pem(pem.as_bytes()).expect("valid EC PEM");
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256),
+        claims,
+        &key,
+    )
+    .expect("sign forged JWT")
+}
+
 // ===========================================================================
 // A23.1 — Old workspace JWT rejected (inverted: must REJECT)
 // ===========================================================================
 
 #[tokio::test]
 async fn test_old_workspace_jwt_rejected_on_resource_endpoint() {
-    let (app, store, state) = setup().await;
+    let (app, store, _state) = setup().await;
     let _admin = create_root_user(&*store, "admin", TEST_PASSWORD).await;
 
     // Create a workspace
     let (agent, _key) = create_agent_in_db(&*store, "old-jwt-ws", vec!["admin"], true, None).await;
 
-    // Issue a v2-style workspace identity JWT (manually, not via issue_agent_jwt which now creates OAuth tokens)
+    // Sign a v2-style workspace identity JWT the way the retired issuer did.
     let now = chrono::Utc::now();
     let claims = serde_json::json!({
         "sub": agent.id.0.to_string(),
         "aud": "agentcordon:workspace-identity",
-        "iss": agent_cordon_core::auth::jwt::ISSUER,
+        "iss": "agentcordon-server",
         "exp": (now + chrono::Duration::seconds(3600)).timestamp(),
         "iat": now.timestamp(),
         "nbf": now.timestamp(),
         "jti": uuid::Uuid::new_v4().to_string(),
         "wkt": "test-workspace-key-thumbprint",
     });
-    let old_jwt = state
-        .jwt_issuer
-        .sign_custom_claims(&claims)
-        .expect("issue test JWT");
+    let old_jwt = sign_forged_jwt(&claims);
 
     // Try using this old JWT as Bearer on the credentials endpoint
     let (status, _body) = send_json(
@@ -477,23 +492,20 @@ async fn test_old_workspace_jwt_rejected_on_resource_endpoint() {
 
 #[tokio::test]
 async fn test_forged_jwt_wrong_audience_rejected() {
-    let (app, _store, state) = setup().await;
+    let (app, _store, _state) = setup().await;
 
     // Create a JWT with wrong audience (e.g., "workspace-identity")
     let now = chrono::Utc::now();
     let claims = json!({
         "sub": uuid::Uuid::new_v4().to_string(),
         "aud": "workspace-identity",
-        "iss": agent_cordon_core::auth::jwt::ISSUER,
+        "iss": "agentcordon-server",
         "exp": (now + chrono::Duration::seconds(3600)).timestamp(),
         "iat": now.timestamp(),
         "nbf": now.timestamp(),
         "jti": uuid::Uuid::new_v4().to_string(),
     });
-    let jwt = state
-        .jwt_issuer
-        .sign_custom_claims(&claims)
-        .expect("sign JWT");
+    let jwt = sign_forged_jwt(&claims);
 
     let (status, _body) = send_json(
         &app,
@@ -578,8 +590,7 @@ async fn test_token_for_disabled_workspace_rejected() {
     let workspace = agent_cordon_core::domain::workspace::Workspace {
         id: agent_cordon_core::domain::workspace::WorkspaceId(uuid::Uuid::new_v4()),
         name: "disabled-ws".to_string(),
-        enabled: false, // disabled
-        status: agent_cordon_core::domain::workspace::WorkspaceStatus::Active,
+        status: agent_cordon_core::domain::workspace::WorkspaceStatus::Disabled,
         pk_hash: Some(pk_hash.to_string()),
         encryption_public_key: None,
         tags: vec![],
@@ -602,6 +613,7 @@ async fn test_token_for_disabled_workspace_rejected() {
         client_secret_hash: None,
         workspace_name: "disabled-ws".to_string(),
         public_key_hash: pk_hash.to_string(),
+        workspace_id: Some(workspace.id.clone()),
         redirect_uris: vec![TEST_REDIRECT_URI.to_string()],
         allowed_scopes: vec![OAuthScope::CredentialsDiscover],
         created_by_user: admin.id.clone(),
@@ -700,7 +712,7 @@ async fn test_auth_code_bound_to_client() {
 
     // Get a code for client A
     let (verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
     let form = format!(
         "client_id={}&redirect_uri={}&scope=credentials:discover&state=s&code_challenge={}&code_challenge_method=S256&decision=approve&csrf_token={}",
         urlencoding::encode(&client_id_a),

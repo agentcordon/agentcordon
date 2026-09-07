@@ -1194,9 +1194,11 @@ async fn oidc_authorize_redirects_to_idp() {
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
 
-    // Should redirect (307 Temporary Redirect)
+    // Should redirect to the IdP; the login page's SSO link expects a 302.
     assert!(
-        status == StatusCode::TEMPORARY_REDIRECT || status == StatusCode::SEE_OTHER,
+        status == StatusCode::FOUND
+            || status == StatusCode::TEMPORARY_REDIRECT
+            || status == StatusCode::SEE_OTHER,
         "should redirect to IdP, got {}",
         status
     );
@@ -1376,14 +1378,14 @@ async fn oidc_callback_full_flow_new_user() {
 }
 
 #[tokio::test]
-async fn oidc_callback_existing_user_login() {
+async fn oidc_callback_existing_admin_is_not_linked_by_username() {
     let mock_idp = setup_mock_idp().await;
     let issuer = mock_idp.uri();
 
     let (app, store, enc) =
         setup_test_app_with_config(Some("http://localhost:3140".to_string())).await;
 
-    // Pre-create the user
+    // A local admin with no identity-provider link.
     create_user_in_db(
         &*store,
         "existing-oidc-user",
@@ -1423,20 +1425,191 @@ async fn oidc_callback_existing_user_login() {
     );
     mount_token_endpoint(&mock_idp, &id_token).await;
 
-    let (status, headers) =
+    let (_, headers) =
         send_callback(&app, &format!("code=authcode456&state={}", state_param)).await;
 
+    assert!(get_location(&headers).contains("oidc_error"));
     assert!(
-        status == StatusCode::TEMPORARY_REDIRECT || status == StatusCode::SEE_OTHER,
-        "should redirect after login, got {}",
-        status
+        !get_set_cookies(&headers)
+            .iter()
+            .any(|c| c.contains("agtcrdn_session=")),
+        "a privileged local account is never claimed by a username match"
     );
-    let location = get_location(&headers);
-    assert_eq!(location, "/");
+}
 
-    // Verify session cookies are set
+/// An unprivileged local account that predates subject binding is adopted
+/// on its first OIDC login. From then on the subject, not the username
+/// claim, identifies it: a later token with a different username still
+/// lands on the same account.
+#[tokio::test]
+async fn oidc_callback_existing_viewer_is_adopted_then_resolved_by_subject() {
+    let mock_idp = setup_mock_idp().await;
+    let issuer = mock_idp.uri();
+
+    let (app, store, enc) =
+        setup_test_app_with_config(Some("http://localhost:3140".to_string())).await;
+
+    let viewer = create_user_in_db(
+        &*store,
+        "legacy-viewer",
+        "dummy-pass",
+        UserRole::Viewer,
+        false,
+        true,
+    )
+    .await;
+
+    let provider_id = create_provider_in_db(
+        &*store,
+        &enc,
+        "Adopting IdP",
+        &issuer,
+        "test-client",
+        "test-secret",
+        true,
+        true,
+        None,
+    )
+    .await;
+    let redirect_uri = "http://localhost:3140/api/v1/auth/oidc/callback";
+
+    // First login: username matches the legacy account; it gets linked.
+    let (state1, nonce1) = create_auth_state_in_db(&*store, &provider_id, redirect_uri, 600).await;
+    let token1 = build_id_token(
+        &issuer,
+        "test-client",
+        &nonce1,
+        "stable-subject",
+        None,
+        Some("legacy-viewer"),
+        None,
+        3600,
+    );
+    mount_token_endpoint(&mock_idp, &token1).await;
+    let (_, headers) = send_callback(&app, &format!("code=c1&state={}", state1)).await;
+    assert_eq!(get_location(&headers), "/", "first login succeeds");
+
+    // Second login: same subject, renamed at the IdP. Still the same account,
+    // and no second account is created.
+    mock_idp.reset().await;
+    let mock_idp2 = mock_idp;
+    let (state2, nonce2) = create_auth_state_in_db(&*store, &provider_id, redirect_uri, 600).await;
+    let token2 = build_id_token(
+        &issuer,
+        "test-client",
+        &nonce2,
+        "stable-subject",
+        None,
+        Some("renamed-at-idp"),
+        None,
+        3600,
+    );
+    remount_idp(&mock_idp2, &token2).await;
+    let (_, headers) = send_callback(&app, &format!("code=c2&state={}", state2)).await;
+    assert_eq!(get_location(&headers), "/", "second login succeeds");
+
+    assert!(
+        store
+            .get_user_by_username("renamed-at-idp")
+            .await
+            .unwrap()
+            .is_none(),
+        "no new account for the renamed subject"
+    );
+    let linked = store
+        .get_user_by_oidc_identity(&provider_id, "stable-subject")
+        .await
+        .unwrap()
+        .expect("subject is linked");
+    assert_eq!(linked.id, viewer.id);
+}
+
+/// Re-mount discovery, JWKS, and a token endpoint after `MockServer::reset`.
+async fn remount_idp(mock_server: &MockServer, id_token: &str) {
+    let issuer = mock_server.uri();
+    let discovery_doc = json!({
+        "issuer": issuer,
+        "authorization_endpoint": format!("{}/authorize", issuer),
+        "token_endpoint": format!("{}/token", issuer),
+        "jwks_uri": format!("{}/jwks", issuer),
+        "userinfo_endpoint": format!("{}/userinfo", issuer),
+    });
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&discovery_doc))
+        .mount(mock_server)
+        .await;
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(build_jwks_response()))
+        .mount(mock_server)
+        .await;
+    mount_token_endpoint(mock_server, id_token).await;
+}
+
+/// An IdP account is identified by its subject, never by a username claim.
+/// A token whose username claim happens to equal root's username must not
+/// produce a root session.
+#[tokio::test]
+async fn oidc_callback_username_match_does_not_grant_root() {
+    let mock_idp = setup_mock_idp().await;
+    let issuer = mock_idp.uri();
+
+    let (app, store, enc) =
+        setup_test_app_with_config(Some("http://localhost:3140".to_string())).await;
+
+    create_user_in_db(
+        &*store,
+        "the-root",
+        "dummy-pass",
+        UserRole::Admin,
+        true,
+        true,
+    )
+    .await;
+
+    let provider_id = create_provider_in_db(
+        &*store,
+        &enc,
+        "Any IdP",
+        &issuer,
+        "test-client",
+        "test-secret",
+        true,
+        true,
+        None,
+    )
+    .await;
+
+    let redirect_uri = "http://localhost:3140/api/v1/auth/oidc/callback";
+    let (state_param, nonce) =
+        create_auth_state_in_db(&*store, &provider_id, redirect_uri, 600).await;
+
+    let id_token = build_id_token(
+        &issuer,
+        "test-client",
+        &nonce,
+        "some-idp-subject",
+        None,
+        Some("the-root"),
+        None,
+        3600,
+    );
+    mount_token_endpoint(&mock_idp, &id_token).await;
+
+    let (_, headers) =
+        send_callback(&app, &format!("code=authcode789&state={}", state_param)).await;
+
     let cookies = get_set_cookies(&headers);
-    assert!(cookies.iter().any(|c| c.contains("agtcrdn_session=")));
+    assert!(
+        !cookies.iter().any(|c| c.contains("agtcrdn_session=")),
+        "no session may be issued for root via a username-claim match: {cookies:?}"
+    );
+    assert!(
+        get_location(&headers).contains("oidc_error"),
+        "login must be refused with an error, got {}",
+        get_location(&headers)
+    );
 }
 
 #[tokio::test]
@@ -1636,8 +1809,11 @@ async fn oidc_callback_username_from_preferred_username() {
     assert_eq!(user.username, "preferred-user");
 }
 
+/// The provider is configured for `preferred_username`. A token without it
+/// has not named the account; the login is refused rather than silently
+/// naming the account after the email or the subject.
 #[tokio::test]
-async fn oidc_callback_username_from_email_fallback() {
+async fn oidc_callback_missing_username_claim_is_refused() {
     let mock_idp = setup_mock_idp().await;
     let issuer = mock_idp.uri();
 
@@ -1647,7 +1823,7 @@ async fn oidc_callback_username_from_email_fallback() {
     let provider_id = create_provider_in_db(
         &*store,
         &enc,
-        "EmailFallback IdP",
+        "Strict IdP",
         &issuer,
         "test-client",
         "test-secret",
@@ -1661,7 +1837,7 @@ async fn oidc_callback_username_from_email_fallback() {
     let (state_param, nonce) =
         create_auth_state_in_db(&*store, &provider_id, redirect_uri, 600).await;
 
-    // No preferred_username — should fall back to email
+    // Email present, preferred_username absent.
     let id_token = build_id_token(
         &issuer,
         "test-client",
@@ -1674,68 +1850,23 @@ async fn oidc_callback_username_from_email_fallback() {
     );
     mount_token_endpoint(&mock_idp, &id_token).await;
 
-    let (status, _headers) =
-        send_callback(&app, &format!("code=authcode&state={}", state_param)).await;
+    let (_, headers) = send_callback(&app, &format!("code=authcode&state={}", state_param)).await;
 
-    assert!(status == StatusCode::TEMPORARY_REDIRECT || status == StatusCode::SEE_OTHER);
-
-    let user = store
-        .get_user_by_username("fallback@example.com")
-        .await
-        .unwrap()
-        .expect("user should be created with email as username");
-    assert_eq!(user.username, "fallback@example.com");
-}
-
-#[tokio::test]
-async fn oidc_callback_username_from_sub_final_fallback() {
-    let mock_idp = setup_mock_idp().await;
-    let issuer = mock_idp.uri();
-
-    let (app, store, enc) =
-        setup_test_app_with_config(Some("http://localhost:3140".to_string())).await;
-
-    let provider_id = create_provider_in_db(
-        &*store,
-        &enc,
-        "SubFallback IdP",
-        &issuer,
-        "test-client",
-        "test-secret",
-        true,
-        true,
-        None,
-    )
-    .await;
-
-    let redirect_uri = "http://localhost:3140/api/v1/auth/oidc/callback";
-    let (state_param, nonce) =
-        create_auth_state_in_db(&*store, &provider_id, redirect_uri, 600).await;
-
-    // No preferred_username, no email — should fall back to sub
-    let id_token = build_id_token(
-        &issuer,
-        "test-client",
-        &nonce,
-        "sub-only-user-id",
-        None,
-        None,
-        None,
-        3600,
+    assert!(get_location(&headers).contains("oidc_error"));
+    assert!(
+        !get_set_cookies(&headers)
+            .iter()
+            .any(|c| c.contains("agtcrdn_session=")),
+        "no session without a username"
     );
-    mount_token_endpoint(&mock_idp, &id_token).await;
-
-    let (status, _headers) =
-        send_callback(&app, &format!("code=authcode&state={}", state_param)).await;
-
-    assert!(status == StatusCode::TEMPORARY_REDIRECT || status == StatusCode::SEE_OTHER);
-
-    let user = store
-        .get_user_by_username("sub-only-user-id")
-        .await
-        .unwrap()
-        .expect("user should be created with sub as username");
-    assert_eq!(user.username, "sub-only-user-id");
+    assert!(
+        store
+            .get_user_by_username("fallback@example.com")
+            .await
+            .unwrap()
+            .is_none(),
+        "no account is provisioned under a fallback claim"
+    );
 }
 
 // ===========================================================================
@@ -2889,5 +3020,130 @@ async fn oidc_callback_empty_params() {
         location.contains("oidc_error="),
         "empty params should fail: {}",
         location
+    );
+}
+
+// ===========================================================================
+// The login page's SSO link (UI review B2)
+// ===========================================================================
+
+/// Read the login page and return the path its SSO button links to, with the
+/// Alpine expression for the provider id replaced by `provider_id`.
+///
+/// The point is that the assertion below drives the *page's own* URL, not a
+/// path retyped in the test: the button linked to `/api/v1/oidc/auth/<id>`
+/// for a whole release because nothing tied the two together.
+async fn sso_start_url_from_login_page(app: &Router, provider_id: &str) -> String {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+
+    let marker = "return '";
+    let at = html
+        .find("ssoStartUrl(providerId)")
+        .expect("the login page defines ssoStartUrl");
+    let start = html[at..].find(marker).expect("ssoStartUrl returns a path") + at + marker.len();
+    let end = start + html[start..].find('\'').expect("unterminated path");
+    format!("{}{}", &html[start..end], provider_id)
+}
+
+#[tokio::test]
+async fn the_login_page_sso_link_redirects_to_the_provider() {
+    let mock_idp = setup_mock_idp().await;
+    let issuer = mock_idp.uri();
+
+    let (app, store, enc) =
+        setup_test_app_with_config(Some("http://localhost:3140".to_string())).await;
+    let provider_id = create_provider_in_db(
+        &*store,
+        &enc,
+        "Review IdP",
+        &issuer,
+        "test-client",
+        "test-secret",
+        true,
+        true,
+        None,
+    )
+    .await;
+
+    let url = sso_start_url_from_login_page(&app, &provider_id.0.to_string()).await;
+    assert!(
+        url.starts_with("/api/v1/auth/oidc/authorize?provider="),
+        "the login page must start SSO at the authorize route, got {url}"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(&url)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::FOUND,
+        "the login page's SSO link must answer 302, not the 404 page"
+    );
+    let location = response
+        .headers()
+        .get("location")
+        .expect("a Location header")
+        .to_str()
+        .unwrap();
+    assert!(
+        location.starts_with(&issuer),
+        "the redirect must go to the provider, got {location}"
+    );
+}
+
+/// With no provider configured the page renders no SSO button at all: the
+/// list it draws from is empty.
+#[tokio::test]
+async fn the_login_page_offers_no_sso_link_without_a_provider() {
+    let (app, _store, _enc) = setup_test_app().await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/auth/oidc/providers")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        body["data"].as_array().map(Vec::len),
+        Some(0),
+        "no provider configured, so the login page has no SSO button to draw: {body}"
     );
 }

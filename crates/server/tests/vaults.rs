@@ -1,9 +1,9 @@
 //! Integration tests for vault organization and vault sharing.
 //!
 //! Tests cover:
-//! - Creating credentials with explicit vault field
-//! - Default vault assignment when vault is not specified
-//! - Listing distinct vault names
+//! - Creating a vault, and creating credentials in it by id
+//! - Default vault assignment when no vault is named
+//! - Listing vault rows
 //! - Listing credentials filtered by vault
 //! - Sharing a vault with another user
 //! - Listing vault shares
@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use agent_cordon_core::crypto::password::hash_password;
 use agent_cordon_core::domain::user::{User, UserId, UserRole};
+use agent_cordon_core::domain::vault::DEFAULT_VAULT_ID;
 use agent_cordon_core::storage::Store;
 
 use crate::common::*;
@@ -207,6 +208,42 @@ async fn send_json(
 // Vault Organization Tests
 // ---------------------------------------------------------------------------
 
+/// Create a vault owned by whoever the cookie belongs to. Returns its id.
+async fn create_vault(app: &Router, cookie: &str, csrf: &str, name: &str) -> String {
+    let (status, body) = send_json(
+        app,
+        Method::POST,
+        "/api/v1/vaults",
+        None,
+        Some(cookie),
+        Some(csrf),
+        Some(json!({ "name": name })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create vault {name}: {body:?}");
+    body["data"]["id"].as_str().expect("vault id").to_string()
+}
+
+/// Put a credential in a vault, so the vault is not empty.
+async fn seed_credential(app: &Router, cookie: &str, csrf: &str, name: &str, vault_id: &str) {
+    let (status, body) = send_json(
+        app,
+        Method::POST,
+        "/api/v1/credentials",
+        None,
+        Some(cookie),
+        Some(csrf),
+        Some(json!({
+            "name": name,
+            "service": "seed",
+            "secret_value": "seed-secret",
+            "vault_id": vault_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed credential {name}: {body:?}");
+}
+
 #[tokio::test]
 async fn test_credential_with_default_vault() {
     let (app, store) = setup_test_app().await;
@@ -229,7 +266,8 @@ async fn test_credential_with_default_vault() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "create credential: {:?}", body);
-    assert_eq!(body["data"]["vault"], "default");
+    assert_eq!(body["data"]["vault_id"], DEFAULT_VAULT_ID);
+    assert_eq!(body["data"]["vault_name"], "default");
 }
 
 #[tokio::test]
@@ -237,8 +275,8 @@ async fn test_credential_with_explicit_vault() {
     let (app, store) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "vault-admin2", TEST_PASSWORD, UserRole::Admin).await;
     let (cookie, csrf) = login_user(&app, "vault-admin2", TEST_PASSWORD).await;
+    let vault_id = create_vault(&app, &cookie, &csrf, "production").await;
 
-    // Create credential with explicit vault
     let (status, body) = send_json(
         &app,
         Method::POST,
@@ -250,49 +288,28 @@ async fn test_credential_with_explicit_vault() {
             "name": "prod-cred",
             "service": "github",
             "secret_value": "ghp_token123",
-            "vault": "production"
+            "vault_id": vault_id
         })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "create credential: {:?}", body);
-    assert_eq!(body["data"]["vault"], "production");
+    assert_eq!(body["data"]["vault_id"], vault_id);
+    assert_eq!(body["data"]["vault_name"], "production");
 }
 
+/// The vault list is rows, not names: two vaults called `alpha` are two
+/// entries, and the system default is always there.
 #[tokio::test]
-async fn test_list_vaults_returns_distinct_names() {
+async fn test_list_vaults_returns_rows_not_names() {
     let (app, store) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "vault-admin3", TEST_PASSWORD, UserRole::Admin).await;
     let (cookie, csrf) = login_user(&app, "vault-admin3", TEST_PASSWORD).await;
 
-    // Create credentials in different vaults
-    for (name, vault) in &[
-        ("cred-a", "alpha"),
-        ("cred-b", "beta"),
-        ("cred-c", "alpha"), // duplicate vault
-        ("cred-d", "default"),
-    ] {
-        let mut payload = json!({
-            "name": name,
-            "service": "test",
-            "secret_value": "secret"
-        });
-        if *vault != "default" {
-            payload["vault"] = json!(vault);
-        }
-        let (status, _) = send_json(
-            &app,
-            Method::POST,
-            "/api/v1/credentials",
-            None,
-            Some(&cookie),
-            Some(&csrf),
-            Some(payload),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-    }
+    // Distinct names: one owner may not hold two vaults of the same name.
+    let alpha_one = create_vault(&app, &cookie, &csrf, "alpha").await;
+    let alpha_two = create_vault(&app, &cookie, &csrf, "alpha-two").await;
+    let beta = create_vault(&app, &cookie, &csrf, "beta").await;
 
-    // List vaults
     let (status, body) = send_json(
         &app,
         Method::GET,
@@ -306,12 +323,29 @@ async fn test_list_vaults_returns_distinct_names() {
     assert_eq!(status, StatusCode::OK, "list vaults: {:?}", body);
 
     let vaults = body["data"].as_array().expect("data should be array");
-    let vault_names: Vec<&str> = vaults.iter().map(|v| v.as_str().unwrap()).collect();
-    assert!(vault_names.contains(&"alpha"));
-    assert!(vault_names.contains(&"beta"));
-    assert!(vault_names.contains(&"default"));
-    // alpha appears twice but should be deduped
-    assert_eq!(vault_names.len(), 3);
+    let ids: Vec<&str> = vaults.iter().filter_map(|v| v["id"].as_str()).collect();
+    for expected in [
+        DEFAULT_VAULT_ID,
+        alpha_one.as_str(),
+        alpha_two.as_str(),
+        beta.as_str(),
+    ] {
+        assert!(
+            ids.contains(&expected),
+            "{expected} should be listed: {ids:?}"
+        );
+    }
+    assert_eq!(
+        vaults.len(),
+        4,
+        "the default plus three created vaults: {ids:?}"
+    );
+    let default = vaults
+        .iter()
+        .find(|v| v["id"] == DEFAULT_VAULT_ID)
+        .expect("the default vault");
+    assert_eq!(default["is_default"], true, "{default}");
+    assert!(default["owner_user_id"].is_null(), "{default}");
 }
 
 #[tokio::test]
@@ -320,63 +354,16 @@ async fn test_list_credentials_by_vault() {
     let _admin = create_user_in_db(&*store, "vault-admin4", TEST_PASSWORD, UserRole::Admin).await;
     let (cookie, csrf) = login_user(&app, "vault-admin4", TEST_PASSWORD).await;
 
-    // Create credentials in different vaults
-    let (s1, _) = send_json(
-        &app,
-        Method::POST,
-        "/api/v1/credentials",
-        None,
-        Some(&cookie),
-        Some(&csrf),
-        Some(json!({
-            "name": "prod-token",
-            "service": "slack",
-            "secret_value": "xoxb-prod",
-            "vault": "production"
-        })),
-    )
-    .await;
-    assert_eq!(s1, StatusCode::OK);
+    let production = create_vault(&app, &cookie, &csrf, "production").await;
+    let staging = create_vault(&app, &cookie, &csrf, "staging").await;
+    seed_credential(&app, &cookie, &csrf, "prod-token", &production).await;
+    seed_credential(&app, &cookie, &csrf, "prod-github", &production).await;
+    seed_credential(&app, &cookie, &csrf, "staging-token", &staging).await;
 
-    let (s2, _) = send_json(
-        &app,
-        Method::POST,
-        "/api/v1/credentials",
-        None,
-        Some(&cookie),
-        Some(&csrf),
-        Some(json!({
-            "name": "staging-token",
-            "service": "slack",
-            "secret_value": "xoxb-staging",
-            "vault": "staging"
-        })),
-    )
-    .await;
-    assert_eq!(s2, StatusCode::OK);
-
-    let (s3, _) = send_json(
-        &app,
-        Method::POST,
-        "/api/v1/credentials",
-        None,
-        Some(&cookie),
-        Some(&csrf),
-        Some(json!({
-            "name": "prod-github",
-            "service": "github",
-            "secret_value": "ghp-prod",
-            "vault": "production"
-        })),
-    )
-    .await;
-    assert_eq!(s3, StatusCode::OK);
-
-    // List production vault
     let (status, body) = send_json(
         &app,
         Method::GET,
-        "/api/v1/vaults/production/credentials",
+        &format!("/api/v1/vaults/{production}/credentials"),
         None,
         Some(&cookie),
         None,
@@ -391,11 +378,10 @@ async fn test_list_credentials_by_vault() {
     assert!(names.contains(&"prod-token"));
     assert!(names.contains(&"prod-github"));
 
-    // List staging vault
     let (status, body) = send_json(
         &app,
         Method::GET,
-        "/api/v1/vaults/staging/credentials",
+        &format!("/api/v1/vaults/{staging}/credentials"),
         None,
         Some(&cookie),
         None,
@@ -407,11 +393,12 @@ async fn test_list_credentials_by_vault() {
     assert_eq!(creds.len(), 1);
     assert_eq!(creds[0]["name"].as_str().unwrap(), "staging-token");
 
-    // List nonexistent vault returns empty
+    // A vault id nobody has is empty, not an error: the read answers with
+    // what the caller may see.
     let (status, body) = send_json(
         &app,
         Method::GET,
-        "/api/v1/vaults/nonexistent/credentials",
+        &format!("/api/v1/vaults/{}/credentials", Uuid::new_v4()),
         None,
         Some(&cookie),
         None,
@@ -427,18 +414,73 @@ async fn test_list_credentials_by_vault() {
 // Vault Sharing Tests
 // ---------------------------------------------------------------------------
 
+/// Sharing a vault is the business of whoever owns it: another admin, who
+/// owns nothing there, is refused, and a vault that does not exist is a 404.
+#[tokio::test]
+async fn sharing_requires_owning_the_vault() {
+    let (app, store) = setup_test_app().await;
+    create_user_in_db(&*store, "vault-owner", TEST_PASSWORD, UserRole::Admin).await;
+    create_user_in_db(&*store, "other-admin", TEST_PASSWORD, UserRole::Admin).await;
+    let viewer = create_user_in_db(&*store, "share-target", TEST_PASSWORD, UserRole::Viewer).await;
+    let (owner_cookie, owner_csrf) = login_user(&app, "vault-owner", TEST_PASSWORD).await;
+    let (other_cookie, other_csrf) = login_user(&app, "other-admin", TEST_PASSWORD).await;
+
+    let vault_id = create_vault(&app, &owner_cookie, &owner_csrf, "team-a").await;
+    let share_body = json!({ "user_id": viewer.id.0.to_string(), "permission": "read" });
+
+    let (status, _) = send_json(
+        &app,
+        Method::POST,
+        &format!("/api/v1/vaults/{vault_id}/shares"),
+        None,
+        Some(&other_cookie),
+        Some(&other_csrf),
+        Some(share_body.clone()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "non-owner admin cannot share"
+    );
+
+    let (status, _) = send_json(
+        &app,
+        Method::POST,
+        &format!("/api/v1/vaults/{}/shares", Uuid::new_v4()),
+        None,
+        Some(&owner_cookie),
+        Some(&owner_csrf),
+        Some(share_body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "no such vault");
+
+    let (status, body) = send_json(
+        &app,
+        Method::POST,
+        &format!("/api/v1/vaults/{vault_id}/shares"),
+        None,
+        Some(&owner_cookie),
+        Some(&owner_csrf),
+        Some(share_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "owner shares: {body:?}");
+}
+
 #[tokio::test]
 async fn test_share_vault_with_user() {
     let (app, store) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "share-admin", TEST_PASSWORD, UserRole::Admin).await;
     let viewer = create_user_in_db(&*store, "share-viewer", TEST_PASSWORD, UserRole::Viewer).await;
     let (cookie, csrf) = login_user(&app, "share-admin", TEST_PASSWORD).await;
+    let vault_id = create_vault(&app, &cookie, &csrf, "production").await;
 
-    // Share vault
     let (status, body) = send_json(
         &app,
         Method::POST,
-        "/api/v1/vaults/production/shares",
+        &format!("/api/v1/vaults/{vault_id}/shares"),
         None,
         Some(&cookie),
         Some(&csrf),
@@ -449,7 +491,7 @@ async fn test_share_vault_with_user() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "share vault: {:?}", body);
-    assert_eq!(body["data"]["vault_name"], "production");
+    assert_eq!(body["data"]["vault_id"], vault_id);
     assert_eq!(body["data"]["permission_level"], "read");
     assert_eq!(body["data"]["shared_with_user_id"], viewer.id.0.to_string());
 }
@@ -469,43 +511,26 @@ async fn test_list_vault_shares() {
     let user2 =
         create_user_in_db(&*store, "list-share-user2", TEST_PASSWORD, UserRole::Viewer).await;
     let (cookie, csrf) = login_user(&app, "list-share-admin", TEST_PASSWORD).await;
+    let vault_id = create_vault(&app, &cookie, &csrf, "shared-vault").await;
 
-    // Share vault with two users
-    let (s1, _) = send_json(
-        &app,
-        Method::POST,
-        "/api/v1/vaults/shared-vault/shares",
-        None,
-        Some(&cookie),
-        Some(&csrf),
-        Some(json!({
-            "user_id": user1.id.0.to_string(),
-            "permission": "write"
-        })),
-    )
-    .await;
-    assert_eq!(s1, StatusCode::OK);
+    for user in [&user1, &user2] {
+        let (status, body) = send_json(
+            &app,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/shares"),
+            None,
+            Some(&cookie),
+            Some(&csrf),
+            Some(json!({ "user_id": user.id.0.to_string(), "permission": "read" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "share: {body:?}");
+    }
 
-    let (s2, _) = send_json(
-        &app,
-        Method::POST,
-        "/api/v1/vaults/shared-vault/shares",
-        None,
-        Some(&cookie),
-        Some(&csrf),
-        Some(json!({
-            "user_id": user2.id.0.to_string(),
-            "permission": "read"
-        })),
-    )
-    .await;
-    assert_eq!(s2, StatusCode::OK);
-
-    // List shares
     let (status, body) = send_json(
         &app,
         Method::GET,
-        "/api/v1/vaults/shared-vault/shares",
+        &format!("/api/v1/vaults/{vault_id}/shares"),
         None,
         Some(&cookie),
         None,
@@ -524,12 +549,12 @@ async fn test_unshare_vault() {
     let viewer =
         create_user_in_db(&*store, "unshare-viewer", TEST_PASSWORD, UserRole::Viewer).await;
     let (cookie, csrf) = login_user(&app, "unshare-admin", TEST_PASSWORD).await;
+    let vault_id = create_vault(&app, &cookie, &csrf, "to-unshare").await;
 
-    // Share vault first
     let (status, _) = send_json(
         &app,
         Method::POST,
-        "/api/v1/vaults/to-unshare/shares",
+        &format!("/api/v1/vaults/{vault_id}/shares"),
         None,
         Some(&cookie),
         Some(&csrf),
@@ -541,22 +566,7 @@ async fn test_unshare_vault() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Verify share exists
-    let (status, body) = send_json(
-        &app,
-        Method::GET,
-        "/api/v1/vaults/to-unshare/shares",
-        None,
-        Some(&cookie),
-        None,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"].as_array().unwrap().len(), 1);
-
-    // Unshare
-    let unshare_uri = format!("/api/v1/vaults/to-unshare/shares/{}", viewer.id.0);
+    let unshare_uri = format!("/api/v1/vaults/{vault_id}/shares/{}", viewer.id.0);
     let (status, body) = send_json(
         &app,
         Method::DELETE,
@@ -570,11 +580,10 @@ async fn test_unshare_vault() {
     assert_eq!(status, StatusCode::OK, "unshare: {:?}", body);
     assert_eq!(body["data"]["deleted"], true);
 
-    // Verify share is gone
     let (status, body) = send_json(
         &app,
         Method::GET,
-        "/api/v1/vaults/to-unshare/shares",
+        &format!("/api/v1/vaults/{vault_id}/shares"),
         None,
         Some(&cookie),
         None,
@@ -596,12 +605,13 @@ async fn test_share_vault_with_nonexistent_user() {
     )
     .await;
     let (cookie, csrf) = login_user(&app, "share-nouser-admin", TEST_PASSWORD).await;
+    let vault_id = create_vault(&app, &cookie, &csrf, "some-vault").await;
 
     let fake_user_id = Uuid::new_v4().to_string();
     let (status, body) = send_json(
         &app,
         Method::POST,
-        "/api/v1/vaults/some-vault/shares",
+        &format!("/api/v1/vaults/{vault_id}/shares"),
         None,
         Some(&cookie),
         Some(&csrf),
@@ -632,12 +642,13 @@ async fn test_share_vault_default_permission() {
     )
     .await;
     let (cookie, csrf) = login_user(&app, "default-perm-admin", TEST_PASSWORD).await;
+    let vault_id = create_vault(&app, &cookie, &csrf, "default-perm-vault").await;
 
     // Share without specifying permission — should default to "read"
     let (status, body) = send_json(
         &app,
         Method::POST,
-        "/api/v1/vaults/default-perm-vault/shares",
+        &format!("/api/v1/vaults/{vault_id}/shares"),
         None,
         Some(&cookie),
         Some(&csrf),
@@ -650,8 +661,10 @@ async fn test_share_vault_default_permission() {
     assert_eq!(body["data"]["permission_level"], "read");
 }
 
+/// A viewer holds no `create`, so there is no vault for them to own and
+/// nothing for them to share.
 #[tokio::test]
-async fn test_viewer_cannot_share_vault() {
+async fn test_viewer_cannot_create_or_share_a_vault() {
     let (app, store) = setup_test_app().await;
     let admin = create_user_in_db(
         &*store,
@@ -667,13 +680,26 @@ async fn test_viewer_cannot_share_vault() {
         UserRole::Viewer,
     )
     .await;
+    let (admin_cookie, admin_csrf) = login_user(&app, "viewer-share-admin", TEST_PASSWORD).await;
     let (viewer_cookie, viewer_csrf) = login_user(&app, "viewer-share-viewer", TEST_PASSWORD).await;
 
-    // Viewer tries to share — should fail with 403
     let (status, body) = send_json(
         &app,
         Method::POST,
-        "/api/v1/vaults/some-vault/shares",
+        "/api/v1/vaults",
+        None,
+        Some(&viewer_cookie),
+        Some(&viewer_csrf),
+        Some(json!({ "name": "viewers-vault" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "viewer create: {:?}", body);
+
+    let vault_id = create_vault(&app, &admin_cookie, &admin_csrf, "admins-vault").await;
+    let (status, body) = send_json(
+        &app,
+        Method::POST,
+        &format!("/api/v1/vaults/{vault_id}/shares"),
         None,
         Some(&viewer_cookie),
         Some(&viewer_csrf),
@@ -687,39 +713,15 @@ async fn test_viewer_cannot_share_vault() {
 }
 
 #[tokio::test]
-async fn test_operator_cannot_share_vault() {
-    let (app, store) = setup_test_app().await;
-    let admin = create_user_in_db(&*store, "op-share-admin", TEST_PASSWORD, UserRole::Admin).await;
-    let _operator = create_user_in_db(
-        &*store,
-        "op-share-operator",
-        TEST_PASSWORD,
-        UserRole::Operator,
-    )
-    .await;
-    let (operator_cookie, operator_csrf) =
-        login_user(&app, "op-share-operator", TEST_PASSWORD).await;
-
-    // Operator tries to share — should fail with 403
-    let (status, body) = send_json(
-        &app,
-        Method::POST,
-        "/api/v1/vaults/some-vault/shares",
-        None,
-        Some(&operator_cookie),
-        Some(&operator_csrf),
-        Some(json!({
-            "user_id": admin.id.0.to_string(),
-            "permission": "read"
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "operator share: {:?}", body);
-}
-
-#[tokio::test]
 async fn test_agent_cannot_share_vault() {
     let ctx = TestAppBuilder::new().build().await;
+    let _admin = create_user_in_db(
+        &*ctx.store,
+        "agent-share-admin",
+        TEST_PASSWORD,
+        UserRole::Admin,
+    )
+    .await;
     let viewer = create_user_in_db(
         &*ctx.store,
         "agent-share-viewer",
@@ -727,6 +729,8 @@ async fn test_agent_cannot_share_vault() {
         UserRole::Viewer,
     )
     .await;
+    let (admin_cookie, admin_csrf) = login_user(&ctx.app, "agent-share-admin", TEST_PASSWORD).await;
+    let vault_id = create_vault(&ctx.app, &admin_cookie, &admin_csrf, "agent-vault").await;
 
     // Create an admin agent and get a JWT via device
     let (agent, raw_key) =
@@ -739,7 +743,7 @@ async fn test_agent_cannot_share_vault() {
     let (status, body) = send_json_dual_auth(
         &ctx.app,
         Method::POST,
-        "/api/v1/vaults/some-vault/shares",
+        &format!("/api/v1/vaults/{vault_id}/shares"),
         &qda.device_signing_key,
         &qda.device_id,
         &qda.agent_jwt,
@@ -759,12 +763,12 @@ async fn test_share_vault_invalid_permission_returns_400() {
     let viewer =
         create_user_in_db(&*store, "bad-perm-viewer", TEST_PASSWORD, UserRole::Viewer).await;
     let (cookie, csrf) = login_user(&app, "bad-perm-admin", TEST_PASSWORD).await;
+    let vault_id = create_vault(&app, &cookie, &csrf, "some-vault").await;
 
-    // Share with invalid permission value
     let (status, body) = send_json(
         &app,
         Method::POST,
-        "/api/v1/vaults/some-vault/shares",
+        &format!("/api/v1/vaults/{vault_id}/shares"),
         None,
         Some(&cookie),
         Some(&csrf),
@@ -783,9 +787,10 @@ async fn test_unshare_nonexistent_returns_404() {
     let _admin =
         create_user_in_db(&*store, "unshare-404-admin", TEST_PASSWORD, UserRole::Admin).await;
     let (cookie, csrf) = login_user(&app, "unshare-404-admin", TEST_PASSWORD).await;
+    let vault_id = create_vault(&app, &cookie, &csrf, "empty-shares").await;
 
     let fake_user_id = Uuid::new_v4();
-    let uri = format!("/api/v1/vaults/no-vault/shares/{}", fake_user_id);
+    let uri = format!("/api/v1/vaults/{vault_id}/shares/{fake_user_id}");
     let (status, body) = send_json(
         &app,
         Method::DELETE,

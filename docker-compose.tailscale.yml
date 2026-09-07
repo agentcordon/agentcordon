@@ -18,7 +18,6 @@
 #   TS_HOSTNAME             — Tailscale machine name (default: agentcordon)
 #   TS_EXTRA_ARGS           — Extra args to `tailscale up` (e.g. --advertise-tags=tag:server)
 #   TS_STATE_DIR            — Tailscale state directory inside container (default: /var/lib/tailscale)
-#   AGTCRDN_SEED_DEMO      — Seed demo data on first boot (default: true)
 
 services:
   tailscale:
@@ -51,8 +50,6 @@ services:
         condition: service_started
     volumes:
       - agentcordon-data:/data
-    environment:
-      AGTCRDN_SEED_DEMO: "${AGTCRDN_SEED_DEMO:-true}"
     env_file:
       - path: .env
         required: false

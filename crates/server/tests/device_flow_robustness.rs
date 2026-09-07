@@ -1,8 +1,8 @@
-//! RFC 8628 device flow robustness tests — v0.3.0.
+//! RFC 8628 device flow robustness tests.
 //!
-//! Source: `docs/internal/plan/test-designs-v0.3.0.md` §4.
-//! One `#[tokio::test]` per TC-ROB-* case. Written speculatively against
-//! the documented API shape; `#[ignore]` until BE-1 lands the endpoints.
+//! Drives the in-process router built by `TestAppBuilder`: activation-form
+//! rate limiting, single-use device codes, CSRF on the form, and concurrent
+//! polls.
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -107,64 +107,98 @@ async fn poll_token_with_ctx(
 // 4.1 Activation form rate limiting
 // ---------------------------------------------------------------------------
 
-// TC-ROB-001: 11th invalid POST /activate from same IP => 429 w/ Retry-After
+/// A signed-in operator with a valid form CSRF token, plus a form body that
+/// guesses a user code. This is the shape of a brute-force through the
+/// browser form.
+async fn activation_guess_setup(
+    trust_forwarded_headers: bool,
+) -> (
+    agent_cordon_server::test_helpers::TestContext,
+    String,
+    String,
+) {
+    use crate::common::{compute_consent_csrf, create_user_in_db, login_user, TEST_PASSWORD};
+    use agent_cordon_core::domain::user::UserRole;
+
+    let ctx = TestAppBuilder::new()
+        .with_config(move |c| c.trust_forwarded_headers = trust_forwarded_headers)
+        .build()
+        .await;
+    create_user_in_db(
+        &*ctx.store,
+        "guesser",
+        TEST_PASSWORD,
+        UserRole::Operator,
+        false,
+        true,
+    )
+    .await;
+    let (session, _) = login_user(&ctx.app, "guesser", TEST_PASSWORD).await;
+    let csrf = compute_consent_csrf(&session, &ctx.state.crypto.session_hash_key);
+    let body = format!(
+        "user_code=bad-bad-bad-bad&csrf_token={}&decision=approve",
+        urlencoding::encode(&csrf)
+    );
+    (ctx, session, body)
+}
+
+// TC-ROB-001: 11th invalid POST /activate from same address => 429 w/ Retry-After
 #[tokio::test]
-#[ignore = "pending BE-1 /activate endpoint + rate limiter"]
 async fn tc_rob_001_activate_rate_limit() {
-    let app = setup().await;
+    let (ctx, session, body) = activation_guess_setup(false).await;
     for _ in 0..10 {
-        let (_, _, _) = post_form_with_headers(
-            &app,
+        let (s, _, _) = post_form_with_headers(
+            &ctx.app,
             "/activate",
-            "user_code=bad-bad-bad-bad&csrf_token=x&decision=approve",
-            &[("x-forwarded-for", "10.0.0.1")],
+            &body,
+            &[("cookie", session.as_str())],
         )
         .await;
+        assert_ne!(s, StatusCode::TOO_MANY_REQUESTS, "within budget");
     }
     let (s, _, h) = post_form_with_headers(
-        &app,
+        &ctx.app,
         "/activate",
-        "user_code=bad-bad-bad-bad&csrf_token=x&decision=approve",
-        &[("x-forwarded-for", "10.0.0.1")],
+        &body,
+        &[("cookie", session.as_str())],
     )
     .await;
     assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
     assert!(h.iter().any(|(k, _)| k == "retry-after"));
 }
 
-// TC-ROB-002: per-IP rate limit isolation
+// TC-ROB-002: per-address isolation (behind a trusted proxy)
 #[tokio::test]
-#[ignore = "pending BE-1 /activate endpoint + rate limiter"]
 async fn tc_rob_002_rate_limit_per_ip_isolation() {
-    let app = setup().await;
+    let (ctx, session, body) = activation_guess_setup(true).await;
     for _ in 0..11 {
         let _ = post_form_with_headers(
-            &app,
+            &ctx.app,
             "/activate",
-            "user_code=bad-bad-bad-bad&csrf_token=x&decision=approve",
-            &[("x-forwarded-for", "10.0.0.1")],
+            &body,
+            &[
+                ("cookie", session.as_str()),
+                ("x-forwarded-for", "10.0.0.1"),
+            ],
         )
         .await;
     }
     let (s, _, _) = post_form_with_headers(
-        &app,
+        &ctx.app,
         "/activate",
-        "user_code=bad-bad-bad-bad&csrf_token=x&decision=approve",
-        &[("x-forwarded-for", "10.0.0.2")],
+        &body,
+        &[
+            ("cookie", session.as_str()),
+            ("x-forwarded-for", "10.0.0.2"),
+        ],
     )
     .await;
-    assert_ne!(s, StatusCode::TOO_MANY_REQUESTS);
+    assert_ne!(
+        s,
+        StatusCode::TOO_MANY_REQUESTS,
+        "another address has its own budget"
+    );
 }
-
-// TC-ROB-003: valid code during lockout still fails
-#[tokio::test]
-#[ignore = "pending BE-1 /activate endpoint + rate limiter"]
-async fn tc_rob_003_valid_code_during_lockout_fails() {}
-
-// TC-ROB-004: 429 emits an audit event
-#[tokio::test]
-#[ignore = "pending BE-1 /activate endpoint + rate limiter + audit hook"]
-async fn tc_rob_004_rate_limit_audit_event() {}
 
 // ---------------------------------------------------------------------------
 // 4.2 Device code single-use
@@ -206,14 +240,8 @@ async fn tc_rob_011_consumed_row_not_deleted() {
 // 4.3 User-to-device binding
 // ---------------------------------------------------------------------------
 
-// TC-ROB-020: approving user becomes workspace owner
-#[tokio::test]
-#[ignore = "pending BE-1 /activate + multi-user session helper"]
-async fn tc_rob_020_approving_user_owns_workspace() {}
-
 // TC-ROB-021: two pending codes — approving one does not affect the other
 #[tokio::test]
-#[ignore = "pending BE-1 /activate endpoint"]
 async fn tc_rob_021_no_crosstalk_between_pending_codes() {
     let app = setup().await;
     let a = request_device_code(&app).await;
@@ -226,34 +254,19 @@ async fn tc_rob_021_no_crosstalk_between_pending_codes() {
 // 4.4 CSRF protection on /activate
 // ---------------------------------------------------------------------------
 
-// TC-ROB-030: GET /activate renders csrf_token hidden field
+// TC-ROB-031: a signed-in POST /activate with a wrong csrf_token => 403
 #[tokio::test]
-#[ignore = "pending BE-1 /activate GET template"]
-async fn tc_rob_030_activate_get_has_csrf_field() {}
-
-// TC-ROB-031: POST /activate without csrf_token => 403
-#[tokio::test]
-#[ignore = "pending BE-1 /activate endpoint"]
 async fn tc_rob_031_activate_post_missing_csrf() {
-    let app = setup().await;
-    let (s, _) = post_form(
-        &app,
+    let (ctx, session, _) = activation_guess_setup(false).await;
+    let (s, _, _) = post_form_with_headers(
+        &ctx.app,
         "/activate",
-        "user_code=word-word-word-word&decision=approve",
+        "user_code=word-word-word-word&csrf_token=not-the-token&decision=approve",
+        &[("cookie", session.as_str())],
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
-
-// TC-ROB-032: csrf_token from different session => 403
-#[tokio::test]
-#[ignore = "pending BE-1 /activate + session helper"]
-async fn tc_rob_032_activate_post_cross_session_csrf() {}
-
-// TC-ROB-033: cross-origin w/ no matching session cookie => 403
-#[tokio::test]
-#[ignore = "pending BE-1 /activate endpoint"]
-async fn tc_rob_033_activate_cross_origin_no_session() {}
 
 // ---------------------------------------------------------------------------
 // 4.5 Concurrent polls — no double issuance
@@ -285,22 +298,3 @@ async fn tc_rob_040_concurrent_polls_single_issuance() {
         "loser must get invalid_grant: {r1:?} / {r2:?}"
     );
 }
-
-// TC-ROB-041: single DeviceCodeApproved-consumed + single Oauth2TokenAcquired
-#[tokio::test]
-#[ignore = "pending BE-1 /activate + audit hook"]
-async fn tc_rob_041_concurrent_polls_audit_dedup() {}
-
-// ---------------------------------------------------------------------------
-// 4.6 User-code entropy / guessability
-// ---------------------------------------------------------------------------
-
-// TC-ROB-050: user_code namespace >= 2^42 (4 words, >=1296 per word)
-#[tokio::test]
-#[ignore = "pending BE-1 device flow + wordlist module"]
-async fn tc_rob_050_user_code_entropy() {}
-
-// TC-ROB-051: GET /activate?user_code=<guess> reveals nothing about validity
-#[tokio::test]
-#[ignore = "pending BE-1 /activate GET endpoint"]
-async fn tc_rob_051_get_activate_does_not_leak_validity() {}

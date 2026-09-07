@@ -16,7 +16,6 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use agent_cordon_core::auth::jwt::JwtIssuer;
 use agent_cordon_core::crypto::aes_gcm::AesGcmEncryptor;
 use agent_cordon_core::crypto::password::hash_password;
 use agent_cordon_core::crypto::SecretEncryptor;
@@ -64,15 +63,10 @@ async fn send_cred(
 // ---------------------------------------------------------------------------
 
 /// Build the full test application with an in-memory SQLite store.
-/// Returns (router, store, encryptor, jwt_issuer).
-async fn setup_test_app() -> (
-    Router,
-    Arc<dyn Store + Send + Sync>,
-    Arc<AesGcmEncryptor>,
-    Arc<JwtIssuer>,
-) {
+/// Returns (router, store, encryptor).
+async fn setup_test_app() -> (Router, Arc<dyn Store + Send + Sync>, Arc<AesGcmEncryptor>) {
     let ctx = TestAppBuilder::new().build().await;
-    (ctx.app, ctx.store, ctx.encryptor, ctx.jwt_issuer)
+    (ctx.app, ctx.store, ctx.encryptor)
 }
 
 /// Create a user directly in the store.
@@ -113,8 +107,11 @@ async fn create_agent_in_db(
     let agent = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled,
-        status: WorkspaceStatus::Active,
+        status: if enabled {
+            WorkspaceStatus::Active
+        } else {
+            WorkspaceStatus::Disabled
+        },
         pk_hash: None,
         encryption_public_key: None,
         tags: tags.into_iter().map(String::from).collect(),
@@ -510,7 +507,7 @@ async fn credential_update_tags_to_empty() {
 
 #[tokio::test]
 async fn credential_create_with_tags_unauthenticated_returns_401() {
-    let (app, _store, _enc, _jwt) = setup_test_app().await;
+    let (app, _store, _enc) = setup_test_app().await;
 
     let (status, _body) = send_json(
         &app,
@@ -553,7 +550,7 @@ async fn credential_update_tags_nonexistent_credential_returns_404() {
 
 #[tokio::test]
 async fn credential_update_tags_unauthenticated_returns_401() {
-    let (app, store, enc, _jwt) = setup_test_app().await;
+    let (app, store, enc) = setup_test_app().await;
     let (admin, _api_key) = create_agent_in_db(&*store, "admin-8", vec!["admin"], true, None).await;
 
     // Create a credential directly in DB
@@ -578,7 +575,8 @@ async fn credential_update_tags_unauthenticated_returns_401() {
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec!["original".to_string()],
         description: None,
@@ -605,7 +603,7 @@ async fn credential_update_tags_unauthenticated_returns_401() {
 
 #[tokio::test]
 async fn agent_created_with_tags_field_works() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     // Create admin user for the user-auth agent management endpoints
     let _admin_user = create_user_in_db(
         &*store,
@@ -656,7 +654,7 @@ async fn agent_created_with_tags_field_works() {
 
 #[tokio::test]
 async fn agent_list_uses_tags_field() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let admin_user = create_user_in_db(
         &*store,
         "admin-list",
@@ -717,7 +715,7 @@ async fn agent_list_uses_tags_field() {
 
 #[tokio::test]
 async fn agent_update_tags_via_put() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let admin_user = create_user_in_db(
         &*store,
         "admin-update-tags",
@@ -764,7 +762,7 @@ async fn agent_update_tags_via_put() {
 
 #[tokio::test]
 async fn agent_detail_unauthenticated_returns_401() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let (agent, _key) =
         create_agent_in_db(&*store, "noauth-agent", vec!["viewer"], true, None).await;
 
@@ -783,7 +781,7 @@ async fn agent_detail_unauthenticated_returns_401() {
 
 #[tokio::test]
 async fn agent_list_non_admin_user_denied() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _viewer = create_user_in_db(
         &*store,
         "viewer-user",
@@ -819,7 +817,7 @@ async fn agent_list_non_admin_user_denied() {
 
 #[tokio::test]
 async fn workspace_status_active_when_created() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let admin_user = create_user_in_db(
         &*store,
         "admin-status-new",
@@ -903,7 +901,7 @@ async fn agent_status_active_after_activation() {
 
 #[tokio::test]
 async fn agent_status_revoked() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let admin_user = create_user_in_db(
         &*store,
         "admin-status-idle",
@@ -920,7 +918,6 @@ async fn agent_status_revoked() {
     let agent = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: "revoked-status-agent".to_string(),
-        enabled: false,
         status: WorkspaceStatus::Revoked,
         pk_hash: None,
         encryption_public_key: None,
@@ -975,7 +972,6 @@ async fn workspace_status_appears_in_list() {
         let ws = Workspace {
             id: WorkspaceId(Uuid::new_v4()),
             name: name.to_string(),
-            enabled: true,
             status: ws_status,
             pk_hash: None,
             encryption_public_key: None,
@@ -1024,7 +1020,7 @@ async fn workspace_status_appears_in_list() {
 
 #[tokio::test]
 async fn agent_status_not_exposed_to_unauthenticated() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let (agent, _key) =
         create_agent_in_db(&*store, "status-noauth", vec!["viewer"], true, None).await;
 
@@ -1042,7 +1038,7 @@ async fn agent_status_not_exposed_to_unauthenticated() {
 
 #[tokio::test]
 async fn agent_status_nonexistent_agent_returns_404() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _admin_user = create_user_in_db(
         &*store,
         "admin-status-404",
@@ -1074,7 +1070,7 @@ async fn agent_status_nonexistent_agent_returns_404() {
 
 #[tokio::test]
 async fn no_bootstrap_admin_agent_in_fresh_db() {
-    let (_app, store, _enc, _jwt) = setup_test_app().await;
+    let (_app, store, _enc) = setup_test_app().await;
 
     // In a fresh DB, there should be no agents at all
     let agents = store.list_workspaces().await.expect("list agents");
@@ -1086,7 +1082,7 @@ async fn no_bootstrap_admin_agent_in_fresh_db() {
 
 #[tokio::test]
 async fn root_user_can_still_be_created_and_login() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
 
     // Manually create a root user (simulating what main.rs does on startup)
     let _root = create_user_in_db(
@@ -1116,7 +1112,7 @@ async fn no_bootstrap_admin_env_var_in_config() {
     // bootstrap_admin proves F-009 is complete.
     let config = AppConfig::test_default();
     // Verify config can be created without any bootstrap admin reference
-    assert!(config.jwt_ttl_seconds > 0, "config should be valid");
+    assert!(config.session_ttl_seconds > 0, "config should be valid");
 }
 
 // ===========================================================================
@@ -1125,7 +1121,7 @@ async fn no_bootstrap_admin_env_var_in_config() {
 
 #[tokio::test]
 async fn user_can_create_credential_with_tags_via_session() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _admin_user = create_user_in_db(
         &*store,
         "admin-cred-tags",
@@ -1214,7 +1210,7 @@ async fn credential_tags_persist_after_other_field_update() {
 
 #[tokio::test]
 async fn agent_tags_persist_after_other_field_update() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let admin_user = create_user_in_db(
         &*store,
         "admin-agent-persist",

@@ -11,10 +11,15 @@ use axum::middleware;
 use axum::routing::{get, post};
 use axum::Router;
 
-use crate::auth::auth_middleware;
+use crate::auth::{auth_middleware, shared_secret_middleware};
 use crate::state::SharedState;
 
 /// Build the broker's axum router.
+///
+/// Three groups: `/health` is open; `/register` needs the shared secret
+/// when one is configured; everything else needs the shared secret (when
+/// configured) and a workspace signature. Layers run outermost-last, so the
+/// shared-secret check precedes signature verification.
 pub fn build_router(state: SharedState) -> Router {
     // Routes that require workspace Ed25519 authentication
     let authenticated = Router::new()
@@ -33,13 +38,26 @@ pub fn build_router(state: SharedState) -> Router {
             state.clone(),
             auth_middleware,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            shared_secret_middleware,
+        ))
         .with_state(state.clone());
 
-    // Routes that do NOT require workspace authentication
-    let public = Router::new()
-        .route("/health", get(health::get_health))
+    // Self-signed, not workspace-authenticated, but still behind the shared
+    // secret so an open bind cannot be used to start device flows.
+    let register = Router::new()
         .route("/register", post(register::post_register))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            shared_secret_middleware,
+        ))
+        .with_state(state.clone());
+
+    // Open: discovery and key pinning need it before any secret is known.
+    let health = Router::new()
+        .route("/health", get(health::get_health))
         .with_state(state);
 
-    public.merge(authenticated)
+    health.merge(register).merge(authenticated)
 }

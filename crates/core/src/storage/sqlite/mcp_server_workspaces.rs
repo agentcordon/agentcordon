@@ -4,6 +4,7 @@ use super::helpers::*;
 use super::SqliteStore;
 
 use crate::domain::mcp::{McpServer, McpServerId};
+use crate::domain::time::format_timestamp;
 use crate::domain::user::UserId;
 use crate::domain::workspace::WorkspaceId;
 use crate::error::StoreError;
@@ -23,7 +24,7 @@ impl McpServerWorkspaceStore for SqliteStore {
         let mcp_id_str = mcp_server_id.0.to_string();
         let ws_id_str = workspace_id.0.to_string();
         let created_by_user_str = created_by_user.map(|u| u.0.to_string());
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = format_timestamp(&chrono::Utc::now());
         self.conn()
             .call(move |conn| {
                 let count = conn
@@ -38,7 +39,7 @@ impl McpServerWorkspaceStore for SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn remove_mcp_server_workspace(
@@ -60,7 +61,7 @@ impl McpServerWorkspaceStore for SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn list_workspaces_for_mcp_server(
@@ -101,7 +102,7 @@ impl McpServerWorkspaceStore for SqliteStore {
                 Ok(out)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn list_mcp_servers_for_workspace(
@@ -131,7 +132,7 @@ impl McpServerWorkspaceStore for SqliteStore {
                 Ok(servers)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     async fn count_workspaces_for_mcp_server(
@@ -151,7 +152,7 @@ impl McpServerWorkspaceStore for SqliteStore {
                 Ok(count.max(0) as usize)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }
 
@@ -177,7 +178,6 @@ mod tests {
             id: WorkspaceId(Uuid::new_v4()),
             name: name.to_string(),
             tags: vec![],
-            enabled: true,
             status: WorkspaceStatus::Active,
             pk_hash: None,
             encryption_public_key: None,

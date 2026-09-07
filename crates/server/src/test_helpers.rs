@@ -21,25 +21,19 @@ use std::sync::Arc;
 use axum::Router;
 use uuid::Uuid;
 
-use agent_cordon_core::auth::jwt::JwtIssuer;
 use agent_cordon_core::crypto::aes_gcm::AesGcmEncryptor;
-use agent_cordon_core::crypto::key_derivation::{
-    derive_jwt_signing_keypair, derive_master_key, derive_session_hash_key,
-};
+use agent_cordon_core::crypto::key_derivation::{derive_master_key, derive_session_hash_key};
+use agent_cordon_core::crypto::key_ring::KeyRing;
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
 // Re-export Agent as alias for tests that reference it
 pub type Agent = Workspace;
 pub type AgentId = WorkspaceId;
-use agent_cordon_core::policy::cedar::CedarPolicyEngine;
-#[cfg(feature = "sqlite")]
 use agent_cordon_core::storage::sqlite::SqliteStore;
 use agent_cordon_core::storage::Store;
 
-use crate::authz::Authz;
 use crate::build_router;
 use crate::config::AppConfig;
-use crate::rate_limit::LoginRateLimiter;
-use crate::state::AppState;
+use crate::state::{policy_engine_from_store, AppState, CatalogState, CryptoState};
 
 // ---------------------------------------------------------------------------
 // Constants (internal)
@@ -66,14 +60,13 @@ pub struct TestContext {
     pub app: Router,
     /// Raw API key for the admin agent (empty string if `.with_admin()` was not called).
     pub admin_key: String,
-    /// The backing store (in-memory SQLite).
+    /// The backing store (in-memory SQLite, or the one given to `with_store`).
     pub store: Arc<dyn Store + Send + Sync>,
     /// The full application state — useful when tests need inner components.
     pub state: AppState,
-    /// Encryptor instance shared by the app state (convenience accessor).
+    /// An encryptor holding the app's current master key. Anything it seals
+    /// opens with the app's key ring (`state.crypto.key_ring`) and vice versa.
     pub encryptor: Arc<AesGcmEncryptor>,
-    /// JWT issuer shared by the app state (convenience accessor).
-    pub jwt_issuer: Arc<JwtIssuer>,
     /// Raw API keys for agents created via `.with_agent()`, keyed by agent name.
     pub agent_keys: HashMap<String, String>,
     /// Agent records created via `.with_agent()`, keyed by agent name.
@@ -84,6 +77,10 @@ pub struct TestContext {
     pub device_contexts: HashMap<String, TestDeviceContext>,
     /// Device context for the admin agent (if `.with_admin()` was called).
     pub admin_device: Option<TestDeviceContext>,
+    /// The operator warning the master-secret resolution produced, set only
+    /// when [`TestAppBuilder::with_sqlite_file`] named a database whose weak
+    /// secret had to keep its legacy derivation.
+    pub master_secret_warning: Option<String>,
 }
 
 impl TestContext {
@@ -134,29 +131,90 @@ pub struct TestAppBuilder {
     custom_policy: Option<String>,
     #[allow(clippy::type_complexity)]
     config_modifiers: Vec<Box<dyn FnOnce(&mut AppConfig)>>,
-    extra_mcp_templates: Vec<crate::routes::admin_api::mcp_templates::McpServerTemplate>,
+    extra_mcp_templates: Vec<crate::templates::McpServerTemplate>,
+    master_secret: String,
+    master_key_version: i64,
+    previous_master_secret: Option<String>,
+    store: Option<Arc<dyn Store + Send + Sync>>,
+    db_file: Option<String>,
 }
 
 impl TestAppBuilder {
     /// Create a new builder with sensible defaults.
+    ///
+    /// Installs the cheap Argon2id parameters process-wide (the runtime
+    /// replacement for the old `test-crypto` cargo feature) so a test that
+    /// hashes a password before building the app is fast too.
     pub fn new() -> Self {
+        agent_cordon_core::crypto::install_argon2_params(
+            agent_cordon_core::crypto::Argon2Params::FAST,
+        );
         Self {
             create_admin: false,
             pending_agents: Vec::new(),
             custom_policy: None,
             config_modifiers: Vec::new(),
             extra_mcp_templates: Vec::new(),
+            master_secret: TEST_MASTER_SECRET.to_string(),
+            master_key_version: 1,
+            previous_master_secret: None,
+            store: None,
+            db_file: None,
         }
+    }
+
+    /// Use `secret` as the current master secret, at key `version`
+    /// (`AGTCRDN_MASTER_SECRET` + `AGTCRDN_MASTER_KEY_VERSION`).
+    pub fn with_master_secret(mut self, secret: &str, version: i64) -> Self {
+        self.master_secret = secret.to_string();
+        self.master_key_version = version;
+        self
+    }
+
+    /// Load `secret` as the key for `version - 1`
+    /// (`AGTCRDN_PREVIOUS_MASTER_SECRET`), for rotation-window tests.
+    pub fn with_previous_master_secret(mut self, secret: &str) -> Self {
+        self.previous_master_secret = Some(secret.to_string());
+        self
+    }
+
+    /// Build over an existing store instead of a fresh in-memory one.
+    ///
+    /// Migrations and the default-policy seed are skipped (the store already
+    /// has them). This is how a test simulates a server restart: a second
+    /// app, possibly with different master secrets, over the same data.
+    pub fn with_store(mut self, store: Arc<dyn Store + Send + Sync>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// Build over a file-backed SQLite database, the way the server boots
+    /// over an install that already exists on disk.
+    ///
+    /// Unlike [`TestAppBuilder::with_store`], the migrations in `migrations/`
+    /// are run against the file, so a test can point at a database written by
+    /// an older release and assert what the upgrade does to it. Two further
+    /// things follow the real startup path rather than the test defaults:
+    /// the KDF salt is derived from the master secret the way
+    /// `AppConfig::from_env` derives it, and the secret then passes through
+    /// `AppConfig::finalize_master_secret` with the store's actual state, so a
+    /// weak secret protecting an existing install keeps its legacy derivation
+    /// instead of being stretched out from under its own ciphertext. The
+    /// warning that branch produces lands in
+    /// [`TestContext::master_secret_warning`].
+    ///
+    /// The file is opened in place and migrated in place: copy the fixture
+    /// into a `tempfile::TempDir` first.
+    pub fn with_sqlite_file(mut self, db_path: impl Into<String>) -> Self {
+        self.db_file = Some(db_path.into());
+        self
     }
 
     /// Inject an additional MCP template into the in-memory catalog.
     ///
     /// Used by OAuth/DCR tests that need a template pointing at a mock
     /// authorization server.
-    pub fn with_mcp_template(
-        mut self,
-        template: crate::routes::admin_api::mcp_templates::McpServerTemplate,
-    ) -> Self {
+    pub fn with_mcp_template(mut self, template: crate::templates::McpServerTemplate) -> Self {
         self.extra_mcp_templates.push(template);
         self
     }
@@ -196,39 +254,56 @@ impl TestAppBuilder {
     }
 
     /// Build the test environment.
-    #[cfg(feature = "sqlite")]
     pub async fn build(self) -> TestContext {
+        // ---- A file-backed database, if one was named ----
+        // Open it, migrate it, and resolve the master secret against what it
+        // already holds, exactly as startup does before deriving any key.
+        let (file_backed_store, resolved_secret, resolved_salt, master_secret_warning) =
+            self.open_db_file().await;
+
         // ---- Crypto keys ----
-        let master_key = derive_master_key(TEST_MASTER_SECRET, TEST_KDF_SALT.as_bytes())
-            .expect("derive master key");
-        let session_hash_key =
-            derive_session_hash_key(TEST_MASTER_SECRET, TEST_KDF_SALT.as_bytes())
-                .expect("derive session hash key");
+        // For an in-memory store the salt is fixed for every secret, as with
+        // an explicit AGTCRDN_KDF_SALT; a file-backed one derives it.
+        let master_secret = resolved_secret.as_str();
+        let kdf_salt = resolved_salt.as_str();
+        let master_key =
+            derive_master_key(master_secret, kdf_salt.as_bytes()).expect("derive master key");
+        let session_hash_key = derive_session_hash_key(master_secret, kdf_salt.as_bytes())
+            .expect("derive session hash key");
         let session_hash_key = *session_hash_key;
 
         let encryptor = Arc::new(AesGcmEncryptor::new(&master_key));
-
-        // Derive ES256 key pair for JWT signing
-        let (jwt_sk, jwt_vk) =
-            derive_jwt_signing_keypair(TEST_MASTER_SECRET, TEST_KDF_SALT.as_bytes())
-                .expect("derive jwt es256 keypair");
-        let jwt_issuer = Arc::new(JwtIssuer::new(
-            &jwt_sk,
-            &jwt_vk,
-            agent_cordon_core::auth::jwt::ISSUER.to_string(),
-            900,
-        ));
+        // The ring shares `encryptor` as its current key, so a test can read
+        // the nonce counter the app is incrementing.
+        let mut key_ring = KeyRing::new(self.master_key_version, encryptor.clone());
+        if let Some(previous) = self.previous_master_secret.as_deref() {
+            assert_ne!(
+                previous, master_secret,
+                "previous master secret must differ from the current one"
+            );
+            let previous_key = derive_master_key(previous, TEST_KDF_SALT.as_bytes())
+                .expect("derive previous master key");
+            key_ring = key_ring.with_previous(Arc::new(AesGcmEncryptor::new(&previous_key)));
+        }
+        let key_ring = Arc::new(key_ring);
 
         // ---- Store ----
-        let sqlite_store = SqliteStore::new_in_memory()
-            .await
-            .expect("create in-memory store");
-        sqlite_store.run_migrations().await.expect("run migrations");
-        let store: Arc<dyn Store + Send + Sync> = Arc::new(sqlite_store);
+        let reused_store = self.store.is_some() || file_backed_store.is_some();
+        let store: Arc<dyn Store + Send + Sync> = match file_backed_store.or(self.store) {
+            Some(store) => store,
+            None => {
+                let sqlite_store = SqliteStore::new_in_memory()
+                    .await
+                    .expect("create in-memory store");
+                sqlite_store.run_migrations().await.expect("run migrations");
+                Arc::new(sqlite_store)
+            }
+        };
 
         // ---- Policy engine (DB is single source of truth) ----
         // Seed policy into DB first, then load from DB — mirrors production startup.
-        {
+        // A reused store was seeded by the app that created it.
+        if !reused_store {
             use agent_cordon_core::domain::policy::{PolicyId, StoredPolicy};
 
             let policy_text = self.custom_policy.unwrap_or_else(|| {
@@ -255,68 +330,41 @@ impl TestAppBuilder {
                 .expect("seed test policy into DB");
         }
 
-        let db_policies = store
-            .get_all_enabled_policies()
+        let policy_engine = policy_engine_from_store(&*store)
             .await
-            .expect("load policies from DB");
-        let policy_sources: Vec<(String, String)> = db_policies
-            .into_iter()
-            .map(|p| (p.id.0.to_string(), p.cedar_policy))
-            .collect();
-        let cedar_engine =
-            CedarPolicyEngine::new(policy_sources).expect("init policy engine from DB");
-        let authz = Arc::new(Authz::new(Arc::new(cedar_engine), store.clone()));
+            .expect("init policy engine from DB");
 
         // ---- Config ----
         let mut config = AppConfig::test_default();
+        config.master_secret = master_secret.to_string();
+        config.kdf_salt = kdf_salt.to_string();
+        config.master_key_version = self.master_key_version;
+        if let Some(db_file) = self.db_file.as_ref() {
+            config.db_path = db_file.clone();
+        }
+        config.previous_master_secret = self.previous_master_secret.clone();
+        config.previous_kdf_salt = self
+            .previous_master_secret
+            .as_ref()
+            .map(|_| TEST_KDF_SALT.to_string());
         for modifier in self.config_modifiers {
             modifier(&mut config);
         }
 
-        // ---- Rate limiter ----
-        let login_rate_limiter = Arc::new(LoginRateLimiter::new(
-            config.login_max_attempts,
-            config.login_lockout_seconds,
-        ));
-
-        // ---- Metrics ----
-        let metrics_handle = crate::metrics::test_handle();
-
-        // ---- Shared HTTP client ----
-        let http_client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(config.proxy_timeout_seconds))
-            .user_agent("AgentCordon/0.1")
-            .build()
-            .expect("build test HTTP client");
-
-        // ---- AppState ----
-        let app_state = AppState {
-            store: store.clone(),
-            jwt_issuer: jwt_issuer.clone(),
-            authz,
-            encryptor: encryptor.clone(),
+        // ---- AppState (same constructor as `main`) ----
+        let catalog =
+            CatalogState::load(&config).with_extra_mcp_templates(self.extra_mcp_templates);
+        let app_state = AppState::new(
             config,
-            login_rate_limiter,
-            device_approve_limiter:
-                crate::middleware::rate_limit_device_approve::DeviceApproveRateLimiter::new(),
-            metrics_handle,
-            session_hash_key,
-            oauth2_token_manager: agent_cordon_core::oauth2::OAuth2TokenManager::new(),
-            http_client,
-            event_bus: crate::events::EventBus::new(256),
-            ui_event_bus: crate::events::UiEventBus::new(16),
-            sse_tracker: crate::events::SseConnectionTracker::new(5),
-            credential_templates: crate::routes::admin_api::credential_templates::load_templates(
-                None,
-            ),
-            mcp_templates: {
-                let mut t = crate::routes::admin_api::mcp_templates::load_mcp_templates(None);
-                t.extend(self.extra_mcp_templates.iter().cloned());
-                t
+            store.clone(),
+            CryptoState {
+                key_ring,
+                session_hash_key,
             },
-            policy_templates: crate::routes::admin_api::policy_templates::load_templates(None),
-        };
+            policy_engine,
+            crate::metrics::test_handle(),
+            catalog,
+        );
 
         // ---- Create agents ----
         let mut admin_key = String::new();
@@ -352,13 +400,75 @@ impl TestAppBuilder {
             store,
             state: app_state,
             encryptor,
-            jwt_issuer,
             agent_keys,
             agents,
             admin_agent,
             device_contexts,
             admin_device,
+            master_secret_warning,
         }
+    }
+
+    /// Open, migrate, and key a file-backed database named by
+    /// [`TestAppBuilder::with_sqlite_file`].
+    ///
+    /// Returns the store, the secret to feed HKDF, the KDF salt, and the
+    /// operator warning the master-secret resolution produced. With no file
+    /// named, returns the in-memory defaults: the configured secret and the
+    /// fixed test salt.
+    async fn open_db_file(
+        &self,
+    ) -> (
+        Option<Arc<dyn Store + Send + Sync>>,
+        String,
+        String,
+        Option<String>,
+    ) {
+        use agent_cordon_core::crypto::master_secret::StoreState;
+
+        let Some(db_path) = self.db_file.as_deref() else {
+            return (
+                None,
+                self.master_secret.clone(),
+                TEST_KDF_SALT.to_string(),
+                None,
+            );
+        };
+
+        let sqlite_store = SqliteStore::new(db_path).await.expect("open sqlite file");
+        sqlite_store.run_migrations().await.expect("run migrations");
+        let store: Arc<dyn Store + Send + Sync> = Arc::new(sqlite_store);
+
+        // The salt is derived from the configured secret, before any
+        // stretching, as `AppConfig::from_env` derives it.
+        let kdf_salt = agent_cordon_core::crypto::kdf::derive_kdf_salt(&self.master_secret);
+
+        // "Nothing sealed yet" is no credentials and no users, the same
+        // signal `main` uses to decide whether a weak secret may be stretched.
+        let no_credentials = store
+            .list_credentials()
+            .await
+            .map(|c| c.is_empty())
+            .unwrap_or(false);
+        let no_users = store
+            .list_users()
+            .await
+            .map(|u| u.is_empty())
+            .unwrap_or(false);
+        let store_state = if no_credentials && no_users {
+            StoreState::Fresh
+        } else {
+            StoreState::Populated
+        };
+
+        let mut config = AppConfig::test_default();
+        config.db_path = db_path.to_string();
+        config.master_secret = self.master_secret.clone();
+        let warning = config
+            .finalize_master_secret(store_state)
+            .expect("resolve the master secret");
+
+        (Some(store), config.master_secret, kdf_salt, warning)
     }
 }
 
@@ -419,8 +529,11 @@ async fn create_agent_in_store(
     let workspace = Workspace {
         id: workspace_id,
         name: name.to_string(),
-        enabled,
-        status: WorkspaceStatus::Active,
+        status: if enabled {
+            WorkspaceStatus::Active
+        } else {
+            WorkspaceStatus::Disabled
+        },
         pk_hash: Some(pk_hash),
         encryption_public_key: Some(enc_pub_key),
         tags: tags.iter().map(|t| t.to_string()).collect(),

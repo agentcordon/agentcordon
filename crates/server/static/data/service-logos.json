@@ -23,8 +23,7 @@
     "intercom": "/img/logos/intercom.svg",
     "paypal": "/img/logos/paypal.svg",
     "square": "/img/logos/square.svg",
-    "wix": "/img/logos/wix.svg",
-    "granola": "/img/logos/granola.png"
+    "wix": "/img/logos/wix.svg"
   },
   "aliases": {
     "google-gemini": "google",

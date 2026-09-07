@@ -4,6 +4,7 @@ use super::helpers::*;
 use super::SqliteStore;
 
 use crate::domain::oidc::{OidcAuthState, OidcProvider, OidcProviderId, OidcProviderSummary};
+use crate::domain::time::format_timestamp;
 use crate::error::StoreError;
 use crate::storage::OidcStore;
 
@@ -32,15 +33,15 @@ impl SqliteStore {
                         provider.auto_provision as i32,
                         provider.enabled as i32,
                         provider.username_claim,
-                        provider.created_at.to_rfc3339(),
-                        provider.updated_at.to_rfc3339(),
+                        format_timestamp(&provider.created_at),
+                        format_timestamp(&provider.updated_at),
                     ],
                 )
                 .map_err(tokio_rusqlite::Error::Rusqlite)?;
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_oidc_provider(
@@ -63,7 +64,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn list_oidc_providers(&self) -> Result<Vec<OidcProviderSummary>, StoreError> {
@@ -82,7 +83,7 @@ impl SqliteStore {
                 Ok(providers)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn update_oidc_provider(
@@ -107,7 +108,7 @@ impl SqliteStore {
                         provider.auto_provision as i32,
                         provider.enabled as i32,
                         provider.username_claim,
-                        provider.updated_at.to_rfc3339(),
+                        format_timestamp(&provider.updated_at),
                         provider.id.0.to_string(),
                     ],
                 )
@@ -115,7 +116,7 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn delete_oidc_provider(
@@ -134,7 +135,7 @@ impl SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_enabled_oidc_providers(
@@ -155,7 +156,7 @@ impl SqliteStore {
                 Ok(providers)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     // ---- OIDC Auth States ----
@@ -175,15 +176,15 @@ impl SqliteStore {
                         auth_state.nonce,
                         auth_state.provider_id.0.to_string(),
                         auth_state.redirect_uri,
-                        auth_state.created_at.to_rfc3339(),
-                        auth_state.expires_at.to_rfc3339(),
+                        format_timestamp(&auth_state.created_at),
+                        format_timestamp(&auth_state.expires_at),
                     ],
                 )
                 .map_err(tokio_rusqlite::Error::Rusqlite)?;
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_oidc_auth_state(
@@ -206,7 +207,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn delete_oidc_auth_state(&self, state: &str) -> Result<bool, StoreError> {
@@ -222,11 +223,11 @@ impl SqliteStore {
                 Ok(count > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn cleanup_expired_oidc_states(&self) -> Result<u32, StoreError> {
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = format_timestamp(&chrono::Utc::now());
         self.conn()
             .call(move |conn| {
                 let count = conn
@@ -238,7 +239,7 @@ impl SqliteStore {
                 Ok(count as u32)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 }
 

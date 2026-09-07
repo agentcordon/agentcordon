@@ -1,0 +1,187 @@
+#!/usr/bin/python3
+"""UAT blind-agent shim — the ONLY program the blind agent is given.
+
+Harness infrastructure. It stands in for "the `agentcordon` CLI is on the
+agent's PATH"; nothing here is a product claim.
+
+Two jobs:
+
+1. **Forward.** `agentcordon <subcommand> ...` is forwarded verbatim into the
+   enrolled UAT CLI container (which shares the broker's network namespace),
+   so an agent working from the host sees exactly what a user in that
+   workspace sees.
+
+2. **Fence and record.** Every invocation is appended to
+   `uat/artifacts/agent-shim.log` as one JSON object:
+
+       {"run_id", "seq", "at", "iso", "invoked_as", "argv", "allowed",
+        "exit_code", "stdout_sha256", "stdout_bytes", "stderr_sha256",
+        "stderr_bytes", "duration_ms", "refusal"}
+
+   and the full stdout/stderr of each invocation is kept beside it in
+   `uat/artifacts/agent-shim-out/<seq>.{out,err}` so the verifier can scan
+   what the agent actually saw rather than a hand-pasted transcript.
+
+   The same file is installed under other names (`docker`, `curl`, `python3`,
+   …) in this directory. Invoked under any name but `agentcordon`, or with a
+   first argument that is not a real `agentcordon` subcommand, it refuses,
+   records the attempt, and exits 126. With `uat/bin` first on the agent's
+   PATH that turns "the agent had `docker` available" into "the agent's
+   attempt to use `docker` is a recorded failure".
+
+Environment (all optional, harness-only):
+  UAT_CLI          container to forward into (default agentcordon-uat-cli)
+  UAT_SHIM_WORKDIR working directory inside it (default /home/uat/workspace)
+"""
+
+import fcntl
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+UAT_DIR = os.path.dirname(HERE)
+ARTIFACTS = os.path.join(UAT_DIR, "artifacts")
+LOG = os.path.join(ARTIFACTS, "agent-shim.log")
+OUT_DIR = os.path.join(ARTIFACTS, "agent-shim-out")
+RUN_ID_FILE = os.path.join(ARTIFACTS, "agent-run-id")
+
+CONTAINER = os.environ.get("UAT_CLI", "agentcordon-uat-cli")
+WORKDIR = os.environ.get("UAT_SHIM_WORKDIR", "/home/uat/workspace")
+
+# `agentcordon --help` lists exactly these. Anything else is not the CLI and
+# the shim will not run it.
+SUBCOMMANDS = {
+    "init",
+    "register",
+    "status",
+    "credentials",
+    "proxy",
+    "mcp-servers",
+    "mcp-tools",
+    "mcp-call",
+    "help",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+}
+
+
+def real_docker():
+    """The host's docker, found on a PATH with this directory removed.
+
+    This directory contains a refusing `docker` decoy, and the agent is told
+    to put this directory first on its PATH — so a bare "docker" lookup here
+    would find the decoy and the shim would refuse itself.
+    """
+    parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p and os.path.realpath(p) != HERE]
+    found = shutil.which("docker", path=os.pathsep.join(parts))
+    return found or "/usr/bin/docker"
+
+
+def run_id():
+    try:
+        with open(RUN_ID_FILE) as fh:
+            return fh.read().strip() or "no-run-id"
+    except OSError:
+        return "no-run-id"
+
+
+def digest(blob):
+    return "sha256:" + hashlib.sha256(blob).hexdigest()
+
+
+def record(entry, stdout=b"", stderr=b""):
+    """Append one JSON line under an exclusive lock, and keep the output."""
+    os.makedirs(ARTIFACTS, exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(LOG, "a+") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        fh.seek(0)
+        seq = sum(1 for _ in fh) + 1
+        entry["seq"] = seq
+        fh.seek(0, os.SEEK_END)
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+        fh.flush()
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    for suffix, blob in (("out", stdout), ("err", stderr)):
+        with open(os.path.join(OUT_DIR, "%04d.%s" % (entry["seq"], suffix)), "wb") as fh:
+            fh.write(blob)
+
+
+def refuse(invoked_as, argv, reason):
+    now = time.time()
+    record(
+        {
+            "run_id": run_id(),
+            "at": round(now, 3),
+            "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "invoked_as": invoked_as,
+            "argv": argv,
+            "allowed": False,
+            "refusal": reason,
+            "exit_code": 126,
+            "stdout_sha256": digest(b""),
+            "stdout_bytes": 0,
+            "stderr_sha256": digest(b""),
+            "stderr_bytes": 0,
+            "duration_ms": 0,
+        }
+    )
+    sys.stderr.write("%s: command not available in this environment (%s)\n" % (invoked_as, reason))
+    return 126
+
+
+def main(argv):
+    invoked_as = os.path.basename(argv[0])
+    args = argv[1:]
+
+    if invoked_as != "agentcordon":
+        return refuse(invoked_as, args, "only `agentcordon` is available on this PATH")
+    if not args:
+        return refuse(invoked_as, args, "no subcommand")
+    if args[0] not in SUBCOMMANDS:
+        return refuse(invoked_as, args, "not an agentcordon subcommand: %r" % args[0])
+
+    started = time.time()
+    proc = subprocess.run(
+        [real_docker(), "exec", "-w", WORKDIR, CONTAINER, "agentcordon"] + args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    finished = time.time()
+
+    record(
+        {
+            "run_id": run_id(),
+            "at": round(started, 3),
+            "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
+            "invoked_as": invoked_as,
+            "argv": args,
+            "allowed": True,
+            "refusal": None,
+            "exit_code": proc.returncode,
+            "stdout_sha256": digest(proc.stdout),
+            "stdout_bytes": len(proc.stdout),
+            "stderr_sha256": digest(proc.stderr),
+            "stderr_bytes": len(proc.stderr),
+            "duration_ms": int((finished - started) * 1000),
+        },
+        stdout=proc.stdout,
+        stderr=proc.stderr,
+    )
+
+    sys.stdout.buffer.write(proc.stdout)
+    sys.stdout.buffer.flush()
+    sys.stderr.buffer.write(proc.stderr)
+    sys.stderr.buffer.flush()
+    return proc.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

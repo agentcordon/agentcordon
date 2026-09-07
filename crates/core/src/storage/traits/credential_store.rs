@@ -27,25 +27,35 @@ pub trait CredentialStore: Send + Sync {
     ) -> Result<Option<StoredCredential>, StoreError>;
     async fn list_credentials(&self) -> Result<Vec<CredentialSummary>, StoreError>;
     async fn delete_credential(&self, id: &CredentialId) -> Result<bool, StoreError>;
-    async fn list_vaults(&self) -> Result<Vec<String>, StoreError>;
-    /// List vault names visible to a specific user: vaults where the user created
-    /// at least one credential, or vaults shared with them via `vault_shares`.
-    async fn list_vaults_for_user(&self, user_id: &UserId) -> Result<Vec<String>, StoreError>;
+    /// Every credential in the vault with this id.
     async fn list_credentials_by_vault(
         &self,
-        vault: &str,
+        vault_id: &str,
     ) -> Result<Vec<CredentialSummary>, StoreError>;
     /// List credentials in a vault, enforcing that the user either created the
     /// credential or has been granted a vault share. Returns only accessible credentials.
     async fn list_credentials_by_vault_for_user(
         &self,
-        vault: &str,
+        vault_id: &str,
         user_id: &UserId,
     ) -> Result<Vec<CredentialSummary>, StoreError>;
     async fn update_credential(
         &self,
         id: &CredentialId,
         updates: &CredentialUpdate,
+    ) -> Result<bool, StoreError>;
+    /// Rotate the sealed secret: archive the ciphertext the row holds now
+    /// (under its own `key_version`) to the secret history, then apply
+    /// `updates`, in one immediate transaction. `updates` must carry the new
+    /// `encrypted_value` and `nonce`. `Ok(false)` when the credential does
+    /// not exist, in which case nothing is archived; when the write fails
+    /// the history row is not kept either.
+    async fn rotate_credential_secret(
+        &self,
+        id: &CredentialId,
+        updates: &CredentialUpdate,
+        changed_by_user: Option<&str>,
+        changed_by_agent: Option<&str>,
     ) -> Result<bool, StoreError>;
     async fn list_credentials_for_agent(
         &self,

@@ -1,16 +1,45 @@
 {% extends "base.html" %}
 {% block title %}Settings — Agent Cordon{% endblock %}
 {% block content %}
-<div x-data="settingsPage()" x-init="init()">
+<div x-data="settingsPage()">
     <div class="content-header">
         <h2>Settings</h2>
     </div>
+
+    <!--
+      One page, one rail.
+
+      Settings is seven cards under five uppercase bands with no sub-navigation
+      of any kind: re-seal and the provider clients are below the fold on every
+      visit, and nothing on the page says they are there
+      (uat/artifacts/reviews/UI-REVIEW-live.md m10). Per-section routes would have read better and
+      would have split the template — and with it the nine tests and the UAT
+      scenario that assert markers on `GET /settings` — so the page stays one
+      page and grows a rail of anchors instead (uat/artifacts/reviews/DESIGN-REVIEW.md §2.4).
+    -->
+    <div class="settings-layout">
+        <nav class="settings-rail" aria-label="Settings sections">
+            <a class="settings-rail-link" href="#account-section">Account</a>
+            <a class="settings-rail-link" href="#vaults-section">Vaults</a>
+            {% if user.is_admin %}
+            <span class="settings-rail-group">Admin</span>
+            <a class="settings-rail-link" href="#users-section">Users</a>
+            <a class="settings-rail-link" href="#sso-section">Sign-in (SSO)</a>
+            <a class="settings-rail-link" href="#master-key-section">Master key</a>
+            {% endif %}
+            {% if user.is_admin || user.role == "operator" %}
+            <span class="settings-rail-group">MCP</span>
+            <a class="settings-rail-link" href="#oauth-clients-section">OAuth clients</a>
+            {% endif %}
+            <span class="settings-rail-version">v{{ version }}</span>
+        </nav>
+        <div class="settings-main">
 
     <!-- Section: Account Settings -->
     <h3 class="settings-section-header">Account Settings</h3>
 
     <!-- Change Password -->
-    <div class="card mb-6">
+    <div id="account-section" class="card mb-6">
         <h3>Change Password</h3>
         <p class="text-sm mt-2 mb-4 settings-desc">Changing your password will sign you out of all sessions.</p>
         <form @submit.prevent="changePassword()">
@@ -38,6 +67,179 @@
         </form>
     </div>
 
+    <!--
+      Section: Vaults. Every role reaches this page, and a viewer's only vault
+      business — seeing what has been shared with them — belongs to the same
+      account-scoped half as Change Password. Owner controls are gated
+      client-side on the vault row, because ownership is per vault, not per
+      role: an operator owns their vaults, and an admin owning none still reads
+      every share list through `manage_vaults`.
+    -->
+    <h3 class="settings-section-header">Vaults</h3>
+    <div id="vaults-section" class="card mb-6">
+        <p class="text-sm mt-2 mb-4 settings-desc">
+            A vault groups credentials, and every credential lives in exactly one. The system
+            <strong>default</strong> vault is the one everybody may use and nobody may rename,
+            share or delete. Sharing a vault read-only lets another user see the credentials in
+            it &mdash; never their secrets.
+        </p>
+
+        {% if user.role != "viewer" %}
+        <div class="vault-create-row mb-4">
+            <input id="vault-new-name" type="text" class="form-input" x-model="newVaultName"
+                   aria-label="New vault name"
+                   placeholder="New vault name" autocomplete="off"
+                   :aria-invalid="vaultNameError ? 'true' : null"
+                   :aria-describedby="vaultNameError ? 'vault-new-name-error' : null"
+                   @input="vaultNameError = ''"
+                   @keydown.enter.prevent="createVault()">
+            <button id="vault-create-btn" class="btn btn-primary btn-sm"
+                    :disabled="vaultSaving || !newVaultName.trim()"
+                    @click="createVault()">Create vault</button>
+        </div>
+        <!--
+          A name this owner already uses is a 409 naming it. Shown next to the
+          field, not only as a toast that has gone by the time the reader looks
+          back at the input (UI review M1).
+        -->
+        <div x-show="vaultNameError" x-cloak id="vault-new-name-error" class="field-error mb-4" role="alert" x-text="vaultNameError"></div>
+        {% endif %}
+
+        <table id="vaults-table" class="tbl">
+            <thead>
+                <tr>
+                    <th>Vault</th>
+                    <th>Credentials</th>
+                    <th>Access</th>
+                    <th class="text-right">Actions</th>
+                </tr>
+            </thead>
+            <!--
+              One <tbody> per vault so each row can carry a second, collapsible
+              row for its share list: an x-for template needs a single root.
+            -->
+            <template x-for="v in vaults" :key="v.id">
+                <!--
+                  The row carries its vault's id: the name cell turns into an
+                  input while renaming, so the name is not a stable handle for
+                  the row it is in.
+                -->
+                <tbody :data-vault-id="v.id">
+                    <tr>
+                        <td>
+                            <template x-if="renamingVaultId !== v.id">
+                                <span x-text="v.name"></span>
+                            </template>
+                            <template x-if="renamingVaultId === v.id">
+                                <span class="vault-rename-row">
+                                    <input class="vault-rename-input form-input form-input-sm"
+                                           :aria-label="'Rename vault ' + v.name"
+                                           x-model="renameVaultName"
+                                           :aria-invalid="renameVaultError ? 'true' : null"
+                                           @input="renameVaultError = ''"
+                                           @keydown.enter.prevent="confirmRename(v)">
+                                    <button class="btn btn-primary btn-sm" @click="confirmRename(v)">Save</button>
+                                    <button class="btn btn-secondary btn-sm" @click="renamingVaultId = null; renameVaultError = ''">Cancel</button>
+                                    <span x-show="renameVaultError" x-cloak class="field-error vault-rename-error" role="alert" x-text="renameVaultError"></span>
+                                </span>
+                            </template>
+                            <span x-show="v.is_default" class="pill pill-type pill-sm">default</span>
+                        </td>
+                        <td x-text="credentialCount(v)"></td>
+                        <td>
+                            <span x-show="v.is_default">Everyone</span>
+                            <span x-show="!v.is_default && isOwner(v)">You own it</span>
+                            <span x-show="!v.is_default && v.shared_by">
+                                Shared by <span x-text="v.shared_by"></span>
+                                (<span x-text="v.permission"></span>)
+                            </span>
+                            <span x-show="!v.is_default && !isOwner(v) && !v.shared_by" class="settings-desc">
+                                Owned by another user
+                            </span>
+                        </td>
+                        <td class="text-right">
+                            <button class="vault-rename-btn btn btn-secondary btn-sm"
+                                    x-show="canRename(v)" @click="startRename(v)">Rename</button>
+                            <button class="vault-share-btn btn btn-secondary btn-sm"
+                                    x-show="canShare(v) || canManageShares(v)"
+                                    @click="toggleShares(v)"
+                                    x-text="canShare(v) ? 'Share' : 'Shares'"></button>
+                            <div class="overflow-menu" x-show="canDelete(v)"
+                                 x-data="acOverflowMenu()"
+                                 @click.outside="close()" @keydown.escape.stop="close()">
+                                <button type="button" class="btn btn-secondary btn-sm overflow-menu-btn"
+                                        aria-haspopup="menu" :aria-expanded="open ? 'true' : 'false'"
+                                        :aria-label="'More actions for vault ' + v.name"
+                                        :title="'More actions for vault ' + v.name"
+                                        @click="toggle()"><svg class="icon" aria-hidden="true"><use href="/icons.svg#more-horizontal"></use></svg><span class="overflow-menu-btn-label" aria-hidden="true">More</span></button>
+                                <div class="overflow-menu-items" role="menu" x-ref="acMenu"
+                                     x-show="open" x-cloak>
+                                    <button type="button" role="menuitem"
+                                            class="vault-delete-btn overflow-menu-item overflow-menu-item-danger"
+                                            :disabled="credentialCount(v) > 0"
+                                            :title="credentialCount(v) > 0
+                                                ? 'This vault still holds ' + credentialCount(v) + ' credential(s); move or delete them first'
+                                                : 'Delete this vault'"
+                                            @click="close(); openDeleteVault(v)">Delete</button>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr x-show="openSharesFor === v.id" x-cloak>
+                        <td colspan="4">
+                            <!--
+                              Granting is the owner's act at any role; holding
+                              `manage_vaults` reads the list and revokes, and is
+                              offered no way to hand out someone else's
+                              credentials. `read` is the only level the API
+                              keeps — `write` and `admin` are a 400 — so it is
+                              stated, not chosen.
+                            -->
+                            <div class="vault-share-form" x-show="canShare(v)">
+                                <label :for="'vault-share-user-' + v.id">Share read-only with</label>
+                                <select x-show="users.length > 0"
+                                        :id="'vault-share-user-' + v.id"
+                                        class="vault-share-user form-input form-input-sm"
+                                        x-model="shareUserId">
+                                    <option value="">Choose a user&hellip;</option>
+                                    <template x-for="u in shareCandidates(v)" :key="u.id">
+                                        <option :value="u.id" x-text="u.username"></option>
+                                    </template>
+                                </select>
+                                <input x-show="users.length === 0"
+                                       class="vault-share-user form-input form-input-sm"
+                                       :aria-label="'Share ' + v.name + ' with the user with this id'"
+                                       x-model="shareUserId" placeholder="User id"
+                                       autocomplete="off">
+                                <button class="vault-share-submit btn btn-primary btn-sm"
+                                        :disabled="!shareUserId || vaultSaving"
+                                        @click="shareVault(v)">Share</button>
+                                <div class="form-hint" x-show="users.length === 0">
+                                    Listing users needs an administrator, so paste the user's id here.
+                                </div>
+                            </div>
+                            <div class="vault-share-list">
+                                <p x-show="(vaultShares[v.id] || []).length === 0"
+                                   class="text-sm settings-desc">Not shared with anyone.</p>
+                                <template x-for="s in (vaultShares[v.id] || [])" :key="s.id">
+                                    <div class="vault-share-row">
+                                        <span x-text="usernameFor(s.shared_with_user_id)"></span>
+                                        <span class="pill pill-type pill-sm" x-text="s.permission_level"></span>
+                                        <button class="vault-share-revoke btn btn-danger btn-sm"
+                                                @click="revokeShare(v, s)">Revoke</button>
+                                    </div>
+                                </template>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </template>
+        </table>
+        <div x-show="!vaultsLoading && vaults.length === 0" x-cloak class="empty-state empty-state-sm">
+            <p>No vaults visible to you.</p>
+        </div>
+    </div>
+
     {% if user.is_admin %}
     <!-- Section: Administration -->
     <h3 class="settings-section-header">
@@ -46,10 +248,10 @@
     </h3>
 
     <!-- OIDC Providers -->
-    <div class="card mb-6">
+    <div id="sso-section" class="card mb-6">
         <div class="d-flex justify-between items-center mb-4">
             <h3>SSO / OIDC Providers</h3>
-            <button class="btn btn-primary btn-sm" @click="showNewProvider = !showNewProvider">Add Provider</button>
+            <button class="btn btn-secondary btn-sm" @click="showNewProvider = !showNewProvider">Add Provider</button>
         </div>
 
         <!-- New Provider Form -->
@@ -78,13 +280,13 @@
             </form>
         </div>
 
-        {% if providers.is_empty() %}
-        <!-- Server-rendered empty state -->
-        <div x-show="providers.length === 0" class="empty-state empty-state-sm">
+        <div x-show="providersLoading" class="page-loader page-loader-sm">
+            <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+        </div>
+        <div x-show="!providersLoading && providers.length === 0" class="empty-state empty-state-sm">
             <p>No SSO providers configured.</p>
         </div>
-        {% else %}
-        <!-- Providers List -->
+        <!-- Providers List (from GET /api/v1/oidc-providers) -->
         <table x-show="providers.length > 0" class="tbl">
             <thead>
                 <tr>
@@ -102,40 +304,197 @@
                         <td class="mono-id" x-text="p.issuer_url"></td>
                         <td class="mono-id" x-text="p.client_id"></td>
                         <td>
-                            <span class="pill" :class="p.enabled ? 'pill-ok' : 'pill-warn'"
-                                  x-text="p.enabled ? 'Yes' : 'No'"></span>
+                            <!-- The clients table already used a switch for this
+                                 exact state; two patterns for one thing was the
+                                 inconsistency (uat/artifacts/reviews/DESIGN-REVIEW.md 1.15). -->
+                            <label class="toggle-switch provider-toggle">
+                                <input type="checkbox" :checked="p.enabled" @change="toggleProvider(p)"
+                                       :aria-label="'Toggle ' + p.name">
+                                <span class="toggle-slider"></span>
+                            </label>
                         </td>
                         <td>
-                            <button class="btn btn-secondary btn-sm" @click="toggleProvider(p)"
-                                    x-text="p.enabled ? 'Disable' : 'Enable'"></button>
                             <button class="btn btn-danger btn-sm" @click="openDeleteProvider(p)">Delete</button>
                         </td>
                     </tr>
                 </template>
             </tbody>
         </table>
-
-        <!-- Empty state after all deleted via JS -->
-        <div x-show="providers.length === 0" x-cloak class="empty-state empty-state-sm">
-            <p>No SSO providers configured.</p>
-        </div>
-        {% endif %}
     </div>
 
+
+    <!--
+      User Management. `manage_users` is an admin action, so the whole section
+      — including the invitation to add one — belongs to admins: an operator or
+      viewer was shown "No users found." over a New User button that answers 403
+      (uat/artifacts/reviews/UI-REVIEW-live.md M3).
+    -->
+    {% if user.is_admin %}
+    <div id="users-section" class="card mb-6">
+        <div class="d-flex justify-between items-center mb-4">
+            <h3>User Management</h3>
+            <a href="/settings/users/new" class="btn btn-secondary btn-sm">Add User</a>
+        </div>
+        <div x-show="usersLoading" class="page-loader page-loader-sm">
+            <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
+        </div>
+        <div x-show="!usersLoading && users.length === 0" class="empty-state empty-state-sm">
+            <p>No users found.</p>
+        </div>
+        <!--
+          The list was read-only: it showed a Role and an Enabled column and
+          offered no way to change either, or to reset a password, although
+          `PUT /api/v1/users/{id}` has always taken `role` and `enabled` and
+          `POST /api/v1/users/{id}/change-password` has always let an admin set
+          another user's password (uat/artifacts/reviews/UI-REVIEW-live.md M12).
+
+          What is withheld is what the server refuses: root's role and root's
+          enabled flag (`UserService::update`), and disabling the account you are
+          signed in as, which would lock you out of the page you did it from.
+        -->
+        <table x-show="!usersLoading && users.length > 0" class="tbl">
+            <thead>
+                <tr>
+                    <th>Username</th>
+                    <th>Display Name</th>
+                    <th>Role</th>
+                    <th>Enabled</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="u in users" :key="u.id">
+                    <tr :class="currentUserId && u.id === currentUserId ? 'settings-current-user' : ''">
+                        <td>
+                            <span x-text="u.username"></span>
+                            <span x-show="currentUserId && u.id === currentUserId" class="pill pill-type pill-sm settings-you-badge">you</span>
+                            <span x-show="u.is_root" class="pill pill-warn pill-sm settings-you-badge">root</span>
+                        </td>
+                        <td x-text="u.display_name || '\u2014'"></td>
+                        <td>
+                            <span x-show="!canEditUser(u)" class="pill pill-type" x-text="u.role"></span>
+                            <select x-show="canEditUser(u)" class="form-input form-input-sm"
+                                    :aria-label="'Role for ' + u.username"
+                                    :disabled="userSaving === u.id"
+                                    @change="saveUserRole(u, $event.target.value)">
+                                <template x-for="r in USER_ROLES" :key="r">
+                                    <option :value="r" :selected="u.role === r" x-text="r"></option>
+                                </template>
+                            </select>
+                        </td>
+                        <td>
+                            <span class="pill" :class="u.enabled ? 'pill-ok' : 'pill-warn'"
+                                  x-text="u.enabled ? 'Yes' : 'No'"></span>
+                        </td>
+                        <td>
+                            <div class="inline-actions-group">
+                                <button class="btn btn-secondary btn-sm"
+                                        x-show="canEditUser(u)"
+                                        :disabled="userSaving === u.id"
+                                        @click="toggleUserEnabled(u)"
+                                        x-text="u.enabled ? 'Disable' : 'Enable'"></button>
+                                <button class="btn btn-secondary btn-sm"
+                                        :disabled="userSaving === u.id"
+                                        @click="openResetPassword(u)">Reset password</button>
+                            </div>
+                            <span x-show="u.is_root" class="text-sm settings-desc">
+                                Root's role and account cannot be changed here.
+                            </span>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    <!-- Master Key -->
+    <div id="master-key-section" class="card mb-6">
+        <div class="d-flex justify-between items-center mb-4">
+            <div>
+                <h3>Master Key</h3>
+                <p class="text-sm mt-2 settings-desc">
+                    Re-seal every credential and every history row under the current master key
+                    (<code>AGTCRDN_MASTER_KEY_VERSION</code>). This is step 4 of a master-secret
+                    rotation: once it reports no errors, <code>AGTCRDN_PREVIOUS_MASTER_SECRET</code>
+                    can be dropped from the configuration. Safe to repeat.
+                </p>
+            </div>
+            <button id="reseal-btn" class="btn btn-secondary btn-sm"
+                    :disabled="resealing"
+                    @click="openReseal()">
+                <span x-show="resealing" class="spinner" aria-hidden="true"></span>
+                <span x-text="resealing ? 'Re-sealing...' : 'Re-seal credentials'"></span>
+            </button>
+        </div>
+
+        <div x-show="resealReport" x-cloak>
+            <table class="tbl">
+                <tbody>
+                    <tr>
+                        <td>Key version</td>
+                        <td class="mono-sm" x-text="resealReport && resealReport.key_version"></td>
+                    </tr>
+                    <tr>
+                        <td>Credentials re-sealed</td>
+                        <td>
+                            <span x-text="resealReport && (resealReport.re_encrypted_count + ' of ' + resealReport.total_credentials)"></span>
+                            <span class="pill pill-sm"
+                                  :class="resealReport && resealReport.re_encrypted_count === resealReport.total_credentials ? 'pill-ok' : 'pill-bad'"
+                                  x-text="resealReport && resealReport.re_encrypted_count === resealReport.total_credentials ? 'Complete' : 'Incomplete'"></span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>History entries re-sealed</td>
+                        <td>
+                            <span x-text="resealReport && (resealReport.history_re_encrypted_count + ' of ' + resealReport.total_history_entries)"></span>
+                            <span class="pill pill-sm"
+                                  :class="resealReport && resealReport.history_re_encrypted_count === resealReport.total_history_entries ? 'pill-ok' : 'pill-bad'"
+                                  x-text="resealReport && resealReport.history_re_encrypted_count === resealReport.total_history_entries ? 'Complete' : 'Incomplete'"></span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Errors</td>
+                        <td>
+                            <span x-show="resealErrors().length === 0" class="pill pill-sm pill-ok">None</span>
+                            <ul x-show="resealErrors().length > 0" class="reseal-errors">
+                                <template x-for="(err, i) in resealErrors()" :key="i">
+                                    <li class="mono-sm" x-text="err"></li>
+                                </template>
+                            </ul>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if user.is_admin || user.role == "operator" %}
+    <!-- Section: OAuth Provider Clients. Visible to anyone who may manage MCP
+         servers; only an administrator is offered the controls that change a
+         row (POST/PUT/DELETE all require manage_oauth_provider_clients). A
+         viewer holds neither action and is not shown the section at all. -->
+    <h3 class="settings-section-header">MCP Identity</h3>
     <!-- OAuth Provider Clients -->
-    <div class="card mb-6">
+    <div id="oauth-clients-section" class="card mb-6">
         <div class="d-flex justify-between items-center mb-4">
             <div>
                 <h3>OAuth Provider Clients</h3>
-                <p class="text-sm mt-2 settings-desc">AgentCordon's registered identity at each OAuth authorization server. Most providers are registered automatically via Dynamic Client Registration; add a row manually only if your provider requires pre-registration.</p>
+                <p class="text-sm mt-2 settings-desc">AgentCordon's registered identity at each OAuth authorization server &mdash; one row per origin, shared by every MCP server there. Administrators add, edit and remove them; operators can see which client an origin uses. Most providers are registered automatically via Dynamic Client Registration.</p>
             </div>
-            <button class="btn btn-primary btn-sm" @click="showOAuthProviderForm = !showOAuthProviderForm">Add Client</button>
+            {% if user.is_admin %}
+            <button id="opc-add-btn" class="btn btn-secondary btn-sm" @click="showOAuthProviderForm = !showOAuthProviderForm">Add Client</button>
+            {% endif %}
         </div>
 
-        <p class="text-sm mb-4 settings-desc">DCR-registered clients are created automatically when users click "Connect" in the marketplace. You normally don't need to add rows here manually.</p>
+        {% if user.is_admin %}
+        <p class="text-sm mb-4 settings-desc">DCR-registered clients are created automatically when users click "Connect" in the marketplace. You normally don't need to add rows here manually. Deleting one is refused while any credential or MCP server still authenticates at that origin.</p>
+        {% endif %}
 
+        {% if user.is_admin %}
         <!-- New OAuth Provider Client Form -->
-        <div x-show="showOAuthProviderForm" x-cloak class="mb-4 p-4 settings-new-provider-form">
+        <div id="opc-new-client-form" x-show="showOAuthProviderForm" x-cloak class="mb-4 p-4 settings-new-provider-form">
             <form @submit.prevent="createOAuthProviderClient()">
                 <div class="form-group">
                     <label for="opc-label">Label</label>
@@ -178,9 +537,10 @@
                 </div>
             </form>
         </div>
+        {% endif %}
 
         <!-- OAuth Provider Clients List -->
-        <table x-show="oauthProviderClients.length > 0" class="tbl">
+        <table id="opc-clients-table" x-show="oauthProviderClients.length > 0" class="tbl">
             <thead>
                 <tr>
                     <th>Label</th>
@@ -202,16 +562,25 @@
                         </td>
                         <td class="mono-id" x-text="client.client_id"></td>
                         <td>
-                            <label class="toggle-switch">
+                            {% if user.is_admin %}
+                            <label class="toggle-switch opc-toggle">
                                 <input type="checkbox" :checked="client.enabled" @change="toggleOAuthProviderClient(client)" :aria-label="'Toggle ' + client.label">
                                 <span class="toggle-slider"></span>
                             </label>
+                            {% else %}
+                            <span class="pill" :class="client.enabled ? 'pill-ok' : 'pill-warn'"
+                                  x-text="client.enabled ? 'Yes' : 'No'"></span>
+                            {% endif %}
                         </td>
                         <td>
+                            {% if user.is_admin %}
                             <template x-if="client.registration_source === 'dcr'">
-                                <button class="btn btn-secondary btn-sm" @click="reregisterOAuthProviderClient(client)">Re-register</button>
+                                <button class="btn btn-secondary btn-sm opc-reregister" @click="reregisterOAuthProviderClient(client)">Re-register</button>
                             </template>
-                            <button class="btn btn-danger btn-sm" @click="openDeleteOAuthProviderClient(client)">Delete</button>
+                            <button class="btn btn-danger btn-sm opc-delete" @click="openDeleteOAuthProviderClient(client)">Delete</button>
+                            {% else %}
+                            <span class="text-sm settings-desc">Admins only</span>
+                            {% endif %}
                         </td>
                     </tr>
                 </template>
@@ -222,82 +591,88 @@
             <p>No OAuth provider clients configured.</p>
         </div>
     </div>
-
-    <!-- User Management -->
-    <div class="card mb-6">
-        <div class="d-flex justify-between items-center mb-4">
-            <h3>User Management</h3>
-            <a href="/users/new" class="btn btn-primary btn-sm">Add User</a>
-        </div>
-        <div x-show="usersLoading" class="page-loader page-loader-sm">
-            <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
-        </div>
-        <div x-show="!usersLoading && users.length === 0" class="empty-state empty-state-sm">
-            <p>No users found.</p>
-        </div>
-        <table x-show="!usersLoading && users.length > 0" class="tbl">
-            <thead>
-                <tr>
-                    <th>Username</th>
-                    <th>Display Name</th>
-                    <th>Role</th>
-                    <th>Enabled</th>
-                </tr>
-            </thead>
-            <tbody>
-                <template x-for="u in users" :key="u.id">
-                    <tr :class="currentUserId && u.id === currentUserId ? 'settings-current-user' : ''">
-                        <td>
-                            <span x-text="u.username"></span>
-                            <span x-show="currentUserId && u.id === currentUserId" class="pill pill-type pill-sm settings-you-badge">you</span>
-                        </td>
-                        <td x-text="u.display_name || '\u2014'"></td>
-                        <td><span class="pill pill-type" x-text="u.role"></span></td>
-                        <td>
-                            <span class="pill" :class="u.enabled ? 'pill-ok' : 'pill-warn'"
-                                  x-text="u.enabled ? 'Yes' : 'No'"></span>
-                        </td>
-                    </tr>
-                </template>
-            </tbody>
-        </table>
-    </div>
     {% endif %}
 
-    <!-- Section: About -->
-    <h3 class="settings-section-header">About</h3>
-    <div class="card mb-6">
-        <div class="d-flex justify-between items-center">
-            <div>
-                <h3>Agent Cordon</h3>
-                <p class="text-sm mt-2 settings-desc">Version {{ version }}</p>
-            </div>
-        </div>
-    </div>
+    <!--
+      The About card held one version string and nothing else; the rail carries
+      it at its foot (uat/artifacts/reviews/DESIGN-REVIEW.md 1.15).
+    -->
+        </div><!-- /.settings-main -->
+    </div><!-- /.settings-layout -->
 
-    <!-- Delete Provider Modal -->
-    <div x-show="deleteProviderModal" x-cloak x-transition.opacity.duration.150ms class="modal-overlay" @click.self="deleteProviderModal = false" @keydown.escape.window="deleteProviderModal && (deleteProviderModal = false)">
-        <div class="modal">
-            <h3>Delete Provider</h3>
-            <p>Are you sure you want to delete <strong x-text="deleteProviderName"></strong>? This will remove SSO access for users authenticating through this provider.</p>
+    <!-- Delete Vault Modal -->
+    <div id="vault-delete-modal" x-show="deleteVaultModal" x-cloak x-transition.opacity.duration.150ms
+         class="modal-overlay" @click.self="deleteVaultModal = false"
+         @keydown.escape.window="deleteVaultModal && (deleteVaultModal = false)">
+        <div class="modal" role="dialog" aria-modal="true">
+            <h3>Delete vault</h3>
+            <p>
+                Delete <strong x-text="deleteVaultName"></strong>? Only the grouping goes away.
+                A vault that still holds credentials cannot be deleted &mdash; move or delete
+                them first.
+            </p>
             <div class="modal-actions">
-                <button class="btn btn-secondary" @click="deleteProviderModal = false">Cancel</button>
-                <button class="btn btn-danger" @click="confirmDeleteProvider()">Delete</button>
+                <button class="btn btn-secondary" @click="deleteVaultModal = false">Cancel</button>
+                <button id="vault-delete-confirm" class="btn btn-danger"
+                        :disabled="vaultSaving"
+                        @click="confirmDeleteVault()">Delete</button>
             </div>
         </div>
     </div>
 
+    <!--
+      Deleting an SSO provider used to have its own hand-written overlay. It is
+      a plain confirmation, so it is AC.confirm now — see `openDeleteProvider`.
+    -->
+
+    {% if user.is_admin %}
     <!-- Delete OAuth Provider Client Modal -->
-    <div x-show="deleteOAuthProviderModal" x-cloak x-transition.opacity.duration.150ms class="modal-overlay" @click.self="deleteOAuthProviderModal = false" @keydown.escape.window="deleteOAuthProviderModal && (deleteOAuthProviderModal = false)">
+    <div id="opc-delete-modal" x-show="deleteOAuthProviderModal" x-cloak x-transition.opacity.duration.150ms class="modal-overlay" @click.self="deleteOAuthProviderModal = false" @keydown.escape.window="deleteOAuthProviderModal && (deleteOAuthProviderModal = false)">
         <div class="modal">
             <h3>Delete OAuth Provider Client</h3>
             <p>Are you sure you want to delete <strong x-text="deleteOAuthProviderName"></strong>? Connections using this client will lose access to the associated service.</p>
+            <!--
+              The server refuses the delete with 409 while credentials or MCP
+              servers still authenticate at that origin, and its message names
+              both counts. Show it here rather than toasting success over it.
+            -->
+            <div id="opc-delete-error" class="alert alert-warning" x-show="opcDeleteError" x-cloak
+                 x-text="opcDeleteError"></div>
             <div class="modal-actions">
                 <button class="btn btn-secondary" @click="deleteOAuthProviderModal = false">Cancel</button>
                 <button class="btn btn-danger" @click="confirmDeleteOAuthProviderClient()">Delete</button>
             </div>
         </div>
     </div>
+    {% endif %}
+
+    {% if user.is_admin %}
+    <!-- Re-seal Confirmation Modal -->
+    <div x-show="resealModal" x-cloak x-transition.opacity.duration.150ms class="modal-overlay"
+         @click.self="resealModal = false"
+         @keydown.escape.window="resealModal && (resealModal = false)">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="reseal-title">
+            <h3 id="reseal-title">Re-seal all credentials</h3>
+            <p>
+                Every credential and every credential-history row is opened with the key its own
+                version names and sealed again under the current master key, with a fresh nonce.
+                Nothing is decrypted to disk and no secret leaves the server.
+            </p>
+            <p class="text-sm settings-desc">
+                On a large vault this runs for a while and holds the credentials it re-seals.
+                Do not remove <code>AGTCRDN_PREVIOUS_MASTER_SECRET</code> until the report below
+                shows no errors.
+            </p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" @click="resealModal = false">Cancel</button>
+                <button id="reseal-confirm" class="btn btn-primary"
+                        :disabled="resealing"
+                        @click="confirmReseal()"
+                        x-text="resealing ? 'Re-sealing...' : 'Re-seal now'"></button>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 </div>
 {% endblock %}
 {% block scripts %}
@@ -321,24 +696,46 @@
 .settings-new-provider-form { background: var(--wash); border-radius: 8px; }
 .settings-current-user { background: var(--accent-glow); }
 .settings-you-badge { margin-left: 6px; }
+.reseal-errors { margin: 0; padding-left: 18px; }
+.vault-create-row { display: flex; gap: 0.5rem; align-items: center; }
+.vault-create-row .form-input { max-width: 280px; }
+.vault-rename-row { display: inline-flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
+.vault-rename-row .form-input { max-width: 200px; }
+/* A server refusal rendered next to the field it names. */
+.field-error { font-size: 0.8rem; line-height: 1.45; color: var(--danger); }
+.vault-rename-error { flex-basis: 100%; }
+.vault-share-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
+.vault-share-form .form-input { max-width: 240px; }
+.vault-share-form .form-hint { flex-basis: 100%; }
+.vault-share-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.25rem 0; }
 </style>
 <script>
+/* The roles `PUT /api/v1/users/{id}` accepts, in the order the docs list them. */
+var USER_ROLES = ['admin', 'operator', 'viewer'];
+
 function settingsPage() {
     return {
         isAdmin: {{ user.is_admin }},
-        providers: {{ providers_json|safe }},
+        // `manage_mcp_servers`, which is what reading the provider-client
+        // listing needs. The section is rendered for operators too, so the
+        // fetch has to follow the same line the markup does — gating it on
+        // isAdmin left an operator with an empty section.
+        canManageMcp: {{ user.is_admin || user.role == "operator" }},
+        providers: [],
+        providersLoading: true,
         showNewProvider: false,
         saving: false,
         newProvider: { name: '', issuer_url: '', client_id: '', client_secret: '' },
         users: [],
         usersLoading: !{{ user.is_admin }},
+        // The id of the user a row action is in flight for, so the row's
+        // controls disable themselves rather than queueing a second write.
+        userSaving: null,
         pwCurrent: '',
         pwNew: '',
         pwConfirm: '',
         pwSaving: false,
         currentUserId: null,
-        deleteProviderModal: false,
-        deleteProviderName: '',
         deleteProviderId: null,
         oauthProviderClients: [],
         showOAuthProviderForm: false,
@@ -348,17 +745,257 @@ function settingsPage() {
         deleteOAuthProviderModal: false,
         deleteOAuthProviderName: '',
         deleteOAuthProviderId: null,
+        // The server's reason when a delete is refused, shown in the modal.
+        opcDeleteError: '',
+        resealModal: false,
+        resealing: false,
+        resealReport: null,
+        // --- Vaults -----------------------------------------------------
+        // The signed-in user's id, rendered rather than fetched: ownership
+        // decides every vault control, and the page must not render the wrong
+        // buttons while /auth/me is in flight.
+        myUserId: '{{ user.user_id }}',
+        vaults: [],
+        vaultsLoading: true,
+        // Credentials the caller can see, for the per-vault count that decides
+        // whether Delete is offered.
+        vaultCredentials: [],
+        vaultShares: {},
+        openSharesFor: null,
+        newVaultName: '',
+        vaultSaving: false,
+        // A 409 from create/rename belongs next to the name field it is about.
+        vaultNameError: '',
+        renameVaultError: '',
+        renamingVaultId: null,
+        renameVaultName: '',
+        shareUserId: '',
+        deleteVaultModal: false,
+        deleteVaultId: null,
+        deleteVaultName: '',
         init() {
             this.loadCurrentUser();
-            if (this.isAdmin) {
-                this.loadUsers();
+            this.loadVaults();
+            this.loadVaultCredentials();
+            window.addEventListener('ac:vault_changed', () => {
+                this.loadVaults();
+                if (this.openSharesFor) this.loadShares(this.openSharesFor);
+            });
+            if (this.canManageMcp) {
                 this.refreshOAuthProviderClients();
+            }
+            if (this.isAdmin) {
+                this.refresh();
+                this.loadUsers();
                 window.addEventListener('ac:user_created', () => this.loadUsers());
             }
         },
+
+        // --- Vaults -----------------------------------------------------
+
+        /** `true` when the caller owns this vault outright. */
+        isOwner(v) {
+            return !!v.owner_user_id && v.owner_user_id === this.myUserId;
+        },
+        /**
+         * Renaming, sharing and deleting belong to the owner. The system
+         * default has no owner and the API refuses all three on it, so no
+         * control is offered for it at all.
+         */
+        canRename(v) { return !v.is_default && this.isOwner(v); },
+        canShare(v) { return !v.is_default && this.isOwner(v); },
+        canDelete(v) { return !v.is_default && this.isOwner(v); },
+        /**
+         * `manage_vaults` — the default policy grants it to admins — reads any
+         * vault's share list and revokes a share. It never grants one: that
+         * would let an admin pass another user's credentials on.
+         */
+        canManageShares(v) { return !v.is_default && this.isAdmin; },
+
+        /** How many credentials the caller can see in this vault. */
+        credentialCount(v) {
+            var id = v.id;
+            return this.vaultCredentials.filter(function(c) { return c.vault_id === id; }).length;
+        },
+
+        /** A share names a user id; show a username when one is listable. */
+        usernameFor(userId) {
+            var u = this.users.find(function(x) { return x.id === userId; });
+            return u ? u.username : userId;
+        },
+
+        /** Users this vault is not already shared with, minus the owner. */
+        shareCandidates(v) {
+            var mine = (this.vaultShares[v.id] || []).map(function(s) { return s.shared_with_user_id; });
+            var me = this.myUserId;
+            return this.users.filter(function(u) {
+                return u.id !== me && mine.indexOf(u.id) === -1;
+            });
+        },
+
+        async loadVaults() {
+            try {
+                const resp = await AC.fetch('/api/v1/vaults', { credentials: 'same-origin' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    this.vaults = data.data || [];
+                }
+            } catch(e) { showToast('Failed to load vaults', 'error'); }
+            this.vaultsLoading = false;
+        },
+
+        async loadVaultCredentials() {
+            try {
+                const resp = await AC.fetch('/api/v1/credentials', { credentials: 'same-origin' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    this.vaultCredentials = data.data || [];
+                }
+            } catch(e) { /* the count falls back to 0 and the API still refuses */ }
+        },
+
+        async createVault() {
+            const name = (this.newVaultName || '').trim();
+            if (!name || this.vaultSaving) return;
+            this.vaultSaving = true;
+            this.vaultNameError = '';
+            try {
+                const resp = await AC.fetch('/api/v1/vaults', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ name: name })
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                    this.newVaultName = '';
+                    await this.loadVaults();
+                    showToast("Vault '" + name + "' created", 'success');
+                } else {
+                    const message = (data.error && data.error.message) || 'Failed to create vault';
+                    if (resp.status === 409) this.vaultNameError = message;
+                    showToast(message, 'error');
+                }
+            } catch(e) { showToast('Network error', 'error'); }
+            this.vaultSaving = false;
+        },
+
+        startRename(v) {
+            this.renamingVaultId = v.id;
+            this.renameVaultName = v.name;
+        },
+
+        async confirmRename(v) {
+            const name = (this.renameVaultName || '').trim();
+            if (!name) return;
+            this.renameVaultError = '';
+            try {
+                const resp = await AC.fetch('/api/v1/vaults/' + v.id, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ name: name })
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                    this.renamingVaultId = null;
+                    await this.loadVaults();
+                    await this.loadVaultCredentials();
+                } else {
+                    const message = (data.error && data.error.message) || 'Failed to rename vault';
+                    if (resp.status === 409) this.renameVaultError = message;
+                    showToast(message, 'error');
+                }
+            } catch(e) { showToast('Network error', 'error'); }
+        },
+
+        openDeleteVault(v) {
+            this.deleteVaultId = v.id;
+            this.deleteVaultName = v.name;
+            this.deleteVaultModal = true;
+        },
+
+        /**
+         * The server answers 409 while the vault still holds credentials. The
+         * disabled control keeps that from happening by accident; when it does,
+         * the server's own sentence is what the toast shows.
+         */
+        async confirmDeleteVault() {
+            if (!this.deleteVaultId || this.vaultSaving) return;
+            this.vaultSaving = true;
+            try {
+                const resp = await AC.fetch('/api/v1/vaults/' + this.deleteVaultId, {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                    this.deleteVaultModal = false;
+                    if (this.openSharesFor === this.deleteVaultId) this.openSharesFor = null;
+                    await this.loadVaults();
+                } else {
+                    showToast((data.error && data.error.message) || 'Failed to delete vault', 'error');
+                }
+            } catch(e) { showToast('Network error', 'error'); }
+            this.vaultSaving = false;
+        },
+
+        toggleShares(v) {
+            if (this.openSharesFor === v.id) {
+                this.openSharesFor = null;
+                return;
+            }
+            this.openSharesFor = v.id;
+            this.shareUserId = '';
+            this.loadShares(v.id);
+        },
+
+        async loadShares(vaultId) {
+            try {
+                const resp = await AC.fetch('/api/v1/vaults/' + vaultId + '/shares', { credentials: 'same-origin' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    this.vaultShares[vaultId] = data.data || [];
+                }
+            } catch(e) { showToast('Failed to load vault shares', 'error'); }
+        },
+
+        async shareVault(v) {
+            const userId = (this.shareUserId || '').trim();
+            if (!userId || this.vaultSaving) return;
+            this.vaultSaving = true;
+            try {
+                const resp = await AC.fetch('/api/v1/vaults/' + v.id + '/shares', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ user_id: userId, permission: 'read' })
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                    this.shareUserId = '';
+                    await this.loadShares(v.id);
+                } else {
+                    showToast((data.error && data.error.message) || 'Failed to share vault', 'error');
+                }
+            } catch(e) { showToast('Network error', 'error'); }
+            this.vaultSaving = false;
+        },
+
+        async revokeShare(v, share) {
+            try {
+                const resp = await AC.fetch('/api/v1/vaults/' + v.id + '/shares/' + share.shared_with_user_id, {
+                    method: 'DELETE',
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                    await this.loadShares(v.id);
+                } else {
+                    showToast((data.error && data.error.message) || 'Failed to revoke share', 'error');
+                }
+            } catch(e) { showToast('Network error', 'error'); }
+        },
         async loadCurrentUser() {
             try {
-                const resp = await fetch('/api/v1/auth/me', {
+                const resp = await AC.fetch('/api/v1/auth/me', {
                     headers: { 'X-CSRF-Token': getCsrfToken() }
                 });
                 if (resp.ok) {
@@ -383,7 +1020,7 @@ function settingsPage() {
             }
             this.pwSaving = true;
             try {
-                const resp = await fetch('/api/v1/users/' + this.currentUserId + '/change-password', {
+                const resp = await AC.fetch('/api/v1/users/' + this.currentUserId + '/change-password', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                     body: JSON.stringify({ current_password: this.pwCurrent, new_password: this.pwNew }),
@@ -399,9 +1036,131 @@ function settingsPage() {
             }
             this.pwSaving = false;
         },
+        openReseal() {
+            this.resealModal = true;
+        },
+        resealErrors() {
+            return (this.resealReport && this.resealReport.errors) || [];
+        },
+        // docs/master-key.md § "Procedure" step 4 — POST /api/v1/admin/rotate-key.
+        // Admin-only; the endpoint refuses anyone else.
+        async confirmReseal() {
+            this.resealing = true;
+            try {
+                const resp = await AC.fetch('/api/v1/admin/rotate-key', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': getCsrfToken() },
+                });
+                const json = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                    this.resealReport = json.data || json;
+                    this.resealModal = false;
+                    const errs = this.resealErrors();
+                    if (errs.length > 0) {
+                        showToast('Re-seal finished with ' + errs.length + ' error(s)', 'error');
+                    } else {
+                        showToast('Re-sealed ' + this.resealReport.re_encrypted_count + ' of ' +
+                                  this.resealReport.total_credentials + ' credentials', 'success');
+                    }
+                } else {
+                    showToast((json.error && json.error.message) || 'Failed to re-seal credentials', 'error');
+                }
+            } catch(e) {
+                showToast('Failed to re-seal credentials', 'error');
+            }
+            this.resealing = false;
+        },
+        /*
+         * Which rows may be edited from here. `UserService::update` refuses to
+         * change root's role or disable root, and disabling your own account
+         * would sign you out of the page you did it from — so neither offers
+         * the controls the server would refuse or you would regret.
+         */
+        canEditUser(u) {
+            // `myUserId` is rendered server-side; `currentUserId` arrives from
+            // /auth/me later, and a row must never offer to disable your own
+            // account in the meantime.
+            return !u.is_root && u.id !== this.myUserId;
+        },
+
+        async saveUserRole(u, role) {
+            if (role === u.role) return;
+            await this.updateUser(u, { role: role }, 'Role changed to ' + role);
+        },
+
+        async toggleUserEnabled(u) {
+            if (u.enabled) {
+                var ok = await AC.confirm({
+                    title: 'Disable user',
+                    message: 'Disable ' + u.username + '? They are signed out and cannot sign ' +
+                             'in again until the account is enabled. Their credentials and ' +
+                             'vaults are untouched.',
+                    confirmLabel: 'Disable',
+                    danger: true
+                });
+                if (!ok) return;
+            }
+            await this.updateUser(u, { enabled: !u.enabled },
+                u.enabled ? 'User disabled' : 'User enabled');
+        },
+
+        /** One PUT, one refusal path, one reload. */
+        async updateUser(u, body, success) {
+            this.userSaving = u.id;
+            try {
+                var resp = await AC.fetch('/api/v1/users/' + u.id, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (resp.ok) {
+                    showToast(success, 'success');
+                    await this.loadUsers();
+                } else {
+                    await AC.reportError(resp, 'Failed to update user');
+                    // The row still shows what the server refused to change.
+                    await this.loadUsers();
+                }
+            } catch(e) { showToast('Failed to update user', 'error'); }
+            this.userSaving = null;
+        },
+
+        /*
+         * An admin sets another user's password without knowing the old one;
+         * `UserService::change_password` requires the current password only for
+         * a self-service change, and refuses root's to anyone but root. Every
+         * session of the target user is invalidated by the route.
+         */
+        async openResetPassword(u) {
+            var next = await AC.prompt({
+                title: 'Reset password for ' + u.username,
+                label: 'New password (at least 12 characters)',
+                confirmLabel: 'Set password'
+            });
+            if (next === null) return;
+            if (next.length < 12) {
+                showToast('Password must be at least 12 characters', 'error');
+                return;
+            }
+            this.userSaving = u.id;
+            try {
+                var resp = await AC.fetch('/api/v1/users/' + u.id + '/change-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ new_password: next })
+                });
+                if (resp.ok) {
+                    showToast('Password reset — ' + u.username + ' is signed out everywhere', 'success');
+                } else {
+                    await AC.reportError(resp, 'Failed to reset the password');
+                }
+            } catch(e) { showToast('Failed to reset the password', 'error'); }
+            this.userSaving = null;
+        },
+
         async loadUsers() {
             try {
-                const resp = await fetch('/api/v1/users', {
+                const resp = await AC.fetch('/api/v1/users', {
                     headers: { 'X-CSRF-Token': getCsrfToken() }
                 });
                 if (resp.ok) {
@@ -413,7 +1172,7 @@ function settingsPage() {
         },
         async refresh() {
             try {
-                const resp = await fetch('/api/v1/oidc-providers', {
+                const resp = await AC.fetch('/api/v1/oidc-providers', {
                     headers: { 'X-CSRF-Token': getCsrfToken() }
                 });
                 if (resp.ok) {
@@ -423,11 +1182,12 @@ function settingsPage() {
                     this.providers = [];
                 }
             } catch(e) { showToast('Failed to load OIDC providers', 'error'); }
+            this.providersLoading = false;
         },
         async createProvider() {
             this.saving = true;
             try {
-                const resp = await fetch('/api/v1/oidc-providers', {
+                const resp = await AC.fetch('/api/v1/oidc-providers', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                     body: JSON.stringify(this.newProvider),
@@ -448,35 +1208,47 @@ function settingsPage() {
         },
         async toggleProvider(p) {
             try {
-                await fetch('/api/v1/oidc-providers/' + p.id, {
+                var resp = await AC.fetch('/api/v1/oidc-providers/' + p.id, {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ enabled: !p.enabled }),
                 });
+                if (!resp.ok) return AC.reportError(resp, 'Failed to update provider');
                 await this.refresh();
+                showToast(p.name + (p.enabled ? ' disabled' : ' enabled'), 'success');
             } catch(e) { showToast('Failed to update provider', 'error'); }
         },
-        openDeleteProvider(p) {
-            this.deleteProviderName = p.name;
+        async openDeleteProvider(p) {
+            var ok = await AC.confirm({
+                title: 'Delete ' + p.name,
+                message: 'Users who sign in through this provider lose SSO access immediately. Local accounts are unaffected.',
+                confirmLabel: 'Delete provider',
+                danger: true
+            });
+            if (!ok) return;
             this.deleteProviderId = p.id;
-            this.deleteProviderModal = true;
+            await this.confirmDeleteProvider();
         },
         async confirmDeleteProvider() {
             if (!this.deleteProviderId) return;
             try {
-                await fetch('/api/v1/oidc-providers/' + this.deleteProviderId, {
-                    method: 'DELETE',
-                    headers: { 'X-CSRF-Token': getCsrfToken() },
+                /* This toasted "Provider deleted" whatever the status, so a 403
+                   read as a success and the row stayed where it was. */
+                var resp = await AC.fetch('/api/v1/oidc-providers/' + this.deleteProviderId, {
+                    method: 'DELETE'
                 });
-                await this.refresh();
-                showToast('Provider deleted', 'success');
+                if (!resp.ok) {
+                    await AC.reportError(resp, 'Failed to delete provider');
+                } else {
+                    await this.refresh();
+                    showToast('Provider deleted', 'success');
+                }
             } catch(e) { showToast('Failed to delete provider', 'error'); }
-            this.deleteProviderModal = false;
             this.deleteProviderId = null;
         },
         async refreshOAuthProviderClients() {
             try {
-                const resp = await fetch('/api/v1/oauth-provider-clients', {
+                const resp = await AC.fetch('/api/v1/oauth-provider-clients', {
                     headers: { 'X-CSRF-Token': getCsrfToken() }
                 });
                 if (resp.ok) {
@@ -490,7 +1262,7 @@ function settingsPage() {
         async createOAuthProviderClient() {
             this.oauthProviderSaving = true;
             try {
-                const resp = await fetch('/api/v1/oauth-provider-clients', {
+                const resp = await AC.fetch('/api/v1/oauth-provider-clients', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                     body: JSON.stringify(this.oauthProviderForm),
@@ -512,17 +1284,22 @@ function settingsPage() {
         },
         async toggleOAuthProviderClient(client) {
             try {
-                await fetch('/api/v1/oauth-provider-clients/' + client.id, {
+                var resp = await AC.fetch('/api/v1/oauth-provider-clients/' + client.id, {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ enabled: !client.enabled }),
                 });
+                if (!resp.ok) {
+                    /* The checkbox has already flipped itself; put it back. */
+                    await this.refreshOAuthProviderClients();
+                    return AC.reportError(resp, 'Failed to update OAuth provider client');
+                }
                 await this.refreshOAuthProviderClients();
             } catch(e) { showToast('Failed to update OAuth provider client', 'error'); }
         },
         async reregisterOAuthProviderClient(client) {
             try {
-                const resp = await fetch('/api/v1/oauth-provider-clients/' + client.id + '/reregister', {
+                const resp = await AC.fetch('/api/v1/oauth-provider-clients/' + client.id + '/reregister', {
                     method: 'POST',
                     headers: { 'X-CSRF-Token': getCsrfToken() },
                 });
@@ -538,18 +1315,38 @@ function settingsPage() {
         openDeleteOAuthProviderClient(client) {
             this.deleteOAuthProviderName = client.label;
             this.deleteOAuthProviderId = client.id;
+            this.opcDeleteError = '';
             this.deleteOAuthProviderModal = true;
         },
+        /**
+         * The server answers 409 while credentials or MCP servers still
+         * authenticate at this origin, and its message names both counts. Keep
+         * the modal open and show that message: reporting success over a
+         * refusal told the admin the row was gone while it was still there.
+         */
         async confirmDeleteOAuthProviderClient() {
             if (!this.deleteOAuthProviderId) return;
+            this.opcDeleteError = '';
             try {
-                await fetch('/api/v1/oauth-provider-clients/' + this.deleteOAuthProviderId, {
-                    method: 'DELETE',
-                    headers: { 'X-CSRF-Token': getCsrfToken() },
-                });
+                const deleteOAuthProviderResp = await AC.fetch(
+                    '/api/v1/oauth-provider-clients/' + this.deleteOAuthProviderId, {
+                        method: 'DELETE',
+                        headers: { 'X-CSRF-Token': getCsrfToken() },
+                    });
+                if (!deleteOAuthProviderResp.ok) {
+                    const err = await deleteOAuthProviderResp.json().catch(() => ({}));
+                    this.opcDeleteError = (err.error && err.error.message) ||
+                        'Failed to delete OAuth provider client';
+                    showToast(this.opcDeleteError, 'error');
+                    return;
+                }
                 await this.refreshOAuthProviderClients();
                 showToast('OAuth provider client deleted', 'success');
-            } catch(e) { showToast('Failed to delete OAuth provider client', 'error'); }
+            } catch(e) {
+                this.opcDeleteError = 'Failed to delete OAuth provider client';
+                showToast(this.opcDeleteError, 'error');
+                return;
+            }
             this.deleteOAuthProviderModal = false;
             this.deleteOAuthProviderId = null;
         }

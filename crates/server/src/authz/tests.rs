@@ -55,7 +55,6 @@ fn make_workspace_with_owner(owner: &User) -> Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: "ws".to_string(),
         tags: vec![],
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -313,7 +312,8 @@ async fn filter_drops_denied_items_silently() {
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -328,6 +328,70 @@ async fn filter_drops_denied_items_silently() {
         .await
         .expect("filter ok");
     assert_eq!(kept.len(), 1, "root must keep all items");
+}
+
+fn make_cred(name: &str) -> StoredCredential {
+    StoredCredential {
+        id: CredentialId(Uuid::new_v4()),
+        name: name.to_string(),
+        service: "svc".to_string(),
+        encrypted_value: vec![],
+        nonce: vec![],
+        scopes: vec![],
+        metadata: serde_json::Value::Null,
+        created_by: None,
+        created_by_user: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        allowed_url_pattern: None,
+        expires_at: None,
+        transform_script: None,
+        transform_name: None,
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
+        credential_type: "generic".to_string(),
+        tags: vec![],
+        description: None,
+        target_identity: None,
+        key_version: 1,
+    }
+}
+
+/// A list page filters every row through Cedar. One request must leave one
+/// audit row describing the batch, not one row per item: a dashboard with
+/// hundreds of credentials would otherwise write hundreds of audit rows and
+/// pay a database round-trip each, per page view.
+#[tokio::test]
+async fn filter_records_one_audit_event_per_call() {
+    let (authz, store) = build_authz().await;
+    let root = make_user(UserRole::Admin, true);
+    let actor = AuthenticatedActor::User(root);
+    let creds: Vec<StoredCredential> = (0..5).map(|i| make_cred(&format!("c{i}"))).collect();
+
+    let kept = authz
+        .request(&actor, "corr-batch")
+        .filter(actions::LIST, creds, |c| PolicyResource::Credential {
+            credential: c.clone(),
+        })
+        .await
+        .expect("filter ok");
+    assert_eq!(kept.len(), 5, "root lists every credential");
+
+    let events = store.list_audit_events(50, 0).await.expect("audit");
+    let policy_events: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            matches!(e.event_type, AuditEventType::PolicyEvaluated)
+                && e.correlation_id == "corr-batch"
+        })
+        .collect();
+    assert_eq!(policy_events.len(), 1, "one summary row for the batch");
+    let meta = &policy_events[0].metadata;
+    assert_eq!(
+        meta["evaluated"], 5,
+        "the summary says how many were evaluated"
+    );
+    assert_eq!(meta["permitted"], 5, "and how many passed");
 }
 
 #[tokio::test]
@@ -351,7 +415,8 @@ async fn from_stored_credential_ref_for_policy_resource() {
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,

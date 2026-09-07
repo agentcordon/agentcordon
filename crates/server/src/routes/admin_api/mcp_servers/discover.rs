@@ -5,23 +5,73 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::mcp::{McpServer, McpServerId, McpTool};
-use agent_cordon_core::domain::policy::{PolicyId, StoredPolicy};
-use agent_cordon_core::proxy::url_safety::validate_proxy_target;
+use agent_cordon_core::proxy::url_safety::validate_proxy_target_resolved;
 
+use crate::config::AppConfig;
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
 use crate::state::AppState;
 
-use super::super::policies::reload_engine;
-use super::check_manage_mcp_servers;
 use super::is_safe_identifier;
 
 // ---------------------------------------------------------------------------
 // Tool Discovery (internal helper, used by import on re-registration)
 // ---------------------------------------------------------------------------
+
+/// Where an API key goes on the wire.
+///
+/// Discovery has to present the secret exactly the way the broker will once
+/// the server is installed: probing with `Authorization: Bearer` a server that
+/// wants `X-API-Key` earns a 401, and provisioning treats a 401 during
+/// discovery as "wrong key pasted" and rolls the install back.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ApiKeyPlacement<'a> {
+    /// `Authorization: Bearer <secret>` — the default for templates that name
+    /// no placement, and what an OAuth access token always uses.
+    Bearer,
+    /// A custom request header, e.g. `X-API-Key: <secret>`.
+    Header(&'a str),
+    /// A query parameter appended to the endpoint, e.g. `?api_key=<secret>`.
+    Query(&'a str),
+}
+
+/// A secret and the placement it is presented under.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DiscoveryCredential<'a> {
+    pub secret: &'a str,
+    pub placement: ApiKeyPlacement<'a>,
+}
+
+impl<'a> DiscoveryCredential<'a> {
+    /// The bearer default, for callers with nothing but a secret.
+    pub fn bearer(secret: &'a str) -> Self {
+        Self {
+            secret,
+            placement: ApiKeyPlacement::Bearer,
+        }
+    }
+}
+
+/// The URL to POST to: a query-parameter credential lives in the URL, every
+/// other placement leaves it alone.
+fn request_url(url: &str, credential: Option<DiscoveryCredential<'_>>) -> String {
+    let Some(DiscoveryCredential {
+        secret,
+        placement: ApiKeyPlacement::Query(param),
+    }) = credential
+    else {
+        return url.to_string();
+    };
+    match reqwest::Url::parse(url) {
+        Ok(mut parsed) => {
+            parsed.query_pairs_mut().append_pair(param, secret);
+            parsed.to_string()
+        }
+        Err(_) => url.to_string(),
+    }
+}
 
 /// Best-effort tool discovery: connect to the MCP server and return tool metadata.
 ///
@@ -34,18 +84,20 @@ use super::is_safe_identifier;
 /// If the initialize request itself returns a protocol-level error indicating
 /// the server does not support the handshake, we fall back to a single
 /// `tools/list` call to keep compatibility with simpler servers.
-pub(super) async fn attempt_tool_discovery(
-    state: &AppState,
+pub(crate) async fn attempt_tool_discovery(
+    config: &AppConfig,
     server: &McpServer,
-    credential_secret: Option<&str>,
+    credential: Option<DiscoveryCredential<'_>>,
 ) -> Result<Vec<McpTool>, String> {
-    // SSRF protection
-    if !state.config.proxy_allow_loopback {
-        validate_proxy_target(&server.upstream_url).map_err(|e| e.to_string())?;
+    // SSRF protection: resolve the host and check every address, the same
+    // check the broker applies to proxied and MCP calls.
+    if !config.proxy_allow_loopback {
+        validate_proxy_target_resolved(&server.upstream_url).await?;
     }
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
+        .user_agent(agent_cordon_core::user_agent_for("mcp-discovery"))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -61,15 +113,7 @@ pub(super) async fn attempt_tool_discovery(
         }
     });
 
-    match send_mcp_request(
-        &client,
-        &server.upstream_url,
-        credential_secret,
-        None,
-        &init_body,
-    )
-    .await
-    {
+    match send_mcp_request(&client, &server.upstream_url, credential, None, &init_body).await {
         Ok((init_json, session_id)) => {
             if let Some(err) = init_json.get("error").and_then(|e| e.as_object()) {
                 // Initialize was understood but refused — fall back to a single
@@ -83,7 +127,7 @@ pub(super) async fn attempt_tool_discovery(
                     error = %msg,
                     "MCP initialize returned error — falling back to plain tools/list"
                 );
-                return tools_list_only(&client, &server.upstream_url, credential_secret).await;
+                return tools_list_only(&client, &server.upstream_url, credential).await;
             }
 
             // Step 2: notifications/initialized (no response id expected)
@@ -94,7 +138,7 @@ pub(super) async fn attempt_tool_discovery(
             let _ = send_mcp_request(
                 &client,
                 &server.upstream_url,
-                credential_secret,
+                credential,
                 session_id.as_deref(),
                 &notify_body,
             )
@@ -110,7 +154,7 @@ pub(super) async fn attempt_tool_discovery(
             let (list_json, _) = send_mcp_request(
                 &client,
                 &server.upstream_url,
-                credential_secret,
+                credential,
                 session_id.as_deref(),
                 &list_body,
             )
@@ -122,7 +166,7 @@ pub(super) async fn attempt_tool_discovery(
         }
         Err(_) => {
             // Network/parse errors from initialize — try the plain path.
-            tools_list_only(&client, &server.upstream_url, credential_secret).await
+            tools_list_only(&client, &server.upstream_url, credential).await
         }
     }
 }
@@ -131,7 +175,7 @@ pub(super) async fn attempt_tool_discovery(
 async fn tools_list_only(
     client: &reqwest::Client,
     url: &str,
-    credential_secret: Option<&str>,
+    credential: Option<DiscoveryCredential<'_>>,
 ) -> Result<Vec<McpTool>, String> {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
@@ -139,7 +183,7 @@ async fn tools_list_only(
         "method": "tools/list",
         "params": {}
     });
-    let (json, _) = send_mcp_request(client, url, credential_secret, None, &body).await?;
+    let (json, _) = send_mcp_request(client, url, credential, None, &body).await?;
     if let Some(err) = json.get("error") {
         if err.is_object() {
             let msg = err
@@ -161,16 +205,25 @@ async fn tools_list_only(
 async fn send_mcp_request(
     client: &reqwest::Client,
     url: &str,
-    credential_secret: Option<&str>,
+    credential: Option<DiscoveryCredential<'_>>,
     session_id: Option<&str>,
     body: &serde_json::Value,
 ) -> Result<(serde_json::Value, Option<String>), String> {
     let mut req = client
-        .post(url)
+        .post(request_url(url, credential))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream");
-    if let Some(secret) = credential_secret {
-        req = req.header("Authorization", format!("Bearer {}", secret));
+    if let Some(cred) = credential {
+        match cred.placement {
+            ApiKeyPlacement::Bearer => {
+                req = req.header("Authorization", format!("Bearer {}", cred.secret));
+            }
+            ApiKeyPlacement::Header(name) => {
+                req = req.header(name, cred.secret);
+            }
+            // Already in the URL.
+            ApiKeyPlacement::Query(_) => {}
+        }
     }
     if let Some(sid) = session_id {
         req = req.header("Mcp-Session-Id", sid);
@@ -241,6 +294,38 @@ fn extract_tools(body: &serde_json::Value) -> Result<Vec<McpTool>, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Rediscovery
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub(super) struct RediscoverResponse {
+    /// How many tools the probe found and stored.
+    tool_count: usize,
+}
+
+/// `POST /api/v1/mcp-servers/{id}/discover-tools`
+///
+/// Re-run tool discovery against the server's upstream. The install-time
+/// probe is best-effort, so a server installed while its upstream was
+/// unreachable — behind the SSRF guard, or simply down — is left with no
+/// tools; before this route the only way back was delete and reinstall.
+/// A probe that fails answers `502` with the reason.
+pub(super) async fn rediscover_tools(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    axum::Extension(corr): axum::Extension<CorrelationId>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<RediscoverResponse>>, ApiError> {
+    let tool_count = state
+        .services
+        .mcp_servers
+        .rediscover_tools(&auth, &corr.0, &McpServerId(id))
+        .await?;
+
+    Ok(Json(ApiResponse::ok(RediscoverResponse { tool_count })))
+}
+
+// ---------------------------------------------------------------------------
 // Policy Generation
 // ---------------------------------------------------------------------------
 
@@ -252,55 +337,7 @@ pub(super) struct GeneratePoliciesRequest {
 
 #[derive(Serialize)]
 pub(super) struct GeneratePoliciesResponse {
-    policies_created: Vec<GeneratedPolicyInfo>,
-}
-
-#[derive(Serialize)]
-pub(super) struct GeneratedPolicyInfo {
-    id: String,
-    name: String,
-    cedar_policy: String,
-}
-
-/// Generate a Cedar policy allowing agents with a given tag to call a
-/// specific tool on a specific MCP server.
-///
-/// Defense-in-depth: validates all inputs internally to prevent Cedar policy
-/// injection, even if callers have already validated.
-fn generate_cedar_policy(tag: &str, tool_name: &str, server_id: &str) -> Result<String, ApiError> {
-    if !is_safe_identifier(tag) {
-        return Err(ApiError::BadRequest(format!(
-            "unsafe tag value for Cedar policy generation: '{}'",
-            tag
-        )));
-    }
-    if !is_safe_identifier(tool_name) {
-        return Err(ApiError::BadRequest(format!(
-            "unsafe tool_name value for Cedar policy generation: '{}'",
-            tool_name
-        )));
-    }
-    // server_id is a UUID string — validate it contains only hex digits and hyphens
-    if server_id.is_empty() || !server_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-        return Err(ApiError::BadRequest(format!(
-            "unsafe server_id value for Cedar policy generation: '{}'",
-            server_id
-        )));
-    }
-    Ok(format!(
-        r#"// Auto-generated: Allow agents tagged "{tag}" to use tool "{tool_name}" on MCP server "{server_id}"
-permit(
-  principal is AgentCordon::Workspace,
-  action == AgentCordon::Action::"mcp_tool_call",
-  resource == AgentCordon::McpServer::"{server_id}"
-) when {{
-  principal.tags.contains("{tag}") &&
-  context.tool_name == "{tool_name}"
-}};"#,
-        tag = tag,
-        tool_name = tool_name,
-        server_id = server_id
-    ))
+    policies_created: Vec<crate::services::mcp_servers::GeneratedPolicy>,
 }
 
 /// `POST /api/v1/mcp-servers/{id}/generate-policies`
@@ -315,8 +352,6 @@ pub(super) async fn generate_policies(
     Path(id): Path<Uuid>,
     Json(req): Json<GeneratePoliciesRequest>,
 ) -> Result<Json<ApiResponse<GeneratePoliciesResponse>>, ApiError> {
-    let policy_decision = check_manage_mcp_servers(&state, &auth).await?;
-
     // Validate input
     if req.tools.is_empty() {
         return Err(ApiError::BadRequest(
@@ -359,108 +394,19 @@ pub(super) async fn generate_policies(
         }
     }
 
-    let server_id = McpServerId(id);
-    let server = state
-        .store
-        .get_mcp_server(&server_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("MCP server not found".to_string()))?;
-
-    // Load existing policies to check for duplicates
-    let existing_policies = state.store.list_policies().await?;
-    let existing_names: std::collections::HashSet<String> =
-        existing_policies.iter().map(|p| p.name.clone()).collect();
-
-    let mut created_policies: Vec<GeneratedPolicyInfo> = Vec::new();
-
-    let server_id_str = server.id.0.to_string();
-    for tool_name in &req.tools {
-        for tag in &req.agent_tags {
-            let policy_name = format!("mcp-{}-{}-{}", server_id_str, tool_name, tag);
-
-            // Skip if a policy with this name already exists
-            if existing_names.contains(&policy_name) {
-                tracing::info!(
-                    policy_name = %policy_name,
-                    "skipping duplicate policy — already exists"
-                );
-                continue;
-            }
-
-            let cedar_text = generate_cedar_policy(tag, tool_name, &server_id_str)?;
-
-            // Validate the generated Cedar policy before storing
-            state.authz.validate_policy_text(&cedar_text).map_err(|e| {
-                ApiError::Internal(format!(
-                    "generated policy failed validation for tool '{}', tag '{}': {}",
-                    tool_name, tag, e
-                ))
-            })?;
-
-            let now = chrono::Utc::now();
-
-            let policy = StoredPolicy {
-                id: PolicyId(Uuid::new_v4()),
-                name: policy_name.clone(),
-                description: Some(format!(
-                    "Auto-generated: Allow agents tagged \"{}\" to use tool \"{}\" on MCP server \"{}\"",
-                    tag, tool_name, server.name
-                )),
-                cedar_policy: cedar_text.clone(),
-                enabled: true,
-                is_system: false,
-                created_at: now,
-                updated_at: now,
-            };
-
-            state.store.store_policy(&policy).await?;
-
-            created_policies.push(GeneratedPolicyInfo {
-                id: policy.id.0.to_string(),
-                name: policy_name,
-                cedar_policy: cedar_text,
-            });
-        }
-    }
-
-    // Reload the Cedar engine after all policies are created
-    reload_engine(&state).await?;
-
-    // Emit UI event for browser auto-refresh
-    for p in &created_policies {
-        state
-            .ui_event_bus
-            .emit(crate::events::UiEvent::PolicyChanged {
-                policy_name: p.name.clone(),
-            });
-    }
-
-    let policy_count = created_policies.len();
-    let policy_names: Vec<String> = created_policies.iter().map(|p| p.name.clone()).collect();
-
-    // Audit event
-    let event = AuditEvent::builder(AuditEventType::McpPoliciesGenerated)
-        .action("generate_policies")
-        .user_actor(&auth.user)
-        .resource("mcp_server", &server.id.0.to_string())
-        .correlation_id(&corr.0)
-        .decision(
-            AuditDecision::Permit,
-            Some(&policy_decision.reasons.join(", ")),
+    let created = state
+        .services
+        .mcp_servers
+        .generate_policies(
+            &auth,
+            &corr.0,
+            &McpServerId(id),
+            &req.tools,
+            &req.agent_tags,
         )
-        .details(serde_json::json!({
-            "server_name": server.name,
-            "policy_count": policy_count,
-            "policy_names": policy_names,
-            "tools": req.tools,
-            "agent_tags": req.agent_tags,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+        .await?;
 
     Ok(Json(ApiResponse::ok(GeneratePoliciesResponse {
-        policies_created: created_policies,
+        policies_created: created,
     })))
 }

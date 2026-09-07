@@ -210,6 +210,26 @@ pub fn execute_transform(
     Ok(value.into())
 }
 
+/// The built-in transforms `resolve_transform` accepts by name.
+pub const BUILTIN_TRANSFORM_NAMES: &[&str] = &["identity", "basic-auth", "bearer", "aws-sigv4"];
+
+/// Parse a transform script without running it.
+///
+/// A script that cannot be parsed is refused when it is saved instead of
+/// failing at the first proxy call that needs it.
+pub fn compile_transform_script(script: &str) -> Result<(), TransformError> {
+    if script.len() > crate::transform::MAX_TRANSFORM_SCRIPT_SIZE {
+        return Err(TransformError::ScriptError(format!(
+            "transform script exceeds maximum size of {} bytes",
+            crate::transform::MAX_TRANSFORM_SCRIPT_SIZE
+        )));
+    }
+    create_engine()
+        .compile(script)
+        .map(|_| ())
+        .map_err(|e| TransformError::ScriptError(e.to_string()))
+}
+
 /// Resolve a transform: custom script > named built-in > identity (passthrough).
 ///
 /// - If `transform_script` is `Some`, run the Rhai script.
@@ -229,6 +249,7 @@ pub fn resolve_transform(
     }
 
     if let Some(name) = transform_name {
+        // Keep this match and `BUILTIN_TRANSFORM_NAMES` in step.
         return match name {
             "identity" => Ok(builtins::identity(secret)),
             "basic-auth" => Ok(builtins::basic_auth(secret)),

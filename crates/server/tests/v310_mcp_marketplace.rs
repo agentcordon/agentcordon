@@ -8,7 +8,7 @@ use crate::common;
 
 use agent_cordon_core::domain::mcp::McpTransport;
 use agent_cordon_core::domain::user::UserRole;
-use agent_cordon_server::routes::admin_api::mcp_templates::McpServerTemplate;
+use agent_cordon_server::templates::McpServerTemplate;
 use agent_cordon_server::test_helpers::TestAppBuilder;
 use axum::http::{Method, StatusCode};
 
@@ -30,6 +30,8 @@ fn mock_mcp_template() -> McpServerTemplate {
         transport: "http".to_string(),
         auth_method: "api_key".to_string(),
         credential_template_key: None,
+        api_key_header: None,
+        api_key_query: None,
         category: "testing".to_string(),
         tags: vec!["test".to_string()],
         icon: "beaker".to_string(),

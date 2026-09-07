@@ -134,11 +134,11 @@ pub struct QuickstartDoc {
 // ---------------------------------------------------------------------------
 
 /// Build the full API documentation. Accepts `AppConfig` so that dynamic
-/// values such as `jwt_ttl_seconds` are reflected.
+/// values can be reflected.
 pub fn build_api_docs(config: &AppConfig) -> ApiDocumentation {
     ApiDocumentation {
         server: build_server_info(),
-        authentication: build_auth_info(config),
+        authentication: build_auth_info(),
         endpoints: build_all_endpoints(config),
         error_format: build_error_format(),
         proxy_guide: build_proxy_guide(),
@@ -146,14 +146,14 @@ pub fn build_api_docs(config: &AppConfig) -> ApiDocumentation {
 }
 
 /// Build the concise quickstart guide.
-pub fn build_quickstart_doc(config: &AppConfig) -> QuickstartDoc {
+pub fn build_quickstart_doc(_config: &AppConfig) -> QuickstartDoc {
     QuickstartDoc {
         authentication: json!({
-            "overview": "AgentCordon uses OAuth-based workspace registration and JWT authentication. Agents register via the CLI (`agentcordon register`), receive a JWT, and use it for all authenticated requests.",
-            "jwt": {
-                "description": "Agents authenticate using server-issued JWTs via OAuth workspace registration.",
+            "overview": "Workspaces authenticate with an opaque OAuth 2.0 bearer access token. `agentcordon register` obtains it through the device authorization grant (RFC 8628); the broker holds it and refreshes it with the refresh grant at POST /api/v1/oauth/token when it expires.",
+            "oauth2": {
+                "description": "Opaque OAuth 2.0 access token issued by the device flow; refreshed with grant_type=refresh_token.",
                 "header": "Authorization: Bearer <access_token>",
-                "ttl_seconds": config.jwt_ttl_seconds
+                "token_endpoint": "/api/v1/oauth/token"
             },
             "response_envelope": {
                 "description": "All authenticated endpoints (except /api/v1/docs and /api/v1/docs/quickstart) wrap responses in {\"data\": ...} for success and {\"error\": {\"code\": ..., \"message\": ...}} for errors."
@@ -241,16 +241,18 @@ fn build_server_info() -> ServerInfo {
     }
 }
 
-fn build_auth_info(config: &AppConfig) -> AuthInfo {
+fn build_auth_info() -> AuthInfo {
     AuthInfo {
         methods: vec![AuthMethodDoc {
-            method: "jwt".to_string(),
+            method: "oauth2".to_string(),
             description:
-                "Agents authenticate using server-issued JWTs via OAuth workspace registration."
+                "Workspaces authenticate with an opaque OAuth 2.0 bearer access token obtained through the device authorization grant (`agentcordon register`) and refreshed with the refresh grant. The token endpoint reports the lifetime in `expires_in`."
                     .to_string(),
-            header: "Authorization: Bearer <jwt>".to_string(),
-            token_endpoint: None,
-            ttl_seconds: Some(config.jwt_ttl_seconds),
+            header: "Authorization: Bearer <access_token>".to_string(),
+            token_endpoint: Some("/api/v1/oauth/token".to_string()),
+            // The access token lifetime is fixed by the token endpoint and
+            // reported per-issue via `expires_in`; it is not a config value.
+            ttl_seconds: None,
         }],
     }
 }
@@ -518,10 +520,13 @@ mod tests {
             ("GET", "/api/v1/docs/quickstart"),
             // Vaults
             ("GET", "/api/v1/vaults"),
-            ("GET", "/api/v1/vaults/{name}/credentials"),
-            ("POST", "/api/v1/vaults/{name}/shares"),
-            ("GET", "/api/v1/vaults/{name}/shares"),
-            ("DELETE", "/api/v1/vaults/{name}/shares/{user_id}"),
+            ("POST", "/api/v1/vaults"),
+            ("PATCH", "/api/v1/vaults/{id}"),
+            ("DELETE", "/api/v1/vaults/{id}"),
+            ("GET", "/api/v1/vaults/{id}/credentials"),
+            ("POST", "/api/v1/vaults/{id}/shares"),
+            ("GET", "/api/v1/vaults/{id}/shares"),
+            ("DELETE", "/api/v1/vaults/{id}/shares/{user_id}"),
             // OIDC Authentication
             ("GET", "/api/v1/auth/oidc/providers"),
             ("GET", "/api/v1/auth/oidc/authorize"),
@@ -539,16 +544,14 @@ mod tests {
             ("PUT", "/api/v1/mcp-servers/{id}"),
             ("DELETE", "/api/v1/mcp-servers/{id}"),
             ("POST", "/api/v1/mcp-servers/{id}/generate-policies"),
+            ("POST", "/api/v1/mcp-servers/{id}/discover-tools"),
+            ("GET", "/api/v1/mcp-servers/{id}/workspaces"),
             // MCP Workspace Bindings (M:N junction)
             ("POST", "/api/v1/mcp-servers/{id}/workspaces"),
             (
                 "DELETE",
                 "/api/v1/mcp-servers/{id}/workspaces/{workspace_id}",
             ),
-            // MCP Proxy
-            ("POST", "/api/v1/mcp/proxy"),
-            // Device SSE Events
-            ("GET", "/api/v1/devices/events"),
             // Admin
             ("POST", "/api/v1/admin/rotate-key"),
             // Credential Templates
@@ -631,11 +634,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 3. Auth info — JWT method listed
+    // 3. Auth info — OAuth 2.0 bearer method listed
     // -----------------------------------------------------------------------
 
     #[test]
-    fn auth_info_lists_jwt() {
+    fn auth_info_lists_oauth2() {
         let docs = docs_default();
         let methods: Vec<&str> = docs
             .authentication
@@ -644,18 +647,26 @@ mod tests {
             .map(|m| m.method.as_str())
             .collect();
 
-        assert!(methods.contains(&"jwt"), "Auth methods should include jwt");
+        assert!(
+            methods.contains(&"oauth2"),
+            "Auth methods should include oauth2"
+        );
         assert_eq!(methods.len(), 1, "Expected exactly 1 auth method");
 
-        let jwt_method = docs
+        let oauth2_method = docs
             .authentication
             .methods
             .iter()
-            .find(|m| m.method == "jwt")
-            .expect("jwt method should exist");
+            .find(|m| m.method == "oauth2")
+            .expect("oauth2 method should exist");
+        assert_eq!(
+            oauth2_method.token_endpoint.as_deref(),
+            Some("/api/v1/oauth/token"),
+            "oauth2 method should name the token endpoint"
+        );
         assert!(
-            jwt_method.ttl_seconds.is_some(),
-            "JWT method should have a ttl_seconds"
+            oauth2_method.ttl_seconds.is_none(),
+            "access token lifetime is reported by the token endpoint, not the docs"
         );
     }
 
@@ -755,25 +766,6 @@ mod tests {
         assert!(
             parsed.get("errors").is_some(),
             "Parsed quickstart should have errors key"
-        );
-    }
-
-    #[test]
-    fn jwt_ttl_reflects_config_value() {
-        let mut config = AppConfig::test_default();
-        config.jwt_ttl_seconds = 42;
-        let docs = build_api_docs(&config);
-
-        let jwt_method = docs
-            .authentication
-            .methods
-            .iter()
-            .find(|m| m.method == "jwt")
-            .expect("jwt method should exist");
-        assert_eq!(
-            jwt_method.ttl_seconds,
-            Some(42),
-            "JWT TTL should reflect the config value"
         );
     }
 }

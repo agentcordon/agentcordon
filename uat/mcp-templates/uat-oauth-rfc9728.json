@@ -1,0 +1,15 @@
+{
+  "key": "uat-oauth-rfc9728",
+  "name": "UAT Mock MCP (OAuth, RFC 9728 shape)",
+  "description": "UAT harness: oauth2_resource_url points at the MCP RESOURCE server, which is what RFC 9728 describes; its protected-resource document names the IdP on another origin. Used to show what AgentCordon does with that shape.",
+  "upstream_url": "http://server:9100/oauth",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "http://127.0.0.1:9100",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "uat.read",
+  "category": "uat",
+  "tags": ["uat", "mock", "oauth"],
+  "icon": "uat",
+  "sort_order": 5
+}

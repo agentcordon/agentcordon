@@ -1,20 +1,23 @@
+//! The one error envelope.
+//!
+//! Every error a route returns is an [`ApiError`], rendered as
+//! `{"error": {"code", "message"}}`. OAuth endpoints, where RFC 6749 §5.2
+//! fixes the body shape, return an [`OAuthError`] rendered as
+//! `{"error", "error_description"}`. Browser pages that must show an error
+//! as HTML render an `ApiError` through [`ApiError::into_html_response`].
+
 use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response},
+    http::{header, StatusCode},
+    response::{Html, IntoResponse, Response},
     Json,
 };
 use serde::Serialize;
 
-#[derive(Serialize)]
-pub struct ApiResponse<T: Serialize> {
-    pub data: T,
-}
-
-impl<T: Serialize> ApiResponse<T> {
-    pub fn ok(data: T) -> Self {
-        Self { data }
-    }
-}
+/// The one success envelope: `{"data": ...}`.
+///
+/// Defined in `agent-cordon-core` as `ApiEnvelope` so the broker
+/// deserialises the exact type the server serialises.
+pub use agent_cordon_core::wire::ApiEnvelope as ApiResponse;
 
 #[derive(Serialize)]
 struct ErrorBody {
@@ -32,6 +35,11 @@ pub enum ApiError {
     NotFound(String),
     Unauthorized(String),
     Forbidden(String),
+    /// A vend refused because the target is outside the credential's
+    /// `allowed_url_pattern`. Its own code, because "forbidden" reads as a
+    /// Cedar denial and sends the reader to `/policies` — the wrong screen
+    /// for a mismatch that lives on the credential.
+    UrlPatternDenied(String),
     BadRequest(String),
     Conflict(String),
     Gone(String),
@@ -56,12 +64,154 @@ pub enum ApiError {
     },
 }
 
+impl ApiError {
+    /// The HTTP status this error is reported with.
+    pub fn status(&self) -> StatusCode {
+        match self {
+            ApiError::NotFound(_) | ApiError::NotFoundWithCandidates { .. } => {
+                StatusCode::NOT_FOUND
+            }
+            ApiError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            ApiError::Forbidden(_) | ApiError::UrlPatternDenied(_) => StatusCode::FORBIDDEN,
+            ApiError::BadRequest(_) | ApiError::PolicyValidation { .. } => StatusCode::BAD_REQUEST,
+            ApiError::Conflict(_) => StatusCode::CONFLICT,
+            ApiError::Gone(_) => StatusCode::GONE,
+            ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::BadGateway(_) | ApiError::CredentialLeakDetected(_) => {
+                StatusCode::BAD_GATEWAY
+            }
+            ApiError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ApiError::MultipleChoices { .. } => StatusCode::MULTIPLE_CHOICES,
+        }
+    }
+
+    /// The message a caller may see. Internal errors are logged and
+    /// replaced with a generic message.
+    pub fn public_message(&self) -> String {
+        match self {
+            ApiError::NotFound(m)
+            | ApiError::Unauthorized(m)
+            | ApiError::Forbidden(m)
+            | ApiError::UrlPatternDenied(m)
+            | ApiError::BadRequest(m)
+            | ApiError::Conflict(m)
+            | ApiError::Gone(m)
+            | ApiError::BadGateway(m)
+            | ApiError::TooManyRequests(m)
+            | ApiError::UnprocessableEntity(m)
+            | ApiError::CredentialLeakDetected(m) => m.clone(),
+            ApiError::Internal(m) => {
+                tracing::error!(error = %m, "internal server error");
+                "internal server error".to_string()
+            }
+            ApiError::PolicyValidation { .. } => "Policy validation failed".to_string(),
+            ApiError::MultipleChoices { message, .. }
+            | ApiError::NotFoundWithCandidates { message, .. } => message.clone(),
+        }
+    }
+
+    /// Render as a minimal HTML page, for browser flows (consent, activate)
+    /// where a JSON body would be shown raw. Same status as the JSON form.
+    pub fn into_html_response(self) -> Response {
+        let status = self.status();
+        let message = self.public_message();
+        let title = status.canonical_reason().unwrap_or("Error");
+        let html = format!(
+            "<!DOCTYPE html><html><head><title>{title}</title>\
+            <style>body{{font-family:system-ui;max-width:600px;margin:60px auto;padding:20px;color:#1a1a1a}}\
+            h1{{color:#c00}}code{{background:#f4f4f4;padding:2px 6px;border-radius:3px}}</style></head>\
+            <body><h1>{title}</h1>\
+            <p>{}</p>\
+            <p><a href=\"/dashboard\">Return to dashboard</a></p></body></html>",
+            html_escape(&message),
+        );
+        (status, Html(html)).into_response()
+    }
+}
+
+/// Minimal HTML escape for embedding messages in an error page.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// An RFC 6749 §5.2 error: `{"error", "error_description"}`. Used only by
+/// the OAuth token, device-code, and revocation endpoints, where the RFC
+/// fixes the body shape; every other route uses [`ApiError`].
+#[derive(Debug, Clone, Serialize)]
+pub struct OAuthError {
+    #[serde(skip)]
+    pub status: StatusCode,
+    pub error: String,
+    pub error_description: String,
+}
+
+impl OAuthError {
+    pub fn new(status: StatusCode, error: &str, description: &str) -> Self {
+        Self {
+            status,
+            error: error.to_string(),
+            error_description: description.to_string(),
+        }
+    }
+
+    /// `invalid_request` (400).
+    pub fn invalid_request(description: &str) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "invalid_request", description)
+    }
+
+    /// `invalid_client` (401).
+    pub fn invalid_client(description: &str) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, "invalid_client", description)
+    }
+
+    /// `invalid_grant` (400).
+    pub fn invalid_grant(description: &str) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "invalid_grant", description)
+    }
+
+    /// `invalid_scope` (400).
+    pub fn invalid_scope(description: &str) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "invalid_scope", description)
+    }
+
+    /// `server_error` (500). The detail is logged, not returned.
+    pub fn server_error(detail: impl std::fmt::Display) -> Self {
+        tracing::error!(error = %detail, "oauth server error");
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "internal error",
+        )
+    }
+}
+
+impl IntoResponse for OAuthError {
+    fn into_response(self) -> Response {
+        // RFC 6749 §5.1/§5.2: token responses, errors included, must not be cached.
+        (
+            self.status,
+            [
+                (header::CACHE_CONTROL, "no-store"),
+                (header::PRAGMA, "no-cache"),
+            ],
+            Json(self),
+        )
+            .into_response()
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "not_found", msg),
             ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "unauthorized", msg),
             ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, "forbidden", msg),
+            ApiError::UrlPatternDenied(msg) => (StatusCode::FORBIDDEN, "url_pattern_denied", msg),
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "bad_request", msg),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, "conflict", msg),
             ApiError::Gone(msg) => (StatusCode::GONE, "gone", msg),

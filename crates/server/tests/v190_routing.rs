@@ -137,10 +137,12 @@ async fn test_all_page_routes_return_html() {
         &format!("/security/{}", uuid),
         "/mcp-servers",
         "/mcp-servers/new",
+        "/mcp-servers/marketplace",
         &format!("/mcp-servers/{}", uuid),
         "/mcp-servers/catalog",
         "/audit",
-        "/settings/users",
+        // `/settings/users` is a redirect into `/settings#users-section` now,
+        // not a page of its own (uat/artifacts/fresh-user-docker-2.md F5).
         "/settings/users/new",
         "/settings",
     ];

@@ -1,14 +1,13 @@
 use async_trait::async_trait;
 
 use crate::domain::user::UserId;
-use crate::domain::workspace::{ProvisioningToken, Workspace, WorkspaceId, WorkspaceRegistration};
+use crate::domain::workspace::{Workspace, WorkspaceId};
 use crate::error::StoreError;
 
 /// Unified workspace storage trait.
 ///
-/// Replaces the former AgentStore, DeviceStore, and the old WorkspaceStore
-/// (workspace identity + registration). All autonomous entities are now
-/// Workspaces stored in the `workspaces` table.
+/// Replaces the former AgentStore and DeviceStore. All autonomous entities
+/// are Workspaces stored in the `workspaces` table.
 #[async_trait]
 pub trait WorkspaceStore: Send + Sync {
     // ---- CRUD ----
@@ -27,19 +26,12 @@ pub trait WorkspaceStore: Send + Sync {
     ) -> Result<Vec<Workspace>, StoreError>;
     async fn update_workspace(&self, workspace: &Workspace) -> Result<(), StoreError>;
     async fn delete_workspace(&self, id: &WorkspaceId) -> Result<bool, StoreError>;
-
-    // ---- JTI tracking (replay prevention) ----
-
-    async fn check_workspace_jti(&self, jti: &str) -> Result<bool, StoreError>;
-    /// Atomically store a JTI. Returns true if the JTI was newly inserted,
-    /// false if it already existed (replay detected).
-    async fn store_workspace_jti(
-        &self,
-        jti: &str,
-        workspace_id: &WorkspaceId,
-        expires_at: &chrono::DateTime<chrono::Utc>,
-    ) -> Result<bool, StoreError>;
-    async fn cleanup_expired_workspace_jtis(&self) -> Result<u32, StoreError>;
+    /// Revoke a workspace and everything that authenticates as it, in one
+    /// transaction: status to revoked, its OAuth clients revoked, and every
+    /// access and refresh token bound to it revoked. `false` when no such
+    /// workspace exists. The caller decides whether the transition is allowed
+    /// (see `Workspace::revoke`); this applies it.
+    async fn revoke_workspace(&self, id: &WorkspaceId) -> Result<bool, StoreError>;
 
     // ---- Authentication tracking ----
 
@@ -49,29 +41,4 @@ pub trait WorkspaceStore: Send + Sync {
         id: &WorkspaceId,
         now: &chrono::DateTime<chrono::Utc>,
     ) -> Result<(), StoreError>;
-
-    // ---- Registration flow (PKCE-based workspace registration) ----
-
-    async fn create_workspace_registration(
-        &self,
-        reg: &WorkspaceRegistration,
-    ) -> Result<(), StoreError>;
-    async fn get_workspace_registration(
-        &self,
-        pk_hash: &str,
-    ) -> Result<Option<WorkspaceRegistration>, StoreError>;
-    async fn increment_registration_attempts(&self, pk_hash: &str) -> Result<(), StoreError>;
-    async fn delete_workspace_registration(&self, pk_hash: &str) -> Result<bool, StoreError>;
-    /// Null out the approval_code field after it has been read (one-time use).
-    async fn null_registration_approval_code(&self, pk_hash: &str) -> Result<(), StoreError>;
-
-    // ---- Provisioning tokens (CI/CD registration) ----
-
-    async fn create_provisioning_token(&self, token: &ProvisioningToken) -> Result<(), StoreError>;
-    async fn get_provisioning_token(
-        &self,
-        token_hash: &str,
-    ) -> Result<Option<ProvisioningToken>, StoreError>;
-    /// Atomically mark a provisioning token as used. Returns true if updated (was unused).
-    async fn mark_provisioning_token_used(&self, token_hash: &str) -> Result<bool, StoreError>;
 }

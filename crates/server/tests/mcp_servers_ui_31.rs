@@ -62,17 +62,27 @@ async fn mcp_servers_list_does_not_dispatch_slide_panel_open() {
     );
 }
 
-/// #31 — RED: row click navigates directly to the full detail page via a
-/// `window.location.href` assignment in the click handler (not a slide-panel
-/// dispatch).
+/// #31 — the row goes to the full detail page rather than opening a slide
+/// panel. It does it the way every list in the console does now: the name
+/// cell's anchor is a `row-link` stretched over the row, so the whole row is
+/// one link with one destination — the click handler that used to sit beside
+/// the anchor was the second control
+/// (uat/artifacts/fresh-user-native-2.md F2).
 #[tokio::test]
 async fn mcp_servers_list_row_navigates_directly_to_detail_page() {
     let ctx = TestAppBuilder::new().build().await;
     let body = render_list_page(&ctx).await;
     assert!(
-        body.contains("window.location.href = '/mcp-servers/' + server.id")
-            || body.contains("window.location.href='/mcp-servers/' + server.id"),
-        "row click must assign window.location.href to /mcp-servers/{{id}}",
+        body.contains(r#"class="cred-name row-link""#),
+        "the row's one link is the name cell's stretched anchor",
+    );
+    assert!(
+        body.contains("'/mcp-servers/' + server.id"),
+        "and it points at the server's detail page",
+    );
+    assert!(
+        !body.contains("window.location.href = '/mcp-servers/' + server.id"),
+        "a row is a link, not an anchor inside a click handler",
     );
 }
 
@@ -94,7 +104,6 @@ async fn mcp_servers_partial_route_is_gone() {
     let ws = Workspace {
         id: WorkspaceId(uuid::Uuid::new_v4()),
         name: "ws-31".to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,

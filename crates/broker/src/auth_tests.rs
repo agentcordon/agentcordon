@@ -1,180 +1,103 @@
 use super::*;
-use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
+use agentcordon_identity::{generate_nonce, sign_request_at, sign_request_with, WorkspaceKey};
 
-#[test]
-fn test_verify_valid_signature() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let pk_hex = hex::encode(verifying_key.as_bytes());
+fn now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
 
-    let timestamp = chrono::Utc::now().timestamp().to_string();
-    let method = "GET";
-    let path = "/status";
-    let body = b"";
-
-    let mut payload = Vec::new();
-    payload.extend_from_slice(method.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(path.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(timestamp.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(body);
-
-    use ed25519_dalek::Signer;
-    let sig = signing_key.sign(&payload);
-    let sig_hex = hex::encode(sig.to_bytes());
-
-    assert!(verify_workspace_signature(&pk_hex, &timestamp, &sig_hex, method, path, body,).is_ok());
+fn verify(
+    h: &agentcordon_identity::SignedHeaders,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<(), AuthError> {
+    verify_workspace_signature(
+        &h.public_key,
+        &h.timestamp,
+        &h.nonce,
+        &h.signature,
+        method,
+        path,
+        body,
+    )
 }
 
 #[test]
-fn test_reject_expired_timestamp() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let pk_hex = hex::encode(verifying_key.as_bytes());
-
-    let timestamp = (chrono::Utc::now().timestamp() - 60).to_string();
-    let method = "GET";
-    let path = "/status";
-    let body = b"";
-
-    let mut payload = Vec::new();
-    payload.extend_from_slice(method.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(path.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(timestamp.as_bytes());
-    payload.push(b'\n');
-
-    use ed25519_dalek::Signer;
-    let sig = signing_key.sign(&payload);
-    let sig_hex = hex::encode(sig.to_bytes());
-
-    assert!(matches!(
-        verify_workspace_signature(&pk_hex, &timestamp, &sig_hex, method, path, body),
-        Err(AuthError::TimestampOutOfRange)
-    ));
-}
-
-#[test]
-fn test_reject_invalid_signature() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let pk_hex = hex::encode(verifying_key.as_bytes());
-
-    let timestamp = chrono::Utc::now().timestamp().to_string();
-
-    // Sign with different body
-    let mut payload = Vec::new();
-    payload.extend_from_slice(b"GET\n/status\n");
-    payload.extend_from_slice(timestamp.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(b"wrong body");
-
-    use ed25519_dalek::Signer;
-    let sig = signing_key.sign(&payload);
-    let sig_hex = hex::encode(sig.to_bytes());
-
-    assert!(matches!(
-        verify_workspace_signature(
-            &pk_hex,
-            &timestamp,
-            &sig_hex,
-            "GET",
-            "/status",
-            b"actual body",
-        ),
-        Err(AuthError::InvalidSignature)
-    ));
-}
-
-#[test]
-fn test_pk_hash() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let pk_hex = hex::encode(verifying_key.as_bytes());
-    let hash = pk_hash(&pk_hex).unwrap();
-    assert_eq!(hash.len(), 64); // SHA-256 hex = 64 chars
-}
-
-#[test]
-fn canonicalise_path_and_query_cases() {
-    assert_eq!(canonicalise_path_and_query("/foo/bar", None), "/foo/bar");
-    assert_eq!(canonicalise_path_and_query("/foo/bar/", None), "/foo/bar");
+fn rejects_body_that_differs_from_signed() {
+    let key = WorkspaceKey::generate();
+    let h = sign_request_at(&key, "GET", "/status", b"wrong body", now());
     assert_eq!(
-        canonicalise_path_and_query("/foo/bar", Some("a=1&b=2")),
-        "/foo/bar?a=1&b=2"
-    );
-    assert_eq!(
-        canonicalise_path_and_query("/foo/bar/", Some("a=1&b=2")),
-        "/foo/bar?a=1&b=2"
-    );
-    assert_eq!(canonicalise_path_and_query("/", None), "/");
-    assert_eq!(canonicalise_path_and_query("/", Some("a=1")), "/?a=1");
-    assert_eq!(canonicalise_path_and_query("/", Some("")), "/");
-}
-
-#[test]
-fn test_verify_signature_with_query_string() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let pk_hex = hex::encode(verifying_key.as_bytes());
-
-    let timestamp = chrono::Utc::now().timestamp().to_string();
-    let method = "GET";
-    // Canonical form the broker would reconstruct from a URI of
-    // `/foo/bar/?a=1&b=2`: trailing slash stripped, query preserved.
-    let signed_path = canonicalise_path_and_query("/foo/bar/", Some("a=1&b=2"));
-    assert_eq!(signed_path, "/foo/bar?a=1&b=2");
-    let body = b"";
-
-    let mut payload = Vec::new();
-    payload.extend_from_slice(method.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(signed_path.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(timestamp.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(body);
-
-    use ed25519_dalek::Signer;
-    let sig = signing_key.sign(&payload);
-    let sig_hex = hex::encode(sig.to_bytes());
-
-    assert!(
-        verify_workspace_signature(&pk_hex, &timestamp, &sig_hex, method, &signed_path, body,)
-            .is_ok()
-    );
-}
-
-#[test]
-fn test_reject_signature_when_query_dropped() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let pk_hex = hex::encode(verifying_key.as_bytes());
-
-    let timestamp = chrono::Utc::now().timestamp().to_string();
-    let method = "GET";
-    let signed_path = "/foo?a=1";
-    let verify_path = "/foo";
-
-    let mut payload = Vec::new();
-    payload.extend_from_slice(method.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(signed_path.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(timestamp.as_bytes());
-    payload.push(b'\n');
-
-    use ed25519_dalek::Signer;
-    let sig = signing_key.sign(&payload);
-    let sig_hex = hex::encode(sig.to_bytes());
-
-    // Verifier reconstructs without the query → signature must fail.
-    assert!(matches!(
-        verify_workspace_signature(&pk_hex, &timestamp, &sig_hex, method, verify_path, b"",),
+        verify(&h, "GET", "/status", b"actual body"),
         Err(AuthError::InvalidSignature)
-    ));
+    );
+}
+
+#[test]
+fn rejects_malformed_nonce() {
+    let key = WorkspaceKey::generate();
+    let h = sign_request_with(&key, "GET", "/status", b"", now(), "not-a-nonce");
+    assert_eq!(
+        verify(&h, "GET", "/status", b""),
+        Err(AuthError::InvalidNonce)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// NonceCache
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nonce_cache_refuses_second_presentation_within_window() {
+    let cache = NonceCache::default();
+    let n = generate_nonce();
+    assert!(cache.check_and_insert("pk", &n, 1_000));
+    assert!(!cache.check_and_insert("pk", &n, 1_000));
+    assert!(!cache.check_and_insert("pk", &n, 1_000 + NONCE_TTL_SECS - 1));
+}
+
+#[test]
+fn nonce_cache_allows_reuse_once_the_window_has_passed() {
+    let cache = NonceCache::default();
+    let n = generate_nonce();
+    assert!(cache.check_and_insert("pk", &n, 1_000));
+    assert!(cache.check_and_insert("pk", &n, 1_000 + NONCE_TTL_SECS));
+    assert_eq!(
+        cache.len(),
+        1,
+        "the expired entry was dropped, the new one kept"
+    );
+}
+
+#[test]
+fn nonce_cache_scopes_nonces_to_the_key() {
+    let cache = NonceCache::default();
+    let n = generate_nonce();
+    assert!(cache.check_and_insert("pk-a", &n, 1_000));
+    assert!(cache.check_and_insert("pk-b", &n, 1_000));
+    assert!(!cache.check_and_insert("pk-a", &n, 1_000));
+}
+
+#[test]
+fn nonce_cache_evicts_oldest_at_capacity() {
+    let cache = NonceCache::with_capacity(3);
+    let nonces: Vec<String> = (0..4).map(|_| generate_nonce()).collect();
+    for (i, n) in nonces.iter().enumerate() {
+        assert!(cache.check_and_insert("pk", n, 1_000 + i as i64));
+    }
+    assert_eq!(cache.len(), 3);
+    // The oldest was evicted and is accepted again; the newer ones still
+    // count as replays.
+    assert!(cache.check_and_insert("pk", &nonces[0], 1_004));
+    assert!(!cache.check_and_insert("pk", &nonces[3], 1_004));
+}
+
+#[test]
+fn nonce_cache_drops_expired_entries_on_insert() {
+    let cache = NonceCache::default();
+    for _ in 0..10 {
+        assert!(cache.check_and_insert("pk", &generate_nonce(), 1_000));
+    }
+    assert_eq!(cache.len(), 10);
+    assert!(cache.check_and_insert("pk", &generate_nonce(), 1_000 + NONCE_TTL_SECS));
+    assert_eq!(cache.len(), 1);
 }

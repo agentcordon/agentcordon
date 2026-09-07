@@ -65,6 +65,11 @@
     margin-bottom: 20px;
 }
 
+.activate-keyhash code {
+    font-size: var(--text-sm);
+    word-break: break-all;
+}
+
 .activate-alert {
     background: var(--danger-bg);
     color: var(--danger);
@@ -191,6 +196,19 @@
             <p class="activate-desc">
                 Enter the code shown in your terminal to connect this device to AgentCordon.
             </p>
+            {% endif %}
+
+            {% if let Some(hash) = pk_hash %}
+            <p class="activate-desc activate-keyhash">
+                Device key: <code>sha256:{{ hash }}</code>
+            </p>
+            {% endif %}
+
+            {% if let Some(existing) = existing_workspace %}
+            <div class="activate-alert" role="alert">
+                This device key is already registered to workspace <strong>{{ existing }}</strong>.
+                Approving re-registers that workspace for this device instead of creating a new one.
+            </div>
             {% endif %}
 
             {% if let Some(msg) = error_message %}

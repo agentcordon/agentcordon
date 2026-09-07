@@ -17,7 +17,6 @@ body:
         - OIDC / SSO
         - Encryption / Crypto
         - Database (SQLite)
-        - Database (PostgreSQL)
         - Docker / Deployment
         - Other
     validations:
@@ -126,17 +125,6 @@ body:
         - Built from source (cargo)
         - Pre-built binary
         - Other
-    validations:
-      required: true
-
-  - type: dropdown
-    id: database
-    attributes:
-      label: Database backend
-      options:
-        - SQLite (default)
-        - PostgreSQL
-        - Not sure
     validations:
       required: true
 

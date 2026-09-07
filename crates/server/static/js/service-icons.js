@@ -81,3 +81,19 @@ function credTplLogoUrl(tpl) {
     }
     return null;
 }
+
+/**
+ * Logo key for an installed MCP server: the marketplace template it came
+ * from, else its own name — matched exactly, never as a substring.
+ *
+ * The MCP list page used to carry its own pair of helpers that scanned every
+ * logo key for a substring of the server's name, so a server called
+ * "Squarespace" wore the Square logo (uat/artifacts/reviews/UI-REVIEW-static.md J8).
+ * Returns '' when nothing matches, which both `serviceLogoUrl` and
+ * `logoDarkClass` read as "no logo".
+ */
+function mcpServerLogoKey(server) {
+    if (!server) return '';
+    var key = (server.template_key || server.name || '').toLowerCase();
+    return SERVICE_LOGOS[key] ? key : '';
+}

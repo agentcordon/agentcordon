@@ -29,7 +29,6 @@ async fn create_mcp_server_in_store(
     let device = agent_cordon_core::domain::workspace::Workspace {
         id: agent_cordon_core::domain::workspace::WorkspaceId(Uuid::new_v4()),
         name: format!("test-workspace-{}", name),
-        enabled: true,
         status: agent_cordon_core::domain::workspace::WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,

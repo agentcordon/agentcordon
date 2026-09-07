@@ -24,7 +24,6 @@ use uuid::Uuid;
 use agent_cordon_core::crypto::password::hash_password;
 use agent_cordon_core::domain::user::{User, UserId, UserRole};
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
-use agent_cordon_core::policy::PolicyEngine;
 use agent_cordon_core::storage::Store;
 
 // Backward-compat aliases for test code
@@ -108,8 +107,11 @@ pub async fn create_agent_in_db(
     let agent = Agent {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled,
-        status: WorkspaceStatus::Active,
+        status: if enabled {
+            WorkspaceStatus::Active
+        } else {
+            WorkspaceStatus::Disabled
+        },
         pk_hash: None,
         encryption_public_key: None,
         tags: tags.into_iter().map(String::from).collect(),
@@ -381,6 +383,7 @@ pub async fn issue_agent_jwt(
             client_secret_hash: None,
             workspace_name: agent.name.clone(),
             public_key_hash: pk_hash,
+            workspace_id: Some(agent.id.clone()),
             redirect_uris: vec!["http://localhost:9999/callback".to_string()],
             allowed_scopes: vec![
                 OAuthScope::CredentialsDiscover,
@@ -532,7 +535,6 @@ pub async fn create_standalone_device(
     let workspace = Workspace {
         id: workspace_id.clone(),
         name: format!("standalone-workspace-{}", workspace_id.0),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -699,7 +701,6 @@ pub async fn create_device_via_api(
     let workspace = Workspace {
         id: workspace_id.clone(),
         name: name.to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -753,7 +754,6 @@ pub async fn enroll_agent_through_device(
     let workspace = Workspace {
         id: workspace_id.clone(),
         name: agent_name.to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -975,7 +975,6 @@ pub async fn register_workspace_identity(
     let workspace = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.unwrap_or("test-workspace").to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: Some(pk_hash.to_string()),
         encryption_public_key: None,

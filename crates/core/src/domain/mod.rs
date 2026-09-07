@@ -8,6 +8,7 @@ pub mod oauth_provider_client;
 pub mod oidc;
 pub mod policy;
 pub mod session;
+pub mod time;
 pub mod user;
 pub mod vault;
 pub mod workspace;

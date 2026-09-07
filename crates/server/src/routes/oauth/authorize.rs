@@ -5,18 +5,19 @@ use axum::{
     extract::{Query, State},
     response::{Html, IntoResponse, Redirect, Response},
 };
-use chrono::{Duration, Utc};
 use serde::Deserialize;
 
 use agent_cordon_core::crypto::session::hash_session_token_hmac;
-use agent_cordon_core::oauth2::types::{OAuthAuthCode, OAuthScope};
+use agent_cordon_core::oauth2::types::OAuthScope;
 
 use crate::extractors::AuthenticatedUser;
 use crate::response::ApiError;
 use crate::state::AppState;
 use crate::utils::cookies::parse_cookie;
 
-use super::{generate_auth_code, is_localhost_uri, scope_descriptions, ScopeDisplay};
+pub(crate) use crate::services::oauth::validate_new_workspace_params;
+
+use super::{is_localhost_uri, scope_descriptions, ScopeDisplay};
 
 /// Compute a deterministic CSRF token from the session cookie using HMAC.
 ///
@@ -31,21 +32,6 @@ pub(crate) fn compute_csrf_token(session_token: &str, session_hash_key: &[u8; 32
 pub(crate) fn extract_session_token(headers: &axum::http::HeaderMap) -> Option<String> {
     let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     parse_cookie(cookie_header, "agtcrdn_session").map(|s| s.to_string())
-}
-
-/// Validate new workspace registration parameters.
-pub(crate) fn validate_new_workspace_params(pk_hash: &str, ws_name: &str) -> Result<(), ApiError> {
-    if ws_name.is_empty() || ws_name.len() > 255 {
-        return Err(ApiError::BadRequest(
-            "workspace_name must be 1-255 characters".into(),
-        ));
-    }
-    if pk_hash.len() != 64 || !pk_hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ApiError::BadRequest(
-            "public_key_hash must be a 64-char hex string".into(),
-        ));
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -173,12 +159,13 @@ pub(crate) async fn authorize_get(
                 return Err(ApiError::BadRequest("redirect_uri does not match".into()));
             }
 
-            for scope in &requested_scopes {
-                if !client.allowed_scopes.contains(scope) {
-                    return Err(ApiError::BadRequest(format!(
-                        "scope not allowed for this client: {scope}"
-                    )));
-                }
+            if let Some(scope) = requested_scopes
+                .iter()
+                .find(|s| !client.allowed_scopes.contains(s))
+            {
+                return Err(ApiError::BadRequest(format!(
+                    "scope not allowed for this client: {scope}"
+                )));
             }
 
             (
@@ -190,8 +177,18 @@ pub(crate) async fn authorize_get(
         } else if let (Some(ref pk_hash), Some(ref ws_name)) =
             (&params.public_key_hash, &params.workspace_name)
         {
-            // New workspace registration path
+            // New workspace registration path. Same gate as the consent POST
+            // and the device-flow approve route: only a user allowed to
+            // manage workspaces gets to see, or submit, the create form.
             validate_new_workspace_params(pk_hash, ws_name)?;
+            state
+                .authz
+                .authorize(
+                    &auth,
+                    agent_cordon_core::policy::actions::MANAGE_WORKSPACES,
+                    &agent_cordon_core::policy::PolicyResource::System,
+                )
+                .await?;
             (ws_name.clone(), String::new(), true, pk_hash.clone())
         } else {
             return Err(ApiError::BadRequest(
@@ -208,21 +205,17 @@ pub(crate) async fn authorize_get(
         {
             let consent_covers_all = requested_scopes.iter().all(|s| consent.scopes.contains(s));
             if consent_covers_all {
-                let (code, code_hash) = generate_auth_code();
-                let now = Utc::now();
-
-                let auth_code = OAuthAuthCode {
-                    code_hash,
-                    client_id: client_id_str.clone(),
-                    user_id: auth.user.id.clone(),
-                    redirect_uri: params.redirect_uri.clone(),
-                    scopes: requested_scopes,
-                    code_challenge: Some(code_challenge.to_string()),
-                    created_at: now,
-                    expires_at: now + Duration::seconds(300),
-                    consumed_at: None,
-                };
-                state.store.create_oauth_auth_code(&auth_code).await?;
+                let code = state
+                    .services
+                    .oauth
+                    .issue_auth_code(
+                        &client_id_str,
+                        &auth.user.id,
+                        &params.redirect_uri,
+                        requested_scopes,
+                        code_challenge,
+                    )
+                    .await?;
 
                 let redirect_url = format!(
                     "{}?code={}&state={}",
@@ -238,7 +231,7 @@ pub(crate) async fn authorize_get(
     // Compute CSRF token from session cookie via HMAC (double-submit pattern)
     let session_token = extract_session_token(&headers)
         .ok_or_else(|| ApiError::Unauthorized("session required".into()))?;
-    let csrf_token = compute_csrf_token(&session_token, &state.session_hash_key);
+    let csrf_token = compute_csrf_token(&session_token, &state.crypto.session_hash_key);
 
     let template = ConsentTemplate {
         workspace_name,

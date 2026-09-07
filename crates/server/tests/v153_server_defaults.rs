@@ -13,7 +13,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use agent_cordon_core::crypto::aes_gcm::AesGcmEncryptor;
-use agent_cordon_core::crypto::key_derivation::{derive_jwt_signing_keypair, derive_master_key};
+use agent_cordon_core::crypto::key_derivation::{derive_master_key, derive_session_hash_key};
 use agent_cordon_core::crypto::SecretEncryptor;
 
 use agent_cordon_server::config::AppConfig;
@@ -651,16 +651,12 @@ fn test_derived_salt_produces_valid_master_key() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. test_derived_salt_produces_valid_jwt_keypair
+// 2. test_derived_salt_produces_valid_session_hash_key
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_derived_salt_produces_valid_jwt_keypair() {
-    use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-    use p256::pkcs8::{EncodePrivateKey, EncodePublicKey};
-    use serde::{Deserialize, Serialize};
-
-    let master_secret = "jwt-keypair-stability-test-sec!";
+fn test_derived_salt_produces_valid_session_hash_key() {
+    let master_secret = "session-key-stability-test-sec!";
 
     // Derive salt via HKDF
     let hk = Hkdf::<Sha256>::new(None, master_secret.as_bytes());
@@ -669,45 +665,21 @@ fn test_derived_salt_produces_valid_jwt_keypair() {
         .expect("HKDF expand");
     let derived_salt = hex::encode(okm);
 
-    // Derive JWT signing keypair
-    let (signing_key, verifying_key) =
-        derive_jwt_signing_keypair(master_secret, derived_salt.as_bytes())
-            .expect("derive_jwt_signing_keypair should succeed");
+    // The derived salt must yield a usable session-hash key that is
+    // domain-separated from the AES master key.
+    let session_key = derive_session_hash_key(master_secret, derived_salt.as_bytes())
+        .expect("derive_session_hash_key should succeed");
+    let master_key = derive_master_key(master_secret, derived_salt.as_bytes())
+        .expect("derive_master_key should succeed");
 
-    // Sign a test JWT
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TestClaims {
-        sub: String,
-        exp: u64,
-    }
-
-    let claims = TestClaims {
-        sub: "test-agent".to_string(),
-        exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as u64,
-    };
-
-    let sk_pem = signing_key
-        .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
-        .expect("signing key to PEM");
-    let encoding_key = EncodingKey::from_ec_pem(sk_pem.as_bytes()).expect("encoding key from PEM");
-
-    let token = encode(&Header::new(Algorithm::ES256), &claims, &encoding_key)
-        .expect("JWT signing should succeed");
-
-    // Verify the JWT
-    let vk_pem = verifying_key
-        .to_public_key_pem(p256::pkcs8::LineEnding::LF)
-        .expect("verifying key to PEM");
-    let decoding_key = DecodingKey::from_ec_pem(vk_pem.as_bytes()).expect("decoding key from PEM");
-
-    let mut validation = Validation::new(Algorithm::ES256);
-    validation.validate_exp = false;
-    validation.set_required_spec_claims::<String>(&[]);
-
-    let decoded = decode::<TestClaims>(&token, &decoding_key, &validation)
-        .expect("JWT verification should succeed");
-
-    assert_eq!(decoded.claims.sub, "test-agent");
+    assert_ne!(
+        *session_key, [0u8; 32],
+        "session hash key must not be all zeros"
+    );
+    assert_ne!(
+        *session_key, *master_key,
+        "session hash key must differ from the AES master key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -728,14 +700,14 @@ fn test_derived_salt_crypto_is_deterministic() {
     // First derivation
     let master_key_1 =
         derive_master_key(master_secret, derived_salt.as_bytes()).expect("derive_master_key 1");
-    let (sk1, vk1) = derive_jwt_signing_keypair(master_secret, derived_salt.as_bytes())
-        .expect("derive_jwt_signing_keypair 1");
+    let session_key_1 = derive_session_hash_key(master_secret, derived_salt.as_bytes())
+        .expect("derive_session_hash_key 1");
 
     // Second derivation (same inputs)
     let master_key_2 =
         derive_master_key(master_secret, derived_salt.as_bytes()).expect("derive_master_key 2");
-    let (sk2, vk2) = derive_jwt_signing_keypair(master_secret, derived_salt.as_bytes())
-        .expect("derive_jwt_signing_keypair 2");
+    let session_key_2 = derive_session_hash_key(master_secret, derived_salt.as_bytes())
+        .expect("derive_session_hash_key 2");
 
     // Keys must be identical
     assert_eq!(
@@ -743,9 +715,7 @@ fn test_derived_salt_crypto_is_deterministic() {
         "AES master keys must be identical across runs"
     );
     assert_eq!(
-        sk1.to_bytes(),
-        sk2.to_bytes(),
-        "JWT signing keys must be identical across runs"
+        *session_key_1, *session_key_2,
+        "session hash keys must be identical across runs"
     );
-    assert_eq!(vk1, vk2, "JWT verifying keys must be identical across runs");
 }

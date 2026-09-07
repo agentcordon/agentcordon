@@ -1,13 +1,54 @@
 /* === AgentCordon Design System === */
 /* Source of truth: docs/design/README.md */
 
+/* === Web Font === */
+/*
+ * Inter, self-hosted.
+ *
+ * `--font` has named the family since the design system was written and
+ * nothing ever loaded it: `base.html` links this stylesheet and no font, there
+ * was no `@font-face`, and the CSP allows no font host. Every screenshot in
+ * every review was therefore the OS fallback — Noto on the review machine,
+ * Segoe on Windows, Helvetica on macOS — and the type scale was tuned for a
+ * face nobody saw (uat/artifacts/reviews/DESIGN-REVIEW.md §3.2).
+ *
+ * One variable file, subset to Latin-1 plus the punctuation, arrows and check
+ * marks the admin UI renders: 111 KB, embedded with the rest of `static/`.
+ * Provenance and the OFL are in `static/fonts/LICENSE`; `base.html` preloads
+ * it. There is no italic file — the UI has two italic rules, and the browser's
+ * synthesized oblique is not worth another 122 KB in the binary.
+ */
+@font-face {
+    font-family: 'InterVariable';
+    font-style: normal;
+    font-weight: 100 900;
+    font-display: swap;
+    src: url('/fonts/InterVariable.woff2') format('woff2');
+}
+
 /* === Design Tokens === */
 
 :root {
+    /* Layout */
+    /* The sticky top bar's height. `.tbl th` sticks below it, and two
+       `calc(100vh - …)` panes measure against it. */
+    --topbar-h: 56px;
+    /* Two control heights and one row height, so the density of the product is
+       three numbers rather than forty (uat/artifacts/reviews/DESIGN-REVIEW.md §3.3, §3.5).
+       `--control-h` is a toolbar or table-row control; `--control-h-lg` is a
+       form field and the button that submits it, which stay comfortable. */
+    --control-h: 32px;
+    --control-h-lg: 36px;
+    --row-h: 40px;
+
     /* Foundation */
     --ink: #1a1a1a;
     --ink-soft: #555555;
-    --ink-faint: #6b7280;
+    --ink-faint: #646b76;
+    /* The dimmest text the design system allows. `.opacity-muted` used to be
+       `opacity: .6` — 4.57:1 at best and 2.51:1 where the policy pages set .4
+       — and dimming is not a colour: it fades whatever is behind it too. */
+    --ink-muted: #5f5f5f;
     --line: #e8e6e1;
     --wash: #f6f5f3;
     --surface: #ffffff;
@@ -19,7 +60,8 @@
 
     /* Semantic */
     --safe: #2d7a3f;
-    --warn: #b5850a;
+    /* #b5850a was 3.19:1 on --warn-bg in the Disabled/Pending pill. */
+    --warn: #8a6508;
     --danger: #c23030;
 
     /* Semantic Backgrounds */
@@ -28,7 +70,7 @@
     --danger-bg: #fef2f2;
     --info: #3b5fc0;
     --info-bg: #eef4ff;
-    --warn-hover: #a37809;
+    --warn-hover: #6f5106;
     --danger-hover-bg: rgba(194,48,48,0.05);
     --ghost-hover-bg: rgba(0,0,0,0.04);
     --secondary-hover-bg: #eeeeee;
@@ -38,22 +80,24 @@
     --shadow-md: 0 4px 16px rgba(0,0,0,0.06);
     --shadow-toast: 0 12px 40px rgba(0,0,0,0.15);
 
-    /* Radius — canonical tokens */
-    --radius-xs: 4px;
-    --radius-sm: 6px;
-    --radius-md: 8px;
-    --radius-lg: 14px;
-    --radius-pill: 99px;
+    /* Radius — four tokens, and only four (uat/artifacts/reviews/DESIGN-REVIEW.md §3.5) */
+    --radius-xs: 4px;    /* pills, tags, chips, code spans */
+    --radius-sm: 6px;    /* buttons, inputs, selects */
+    --radius-md: 8px;    /* cards, tables, tiles, panes */
+    --radius-lg: 12px;   /* modals, menus, toasts, the login card */
 
-    /* Legacy radius aliases */
-    --r: var(--radius-lg);
-    --r-sm: var(--radius-md);
+    /* Legacy radius aliases. Nothing in this stylesheet reaches for them any
+       more. Nothing names them any more - the last page-level `<style>` rules
+       that did were rewritten to `--radius-*` in phase 3 - so they are gone,
+       along with the 99px capsule: nothing in the product is a capsule, and
+       the toggle switch carries its own literal. */
 
     /* Spacing Scale (4px base) */
     --sp-1: 4px;
     --sp-2: 8px;
     --sp-3: 12px;
     --sp-4: 16px;
+    --sp-5: 20px;
     --sp-6: 24px;
     --sp-8: 32px;
     --sp-10: 40px;
@@ -69,14 +113,54 @@
     --text-3xl: 2rem;
 
     /* Typography */
-    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    --font-mono: 'SF Mono', Menlo, monospace;
+    /* The face loaded by the `@font-face` above, then an explicit fallback
+       stack rather than a bare `sans-serif` — the page must look deliberate in
+       the swap period and on a browser that refuses the download. */
+    --font: 'InterVariable', 'Inter', ui-sans-serif, system-ui, -apple-system,
+            'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
+                 'Liberation Mono', monospace;
+    /* Inter's single-storey `a` and open digits: the shapes the mark and the
+       rest of the system were drawn against. */
+    --font-features: 'cv11', 'ss01';
+
+    /* Two line heights: text you read, and text you scan. */
+    --leading-body: 1.5;
+    --leading-heading: 1.25;
+
+    /* Pill and status colour by meaning, not by hue (§3.8). A category —
+       credential type, transform, auth mode, transport, role, source — is
+       grey; only a lifecycle state is coloured. */
+    --state-ok: var(--safe);
+    --state-ok-bg: var(--safe-bg);
+    --state-warn: var(--warn);
+    --state-warn-bg: var(--warn-bg);
+    --state-bad: var(--danger);
+    --state-bad-bg: var(--danger-bg);
+    --state-neutral: var(--ink-soft);
+    --state-neutral-bg: var(--wash);
 
     /* Cedar editor / code blocks */
     --bg-secondary: #f0eeeb;
     --bg-tertiary: rgba(0,0,0,0.03);
-    --color-ok: #22c55e;
-    --color-bad: #ef4444;
+    /* Tailwind's green and red, used as *text* by the policy pages: 2.28:1
+       and 3.76:1 on white. The design system already owns a green and a red
+       that read. */
+    --color-ok: var(--safe);
+    --color-bad: var(--danger);
+
+    /* Tokens the page-level stylesheets reference. Every one of these was
+       written as `var(--color-link, #60a5fa)` and similar, so the policy pages
+       rendered in a Tailwind palette — blue links at 2.54:1, a green PERMIT at
+       2.28:1 — on top of the orange/ink design system. Defining them here is
+       what makes the fallbacks unreachable. */
+    --color-link: var(--accent-hover);
+    --color-warn: var(--warn);
+    --bg-hover: var(--ghost-hover-bg);
+    --bg: var(--surface);
+    --faint: var(--ink-muted);
+    /* White on amber is 3.32:1 light and 1.53:1 dark. */
+    --btn-warning-ink: #ffffff;
 
     /* Legacy aliases — referenced by inline styles in HTML */
     --text-muted: var(--ink-faint);
@@ -105,24 +189,143 @@ html, body { height: 100%; }
 
 body {
     font-family: var(--font);
+    font-feature-settings: var(--font-features);
     color: var(--ink);
     background: var(--wash);
-    font-size: 14px;
-    line-height: 1.6;
+    font-size: var(--text-base);
+    line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
 
+/* A link takes the product's link colour. Every component that styles its own
+   anchors (`.nav-link`, `.btn`, `.cred-name`, `.back-link`, `a.pill`,
+   `a.dash-card-link`) is a class and outranks this. */
+a {
+    color: var(--color-link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* === Type Scale === */
+/*
+ * Seven steps, enforced here rather than page by page. The tokens existed and
+ * the pages ignored them — 22 px titles, 18 px card headings, 28 px counts,
+ * 11 px pills — so a heading's size depended on which page it was written on
+ * (uat/artifacts/reviews/DESIGN-REVIEW.md §3.2). Weights are 400, 500 and 600; nothing heavier.
+ */
+h1,
+.page-title,
+.content-header h2 {
+    font-size: var(--text-2xl);
+    font-weight: 600;
+    line-height: var(--leading-heading);
+    letter-spacing: -0.01em;
+    color: var(--ink);
+}
+
+h2 {
+    font-size: var(--text-xl);
+    font-weight: 600;
+    line-height: var(--leading-heading);
+    letter-spacing: -0.01em;
+    color: var(--ink);
+}
+
+h3,
+.card-title {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: var(--leading-heading);
+    color: var(--ink);
+}
+
+h4 {
+    font-size: var(--text-base);
+    font-weight: 600;
+    line-height: var(--leading-heading);
+    color: var(--ink);
+}
+
+/* The one line of secondary information under a title or beside a row. */
+.meta {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    line-height: var(--leading-body);
+    color: var(--ink-soft);
+}
+
+/* The only place small-caps-ish uppercase is allowed: a section label inside a
+   detail body. */
+.section-label,
+.detail-section-label {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-faint);
+}
+
+/* === Icons === */
+/*
+ * One sprite, `static/icons.svg` (Lucide; licence and version in
+ * `static/icons.LICENSE`), drawn as
+ * `<svg class="icon" aria-hidden="true"><use href="/icons.svg#trash"/></svg>`.
+ * Same origin, so no CSP change. Phase 3 replaces the text glyphs (✕ × ↑ ↓ →
+ * ✓ ⚡ ✗ ▸) that render in whatever the fallback font happens to have; the
+ * sprite and this rule land now so that change is a template edit only.
+ */
+.icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vertical-align: middle;
+}
+
+.icon-sm {
+    width: 14px;
+    height: 14px;
+}
+
+.icon-lg {
+    width: 20px;
+    height: 20px;
+}
+
+/* === Motion === */
+/*
+ * A reader who has asked their OS for less motion gets none of ours: the
+ * toast slide, the modal fade, the loader pulse, every hover transition
+ * (uat/artifacts/reviews/DESIGN-REVIEW.md §3.10). The login canvas already checks the query
+ * itself.
+ */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
 
 .mt-2 { margin-top: 0.5rem; }
-.mt-4 { margin-top: 1rem; }
 .mt-6 { margin-top: 1.5rem; }
 .mb-2 { margin-bottom: 0.5rem; }
 .mb-4 { margin-bottom: 1rem; }
 .mb-5 { margin-bottom: 1.25rem; }
 .mb-6 { margin-bottom: 1.5rem; }
 .p-4 { padding: 1rem; }
-.gap-2 { gap: 0.5rem; }
 .w-full { width: 100%; }
 
 /* === Display Utilities === */
@@ -131,7 +334,8 @@ body {
 .items-center { align-items: center; }
 .justify-between { justify-content: space-between; }
 .text-center { text-align: center; }
-.opacity-muted { opacity: 0.6; }
+/* A colour, not a dimmer: see --ink-muted. */
+.opacity-muted { color: var(--ink-muted); }
 
 /* === Login — Split Screen === */
 
@@ -229,10 +433,10 @@ body {
     background: var(--danger-bg);
     color: var(--danger);
     border: 1px solid rgba(194,48,48,0.2);
-    border-radius: var(--r-sm);
-    padding: 10px 14px;
-    font-size: 13px;
-    margin-bottom: 16px;
+    border-radius: var(--radius-sm);
+    padding: var(--sp-2) var(--sp-3);
+    font-size: var(--text-sm);
+    margin-bottom: var(--sp-4);
 }
 
 .login-footer-hint {
@@ -273,12 +477,12 @@ body {
 /* === Top Navigation Bar === */
 
 .top-bar {
-    height: 56px;
+    height: var(--topbar-h);
     background: var(--surface);
     border-bottom: 1px solid var(--line);
     display: flex;
     align-items: center;
-    padding: 0 28px;
+    padding: 0 var(--sp-6);
     gap: 0;
     position: sticky;
     top: 0;
@@ -303,15 +507,15 @@ body {
 .nav-link {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 16px 14px;
-    font-size: 14px;
+    gap: var(--sp-2);
+    padding: 16px var(--sp-3);
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--ink-faint);
     text-decoration: none;
     border-bottom: 2px solid transparent;
     margin-bottom: -1px;
-    transition: color 0.15s ease-out;
+    transition: color 150ms ease-out;
     cursor: pointer;
     white-space: nowrap;
 }
@@ -325,8 +529,6 @@ body {
 .nav-link.nav-active {
     color: var(--ink);
     border-bottom-color: var(--accent);
-    background: var(--accent-glow);
-    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
 }
 
 .nav-link:focus-visible {
@@ -346,7 +548,7 @@ body {
 }
 
 button.sign-out {
-    font-size: 13px;
+    font-size: var(--text-sm);
     font-family: var(--font);
     border: none;
     background: none;
@@ -355,14 +557,14 @@ button.sign-out {
 /* === Content Area === */
 
 .content {
-    padding: 32px 28px;
+    padding: var(--sp-8) var(--sp-6);
     max-width: 1280px;
     margin: 0 auto;
-    min-height: calc(100vh - 56px);
+    min-height: calc(100vh - var(--topbar-h));
 }
 
 .main-content {
-    padding: 32px 28px;
+    padding: var(--sp-8) var(--sp-6);
     max-width: 960px;
     margin: 0 auto;
     min-height: 100vh;
@@ -372,20 +574,13 @@ button.sign-out {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
-    margin-bottom: 24px;
-}
-
-.content-header h2 {
-    font-size: 22px;
-    font-weight: 600;
-    letter-spacing: -0.3px;
-    color: var(--ink);
+    gap: var(--sp-4);
+    margin-bottom: var(--sp-6);
 }
 
 .content-header .actions {
     display: flex;
-    gap: 8px;
+    gap: var(--sp-2);
     align-items: center;
 }
 
@@ -398,25 +593,23 @@ button.sign-out {
 .back-link {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    font-size: 14px;
+    gap: var(--sp-1);
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--ink-soft);
     text-decoration: none;
-    margin-bottom: 8px;
-    transition: color 0.15s ease-out;
+    margin-bottom: var(--sp-2);
+    transition: color 150ms ease-out;
 }
 
 .back-link:hover {
     color: var(--ink);
 }
 
+/* Size and weight come from the type-scale block above; this is the space
+   under the title. */
 .page-title {
-    font-size: 22px;
-    font-weight: 600;
-    letter-spacing: -0.3px;
-    color: var(--ink);
-    margin-bottom: 24px;
+    margin-bottom: var(--sp-6);
 }
 
 /* === Search Input === */
@@ -426,15 +619,16 @@ button.sign-out {
 }
 
 .search-input input {
-    padding: 7px 12px 7px 32px;
+    height: var(--control-h);
+    padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-8);
     border: 1px solid var(--line);
-    border-radius: var(--r-sm);
-    font-size: 14px;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-base);
     font-family: var(--font);
     width: 240px;
     background: var(--surface);
     color: var(--ink);
-    transition: border-color 0.15s ease-out, box-shadow 0.15s ease-out;
+    transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
 }
 
 .search-input input:focus {
@@ -444,12 +638,12 @@ button.sign-out {
 }
 
 .search-input input::placeholder {
-    color: #9ca3af;
+    color: var(--ink-muted);
 }
 
 .search-input .search-icon {
     position: absolute;
-    left: 10px;
+    left: var(--sp-3);
     top: 50%;
     -webkit-transform: translateY(-50%);
     transform: translateY(-50%);
@@ -465,18 +659,32 @@ button.sign-out {
 .btn {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 16px;
-    height: 36px;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    height: var(--control-h);
     border: none;
     border-radius: var(--radius-sm);
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
     font-family: var(--font);
     transition: background 150ms ease, color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
     text-decoration: none;
     line-height: 1;
+    white-space: nowrap;
+}
+
+/* A form's fields are 36 px, so the button that submits them is too; a
+   toolbar's are 32 (uat/artifacts/reviews/DESIGN-REVIEW.md §3.3). */
+.btn-lg,
+.form-actions .btn,
+.login-submit-btn,
+.login-sso-btn,
+.modal-actions .btn,
+.ac-confirm-actions .btn {
+    height: var(--control-h-lg);
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
 }
 
 .btn:focus-visible {
@@ -525,7 +733,7 @@ button.sign-out {
 /* Warning — amber confirmation */
 .btn-warning {
     background: var(--warn);
-    color: #fff;
+    color: var(--btn-warning-ink);
 }
 
 .btn-warning:hover:not(:disabled) {
@@ -536,7 +744,7 @@ button.sign-out {
 .btn-ghost {
     background: transparent;
     color: var(--ink-soft);
-    padding: 6px 10px;
+    padding: var(--sp-2);
 }
 
 .btn-ghost:hover:not(:disabled) {
@@ -545,8 +753,9 @@ button.sign-out {
 
 /* Small variant */
 .btn-sm {
-    padding: 7px 14px;
-    font-size: 13px;
+    height: 28px;
+    padding: var(--sp-1) var(--sp-2);
+    font-size: var(--text-sm);
 }
 
 /* === Tables (.tbl) === */
@@ -554,25 +763,46 @@ button.sign-out {
 .tbl {
     width: 100%;
     border-collapse: collapse;
+    /* An id, a count and a timestamp only line up in a column if the digits
+       are the same width. */
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: var(--font-features), 'tnum';
 }
 
 .tbl th {
     text-align: left;
-    padding: 10px 0;
-    font-size: 12px;
+    padding: var(--sp-2) var(--sp-3);
+    font-size: var(--text-sm);
     font-weight: 500;
     color: var(--ink-faint);
     border-bottom: 1px solid var(--line);
     position: sticky;
-    top: 0;
-    background: var(--surface);
+    /* The page scrolls under a 56 px sticky bar, so `top: 0` parked the header
+       row behind it. A table inside its own scrolling box (a modal) sets
+       --tbl-sticky-top back to 0. */
+    top: var(--tbl-sticky-top, var(--topbar-h));
+    /* A sticky header has to be opaque against whatever it slides over. A list
+       page's table sits directly on the wash — there is no card around it any
+       more — and a white band there reads as a stray rectangle, so the default
+       is the page and the surfaces that contain a table say so themselves. */
+    background: var(--tbl-header-bg, var(--wash));
     z-index: 1;
 }
 
+.card,
+.detail-card,
+.modal,
+.modal-card,
+.modal-scroll,
+.tab-content,
+.perm-form-batch {
+    --tbl-header-bg: var(--surface);
+}
+
 .tbl td {
-    padding: 12px 0;
-    height: 44px;
-    font-size: 14px;
+    padding: var(--sp-2) var(--sp-3);
+    height: var(--row-h);
+    font-size: var(--text-base);
     border-bottom: 1px solid var(--line);
     vertical-align: middle;
 }
@@ -581,11 +811,19 @@ button.sign-out {
     transition: background 120ms ease-out;
 }
 
+/* A clickable row is one stretched anchor (`.row-link`) in its name cell, and
+   `position: relative` is what makes the row — rather than the page — that
+   anchor's containing block. Without it `.row-link::after` resolves against
+   the initial containing block and the row navigates only from the name
+   (uat/artifacts/fresh-user-native-2.md F2). */
 .tbl-clickable tbody tr {
     cursor: pointer;
+    position: relative;
 }
 
-.tbl-clickable tbody tr:focus-visible {
+/* The row is what the anchor covers, so the row is what shows the keyboard
+   focus ring. `:focus-visible` keeps it off a mouse click. */
+.tbl-clickable tbody tr:has(.row-link:focus-visible) {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
 }
@@ -598,15 +836,22 @@ button.sign-out {
     border-bottom: none;
 }
 
-/* Give table cells some horizontal breathing room between columns */
-.tbl th + th,
-.tbl td + td {
-    padding-left: 16px;
+/* The gutter belongs to the page, not to the first column: every cell pads
+   itself, and the outer edges give theirs back so the table's first column
+   lines up with the page title above it. */
+.tbl th:first-child,
+.tbl td:first-child {
+    padding-left: 0;
+}
+
+.tbl th:last-child,
+.tbl td:last-child {
+    padding-right: 0;
 }
 
 
 .cred-name {
-    font-weight: 600;
+    font-weight: 500;
     color: var(--ink);
     text-decoration: none;
 }
@@ -620,22 +865,23 @@ a.cred-name:hover {
 .pill {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 3px 10px;
+    gap: var(--sp-1);
+    padding: 2px var(--sp-2);
     border-radius: var(--radius-xs);         /* 4px — clean rectangle, not fully round */
     font-family: var(--font);               /* sans-serif, not mono */
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-size: var(--text-xs);              /* 12px; 11 is below the floor */
+    font-weight: 500;
+    line-height: 1.4;
+    letter-spacing: 0.01em;
     white-space: nowrap;
     vertical-align: middle;
     position: relative;
     border: 1px solid transparent;           /* clean border — no crescent */
-    transition: background 0.12s ease-out, box-shadow 0.12s ease-out;
+    transition: background 120ms ease-out;
 }
 
 .pill + .pill {
-    margin-left: 4px;
+    margin-left: var(--sp-1);
 }
 
 /* Clickable pill hover — subtle lift + soft glow */
@@ -654,7 +900,7 @@ a.pill:active {
     filter: brightness(0.90);
 }
 
-/* Pill dot — 6px circle in currentColor */
+/* Pill dot — 6px circle in currentColor. Lifecycle statuses only. */
 .pill-dot {
     display: inline-block;
     width: 6px;
@@ -664,46 +910,49 @@ a.pill:active {
     flex-shrink: 0;
 }
 
-/* Scope pill — warm neutral */
-.pill-scope {
-    background: var(--wash);
-    color: var(--ink-soft);
+/*
+ * Colour means state; a category is grey (uat/artifacts/reviews/DESIGN-REVIEW.md §3.8).
+ *
+ * Six pill colours were spent on four meanings: blue for API Key, amber for
+ * OAuth, green for None — so an auth mode read as a warning on every
+ * marketplace card, and a credential type read as a status. `.pill-scope` and
+ * `.pill-type` were byte-identical already; `.pill-info` and `.pill-muted`
+ * were the same idea under other names. All four are the one neutral pill, and
+ * `--info` goes back to being a banner colour.
+ *
+ * A page still writes `.pill-warn` for an auth mode here and there; those are
+ * template edits and belong to phase 3. What is fixed here is that no *new*
+ * category can pick up a colour by accident.
+ */
+.pill-neutral,
+.pill-type,
+.pill-scope,
+.pill-info,
+.pill-muted {
+    background: var(--state-neutral-bg);
+    color: var(--state-neutral);
     border-color: var(--line);
 }
 
-/* Type pill — neutral */
-.pill-type {
-    background: var(--wash);
-    color: var(--ink-soft);
-    border-color: var(--line);
-}
-
-/* OK pill — green */
+/* OK — Active, Enabled, permit, Connected, Yes */
 .pill-ok {
-    background: var(--safe-bg);
-    color: var(--safe);
-    border-color: color-mix(in srgb, var(--safe) 30%, transparent);
+    background: var(--state-ok-bg);
+    color: var(--state-ok);
+    border-color: color-mix(in srgb, var(--state-ok) 30%, transparent);
 }
 
-/* Warn pill — yellow */
+/* Warn — Disabled, Pending, deny-by-default, conditional */
 .pill-warn {
-    background: var(--warn-bg);
-    color: var(--warn);
-    border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+    background: var(--state-warn-bg);
+    color: var(--state-warn);
+    border-color: color-mix(in srgb, var(--state-warn) 30%, transparent);
 }
 
-/* Bad pill — red */
+/* Bad — Revoked, forbid, failed */
 .pill-bad {
-    background: var(--danger-bg);
-    color: var(--danger);
-    border-color: color-mix(in srgb, var(--danger) 30%, transparent);
-}
-
-/* Info pill — blue */
-.pill-info {
-    background: var(--info-bg);
-    color: var(--info);
-    border-color: color-mix(in srgb, var(--info) 30%, transparent);
+    background: var(--state-bad-bg);
+    color: var(--state-bad);
+    border-color: color-mix(in srgb, var(--state-bad) 30%, transparent);
 }
 
 
@@ -711,10 +960,10 @@ a.pill:active {
 .tag {
     display: inline-flex;
     align-items: center;
-    padding: 2px 8px;
+    padding: 2px var(--sp-2);
     border-radius: var(--radius-xs);
     font-family: var(--font);
-    font-size: 11px;
+    font-size: var(--text-xs);
     font-weight: 500;
     line-height: 1.4;
     letter-spacing: 0.01em;
@@ -723,11 +972,11 @@ a.pill:active {
     border: 1px solid var(--line);
     white-space: nowrap;
     vertical-align: middle;
-    transition: background 0.1s ease, border-color 0.1s ease;
+    transition: background 100ms ease, border-color 100ms ease;
 }
 
 .tag + .tag {
-    margin-left: 4px;
+    margin-left: var(--sp-1);
 }
 
 /* Clickable tags (filter-on-click in list view) */
@@ -750,37 +999,76 @@ button.tag:focus-visible {
 button.tag.tag-active {
     background: var(--accent-glow);
     border-color: var(--accent);
-    color: var(--accent);
-}
-
-
-.policy-tester-grid .form-group {
-    margin-bottom: 0;
+    color: var(--color-link);
 }
 
 
 /* Code display block */
 .code-block {
     background: var(--wash);
-    padding: 12px;
-    border-radius: var(--r-sm);
+    padding: var(--sp-3);
+    border-radius: var(--radius-sm);
 }
 
-/* Legacy .chip — map to pill */
+/*
+ * The chip: the interactive sibling of `.pill`. A 4px rectangle like
+ * everything else in the product — the capsule it used to be was the only
+ * 99px radius on the page.
+ */
 .chip {
     display: inline-flex;
     align-items: center;
-    padding: 3px 10px;
-    border-radius: 99px;
-    font-size: 12px;
+    padding: 2px var(--sp-2);
+    border-radius: var(--radius-xs);
+    font-size: var(--text-xs);
     font-weight: 500;
-    background: var(--wash);
-    color: var(--ink-soft);
+    line-height: 1.4;
+    background: var(--state-neutral-bg);
+    color: var(--state-neutral);
     border: 1px solid var(--line);
     margin: 1px;
 }
 
+/*
+ * A filter chip reports whether it is on, and an on chip inverts to
+ * ink-on-surface with an ink border rather than filling with orange: the
+ * accent is the primary button's, and a page full of orange filters says
+ * nothing is more important than anything else (uat/artifacts/reviews/DESIGN-REVIEW.md §3.11).
+ * Defined here for phase 3, which turns the filter buttons that are currently
+ * `.tag` into these.
+ */
+button.chip,
+a.chip {
+    cursor: pointer;
+    font-family: var(--font);
+    transition: background 120ms ease-out, border-color 120ms ease-out,
+                color 120ms ease-out;
+}
+
+button.chip:hover,
+a.chip:hover {
+    border-color: var(--ink-faint);
+    color: var(--ink);
+}
+
+.chip[aria-pressed="true"] {
+    background: var(--surface);
+    border-color: var(--ink);
+    color: var(--ink);
+    font-weight: 600;
+}
+
+/* Removing a tag is a button now, not a <span>: it has to be reachable by
+   keyboard and announced as a control (uat/artifacts/reviews/UI-REVIEW-static.md A10). The
+   chrome reset keeps the chip looking exactly as it did. */
 .chip-remove {
+    /* Button chrome reset first: `font: inherit` is a shorthand and would
+       otherwise wipe the font-size below. */
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    font: inherit;
     margin-left: 4px;
     cursor: pointer;
     opacity: 0.6;
@@ -790,12 +1078,17 @@ button.tag.tag-active {
 
 .chip-remove:hover { opacity: 1; }
 
+.chip-remove:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 
 /* === Forms === */
 
 .form-two-col {
     display: flex;
-    gap: 48px;
+    gap: var(--sp-12);
     align-items: flex-start;
 }
 
@@ -809,41 +1102,50 @@ button.tag.tag-active {
     flex-shrink: 0;
 }
 
+/*
+ * A resting surface is bordered; a floating one is shadowed, and nothing is
+ * both (uat/artifacts/reviews/DESIGN-REVIEW.md §3.4). The card used to carry a border *and* a
+ * shadow, `.detail-card` a shadow and no border, and the login card neither —
+ * three answers to one question on three pages of the same product.
+ */
 .card {
     background: var(--surface);
-    border: 1px solid rgba(0,0,0,0.08);
+    border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    padding: 24px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    padding: var(--sp-5);
+}
+
+.card + .card {
+    margin-top: var(--sp-6);
 }
 
 .form-group {
-    margin-bottom: 22px;
+    margin-bottom: var(--sp-4);
 }
 
 .form-group label {
     display: block;
-    font-size: 13px;
+    font-size: var(--text-sm);
     font-weight: 500;
     color: var(--ink-faint);
-    margin-bottom: 6px;
+    margin-bottom: var(--sp-1);
 }
 
 .form-group label .required {
-    color: var(--accent);
+    color: var(--color-link);
 }
 
 .form-input {
     width: 100%;
-    padding: 8px 14px;
-    height: 36px;
+    padding: var(--sp-2) var(--sp-3);
+    height: var(--control-h-lg);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
-    font-size: 14px;
+    font-size: var(--text-base);
     font-family: var(--font);
     background: var(--surface);
     color: var(--ink);
-    transition: border-color 0.15s ease-out, box-shadow 0.15s ease-out;
+    transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
 }
 
 .form-input:focus {
@@ -853,12 +1155,12 @@ button.tag.tag-active {
 }
 
 .form-input::placeholder {
-    color: #c5c3be;
+    color: var(--ink-muted);
 }
 
 .form-input.mono {
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: var(--text-sm);
 }
 
 select.form-input {
@@ -872,15 +1174,15 @@ textarea.form-input {
 }
 
 .form-hint {
-    font-size: 12px;
+    font-size: var(--text-xs);
     color: var(--ink-faint);
-    margin-top: 5px;
+    margin-top: var(--sp-1);
 }
 
 .form-actions {
     display: flex;
-    gap: 8px;
-    margin-top: 24px;
+    gap: var(--sp-2);
+    margin-top: var(--sp-6);
 }
 
 /* Help card */
@@ -888,18 +1190,18 @@ textarea.form-input {
     background: var(--wash);
     border: 1px solid var(--line);
     border-left: 3px solid var(--accent);
-    border-radius: var(--r-sm);
-    padding: 20px;
+    border-radius: var(--radius-md);
+    padding: var(--sp-5);
 }
 
 .help-card-icon {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 13px;
+    gap: var(--sp-2);
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--ink);
-    margin-bottom: 10px;
+    margin-bottom: var(--sp-2);
 }
 
 .help-card-icon svg {
@@ -907,9 +1209,9 @@ textarea.form-input {
 }
 
 .help-card p {
-    font-size: 13px;
+    font-size: var(--text-sm);
     color: var(--ink-soft);
-    line-height: 1.7;
+    line-height: var(--leading-body);
 }
 
 /* === Secret Input === */
@@ -925,16 +1227,16 @@ textarea.form-input {
 
 .secret-toggle {
     position: absolute;
-    right: 8px;
-    top: 10px;
+    right: var(--sp-2);
+    top: var(--sp-2);
     background: none;
     border: none;
     color: var(--ink-faint);
     cursor: pointer;
-    font-size: 13px;
+    font-size: var(--text-sm);
     font-family: var(--font);
-    padding: 2px 6px;
-    transition: color 0.15s ease-out;
+    padding: var(--sp-1) var(--sp-2);
+    transition: color 150ms ease-out;
 }
 
 .secret-toggle:hover {
@@ -946,15 +1248,15 @@ textarea.form-input {
 .tag-input-wrapper {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
-    padding: 6px 10px;
+    gap: var(--sp-1);
+    padding: var(--sp-1) var(--sp-3);
     border: 1px solid var(--line);
-    border-radius: var(--r-sm);
+    border-radius: var(--radius-sm);
     background: var(--surface);
     cursor: text;
-    min-height: 40px;
+    min-height: var(--control-h-lg);
     align-items: center;
-    transition: border-color 0.15s ease-out, box-shadow 0.15s ease-out;
+    transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
 }
 
 .tag-input-wrapper:focus-within {
@@ -975,7 +1277,7 @@ textarea.form-input {
 }
 
 .tag-input-wrapper input::placeholder {
-    color: #c5c3be;
+    color: var(--ink-muted);
 }
 
 /* Inline input within tag wrappers */
@@ -993,70 +1295,60 @@ textarea.form-input {
 
 /* === Empty State === */
 
+/* Two empty states, not seven: a page one and an inline one
+   (uat/artifacts/reviews/DESIGN-REVIEW.md §3.7). The inline variant is defined here for phase 3
+   to collapse `-compact` and `-sm` onto. */
 .empty-state {
     text-align: center;
-    padding: 80px 20px;
+    padding: var(--sp-12) var(--sp-5);
     color: var(--ink-faint);
+}
+
+.empty-state h3 {
+    margin-bottom: var(--sp-2);
+}
+
+.empty-state-inline {
+    padding: var(--sp-6);
+    text-align: center;
+    color: var(--ink-faint);
+    font-size: var(--text-base);
 }
 
 .empty-glyph {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 64px;
-    height: 64px;
+    width: 48px;
+    height: 48px;
     background: var(--wash);
     border: 1px solid var(--line);
-    border-radius: 16px;
-    margin: 0 auto 16px;
+    border-radius: var(--radius-lg);
+    margin: 0 auto var(--sp-4);
     color: var(--ink-faint);
-}
-
-.empty-state .empty-icon {
-    font-size: 48px;
-    margin-bottom: 16px;
-    opacity: 0.4;
-}
-
-.empty-state h3 {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--ink);
-    margin-bottom: 6px;
 }
 
 .empty-state p {
-    font-size: 14px;
+    font-size: var(--text-base);
     color: var(--ink-faint);
-    margin-bottom: 20px;
+    margin-bottom: var(--sp-5);
     max-width: 360px;
     margin-left: auto;
     margin-right: auto;
-    line-height: 1.6;
-}
-
-.empty-state .install-cmd {
-    background: var(--wash);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 8px 12px;
-    margin: 8px auto;
-    max-width: 480px;
-    font-size: 13px;
-    text-align: left;
+    line-height: var(--leading-body);
 }
 
 /* === Detail View === */
 
 .detail-card {
     background: var(--surface);
-    border-radius: var(--r-sm);
-    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
     overflow: hidden;
 }
 
 .detail-header {
-    padding: 20px 24px;
+    padding: var(--sp-4) var(--sp-5);
     border-bottom: 1px solid var(--line);
     display: flex;
     align-items: center;
@@ -1064,24 +1356,21 @@ textarea.form-input {
 }
 
 .detail-header h3 {
-    font-size: 18px;
+    font-size: var(--text-lg);
     font-weight: 600;
+    line-height: var(--leading-heading);
     color: var(--ink);
 }
 
 .detail-body {
-    padding: 20px 24px 24px;
+    padding: var(--sp-5);
 }
 
+/* Size, weight and case come from `.section-label` in the type scale. */
 .detail-section-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--ink-faint);
-    margin-top: 24px;
-    margin-bottom: 8px;
-    padding-top: 24px;
+    margin-top: var(--sp-6);
+    margin-bottom: var(--sp-2);
+    padding-top: var(--sp-6);
     border-top: 1px solid var(--line);
 }
 
@@ -1093,27 +1382,26 @@ textarea.form-input {
 
 .detail-row {
     display: grid;
-    grid-template-columns: 160px 1fr;
-    gap: 12px;
-    padding: 12px 0;
+    grid-template-columns: 140px 1fr;
+    gap: var(--sp-3);
+    padding: var(--sp-2) 0;
 }
 
 .detail-label {
-    font-size: 13px;
+    font-size: var(--text-sm);
     font-weight: 500;
     color: var(--ink-soft);
 }
 
 .detail-value {
-    font-size: 14px;
+    font-size: var(--text-base);
     color: var(--ink);
 }
 
 /* === Detail Tabs === */
 
 .detail-tabs {
-    margin-top: 24px;
-    max-width: 640px;
+    margin-top: var(--sp-6);
 }
 
 .tab-bar {
@@ -1123,17 +1411,17 @@ textarea.form-input {
 }
 
 .tab-btn {
-    padding: 10px 16px;
+    padding: var(--sp-2) var(--sp-4);
     background: none;
     border: none;
     border-bottom: 2px solid transparent;
     cursor: pointer;
     font-weight: 500;
-    font-size: 14px;
+    font-size: var(--text-base);
     font-family: var(--font);
     color: var(--ink-faint);
     margin-bottom: -1px;
-    transition: color 0.15s ease-out, border-color 0.15s ease-out;
+    transition: color 150ms ease-out, border-color 150ms ease-out;
 }
 
 .tab-btn:hover {
@@ -1146,17 +1434,17 @@ textarea.form-input {
 }
 
 .tab-content {
-    padding: 16px 0;
+    padding: var(--sp-4) 0;
 }
 
 
 /* Batch permission form */
 .perm-form-batch {
-    margin-top: 16px;
-    padding: 16px;
+    margin-top: var(--sp-4);
+    padding: var(--sp-4);
     background: var(--wash);
     border: 1px solid var(--line);
-    border-radius: var(--r-sm);
+    border-radius: var(--radius-md);
 }
 
 .perm-form-batch .perm-form-row {
@@ -1173,7 +1461,7 @@ textarea.form-input {
 }
 
 .perm-checkboxes .checkbox-label {
-    font-size: 13px;
+    font-size: var(--text-sm);
 }
 
 /* === Pagination === */
@@ -1187,7 +1475,7 @@ textarea.form-input {
 }
 
 .pagination-info {
-    font-size: 13px;
+    font-size: var(--text-sm);
     color: var(--ink-soft);
     font-variant-numeric: tabular-nums;
 }
@@ -1195,122 +1483,24 @@ textarea.form-input {
 
 .audit-metadata-pre {
     white-space: pre-wrap;
-    font-size: 0.8rem;
-    margin: 4px 0 0 0;
+    font-size: var(--text-xs);
+    margin: var(--sp-1) 0 0 0;
     background: var(--surface);
-    padding: 8px;
-    border-radius: 4px;
+    padding: var(--sp-2);
+    border-radius: var(--radius-xs);
     border: 1px solid var(--line);
 }
 
 
-/* === Master-Detail Split-Pane Layout === */
-
-.md-split {
-    display: flex;
-    height: calc(100vh - 180px);
-    background: var(--surface);
-    border-radius: var(--r);
-    box-shadow: var(--shadow-sm);
-    overflow: hidden;
-}
-
-.md-list-pane {
-    width: 320px;
-    flex-shrink: 0;
-    overflow-y: auto;
-    border-right: 1px solid var(--line);
-}
-
-.md-detail-pane {
-    flex: 1;
-    overflow-y: auto;
-    padding: 24px 28px;
-}
-
-/* List row */
-.md-row {
-    display: flex;
-    gap: 10px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--line);
-    cursor: pointer;
-    transition: background 0.12s ease-out;
-}
-
-.md-row:hover {
-    background: var(--wash);
-}
-
-.md-row:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-}
-
-.md-row.selected {
-    background: var(--wash);
-    box-shadow: inset 3px 0 0 var(--accent);
-}
-
-.md-row-icon {
-    flex-shrink: 0;
-    width: 28px;
-    height: 28px;
-    border-radius: var(--r-sm);
-    background: var(--wash);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--ink-faint);
-    margin-top: 2px;
-}
-
-.md-row.selected .md-row-icon {
-    background: var(--accent-glow);
-    color: var(--accent);
-}
-
-.md-row-info {
-    flex: 1;
-    min-width: 0;
-}
-
-.md-row-name {
-    font-weight: 600;
-    font-size: 14px;
-    color: var(--ink);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.md-row-meta {
-    font-size: 13px;
-    color: var(--ink-soft);
-    margin-top: 1px;
-}
-
-.md-row-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 4px;
-}
-
-.md-row-tag-btn {
-    cursor: pointer;
-    transition: background 0.12s ease-out, border-color 0.12s ease-out, transform 0.12s ease-out, box-shadow 0.12s ease-out;
-}
-
-.md-row-tag-btn:hover {
-    border-color: var(--ink-soft);
-    background: var(--surface);
-}
-
-.md-row-tag-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -1px;
-}
+/* === List-row tag filters === */
+/*
+ * What is left of the master-detail split pane. Phase 2 replaced it with full
+ * pages — a list is a table of links, a detail page is a page — so `.md-split`,
+ * the two panes, `.md-row*` and the three pane-scoped empty states are gone.
+ * These two survive because the credential and workspace list tables still
+ * name them: the filter bar above the table is the filter; the tag chips
+ * inside a row are labels (uat/artifacts/reviews/DESIGN-REVIEW.md 1.4).
+ */
 
 /* Tag filters */
 .md-tag-filters {
@@ -1322,65 +1512,9 @@ textarea.form-input {
 }
 
 .md-tag-filters-label {
-    font-size: 12px;
+    font-size: var(--text-xs);
     color: var(--ink-soft);
     font-weight: 500;
-}
-
-/* Empty detail state */
-.md-detail-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: var(--ink-faint);
-    gap: 12px;
-}
-
-.md-detail-empty p {
-    font-size: 14px;
-    color: var(--ink-faint);
-}
-
-/* Detail content fade-in animation */
-.md-detail-content {
-    animation: mdDetailFadeIn 0.15s ease-out;
-}
-
-@keyframes mdDetailFadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(4px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-/* Left pane empty state */
-.md-list-empty {
-    padding: 32px 16px;
-    text-align: center;
-    color: var(--ink-faint);
-    font-size: 14px;
-}
-
-/* Responsive: no split on mobile */
-@media (max-width: 768px) {
-    .md-split {
-        flex-direction: column;
-        height: auto;
-        border-radius: var(--r-sm);
-    }
-    .md-list-pane {
-        width: 100%;
-        border-right: none;
-    }
-    .md-detail-pane {
-        display: none;
-    }
 }
 
 
@@ -1393,26 +1527,23 @@ textarea.form-input {
 
 .modal-card {
     background: var(--surface);
-    border-radius: var(--r);
-    padding: 24px;
+    border-radius: var(--radius-lg);
+    padding: var(--sp-6);
     width: 100%;
     max-width: 440px;
     box-shadow: var(--shadow-md);
-    animation: modalFadeIn 0.15s ease-out;
+    animation: modalFadeIn 120ms ease-out;
 }
 
 .modal-card h3 {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--ink);
-    margin-bottom: 12px;
+    margin-bottom: var(--sp-3);
 }
 
 .modal-card p {
-    font-size: 14px;
+    font-size: var(--text-base);
     color: var(--ink-soft);
-    margin-bottom: 12px;
-    line-height: 1.6;
+    margin-bottom: var(--sp-3);
+    line-height: var(--leading-body);
 }
 
 /* === Modal === */
@@ -1434,106 +1565,35 @@ textarea.form-input {
 
 .modal {
     background: var(--surface);
-    border-radius: var(--r);
-    padding: 24px;
+    border-radius: var(--radius-lg);
+    padding: var(--sp-6);
     width: 100%;
     max-width: 440px;
     box-shadow: var(--shadow-md);
 }
 
 .modal h3 {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--ink);
-    margin-bottom: 12px;
+    margin-bottom: var(--sp-3);
 }
 
 .modal p {
-    font-size: 14px;
+    font-size: var(--text-base);
     color: var(--ink-soft);
-    margin-bottom: 12px;
-    line-height: 1.6;
+    margin-bottom: var(--sp-3);
+    line-height: var(--leading-body);
 }
 
 .modal .form-input {
-    margin-bottom: 16px;
+    margin-bottom: var(--sp-4);
 }
 
-.modal-actions {
+.modal-actions,
+.ac-confirm-actions {
     display: flex;
-    gap: 8px;
+    gap: var(--sp-2);
     justify-content: flex-end;
 }
 
-
-.try-it-modal {
-    max-width: 560px;
-}
-
-.try-it-code-wrapper {
-    position: relative;
-    margin-bottom: 16px;
-}
-
-.try-it-code {
-    background: var(--base);
-    border: 1px solid var(--border);
-    border-radius: var(--r-sm);
-    padding: 12px 16px;
-    font-family: var(--font-mono);
-    font-size: 13px;
-    color: var(--ink);
-    white-space: pre-wrap;
-    word-break: break-all;
-    overflow-x: auto;
-    margin: 0;
-    line-height: 1.5;
-}
-
-.try-it-code-sm {
-    font-size: 12px;
-    padding: 8px 12px;
-    max-height: 120px;
-    overflow-y: auto;
-}
-
-.try-it-copy {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-}
-
-.try-it-section {
-    margin-bottom: 12px;
-}
-
-.try-it-section-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--ink-soft);
-    margin-bottom: 6px;
-}
-
-.try-it-explanation {
-    font-size: 13px;
-    color: var(--ink-soft);
-    line-height: 1.5;
-    margin-bottom: 12px;
-}
-
-.try-it-links {
-    display: flex;
-    gap: 16px;
-    font-size: 13px;
-    color: var(--ink-soft);
-    margin-bottom: 8px;
-}
-
-.try-it-error {
-    color: var(--danger);
-    font-size: 14px;
-    padding: 12px 0;
-}
 
 /* === Toast === */
 
@@ -1550,10 +1610,10 @@ textarea.form-input {
 .toast {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 14px 20px;
-    border-radius: var(--r-sm);
-    font-size: 14px;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-5);
+    border-radius: var(--radius-lg);
+    font-size: var(--text-base);
     font-weight: 500;
     box-shadow: var(--shadow-toast);
     -webkit-animation: slideIn 0.2s ease-out;
@@ -1609,9 +1669,9 @@ textarea.form-input {
     background: #1e1e2e;
     color: #cdd6f4;
     font-family: var(--font-mono);
-    font-size: 13px;
-    padding: 16px;
-    border-radius: var(--r-sm);
+    font-size: var(--text-sm);
+    padding: var(--sp-4);
+    border-radius: var(--radius-sm);
     border: 2px solid var(--accent);
     resize: vertical;
     min-height: 200px;
@@ -1628,23 +1688,13 @@ textarea.form-input {
 
 /* === Status Indicators === */
 
-.status-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    margin-right: 6px;
-}
-
-.status-enabled { background: var(--safe); }
-
-
 /* === Timestamp === */
 
 .timestamp {
     color: var(--ink-faint);
-    font-size: 13px;
+    font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
+    font-feature-settings: var(--font-features), 'tnum';
 }
 
 /* === Enrollment Highlight === */
@@ -1665,7 +1715,6 @@ textarea.form-input {
 .fi:focus-visible,
 .search-input input:focus-visible,
 .cedar-editor:focus-visible,
-.perm-form select:focus-visible,
 .tag-input-wrapper:focus-within {
     outline: none;
 }
@@ -1680,14 +1729,14 @@ textarea.form-input {
 
 .mono-sm {
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: var(--text-sm);
 }
 
 
 .link {
-    color: var(--accent);
+    color: var(--color-link);
     text-decoration: none;
-    transition: color 0.15s ease-out;
+    transition: color 150ms ease-out;
 }
 
 .link:hover {
@@ -1734,11 +1783,11 @@ textarea.form-input {
 }
 
 .inline-edit-title {
-    font-size: 18px;
+    font-size: var(--text-lg);
     font-weight: 600;
-    padding: 4px 8px;
+    padding: var(--sp-1) var(--sp-2);
     border: 1px solid var(--line);
-    border-radius: var(--r-sm);
+    border-radius: var(--radius-sm);
     background: var(--surface);
     color: var(--ink);
     flex: 1;
@@ -1767,8 +1816,8 @@ textarea.form-input {
 }
 
 .inline-edit-hint {
-    margin-top: 4px;
-    font-size: 12px;
+    margin-top: var(--sp-1);
+    font-size: var(--text-xs);
     color: var(--ink-faint);
     font-style: italic;
 }
@@ -1783,10 +1832,10 @@ textarea.form-input {
 .login-divider {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin: 20px 0;
+    gap: var(--sp-3);
+    margin: var(--sp-5) 0;
     color: var(--ink-faint);
-    font-size: 13px;
+    font-size: var(--text-sm);
 }
 
 .login-divider::before,
@@ -1817,12 +1866,12 @@ textarea.form-input {
 /* === Login Form === */
 
 .login-form .form-group {
-    margin-bottom: 18px;
+    margin-bottom: var(--sp-4);
 }
 
 .login-form .form-group label {
     display: block;
-    font-size: 13px;
+    font-size: var(--text-sm);
     font-weight: 500;
     color: var(--ink-soft);
     margin-bottom: 6px;
@@ -1841,7 +1890,7 @@ textarea.form-input {
 /* === User Info (Top Bar) === */
 
 .user-info {
-    font-size: 13px;
+    font-size: var(--text-sm);
     color: var(--ink-soft);
     margin-right: 12px;
     display: inline-flex;
@@ -1852,7 +1901,7 @@ textarea.form-input {
 
 .mono-id {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--text-xs);
     color: var(--ink-faint);
 }
 
@@ -1877,8 +1926,9 @@ textarea.form-input {
     position: absolute;
     inset: 0;
     background: var(--line);
+    /* The one capsule left in the product, and it is a switch. */
     border-radius: 24px;
-    transition: background 0.2s ease;
+    transition: background 150ms ease;
 }
 
 .toggle-slider::before {
@@ -1890,7 +1940,7 @@ textarea.form-input {
     bottom: 3px;
     background: #fff;
     border-radius: 50%;
-    transition: transform 0.2s ease;
+    transition: transform 150ms ease;
     box-shadow: 0 1px 3px rgba(0,0,0,0.15);
 }
 
@@ -1913,10 +1963,10 @@ textarea.form-input {
 .checkbox-label {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--sp-2);
     cursor: pointer;
     color: var(--ink);
-    font-size: 14px;
+    font-size: var(--text-base);
     line-height: 1.4;
 }
 
@@ -1948,17 +1998,17 @@ textarea.form-input {
 }
 
 .modal .form-group:last-of-type {
-    margin-bottom: 20px;
+    margin-bottom: var(--sp-5);
 }
 
-/* Modal enter animation */
+/* Modal enter animation — a fade, not a rise. */
 .modal {
-    animation: modalFadeIn 0.15s ease-out;
+    animation: modalFadeIn 120ms ease-out;
 }
 
 @keyframes modalFadeIn {
-    from { opacity: 0; transform: translateY(8px) scale(0.98); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 
 /* === Bow-tie Hero (Login) === */
@@ -2027,7 +2077,7 @@ textarea.form-input {
 
 .page-loader-label {
     display: block;
-    font-size: 13px;
+    font-size: var(--text-sm);
     color: var(--ink-faint);
     font-weight: 500;
 }
@@ -2098,25 +2148,13 @@ textarea.form-input {
     .search-input input {
         width: 160px;
     }
-
-    /* User info in top bar — hide role pill on narrow screens */
-    .user-info .user-role-pill {
-        display: none;
-    }
-
-    /* Scroll tables horizontally on narrow viewports */
+    /* Narrow viewports scroll the .tbl-scroll wrapper, not the table: a
+       `display: block` table shrink-wraps its anonymous table box, which is
+       why the audit log collapsed to one-character columns instead of
+       overflowing. */
     .tbl {
-        display: block;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-    }
-
-    .tbl thead,
-    .tbl tbody,
-    .tbl tr,
-    .tbl th,
-    .tbl td {
-        display: revert;
+        white-space: nowrap;
+        min-width: max-content;
     }
 }
 
@@ -2163,163 +2201,6 @@ textarea.form-input {
 }
 
 
-.form-row .form-input {
-    flex: 1;
-    min-width: 0;
-}
-
-
-.detail-section-chevron {
-    flex-shrink: 0;
-    color: var(--ink-faint);
-    transition: transform 0.15s ease-out;
-}
-
-.detail-section-chevron--open {
-    transform: rotate(90deg);
-}
-
-.pill-count {
-    font-size: 11px;
-    padding: 1px 7px;
-    background: var(--wash);
-    color: var(--ink-soft);
-    border: 1px solid var(--line);
-}
-
-
-.device-group-table th:first-child,
-
-
-/* === Workspace-grouped tree (MCP servers list) === */
-.workspace-tree {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
-.workspace-group {
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-}
-
-.workspace-group-header {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 12px 16px;
-    background: var(--wash);
-    border-bottom: 1px solid var(--line);
-    cursor: pointer;
-    border: none;
-    font: inherit;
-    color: var(--ink);
-    transition: background 0.1s ease;
-}
-
-/* Fallback hover if color-mix is unsupported */
-.workspace-group-header:hover {
-    background: var(--wash);
-    filter: brightness(0.97);
-}
-
-/* Modern browsers: use color-mix for subtle darken */
-@supports (background: color-mix(in srgb, red, blue)) {
-    .workspace-group-header:hover {
-        background: color-mix(in srgb, var(--wash) 80%, var(--ink) 4%);
-        filter: none;
-    }
-}
-
-.workspace-group-header:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-    border-radius: var(--radius-sm);
-}
-
-/* Workspace name — secondary, muted */
-.workspace-group-name {
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--ink-faint);
-    flex: 1;
-    text-align: left;
-}
-
-/* Server count badge */
-.workspace-group .pill-count {
-    font-size: 11px;
-    font-weight: 500;
-    padding: 1px 8px;
-    border-radius: var(--radius-xs);
-    background: transparent;
-    color: var(--ink-faint);
-    border: 1px solid var(--line);
-}
-
-/* Table within workspace group */
-.workspace-group-table {
-    margin: 0;
-    border: none;
-    border-radius: 0;
-    width: 100%;
-}
-
-.workspace-group-table thead th {
-    background: var(--surface);
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--ink-faint);
-    padding: 8px 16px;
-}
-
-.workspace-group-table td {
-    padding: 10px 16px;
-}
-
-.workspace-group-table th:first-child,
-.workspace-group-table td:first-child {
-    padding-left: 16px;
-}
-
-/* Server name link — the primary visual element */
-.workspace-group-table .cred-name {
-    font-weight: 600;
-    font-size: 14px;
-    color: var(--ink);
-}
-
-.workspace-group-table .cred-name:hover {
-    color: var(--accent);
-}
-
-
-.agent-list-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 14px;
-    color: var(--ink);
-    text-decoration: none;
-    padding: 6px 0;
-    transition: color 0.15s ease-out;
-}
-
-.agent-list-item:hover {
-    color: var(--accent);
-}
-
-
-.tbl-compact th,
-
-
 /* === Credential Secret Reveal === */
 
 .reveal-secret-row {
@@ -2335,11 +2216,11 @@ textarea.form-input {
 .revealed-secret-field {
     flex: 1;
     font-family: var(--font-mono);
-    font-size: 13px;
-    padding: 8px 12px;
+    font-size: var(--text-sm);
+    padding: var(--sp-2) var(--sp-3);
     background: var(--surface);
     border: 1px solid var(--line);
-    border-radius: var(--r-sm);
+    border-radius: var(--radius-sm);
     color: var(--ink);
 }
 
@@ -2350,32 +2231,10 @@ textarea.form-input {
 }
 
 .reveal-countdown {
-    font-size: 12px;
+    font-size: var(--text-xs);
     color: var(--ink-faint);
     margin-top: 4px;
 }
-
-
-/* ============================================================
-   Policy Editor Page
-   ============================================================ */
-
-/* Override .content padding when policy editor is shown */
-.content:has(.pe-page) {
-    padding: 0;
-    min-height: auto;
-}
-
-
-.pe-sidebar-heading .btn-ghost {
-    color: var(--accent);
-    font-size: 12px;
-    font-weight: 600;
-    padding: 2px 8px;
-}
-
-
-.pe-highlight,
 
 
 /* === Dashboard === */
@@ -2383,36 +2242,36 @@ textarea.form-input {
 .dash-cards {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px;
+    gap: var(--sp-4);
 }
 
 .dash-card {
     background: var(--surface);
-    border: 1px solid rgba(0,0,0,0.08);
+    border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    padding: 24px;
+    padding: var(--sp-5);
     display: flex;
     align-items: flex-start;
-    gap: 20px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    gap: var(--sp-4);
 }
 
 a.dash-card-link {
     text-decoration: none;
     color: inherit;
     cursor: pointer;
-    transition: border-color 0.15s, box-shadow 0.15s;
+    transition: border-color 150ms ease-out;
 }
 
+/* A hovered tile moves its border colour and nothing else — no shadow, no
+   lift, and not the accent, which belongs to the primary action. */
 a.dash-card-link:hover {
-    border-color: var(--accent);
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    border-color: var(--ink-faint);
 }
 
 .dash-card-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 10px;
+    width: var(--sp-8);
+    height: var(--sp-8);
+    border-radius: var(--radius-md);
     background: var(--wash);
     display: flex;
     align-items: center;
@@ -2433,30 +2292,33 @@ a.dash-card-link:hover {
 
 .dash-card-count {
     font-size: 28px;
-    font-weight: 700;
-    line-height: 1.1;
+    font-weight: 600;
+    line-height: var(--leading-heading);
     color: var(--ink);
-    letter-spacing: -0.5px;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: var(--font-features), 'tnum';
 }
 
 .dash-card-label {
-    font-size: 13px;
+    font-size: var(--text-sm);
     font-weight: 500;
     color: var(--ink-soft);
     margin-top: 2px;
 }
 
 .dash-card-sub {
-    font-size: 12px;
+    font-size: var(--text-xs);
     color: var(--ink-faint);
-    margin-top: 4px;
+    margin-top: var(--sp-1);
 }
 
 .dash-section-title {
-    font-size: 16px;
+    font-size: var(--text-lg);
     font-weight: 600;
+    line-height: var(--leading-heading);
     color: var(--ink);
-    margin-bottom: 12px;
+    margin-bottom: var(--sp-3);
 }
 
 /* === LLM Exposed === */
@@ -2469,13 +2331,13 @@ a.dash-card-link:hover {
 .llm-exposed-banner {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 12px 16px;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
     background: #fff3cd;
     border: 1px solid #ffc107;
-    border-radius: var(--r-sm);
-    margin-bottom: 16px;
-    font-size: 13px;
+    border-radius: var(--radius-sm);
+    margin-bottom: var(--sp-4);
+    font-size: var(--text-sm);
     color: #856404;
     line-height: 1.5;
 }
@@ -2485,12 +2347,28 @@ a.dash-card-link:hover {
     color: #b5850a;
 }
 
+/* Neutral sibling of the banner above: states a limit rather than warning
+   about one — a credential seen only through a vault read share, say. */
+.info-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--info-bg);
+    border: 1px solid color-mix(in srgb, var(--info) 30%, transparent);
+    border-radius: var(--radius-sm);
+    margin-bottom: var(--sp-4);
+    font-size: var(--text-sm);
+    color: var(--ink-soft, #555);
+    line-height: 1.5;
+}
+
 
 /* === Login Button Glow === */
 
 .login-submit-btn {
     position: relative;
-    transition: background 0.15s ease-out, box-shadow 0.3s ease-out;
+    transition: background 150ms ease-out, box-shadow 150ms ease-out;
 }
 
 .login-submit-btn:not(:disabled):hover,
@@ -2501,272 +2379,22 @@ a.dash-card-link:hover {
 /* loginGlow animation removed — infinite pulse was distracting.
    Hover/focus glow above is sufficient. */
 
-/* === Slide-In Panel === */
-
-.slide-panel-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.3);
-    backdrop-filter: blur(2px);
-    z-index: 150;
-    opacity: 0;
-    transition: opacity 0.2s ease-out;
-    pointer-events: none;
-}
-
-.slide-panel-backdrop.slide-panel-visible {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.slide-panel {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 520px;
-    max-width: 100vw;
-    background: var(--surface);
-    box-shadow: -4px 0 24px rgba(0,0,0,0.12);
-    z-index: 160;
-    transform: translateX(100%);
-    transition: transform 0.2s ease-out;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-
-.slide-panel.slide-panel-visible {
-    transform: translateX(0);
-}
-
-.slide-panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    padding: 8px 12px;
-    flex-shrink: 0;
-}
-
-.slide-panel-close {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border: none;
-    background: none;
-    color: var(--ink-faint);
-    cursor: pointer;
-    border-radius: var(--r-sm);
-    font-size: 18px;
-    transition: background 0.15s, color 0.15s;
-}
-
-.slide-panel-close:hover {
-    background: var(--ghost-hover-bg);
-    color: var(--ink);
-}
-
-.slide-panel-close:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-}
-
-.slide-panel-content {
-    flex: 1;
-    overflow-y: auto;
-    padding: 0;
-}
-
-/* --- Panel content partials (injected via x-html) --- */
-
-.slide-panel-content .panel-header {
-    padding: 24px 24px 20px;
-    border-bottom: 1px solid var(--line);
-}
-
-.slide-panel-content .panel-header h2 {
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--ink);
-    margin: 0 0 8px;
-    line-height: 1.3;
-    word-break: break-word;
-}
-
-.slide-panel-content .panel-header .pill {
-    margin-top: 0;
-}
-
-.slide-panel-content .panel-body {
-    padding: 20px 24px 24px;
-}
-
-/* Definition list — key-value pairs */
-.slide-panel-content .detail-list {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 0;
-    margin: 0;
-}
-
-.slide-panel-content .detail-list dt {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--ink-faint);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 10px 16px 10px 0;
-    border-bottom: 1px solid var(--line);
-    white-space: nowrap;
-}
-
-.slide-panel-content .detail-list dd {
-    font-size: 13px;
-    color: var(--ink);
-    padding: 10px 0;
-    border-bottom: 1px solid var(--line);
-    word-break: break-word;
-    margin: 0;
-}
-
-.slide-panel-content .detail-list dt:last-of-type,
-.slide-panel-content .detail-list dd:last-of-type {
-    border-bottom: none;
-}
-
-/* Monospace values (IDs, hashes) */
-.slide-panel-content .monospace {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--ink-soft);
-    background: var(--wash);
-    padding: 2px 6px;
-    border-radius: var(--radius-sm);
-}
-
-/* Panel sections (e.g., policy text block) */
-.slide-panel-content .panel-section {
-    margin-top: 20px;
-    padding-top: 16px;
-    border-top: 1px solid var(--line);
-}
-
-.slide-panel-content .panel-section h4 {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--ink-faint);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin: 0 0 8px;
-}
-
-.slide-panel-content .panel-section .code-block {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    background: var(--wash);
-    border: 1px solid var(--line);
-    border-radius: var(--r-sm);
-    padding: 12px;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--ink-soft);
-}
-
-.slide-panel-footer {
-    padding: 14px 24px;
-    border-top: 1px solid var(--line);
-    text-align: center;
-    background: var(--surface);
-    flex-shrink: 0;
-}
-
-.slide-panel-footer a {
-    color: var(--accent);
-    text-decoration: none;
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.01em;
-}
-
-.slide-panel-footer a:hover {
-    text-decoration: underline;
-}
-
-/* Panel grant section (credential quick-grant in slide-in panel) */
-.panel-grant-section {
-    margin-top: 20px;
-    padding-top: 16px;
-    border-top: 1px solid var(--line);
-}
-.panel-grant-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--ink-faint);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin: 0 0 10px;
-}
-.panel-grant-form {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.panel-grant-select {
-    font-size: 13px;
-    padding: 6px 10px;
-    min-height: 44px;
-}
-.panel-actions {
-    margin-top: 16px;
-    padding-top: 12px;
-    border-top: 1px solid var(--line);
-}
-
-/* Panel tools list (MCP server slide-in panel) */
-.panel-tools-list {
-    list-style: none;
-    padding: 0;
-    margin: 6px 0 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-}
-.panel-tools-list li {
-    display: inline-block;
-}
-.panel-tools-list code {
-    font-size: 11px;
-    background: var(--wash);
-    padding: 2px 6px;
-    border-radius: var(--radius-sm);
-    color: var(--ink-soft);
-}
-
-@media (max-width: 768px) {
-    .slide-panel {
-        width: 100vw;
-    }
-}
-
 /* === Theme Toggle === */
 
 .theme-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
+    width: var(--control-h);
+    height: var(--control-h);
     border: none;
     background: none;
     color: var(--ink-faint);
     cursor: pointer;
-    border-radius: var(--r-sm);
+    border-radius: var(--radius-sm);
     padding: 0;
-    transition: color 0.15s, background 0.15s;
-    margin-right: 4px;
+    transition: color 150ms, background 150ms;
+    margin-right: var(--sp-1);
 }
 
 .theme-toggle:hover {
@@ -2785,17 +2413,41 @@ a.dash-card-link:hover {
 }
 
 /* === Dark Mode === */
-/* Dark palette — shared by manual toggle and system preference fallback.
-   Variables are defined once; both selectors reference this single block. */
+/*
+ * The dark palette, written once.
+ *
+ * `base.html` resolves the reader's theme before first paint and always
+ * stamps `data-theme` with the answer — their stored choice, else what the
+ * OS reports — so this one selector covers both. It used to be two blocks,
+ * the second a verbatim `prefers-color-scheme` copy, and the copies had
+ * drifted: the second gave `.pill-scope` its dark inset highlight under
+ * `:root:not([data-theme])`, which is every light-mode reader who had never
+ * touched the toggle (uat/artifacts/reviews/UI-REVIEW-static.md C2).
+ */
 
 [data-theme="dark"] {
+    /*
+     * Warm neutrals, not zinc (uat/artifacts/reviews/DESIGN-REVIEW.md §3.9).
+     *
+     * The light palette is yellow-grey (#f6f5f3 wash, #e8e6e1 line) and the
+     * dark one was zinc — blue-grey through every neutral — so a dark page
+     * read as a different product with the same logo on it. Structure and the
+     * accent are unchanged; every neutral moves onto the same warm axis as the
+     * light one, and the state colours are pulled back far enough that pill
+     * text on its own 10% tint reaches 4.5:1 (amber was neon).
+     *
+     * `crates/server/tests/admin_ui_controls.rs` computes those ratios rather
+     * than trusting this comment.
+     */
+
     /* Foundation */
-    --ink: #e4e4e7;
-    --ink-soft: #a1a1aa;
-    --ink-faint: #9e9ea8;
-    --line: #3f3f46;
-    --wash: #18181b;
-    --surface: #27272a;
+    --ink: #ece9e4;
+    --ink-soft: #b3ada4;
+    --ink-faint: #948e85;
+    --ink-muted: #c2bcb2;
+    --line: #2e2c29;
+    --wash: #161514;
+    --surface: #1f1e1c;
 
     /* Accent — Deep Orange (brighter for dark bg) */
     --accent: #e8743a;
@@ -2803,20 +2455,20 @@ a.dash-card-link:hover {
     --accent-glow: rgba(232,116,58,0.12);
 
     /* Semantic */
-    --safe: #4ade80;
-    --warn: #facc15;
-    --danger: #f87171;
+    --safe: #5fd38a;
+    --warn: #e5b83b;
+    --danger: #f07474;
 
     /* Semantic Backgrounds */
-    --safe-bg: rgba(74,222,128,0.1);
-    --warn-bg: rgba(250,204,21,0.1);
-    --danger-bg: rgba(248,113,113,0.1);
+    --safe-bg: rgba(95,211,138,0.1);
+    --warn-bg: rgba(229,184,59,0.1);
+    --danger-bg: rgba(240,116,116,0.1);
     --info: #60a5fa;
     --info-bg: rgba(96,165,250,0.1);
-    --warn-hover: #eab308;
-    --danger-hover-bg: rgba(248,113,113,0.08);
+    --warn-hover: #f0c957;
+    --danger-hover-bg: rgba(240,116,116,0.08);
     --ghost-hover-bg: rgba(255,255,255,0.06);
-    --secondary-hover-bg: #3f3f46;
+    --secondary-hover-bg: #2a2825;
 
     /* Shadows */
     --shadow-sm: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
@@ -2826,62 +2478,22 @@ a.dash-card-link:hover {
     /* Cedar editor */
     --bg-secondary: #1e1e2e;
     --bg-tertiary: rgba(255,255,255,0.04);
-    --color-ok: #4ade80;
-    --color-bad: #f87171;
+    --color-ok: var(--safe);
+    --color-bad: var(--danger);
+    --color-link: var(--accent-hover);
+    --color-warn: var(--warn);
+    --bg-hover: var(--ghost-hover-bg);
+    --bg: var(--surface);
+    --faint: var(--ink-muted);
+    --btn-warning-ink: #1a1a1a;
 }
 
 /* Service logos — dark mode: invert dark-colored logos for visibility.
    The .logo-dark-invert class is applied by service-icons.js based on
    the dark_mode_invert list in data/service-logos.json. */
 [data-theme="dark"] .logo-dark-invert { filter: invert(1); }
-@media (prefers-color-scheme: dark) {
-    html:not([data-theme]) .logo-dark-invert { filter: invert(1); }
-}
 
-/* System preference fallback — inherits the same dark values */
-@media (prefers-color-scheme: dark) {
-    html:not([data-theme]) {
-        --ink: #e4e4e7;
-        --ink-soft: #a1a1aa;
-        --ink-faint: #9e9ea8;
-        --line: #3f3f46;
-        --wash: #18181b;
-        --surface: #27272a;
-        --accent: #e8743a;
-        --accent-hover: #f08c56;
-        --accent-glow: rgba(232,116,58,0.12);
-        --safe: #4ade80;
-        --warn: #facc15;
-        --danger: #f87171;
-        --safe-bg: rgba(74,222,128,0.1);
-        --warn-bg: rgba(250,204,21,0.1);
-        --danger-bg: rgba(248,113,113,0.1);
-        --info: #60a5fa;
-        --info-bg: rgba(96,165,250,0.1);
-        --warn-hover: #eab308;
-        --danger-hover-bg: rgba(248,113,113,0.08);
-        --ghost-hover-bg: rgba(255,255,255,0.06);
-        --secondary-hover-bg: #3f3f46;
-        --shadow-sm: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
-        --shadow-md: 0 4px 16px rgba(0,0,0,0.3);
-        --shadow-toast: 0 12px 40px rgba(0,0,0,0.5);
-        --bg-secondary: #1e1e2e;
-        --bg-tertiary: rgba(255,255,255,0.04);
-        --color-ok: #4ade80;
-        --color-bad: #f87171;
-    }
-}
-
-/* Dark mode element overrides — combined selectors to avoid duplication */
-[data-theme="dark"] .pill-scope,
-:root:not([data-theme]) .pill-scope {
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
-}
-
-[data-theme="dark"] button.pill:hover,
-[data-theme="dark"] a.pill:hover {
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-}
+/* Dark mode element overrides */
 
 [data-theme="dark"] .tag {
     color: var(--ink-faint);
@@ -2895,12 +2507,12 @@ a.dash-card-link:hover {
 }
 
 [data-theme="dark"] .llm-exposed-banner {
-    background: rgba(250,204,21,0.1);
-    border-color: #854d0e;
-    color: #fbbf24;
+    background: var(--warn-bg);
+    border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+    color: var(--warn);
 }
 [data-theme="dark"] .llm-exposed-banner svg {
-    color: #fbbf24;
+    color: var(--warn);
 }
 
 /* Logo mark needs inversion in dark mode */
@@ -2913,12 +2525,13 @@ a.dash-card-link:hover {
 [data-theme="dark"] .search-input input::placeholder,
 [data-theme="dark"] .form-input::placeholder,
 [data-theme="dark"] .tag-input-wrapper input::placeholder {
-    color: #71717a;
+    color: var(--ink-muted);
 }
 
-/* Toast stays dark in both themes */
+/* Toast stays dark in both themes — one step above the surface so it reads as
+   floating rather than as another panel. */
 [data-theme="dark"] .toast {
-    background: #3f3f46;
+    background: #3a3733;
 }
 
 /* Login hero — theme-fixed-dark: never re-theme the hero panel */
@@ -2947,67 +2560,14 @@ a.dash-card-link:hover {
     color: var(--ink-faint);
 }
 
-/* System preference fallback — element overrides */
-@media (prefers-color-scheme: dark) {
-    html:not([data-theme]) .llm-exposed-banner {
-        background: rgba(250,204,21,0.1);
-        border-color: #854d0e;
-        color: #fbbf24;
-    }
-    html:not([data-theme]) .llm-exposed-banner svg {
-        color: #fbbf24;
-    }
-    html:not([data-theme]) button.pill:hover,
-    html:not([data-theme]) a.pill:hover {
-        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-    }
-    html:not([data-theme]) .tag {
-        color: var(--ink-faint);
-        border-color: var(--line);
-    }
-    html:not([data-theme]) button.tag:hover {
-        background: rgba(255,255,255,0.06);
-        border-color: var(--ink-faint);
-        color: var(--ink-soft);
-    }
-    html:not([data-theme]) .logo-mark {
-        background: var(--surface);
-        border: 1px solid var(--line);
-    }
-    html:not([data-theme]) .search-input input::placeholder,
-    html:not([data-theme]) .form-input::placeholder,
-    html:not([data-theme]) .tag-input-wrapper input::placeholder {
-        color: #71717a;
-    }
-    html:not([data-theme]) .toast {
-        background: #3f3f46;
-    }
-    html:not([data-theme]) .login-right {
-        background: var(--surface);
-    }
-    html:not([data-theme]) .login-heading {
-        color: var(--ink);
-    }
-    html:not([data-theme]) .login-footer-hint {
-        color: var(--ink-faint);
-    }
-    html:not([data-theme]) .theme-fixed-dark {
-        --ink: #1a1a1a;
-        --ink-soft: #555555;
-        --line: #e8e6e1;
-        --wash: #f6f5f3;
-        --surface: #ffffff;
-    }
-}
-
 /* === Hamburger Menu === */
 
 .hamburger-btn {
     display: none;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
+    width: var(--control-h-lg);
+    height: var(--control-h-lg);
     padding: 0;
     border: none;
     background: transparent;
@@ -3096,19 +2656,9 @@ a.dash-card-link:hover {
         width: 100%;
     }
 
-    /* Make dashboard tables horizontally scrollable */
-    .tbl {
-        display: block;
-        overflow-x: auto;
-        white-space: nowrap;
-    }
 }
 
 @media (max-width: 480px) {
-    .top-bar-nav .nav-link span:not(.nav-icon) {
-        display: none;
-    }
-
     /* Login: reduce hero height on mobile */
     .login-left {
         min-height: 40vh;
@@ -3128,3 +2678,1070 @@ a.dash-card-link:hover {
     }
 }
 
+
+/* ==========================================================================
+   Shared primitives and layout repairs (uat/artifacts/reviews/UI-REVIEW A2, A6, A16, B3, B4,
+   C3, C4, M5)
+
+   Everything below either styles a component that lives in `base.html` /
+   `partials/` and so belongs to every page, or defines a class the templates
+   were already using and that the stylesheet had never heard of.
+   ========================================================================== */
+
+/* --- Tables scroll instead of clipping (B4, M5) --------------------------- */
+
+/*
+   `ac.js` wraps every `table.tbl` — including the ones that arrive later in an
+   AJAX detail pane — in one of these.
+
+   The wrapper is a plain block on a wide screen on purpose: `overflow-x: auto`
+   computes `overflow-y` to `auto` as well, which would make the wrapper the
+   scrollport for the sticky `<th>` and undo A16's fix. Below the breakpoint the
+   header's stickiness is not what anyone is missing.
+*/
+.tbl-scroll {
+    max-width: 100%;
+}
+
+/* A table in a box that scrolls on its own sticks to that box's top, not to a
+   top bar that is nowhere near it. */
+.modal,
+.modal-card,
+.modal-scroll {
+    --tbl-sticky-top: 0px;
+}
+
+/* --- Toasts (A2) ---------------------------------------------------------- */
+
+.toast-message {
+    flex: 1;
+    min-width: 0;
+}
+
+.toast-close {
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    color: inherit;
+    opacity: 0.7;
+    font-size: 18px;
+    line-height: 1;
+    padding: 0 2px;
+    cursor: pointer;
+    border-radius: var(--radius-xs);
+}
+
+.toast-close:hover {
+    opacity: 1;
+}
+
+.toast-close:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 1px;
+    opacity: 1;
+}
+
+/* --- The shared confirm dialog (A1, B2) ----------------------------------- */
+
+#ac-confirm .modal {
+    max-width: 460px;
+}
+
+.ac-confirm-field {
+    margin-top: var(--sp-4);
+    text-align: left;
+}
+
+.ac-confirm-field .form-label {
+    display: block;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--ink-faint);
+    margin-bottom: var(--sp-1);
+}
+
+/* --- Mobile navigation drawer (B3) ---------------------------------------- */
+
+.nav-drawer-backdrop {
+    display: none;
+}
+
+.nav-drawer-header {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px 12px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 8px;
+}
+
+.nav-drawer-title {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+}
+
+/* Settings and Sign Out are in the top bar's right-hand group on a wide
+   screen; the drawer carries its own copies because that group is hidden on a
+   phone, which left a phone with no way to sign out. */
+.nav-drawer-extra {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .nav-drawer-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        top: var(--topbar-h);
+        background: rgba(0, 0, 0, 0.45);
+        z-index: 90;
+    }
+
+    .nav-drawer-header {
+        display: flex;
+    }
+
+    .top-bar-nav.nav-open .nav-drawer-extra {
+        display: inline-flex;
+    }
+
+    .top-bar-nav.nav-open {
+        position: relative;
+        z-index: 101;
+        background: var(--surface);
+        box-shadow: var(--shadow-md);
+        max-height: calc(100vh - var(--topbar-h));
+        overflow-y: auto;
+        padding-bottom: 16px;
+    }
+
+    .nav-drawer-close {
+        font-size: 22px;
+        line-height: 1;
+    }
+
+    /* The wrapper, not the table, is what scrolls. */
+    .tbl-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        /* `overflow-x: auto` computes `overflow-y` to `auto` as well, which
+           makes this wrapper the scrollport for the sticky `<th>`. The top bar
+           it was told to clear is nowhere near that scrollport, so the header
+           row parked itself 56 px down and sat on top of the first two rows
+           (a phone showed "Name Service Type" straddling `aws-analytics`).
+           Inside its own scroll box the header sticks to the box. */
+        --tbl-sticky-top: 0px;
+    }
+}
+
+/* --- The New Credential form fits the viewport (M5) ----------------------- */
+
+/*
+   `/credentials/new` measured 401 px in a 390 px viewport. A grid track and a
+   flex item both default to `min-width: auto`, so the template cards and the
+   two-column form refused to shrink below their content; nothing in the page's
+   own stylesheet said otherwise. These selectors are one specificity step
+   above the page's so they win from the shared sheet without editing it.
+*/
+@media (max-width: 768px) {
+    .content .form-two-col,
+    .content .form-main,
+    .content .form-aside {
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .content .template-grid {
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    }
+
+    .content .template-card {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .content .template-selector-header {
+        flex-wrap: wrap;
+    }
+
+    .content .template-selector-header .form-input {
+        max-width: 100%;
+    }
+
+    .content pre,
+    .content .code-block {
+        max-width: 100%;
+        overflow-x: auto;
+    }
+}
+
+/* --- Device activation buttons (C3) --------------------------------------- */
+
+/*
+   Approve and Deny of the RFC 8628 device flow — the one page every new
+   workspace owner must use — rendered as bare unfilled text, because these two
+   rules lived only in `consent.html`'s inline `<style>` while `activate.html`
+   and `activate_confirm_replace.html` used the class names.
+*/
+.btn-approve {
+    background: var(--safe);
+    color: #fff;
+    border: none;
+}
+
+.btn-approve:hover:not(:disabled) {
+    background: #246632;
+}
+
+.btn-approve:focus-visible {
+    outline: 2px solid var(--safe);
+    outline-offset: 2px;
+}
+
+.btn-deny {
+    background: transparent;
+    color: var(--danger);
+    border: 1px solid rgba(194, 48, 48, 0.3);
+}
+
+.btn-deny:hover:not(:disabled) {
+    background: var(--danger-hover-bg);
+}
+
+.btn-deny:focus-visible {
+    outline: 2px solid var(--danger);
+    outline-offset: 2px;
+}
+
+/* --- Classes the templates used that were defined nowhere (C3) ------------ */
+
+/* Typography utilities the pages assume exist. */
+.text-sm { font-size: var(--text-sm); }
+.text-lg { font-size: var(--text-lg); }
+.text-right { text-align: right; }
+
+/* A pill one step smaller than `.pill`, used in MCP and workspace tables.
+   It is tighter, not smaller: 11 px was already below the review's floor and
+   10 px is unreadable, so only the padding moves. */
+.pill-sm {
+    padding: 1px var(--sp-1);
+}
+
+/* Decision pills: a forbid row rendered as unstyled text. */
+.pill-danger {
+    background: var(--state-bad-bg);
+    color: var(--state-bad);
+}
+
+/* The compact select/input used inside table rows and filter bars. */
+.form-input-sm {
+    height: var(--control-h);
+    padding: var(--sp-1) var(--sp-2);
+    font-size: var(--text-sm);
+}
+
+/* A block-level notice inside a form. The AWS-key warning and the OAuth-client
+   delete refusal were rendering as ordinary paragraphs. */
+.alert {
+    display: block;
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--line);
+    background: var(--wash);
+    color: var(--ink);
+    font-size: var(--text-sm);
+    line-height: var(--leading-body);
+}
+
+.alert + .alert,
+.alert + .form-group,
+.form-group + .alert {
+    margin-top: var(--sp-3);
+}
+
+.alert-warning {
+    background: var(--warn-bg);
+    border-color: var(--warn);
+    color: var(--warn);
+}
+
+.alert-danger {
+    background: var(--danger-bg);
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+/* Hints under a field: neutral and warning. */
+.form-help {
+    font-size: var(--text-xs);
+    color: var(--ink-muted);
+    line-height: var(--leading-body);
+    margin-top: var(--sp-1);
+}
+
+.form-hint-warn {
+    font-size: var(--text-xs);
+    color: var(--warn);
+    font-weight: 500;
+    line-height: var(--leading-body);
+    margin-top: var(--sp-1);
+}
+
+/* Icon-only buttons: browser-default chrome until now. */
+.btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-h);
+    height: var(--control-h);
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--ink-soft);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+}
+
+.btn-icon:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--ink);
+}
+
+.btn-icon:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.btn-icon-xs {
+    width: 22px;
+    height: 22px;
+    font-size: 12px;
+}
+
+/* The × that closes a panel or a drawer. */
+.close-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-h);
+    height: var(--control-h);
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--ink-soft);
+    font-size: 20px;
+    line-height: 1;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+
+.close-btn:hover {
+    background: var(--bg-hover);
+    color: var(--ink);
+}
+
+.close-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* The vault name beside a credential in the split-pane list. */
+.md-row-vault {
+    font-size: var(--text-xs);
+    color: var(--ink-muted);
+    white-space: nowrap;
+}
+
+/* The expanded audit row's detail cell. */
+.audit-detail-td {
+    padding: 0 0 14px;
+    background: var(--wash);
+}
+
+.audit-evt-icon-credential {
+    color: var(--accent);
+}
+
+/* Policy tester: the three scenario inputs and their result summary. */
+.tester-input-field {
+    min-width: 0;
+}
+
+.tester-result-summary {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+    padding: var(--sp-3) 0;
+    font-size: var(--text-base);
+}
+
+/* --- Touch targets (A15) --------------------------------------------------- */
+
+@media (pointer: coarse) {
+    button.tag,
+    button.pill,
+    .btn-icon,
+    .chip-remove {
+        min-height: 24px;
+        min-width: 24px;
+    }
+}
+
+/* --- The policy pages' muted text (A6) ------------------------------------
+
+   `opacity` is not a colour. The policy pages dim body text to .4, .5 and .55
+   — 2.51:1, 3.34:1 and 3.89:1 — and dimming fades the background through it
+   too, so the same rule reads differently on a card and on the wash. Each of
+   these is a label or a caption, which is what `--ink-muted` is for; the
+   selectors are one step more specific than the page's own so the shared sheet
+   wins without editing a template another surface also includes.
+   ------------------------------------------------------------------------ */
+
+.content .tester-input-label,
+.content .tester-shortcut-hint,
+.content .tester-result-meta,
+.content .tester-result-explanation,
+.content .tester-chain-title,
+.content .tester-chain-index,
+.content .tester-chain-reason,
+.content .tester-matrix-subtitle,
+.content .tester-policy-text,
+.content .tester-empty-state,
+.content .policy-tester-cta-desc,
+.content .policy-tester-cta-arrow,
+.content .new-policy-tpl-desc,
+.content .new-policy-tpl-hint,
+.content .cedar-error-where,
+.content .cedar-readable-label,
+.content .cedar-stmt-toggle,
+.content .cedar-stmt-link,
+.content .affected-principals-desc {
+    opacity: 1;
+    color: var(--ink-muted);
+}
+
+/* `.cedar-stmt-link` fades in on hover; keep the motion, drop the dimming. */
+.content .cedar-stmt-link:hover,
+.content .cedar-stmt-toggle:hover {
+    color: var(--ink);
+}
+
+/* phase 2 — layout and navigation (uat/artifacts/reviews/DESIGN-REVIEW.md §2).
+   Only the rules the new markup needs; the token, density and surface pass is
+   phase 1's and the per-page composition is phase 3's. */
+
+/* --- the one overflow menu ------------------------------------------------ */
+.overflow-menu {
+    position: relative;
+    display: inline-flex;
+}
+.overflow-menu-btn {
+    line-height: 1;
+    padding-left: 10px;
+    padding-right: 10px;
+}
+.overflow-menu-items {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 40;
+    min-width: 180px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+}
+.overflow-menu-item {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: var(--radius-xs);
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    font-size: var(--text-sm);
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+}
+.overflow-menu-item:hover:not([disabled]),
+.overflow-menu-item:focus-visible {
+    background: var(--wash);
+}
+.overflow-menu-item[disabled] {
+    color: var(--ink-faint);
+    cursor: not-allowed;
+}
+.overflow-menu-item-danger {
+    color: var(--danger);
+}
+
+/* --- the user menu in the top bar ---------------------------------------- */
+.user-menu {
+    position: relative;
+}
+.user-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+.user-menu-btn:hover,
+.user-menu-btn:focus-visible {
+    background: var(--secondary-hover-bg);
+}
+.user-menu-role {
+    text-transform: capitalize;
+}
+.user-menu-chevron {
+    flex-shrink: 0;
+    color: var(--ink-faint);
+}
+.user-menu-items {
+    min-width: 200px;
+}
+
+/* --- breadcrumbs on the detail pages ------------------------------------- */
+.breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 0 8px;
+    font-size: var(--text-sm);
+    color: var(--ink-faint);
+}
+.breadcrumb-sep {
+    color: var(--ink-faint);
+}
+.breadcrumb-current {
+    color: var(--ink-soft);
+}
+
+/* --- the credential and workspace tables --------------------------------- */
+.cred-name-cell,
+.ws-name-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.cred-row-icon,
+.ws-row-icon {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    color: var(--ink-faint);
+}
+.cred-row-tags,
+.ws-row-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+}
+.cred-type-cell {
+    white-space: nowrap;
+}
+
+/* --- Settings: one page, a sticky rail ----------------------------------- */
+.settings-layout {
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: 32px;
+    align-items: start;
+}
+.settings-rail {
+    position: sticky;
+    top: calc(var(--topbar-h) + 24px);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.settings-rail-link {
+    padding: 6px 10px;
+    border-radius: var(--radius-xs);
+    color: var(--ink-soft);
+    font-size: var(--text-sm);
+    text-decoration: none;
+}
+.settings-rail-link:hover,
+.settings-rail-link:focus-visible {
+    background: var(--wash);
+    color: var(--ink);
+}
+.settings-rail-group {
+    margin-top: 12px;
+    padding: 0 10px;
+    color: var(--ink-faint);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.settings-rail-version {
+    margin-top: 16px;
+    padding: 0 10px;
+    color: var(--ink-faint);
+    font-size: var(--text-xs);
+}
+.settings-main > .card,
+.settings-main > [id$="-section"] {
+    scroll-margin-top: calc(var(--topbar-h) + 16px);
+}
+@media (max-width: 900px) {
+    .settings-layout {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 16px;
+    }
+    .settings-rail {
+        position: static;
+        flex-direction: row;
+        flex-wrap: nowrap;
+        gap: 4px;
+        overflow-x: auto;
+    }
+    .settings-rail-group,
+    .settings-rail-version {
+        margin-top: 0;
+        align-self: center;
+        white-space: nowrap;
+    }
+    .settings-rail-link {
+        white-space: nowrap;
+    }
+}
+
+/* --- the dashboard's first-run checklist --------------------------------- */
+.dash-checklist {
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.dash-checklist-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--text-sm);
+}
+.dash-checklist-tick {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xs);
+    color: var(--ink-faint);
+    font-size: var(--text-xs);
+    font-weight: 600;
+}
+.dash-checklist-item.is-done .dash-checklist-tick {
+    border-color: var(--safe);
+    color: var(--safe);
+}
+.dash-checklist-note {
+    color: var(--ink-faint);
+    font-size: var(--text-xs);
+}
+
+/* --- the audit type filter ----------------------------------------------- */
+.audit-type-select {
+    max-width: 260px;
+}
+
+@media (max-width: 768px) {
+    /* The drawer carries the user's name, the theme and Sign Out on a phone,
+       so the bar's copy of them is one control too many for the width. */
+    .top-bar-right .user-menu {
+        display: none;
+    }
+}
+
+/* ==========================================================================
+   phase 3 — per-page composition (uat/artifacts/reviews/DESIGN-REVIEW.md §1, §2, §3.11)
+   ========================================================================== */
+
+/* A table row is one link, not a click handler wrapped around an anchor to the
+   same URL. The anchor stretches over the row it names (§2.1 TABLES). */
+.row-link::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+}
+.row-link {
+    position: relative;
+    z-index: 1;
+}
+
+/* Created / Owner / ID were titled rows competing with the entity itself;
+   they are one small line under the title (§1.6, §1.8, §1.11). */
+.detail-meta-line {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-3);
+    margin: 0 0 var(--sp-4) 0;
+    padding: 0 var(--sp-5);
+    color: var(--ink-faint);
+    font-size: var(--text-sm);
+}
+.detail-meta-line > span + span::before {
+    content: "·";
+    margin-right: var(--sp-3);
+    color: var(--line);
+}
+.detail-meta-id {
+    color: var(--ink-faint);
+}
+
+/* Two icons on every statement card is 48 icons on the seeded policy. They
+   stay reachable — focus counts, so the keyboard still finds them (§1.11). */
+.cedar-stmt-header-actions {
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+.cedar-stmt-card:hover .cedar-stmt-header-actions,
+.cedar-stmt-header-actions:focus-within {
+    opacity: 1;
+}
+
+/* Disabling a policy is confirmed with the consequence (§1.11). */
+.policy-toggle-consequence {
+    color: var(--danger);
+    font-size: var(--text-sm);
+}
+.policy-tester-link {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+    margin-top: var(--sp-6);
+}
+
+/* The tester's principal-attribute row and its scenario menu (§1.12). */
+.tester-attr-row {
+    margin-top: var(--sp-4);
+}
+.overflow-menu-note {
+    padding: var(--sp-2) var(--sp-3);
+    color: var(--ink-faint);
+    font-size: var(--text-sm);
+}
+
+/* Two tabs that answered the same question became one tab with two sections;
+   the section heading is what tells them apart (§1.8, §1.14). */
+.tab-section-title {
+    margin: 0 0 var(--sp-3) 0;
+    font-size: var(--text-lg);
+    font-weight: 600;
+}
+.tab-section-title-next {
+    margin-top: var(--sp-8);
+}
+.detail-meta-copy {
+    color: var(--ink-faint);
+}
+.detail-meta-copy:hover {
+    color: var(--ink);
+}
+
+/* One filter row: the vault select sits with the tag chips instead of taking a
+   full-width row of its own above a half-width search (§1.4). */
+.md-filter-group {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+}
+.md-filter-link {
+    margin-left: auto;
+    font-size: var(--text-sm);
+    white-space: nowrap;
+}
+
+/* The rare fields on a form fold away rather than sitting between the form and
+   its submit button (§1.5). */
+.form-advanced {
+    margin: var(--sp-4) 0;
+    border-top: 1px solid var(--line);
+    padding-top: var(--sp-4);
+}
+.form-advanced-summary {
+    cursor: pointer;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--ink-soft);
+    list-style: none;
+}
+.form-advanced-summary::marker,
+.form-advanced-summary::-webkit-details-marker {
+    display: none;
+}
+.form-advanced-summary::before {
+    content: "\203A";
+    display: inline-block;
+    width: 1em;
+    transition: transform 120ms ease;
+}
+.form-advanced[open] .form-advanced-summary::before {
+    transform: rotate(90deg);
+}
+
+/* The template picker collapses to one line once a template is chosen (§1.5). */
+.template-selector-line {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-6);
+    font-size: var(--text-sm);
+    color: var(--ink-soft);
+}
+.template-show-all {
+    margin-top: var(--sp-3);
+}
+
+/* --- the dashboard (§1.3, §3.11) ----------------------------------------- */
+
+/* Health is a sentence under the title, not a tile that linked to the audit
+   log. */
+.dash-health-line {
+    margin: var(--sp-1) 0 0 0;
+    color: var(--ink-faint);
+    font-size: var(--text-sm);
+}
+
+.dash-section {
+    margin-top: var(--sp-8);
+}
+.dash-section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-3);
+}
+.dash-section-link {
+    font-size: var(--text-sm);
+}
+.dash-empty-hint {
+    color: var(--ink-faint);
+    margin-top: var(--sp-1);
+}
+
+/* The dashboard has no primary action, so nothing on it is orange — the
+   first-run card included. It is a resting surface like every other card. */
+.dash-cta-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-4);
+    margin-top: var(--sp-8);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: var(--sp-5);
+}
+.dash-cta-card h3 {
+    margin: 0;
+}
+.dash-cta-card p {
+    color: var(--ink-soft);
+    margin: var(--sp-1) 0 0 0;
+}
+.dash-cta-card .btn {
+    flex-shrink: 0;
+}
+
+/* --- settings: one pattern for one state (§1.15) ------------------------- */
+.provider-toggle {
+    vertical-align: middle;
+}
+
+/* Grant and Deny are one choice with two values, not two buttons that swapped
+   `btn-primary` for `btn-danger` (§1.6, §1.14). The segment that is on is
+   marked; the other is not a red button waiting to be pressed. */
+.segmented {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+.segmented-option {
+    padding: var(--sp-2) var(--sp-3);
+    border: 0;
+    background: var(--surface);
+    color: var(--ink-soft);
+    font: inherit;
+    font-size: var(--text-sm);
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+}
+.segmented-option + .segmented-option {
+    border-left: 1px solid var(--line);
+}
+.segmented-option:hover:not(.is-on) {
+    background: var(--wash);
+}
+.segmented-option.is-on {
+    background: var(--ink);
+    color: var(--surface);
+}
+.segmented-option.is-on.is-deny {
+    background: var(--danger);
+    color: #fff;
+}
+.segmented-option:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+
+/* fresh-user round 2 */
+/* ==========================================================================
+   uat/artifacts/fresh-user-native-2.md, uat/artifacts/fresh-user-docker-2.md
+
+   Appended, never interleaved: everything here is one specificity step above
+   or one breakpoint wider than the rule it corrects, so the sections above
+   stay readable as the record of what they were for.
+   ========================================================================== */
+
+/* --- Tables scroll where they start overflowing (native F15) -------------- */
+
+/*
+   `.tbl` becomes `white-space: nowrap; min-width: max-content` at 768px, which
+   is where a table starts being wider than its column. The wrapper only became
+   a scrollport at 480px, so between the two the dashboard's Recent activity
+   simply clipped Resource and Decision off the right edge with nothing to say
+   so. The wrapper scrolls from the same breakpoint the table stops fitting,
+   and a persistent scrollbar is the affordance that says there is more.
+*/
+@media (max-width: 768px) {
+    .tbl-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        /* `overflow-x: auto` computes `overflow-y` to `auto` too, making this
+           wrapper the scrollport for the sticky `<th>`; inside its own box the
+           header sticks to the box, not to a top bar that is nowhere near it. */
+        --tbl-sticky-top: 0px;
+        /* The scroll hint is a scrollbar that is actually there. A phone's
+           overlay scrollbar appears only *during* a scroll, which is no help
+           to a reader who does not yet know there is anything to scroll to;
+           naming a width (Firefox) and styling the parts (WebKit/Blink) opts
+           the scrollport out of overlay scrollbars, so the bar sits under the
+           table whenever the table is wider than it. */
+        scrollbar-width: thin;
+        scrollbar-color: var(--line) transparent;
+    }
+    .tbl-scroll::-webkit-scrollbar {
+        height: 6px;
+    }
+    .tbl-scroll::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    .tbl-scroll::-webkit-scrollbar-thumb {
+        background: var(--line);
+        border-radius: 3px;
+    }
+}
+
+/* --- Empty states give their height back (both runs, UI impressions) ------ */
+
+/*
+   "On a 1000px viewport the first-run dashboard spends roughly half its height
+   on an empty Recent activity panel." The copy is right and stays; the padding
+   and the illustration are what made it a half-screen.
+*/
+.empty-state {
+    padding: var(--sp-8) var(--sp-5);
+}
+.empty-state-sm {
+    padding: 20px 16px;
+}
+.empty-state-compact {
+    padding: 16px;
+}
+.empty-glyph {
+    width: 36px;
+    height: 36px;
+    margin-bottom: var(--sp-3);
+}
+.empty-glyph svg {
+    width: 20px;
+    height: 20px;
+}
+.empty-state p {
+    margin-bottom: var(--sp-3);
+}
+.empty-state p:last-child {
+    margin-bottom: 0;
+}
+
+/* --- A rejected save marks its field (docker, UI impressions 1) ----------- */
+
+/*
+   The messages this product writes are good; a refused save just did not look
+   refused. `.field-error` was a page-local style on the create form, so the
+   detail pane's edit mode had nowhere to put one.
+*/
+.field-error {
+    margin-top: 6px;
+    font-size: 0.8rem;
+    line-height: 1.45;
+    color: var(--danger);
+}
+
+.form-input[aria-invalid="true"],
+.form-input[aria-invalid="true"]:focus {
+    border-color: var(--danger);
+    outline-color: var(--danger);
+}
+
+.inline-edit-field {
+    flex: 1;
+    min-width: 0;
+}
+
+/* --- The overflow button is a control, not a glyph (docker, impressions 2) - */
+
+/*
+   "On a page whose entire destructive surface lives behind one unlabelled
+   button, discoverability rests on a single 3-pixel affordance." The hit
+   target is a full one, and the name appears on hover and on focus.
+*/
+.overflow-menu-btn {
+    min-width: 34px;
+    min-height: 34px;
+    padding-left: var(--sp-3);
+    padding-right: var(--sp-3);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-2);
+}
+.overflow-menu-btn .overflow-menu-btn-label {
+    display: none;
+    font-size: var(--text-sm);
+}
+.overflow-menu-btn:hover .overflow-menu-btn-label,
+.overflow-menu-btn:focus-visible .overflow-menu-btn-label,
+.overflow-menu-btn[aria-expanded="true"] .overflow-menu-btn-label {
+    display: inline;
+}

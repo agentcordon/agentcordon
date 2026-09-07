@@ -11,29 +11,24 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use agent_cordon_core::crypto::SecretEncryptor;
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
-use agent_cordon_core::domain::credential::StoredCredential;
-use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
-use agent_cordon_core::domain::mcp_oauth::McpOAuthState;
 use agent_cordon_core::domain::workspace::WorkspaceId;
 
 use crate::oauth_discovery::DiscoveryError;
 
-use crate::credential_service::{self, NewCredentialParams};
-use crate::events::UiEvent;
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::mcp_servers::{OAuthFlowStart, OAuthProvisionInput};
 use crate::state::AppState;
 
-use super::check_manage_mcp_servers;
 use super::oauth_token::{exchange_code_for_tokens, generate_pkce, generate_state_token};
+use agent_cordon_core::policy::actions;
+use agent_cordon_core::policy::PolicyResource;
 
 /// Map a `DiscoveryError` from `ensure_provider_client` into an `ApiError`
 /// suitable for returning to admins via the initiate endpoint.
 fn map_discovery_error(
-    template: &crate::routes::admin_api::mcp_templates::McpServerTemplate,
+    template: &crate::templates::McpServerTemplate,
     e: DiscoveryError,
 ) -> ApiError {
     match e {
@@ -43,7 +38,8 @@ fn map_discovery_error(
             template.name
         )),
         DiscoveryError::MissingResourceUrl => ApiError::BadRequest(format!(
-            "Template '{}' is missing oauth2_resource_url",
+            "Template '{}' has no oauth2_resource_url and its MCP endpoint returned no \
+             'WWW-Authenticate: Bearer resource_metadata=...' discovery hint",
             template.key
         )),
         other => ApiError::BadRequest(format!("OAuth discovery failed: {other}")),
@@ -71,9 +67,13 @@ pub(crate) async fn initiate_oauth(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<InitiateRequest>,
 ) -> Result<Json<ApiResponse<InitiateResponse>>, ApiError> {
-    check_manage_mcp_servers(&state, &auth).await?;
+    state
+        .authz
+        .authorize(&auth, actions::MANAGE_MCP_SERVERS, &PolicyResource::System)
+        .await?;
 
     let template = state
+        .catalog
         .mcp_templates
         .iter()
         .find(|t| t.key == req.template_key)
@@ -96,16 +96,11 @@ pub(crate) async fn initiate_oauth(
         Ok(app) => app,
         Err(e) => {
             // Emit discovery-failure audit event (sink: audit log)
-            let event = AuditEvent::builder(AuditEventType::OAuthProviderDiscoveryFailed)
-                .action("discover")
-                .resource("mcp_template", &template.key)
-                .correlation_id(&corr.0)
-                .details(serde_json::json!({
-                    "template_key": template.key,
-                    "error": format!("{e}"),
-                }))
-                .build();
-            let _ = state.store.append_audit_event(&event).await;
+            state
+                .services
+                .mcp_servers
+                .record_oauth_discovery_failure(&corr.0, &template.key, &format!("{e}"))
+                .await;
             return Err(map_discovery_error(&template, e));
         }
     };
@@ -138,20 +133,19 @@ pub(crate) async fn initiate_oauth(
     );
 
     // Store OAuth state
-    let now = chrono::Utc::now();
-    let ttl = chrono::Duration::seconds(state.config.oidc_state_ttl_seconds as i64);
-    let mcp_state = McpOAuthState {
-        state: oauth_state.clone(),
-        template_key: template.key.clone(),
-        workspace_id,
-        user_id: auth.user.id.clone(),
-        redirect_uri: redirect_uri.clone(),
-        code_verifier: Some(code_verifier),
-        authorization_server_url: Some(oauth_app.authorization_server_url.clone()),
-        created_at: now,
-        expires_at: now + ttl,
-    };
-    state.store.create_mcp_oauth_state(&mcp_state).await?;
+    state
+        .services
+        .mcp_servers
+        .begin_oauth_flow(OAuthFlowStart {
+            template_key: &template.key,
+            workspace_id: workspace_id.clone(),
+            user_id: auth.user.id.clone(),
+            redirect_uri: redirect_uri.clone(),
+            code_verifier,
+            authorization_server_url: oauth_app.authorization_server_url.clone(),
+            state_token: oauth_state.clone(),
+        })
+        .await?;
 
     // Build authorize URL using app config
     let mut url = format!(
@@ -174,7 +168,7 @@ pub(crate) async fn initiate_oauth(
 
     tracing::info!(
         template_key = %template.key,
-        workspace_id = %mcp_state.workspace_id.0,
+        workspace_id = %workspace_id.0,
         correlation_id = %corr.0,
         "initiated MCP OAuth2 flow"
     );
@@ -275,6 +269,7 @@ async fn oauth_callback(
 
     // Resolve template
     let template = state
+        .catalog
         .mcp_templates
         .iter()
         .find(|t| t.key == mcp_state.template_key)
@@ -303,19 +298,10 @@ async fn oauth_callback(
             ApiError::Internal("OAuth provider client disappeared mid-flow".to_string())
         })?;
 
-    let client_secret_opt: Option<String> = if let (Some(enc), Some(nonce)) = (
-        oauth_app.encrypted_client_secret.as_ref(),
-        oauth_app.nonce.as_ref(),
-    ) {
-        let bytes = state
-            .encryptor
-            .decrypt(enc, nonce, oauth_app.id.0.to_string().as_bytes())?;
-        Some(String::from_utf8(bytes).map_err(|_| {
-            ApiError::Internal("oauth provider client_secret is not valid UTF-8".to_string())
-        })?)
-    } else {
-        None
-    };
+    let client_secret_opt = state
+        .services
+        .identity_providers
+        .open_oauth_client_secret(&oauth_app)?;
 
     // Exchange code for tokens
     let token_response = exchange_code_for_tokens(
@@ -338,210 +324,25 @@ async fn oauth_callback(
     })?;
     let access_token = token_response.access_token;
 
-    // Create or reuse credential + MCP server.
-    let workspace = state
-        .store
-        .get_workspace(&mcp_state.workspace_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("workspace not found".to_string()))?;
-
-    // Fix #1: Reuse an existing oauth2_user_authorization credential for this
-    // (user, template) pair if one already exists. Service is set to template.key
-    // at creation time, and credential_type is "oauth2_user_authorization".
-    let existing_creds = state.store.list_all_stored_credentials().await?;
-    let existing_cred = existing_creds.into_iter().find(|c| {
-        c.created_by_user.as_ref() == Some(&auth.user.id)
-            && c.service == template.key
-            && c.credential_type == "oauth2_user_authorization"
-    });
-
-    let (cred_id, reused_credential) = if let Some(c) = existing_cred {
-        tracing::info!(
-            credential_id = %c.id.0,
-            template = %template.key,
-            user = %auth.user.id.0,
-            "reusing existing OAuth credential for second-workspace install"
-        );
-        (c.id, true)
-    } else {
-        let cred = create_oauth_credential(
-            &state,
+    state
+        .services
+        .mcp_servers
+        .provision_from_oauth(
             &auth,
-            &template,
-            &workspace,
-            OAuthCredentialParams {
+            &corr.0,
+            OAuthProvisionInput {
+                template: &template,
+                workspace_id: &mcp_state.workspace_id,
                 token_url: &oauth_app.token_endpoint,
                 client_id: &oauth_app.client_id,
                 authorization_server_url: &oauth_app.authorization_server_url,
                 refresh_token,
+                access_token: &access_token,
             },
-        )?;
-        state.store.store_credential(&cred).await?;
-        credential_service::emit_credential_created(&state, cred.id.0, cred.name.clone());
-        (cred.id, false)
-    };
-
-    // Fix #1: Reuse an existing MCP server for this (user, template) pair if
-    // present. The server stays bound to its original workspace_id; Cedar's
-    // same-owner default policy makes it usable from the new workspace too.
-    let user_servers = state.store.list_mcp_servers_by_user(&auth.user.id).await?;
-    let existing_server = user_servers
-        .into_iter()
-        .find(|s| s.template_key.as_deref() == Some(template.key.as_str()));
-
-    let (server, reused_server) = if let Some(s) = existing_server {
-        tracing::info!(
-            server_id = %s.id.0,
-            template = %template.key,
-            user = %auth.user.id.0,
-            "reusing existing MCP server for second-workspace install"
-        );
-        (s, true)
-    } else {
-        let s = create_mcp_server(
-            &template,
-            &mcp_state.workspace_id,
-            &cred_id,
-            &mcp_state.user_id,
-        );
-        state.store.create_mcp_server(&s).await?;
-        // Bind the new MCP to its originating workspace in the junction so
-        // broker `mcp_sync` (which joins through `mcp_server_workspaces` after
-        // migration 010) can see it. See also provision.rs §7a.
-        state
-            .store
-            .add_mcp_server_workspace(&s.id, &mcp_state.workspace_id, Some(&mcp_state.user_id))
-            .await?;
-        (s, false)
-    };
-
-    // Best-effort tool discovery
-    match super::discover::attempt_tool_discovery(&state, &server, Some(&access_token)).await {
-        Ok(tools) if !tools.is_empty() => {
-            let mut updated = server.clone();
-            updated.allowed_tools = Some(tools.iter().map(|t| t.name.clone()).collect());
-            updated.discovered_tools = Some(tools);
-            if let Err(e) = state.store.update_mcp_server(&updated).await {
-                tracing::warn!(error = %e, server = %server.name, "failed to update discovered tools");
-            }
-        }
-        Ok(_) => {
-            tracing::debug!(server = %server.name, "tool discovery returned empty list")
-        }
-        Err(e) => {
-            tracing::debug!(server = %server.name, error = %e, "tool discovery failed (non-fatal)")
-        }
-    }
-
-    state.ui_event_bus.emit(UiEvent::McpServerChanged {
-        server_name: server.name.clone(),
-    });
-
-    // Audit
-    let server_id_str = server.id.0.to_string();
-    let workspace_id_str = mcp_state.workspace_id.0.to_string();
-    let event = AuditEvent::builder(AuditEventType::McpServerProvisioned)
-        .action("provision")
-        .user_actor(&auth.user)
-        .resource("mcp_server", &server_id_str)
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some("oauth2_user_authorization"))
-        .details(serde_json::json!({
-            "template_key": template.key,
-            "server_name": template.name,
-            "workspace_id": workspace_id_str,
-            "workspace_name": workspace.name,
-            "auth_method": "oauth2",
-            "source": "oauth2",
-            "reused_credential": reused_credential,
-            "reused_server": reused_server,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+        )
+        .await?;
 
     Ok(redirect_with_status("success", Some(&template.key)))
-}
-
-/// Parameters for creating an OAuth2 authorization code credential.
-struct OAuthCredentialParams<'a> {
-    token_url: &'a str,
-    client_id: &'a str,
-    authorization_server_url: &'a str,
-    refresh_token: String,
-}
-
-/// Build a `StoredCredential` for an OAuth2 authorization code flow.
-fn create_oauth_credential(
-    state: &AppState,
-    auth: &AuthenticatedUser,
-    template: &crate::routes::admin_api::mcp_templates::McpServerTemplate,
-    workspace: &agent_cordon_core::domain::workspace::Workspace,
-    params: OAuthCredentialParams<'_>,
-) -> Result<StoredCredential, ApiError> {
-    let cred_name = format!("{}-{}", template.key, workspace.name);
-    credential_service::build_credential(
-        state.encryptor.as_ref(),
-        NewCredentialParams {
-            name: cred_name,
-            service: template.key.clone(),
-            secret_value: params.refresh_token,
-            credential_type: "oauth2_user_authorization".to_string(),
-            scopes: vec![],
-            metadata: serde_json::json!({
-                "oauth2_token_url": params.token_url,
-                "oauth2_client_id": params.client_id,
-                "authorization_server_url": params.authorization_server_url,
-                "template_key": template.key,
-            }),
-            tags: vec![format!("mcp:{}", template.key)],
-            vault: "default".to_string(),
-            created_by: None,
-            created_by_user: Some(auth.user.id.clone()),
-            allowed_url_pattern: Some(format!("{}*", template.upstream_url)),
-            expires_at: None,
-            transform_script: None,
-            transform_name: Some("bearer".to_string()),
-            description: Some(format!(
-                "OAuth2 credential for MCP server '{}' on workspace '{}'",
-                template.name, workspace.name
-            )),
-            target_identity: None,
-        },
-    )
-}
-
-/// Create an MCP server record for an OAuth2-provisioned template.
-fn create_mcp_server(
-    template: &crate::routes::admin_api::mcp_templates::McpServerTemplate,
-    // #37: legacy parameter retained for caller signature compatibility; the
-    // workspace binding is now created via the junction by the caller.
-    _workspace_id: &WorkspaceId,
-    credential_id: &agent_cordon_core::domain::credential::CredentialId,
-    user_id: &agent_cordon_core::domain::user::UserId,
-) -> McpServer {
-    let now = chrono::Utc::now();
-    let transport = McpTransport::from_str_opt(&template.transport).unwrap_or_default();
-    McpServer {
-        id: McpServerId(Uuid::new_v4()),
-        // #37: workspace ownership lives in `mcp_server_workspaces`.
-        workspace_id: None,
-        name: template.key.clone(),
-        upstream_url: template.upstream_url.clone(),
-        transport,
-        allowed_tools: None,
-        enabled: true,
-        created_by: None,
-        created_at: now,
-        updated_at: now,
-        tags: template.tags.clone(),
-        required_credentials: Some(vec![credential_id.clone()]),
-        auth_method: McpAuthMethod::OAuth2,
-        template_key: Some(template.key.clone()),
-        discovered_tools: None,
-        created_by_user: Some(user_id.clone()),
-    }
 }
 
 /// Build a redirect response to the MCP servers page with OAuth status.

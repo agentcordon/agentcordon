@@ -3,6 +3,15 @@
 # Quick start (no .env required):
 #   docker compose up -d
 #
+# This file PULLS a published image. If you are running from a clone of this
+# repository — or the tag below has no release yet — use the build file
+# instead, which compiles the image from the Dockerfile in this tree:
+#
+#   docker compose -f docker-compose.build.yml up -d --build
+#
+# Both need Docker with the Compose plugin (`docker compose version`). Without
+# it, see README.md § "Production deployment" for the equivalent `docker run`.
+#
 # The server auto-generates cryptographic secrets on first run
 # and persists them to the /data volume. No env vars needed.
 #
@@ -13,21 +22,23 @@
 #   AGTCRDN_PORT           — Server host port (default: 3140)
 #   AGTCRDN_ROOT_USERNAME  — Admin username (default: auto-generated)
 #   AGTCRDN_ROOT_PASSWORD  — Admin password (default: auto-generated, printed in logs)
-#   AGTCRDN_SEED_DEMO      — Seed demo data on first boot (default: true)
+#
+# Container and volume names come from the Compose project name, which
+# defaults to this directory's name. To run two independent stacks on one
+# host, give each its own project name and host port:
+#
+#   COMPOSE_PROJECT_NAME=agentcordon-staging AGTCRDN_PORT=3141 docker compose up -d
 #
 # See .env.example for all available options.
 
 services:
   agentcordon:
     image: ghcr.io/agentcordon/agentcordon:latest
-    container_name: agentcordon
     command: ["agent-cordon-server"]
     ports:
       - "${AGTCRDN_PORT:-3140}:3140"
     volumes:
       - agentcordon-data:/data
-    environment:
-      AGTCRDN_SEED_DEMO: "${AGTCRDN_SEED_DEMO:-true}"
     env_file:
       - path: .env
         required: false

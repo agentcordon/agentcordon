@@ -1,6 +1,6 @@
 //! Consolidated integration tests for v1.9.3 features.
 //!
-//! Merged from: v193_bug_fixes.rs, v193_ux_renames.rs, v193_seed_policies.rs
+//! Merged from: v193_bug_fixes.rs, v193_ux_renames.rs
 
 mod bug_fixes {
     //! Integration tests — v1.9.3 Features 6-10: Bug Fixes.
@@ -89,35 +89,6 @@ mod bug_fixes {
         .await;
         let cookie =
             common::login_user_combined(&ctx.app, "bugfix-user", common::TEST_PASSWORD).await;
-        (ctx, cookie)
-    }
-
-    async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, String) {
-        let ctx = TestAppBuilder::new()
-            .with_config(|c| {
-                c.seed_demo = true;
-            })
-            .build()
-            .await;
-
-        agent_cordon_server::seed::seed_demo_data(
-            &ctx.store,
-            &ctx.encryptor,
-            &ctx.state.config,
-            &ctx.jwt_issuer,
-        )
-        .await
-        .expect("seed demo data");
-
-        let _user = common::create_test_user(
-            &*ctx.store,
-            "bugfix-seed-user",
-            common::TEST_PASSWORD,
-            UserRole::Admin,
-        )
-        .await;
-        let cookie =
-            common::login_user_combined(&ctx.app, "bugfix-seed-user", common::TEST_PASSWORD).await;
         (ctx, cookie)
     }
 
@@ -268,7 +239,7 @@ mod bug_fixes {
     /// Dashboard timestamps should not show raw ISO format with nanoseconds.
     #[tokio::test]
     async fn test_dashboard_timestamps_not_raw_iso() {
-        let (ctx, cookie) = setup_with_seed().await;
+        let (ctx, cookie) = setup().await;
 
         let (status, body) = get_html(&ctx.app, "/dashboard", &cookie).await;
         assert_eq!(status, StatusCode::OK);
@@ -301,7 +272,7 @@ mod bug_fixes {
     /// Dashboard HTML/JS should reference formatDateTime for timestamp rendering.
     #[tokio::test]
     async fn test_dashboard_uses_format_datetime() {
-        let (ctx, cookie) = setup_with_seed().await;
+        let (ctx, cookie) = setup().await;
 
         let (status, body) = get_html(&ctx.app, "/dashboard", &cookie).await;
         assert_eq!(status, StatusCode::OK);
@@ -315,7 +286,7 @@ mod bug_fixes {
     /// Audit log page should also format timestamps.
     #[tokio::test]
     async fn test_audit_page_timestamps_formatted() {
-        let (ctx, cookie) = setup_with_seed().await;
+        let (ctx, cookie) = setup().await;
 
         let (status, body) = get_html(&ctx.app, "/audit", &cookie).await;
         assert_eq!(status, StatusCode::OK);
@@ -329,7 +300,7 @@ mod bug_fixes {
     /// API timestamps should remain full ISO format (no change).
     #[tokio::test]
     async fn test_api_timestamps_unchanged() {
-        let (ctx, cookie) = setup_with_seed().await;
+        let (ctx, cookie) = setup().await;
 
         let (status, body) = common::send_json_auto_csrf(
             &ctx.app,
@@ -569,10 +540,15 @@ mod ux_renames {
     }
 
     // ===========================================================================
-    // Feature 2: Rename Policies to Security
+    // Feature 2: the /security routes, labelled for what they hold
+    //
+    // v1.9.3 renamed the nav item Policies -> Security. The design review
+    // (uat/artifacts/reviews/DESIGN-REVIEW.md 1.1) renamed it back: the page title, the back
+    // links and the tester breadcrumb all say "policy". The routes did not
+    // move, so the redirects below still hold.
     // ===========================================================================
 
-    /// Nav should show "Security" as the label, not "Policies".
+    /// Nav should show "Policies" as the label, pointing at /security.
     #[tokio::test]
     async fn test_nav_shows_security_label() {
         let (ctx, cookie) = setup().await;
@@ -581,8 +557,12 @@ mod ux_renames {
         assert_eq!(status, StatusCode::OK);
 
         assert!(
-            body.contains("Security"),
-            "nav should contain 'Security' label"
+            body.contains(r#"<span class="nav-label">Policies</span>"#),
+            "nav should contain the 'Policies' label"
+        );
+        assert!(
+            body.contains(r#"href="/security" class="nav-link"#),
+            "and it should still point at /security"
         );
     }
 
@@ -741,405 +721,5 @@ mod ux_renames {
             body["data"].is_array(),
             "users API should return array of users"
         );
-    }
-}
-
-mod seed_policies {
-    //! Integration tests — v1.9.3 Feature 5: Pre-populated Disabled Cedar Policies.
-    //!
-    //! Verifies that seed demo data includes example Cedar policies that are
-    //! disabled by default, have descriptions, parse as valid Cedar, and
-    //! don't affect access decisions until enabled.
-
-    use crate::common;
-
-    use agent_cordon_core::domain::user::UserRole;
-    use agent_cordon_server::test_helpers::TestAppBuilder;
-    use axum::http::{Method, StatusCode};
-
-    // ---------------------------------------------------------------------------
-    // Helpers
-    // ---------------------------------------------------------------------------
-
-    /// Setup with demo seed data (seed policies are created alongside demo data).
-    async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, String) {
-        let ctx = TestAppBuilder::new()
-            .with_config(|c| {
-                c.seed_demo = true;
-            })
-            .build()
-            .await;
-
-        agent_cordon_server::seed::seed_demo_data(
-            &ctx.store,
-            &ctx.encryptor,
-            &ctx.state.config,
-            &ctx.jwt_issuer,
-        )
-        .await
-        .expect("seed demo data");
-
-        let _user = common::create_test_user(
-            &*ctx.store,
-            "seed-policy-user",
-            common::TEST_PASSWORD,
-            UserRole::Admin,
-        )
-        .await;
-        let cookie =
-            common::login_user_combined(&ctx.app, "seed-policy-user", common::TEST_PASSWORD).await;
-        (ctx, cookie)
-    }
-
-    // ===========================================================================
-    // 5A. Happy Path
-    // ===========================================================================
-
-    /// Fresh DB with seed should have policies beyond just the default.
-    #[tokio::test]
-    async fn test_seed_policies_exist() {
-        let (ctx, cookie) = setup_with_seed().await;
-
-        let (status, body) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/policies",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "list policies: {:?}", body);
-
-        let policies = body["data"].as_array().expect("data should be array");
-        assert!(
-            policies.len() >= 2,
-            "should have at least 2 policies (default + demo/seed), got {}",
-            policies.len()
-        );
-    }
-
-    /// All seed example policies should be disabled by default.
-    #[tokio::test]
-    async fn test_seed_policies_disabled() {
-        let (ctx, cookie) = setup_with_seed().await;
-
-        let (status, body) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/policies",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-
-        let policies = body["data"].as_array().expect("data");
-
-        let seed_examples: Vec<_> = policies
-            .iter()
-            .filter(|p| {
-                let name = p["name"].as_str().unwrap_or("");
-                name != "default" && !name.contains("demo") && !name.starts_with("grant:")
-            })
-            .collect();
-
-        for policy in &seed_examples {
-            let enabled = policy["enabled"].as_bool().unwrap_or(true);
-            let name = policy["name"].as_str().unwrap_or("unknown");
-            assert!(
-                !enabled,
-                "seed policy '{}' should be disabled by default",
-                name
-            );
-        }
-    }
-
-    /// Each seed policy should have a non-empty description.
-    #[tokio::test]
-    async fn test_seed_policies_have_descriptions() {
-        let (ctx, cookie) = setup_with_seed().await;
-
-        let (status, body) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/policies",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-
-        let policies = body["data"].as_array().expect("data");
-
-        let seed_examples: Vec<_> = policies
-            .iter()
-            .filter(|p| {
-                let name = p["name"].as_str().unwrap_or("");
-                name != "default" && !name.contains("demo") && !name.starts_with("grant:")
-            })
-            .collect();
-
-        for policy in &seed_examples {
-            let description = policy["description"].as_str().unwrap_or("");
-            let name = policy["name"].as_str().unwrap_or("unknown");
-            assert!(
-                !description.is_empty(),
-                "seed policy '{}' should have a non-empty description",
-                name
-            );
-        }
-    }
-
-    /// Each seed policy should parse as valid Cedar (enabling it should succeed).
-    #[tokio::test]
-    async fn test_seed_policies_valid_cedar() {
-        let (ctx, cookie) = setup_with_seed().await;
-
-        let (status, body) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/policies",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-
-        let policies = body["data"].as_array().expect("data");
-
-        let seed_examples: Vec<_> = policies
-            .iter()
-            .filter(|p| {
-                let name = p["name"].as_str().unwrap_or("");
-                name != "default" && !name.contains("demo") && !name.starts_with("grant:")
-            })
-            .collect();
-
-        for policy in &seed_examples {
-            let policy_id = policy["id"].as_str().expect("policy id");
-            let name = policy["name"].as_str().unwrap_or("unknown");
-
-            let (enable_status, enable_body) = common::send_json_auto_csrf(
-                &ctx.app,
-                Method::PUT,
-                &format!("/api/v1/policies/{}", policy_id),
-                None,
-                Some(&cookie),
-                Some(serde_json::json!({
-                    "name": name,
-                    "cedar_policy": policy["cedar_policy"].as_str().unwrap_or(""),
-                    "description": policy["description"].as_str().unwrap_or(""),
-                    "enabled": true
-                })),
-            )
-            .await;
-            assert!(
-                enable_status == StatusCode::OK || enable_status == StatusCode::NO_CONTENT,
-                "enabling seed policy '{}' should succeed (valid Cedar): status={}, body={:?}",
-                name,
-                enable_status,
-                enable_body
-            );
-        }
-    }
-
-    // ===========================================================================
-    // 5B. Retry/Idempotency
-    // ===========================================================================
-
-    /// Running seed again should not create duplicate policies.
-    #[tokio::test]
-    async fn test_seed_policies_not_duplicated() {
-        let (ctx, cookie) = setup_with_seed().await;
-
-        let (_, body1) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/policies",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        let count1 = body1["data"].as_array().map(|a| a.len()).unwrap_or(0);
-
-        agent_cordon_server::seed::seed_demo_data(
-            &ctx.store,
-            &ctx.encryptor,
-            &ctx.state.config,
-            &ctx.jwt_issuer,
-        )
-        .await
-        .expect("second seed should succeed");
-
-        let (_, body2) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/policies",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        let count2 = body2["data"].as_array().map(|a| a.len()).unwrap_or(0);
-
-        assert_eq!(
-            count1, count2,
-            "policy count should be unchanged after double seed ({} vs {})",
-            count1, count2
-        );
-    }
-
-    // ===========================================================================
-    // 5D. Cross-Feature
-    // ===========================================================================
-
-    /// With seed policies disabled, access decisions should be unchanged.
-    #[tokio::test]
-    async fn test_disabled_policies_no_effect() {
-        let (ctx, cookie) = setup_with_seed().await;
-
-        let (status, _) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/workspaces",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "disabled seed policies should not affect normal operations"
-        );
-
-        let (status, _) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/credentials",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "disabled seed policies should not affect credential access"
-        );
-    }
-
-    /// Enabling a seed policy should make it participate in Cedar evaluation.
-    #[tokio::test]
-    async fn test_enable_seed_policy_affects_access() {
-        let (ctx, cookie) = setup_with_seed().await;
-
-        let (status, body) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/policies",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-
-        let policies = body["data"].as_array().expect("data");
-
-        let disabled_seed = policies.iter().find(|p| {
-            let name = p["name"].as_str().unwrap_or("");
-            let enabled = p["enabled"].as_bool().unwrap_or(true);
-            name != "default" && !name.contains("demo") && !enabled
-        });
-
-        if let Some(policy) = disabled_seed {
-            let policy_id = policy["id"].as_str().expect("policy id");
-            let name = policy["name"].as_str().unwrap_or("");
-            let cedar = policy["cedar_policy"].as_str().unwrap_or("");
-            let desc = policy["description"].as_str().unwrap_or("");
-
-            let (enable_status, _) = common::send_json_auto_csrf(
-                &ctx.app,
-                Method::PUT,
-                &format!("/api/v1/policies/{}", policy_id),
-                None,
-                Some(&cookie),
-                Some(serde_json::json!({
-                    "name": name,
-                    "cedar_policy": cedar,
-                    "description": desc,
-                    "enabled": true
-                })),
-            )
-            .await;
-            assert!(
-                enable_status == StatusCode::OK || enable_status == StatusCode::NO_CONTENT,
-                "enabling policy should succeed"
-            );
-
-            let (status, body) = common::send_json_auto_csrf(
-                &ctx.app,
-                Method::GET,
-                &format!("/api/v1/policies/{}", policy_id),
-                None,
-                Some(&cookie),
-                None,
-            )
-            .await;
-            assert_eq!(status, StatusCode::OK);
-
-            let enabled = body["data"]["enabled"].as_bool().unwrap_or(false);
-            assert!(enabled, "policy should be enabled after update");
-        }
-    }
-
-    // ===========================================================================
-    // 5E. Security
-    // ===========================================================================
-
-    /// Seed policies should demonstrate restrictive patterns (deny/restrict, not permit-all).
-    #[tokio::test]
-    async fn test_seed_policy_examples_are_restrictive() {
-        let (ctx, cookie) = setup_with_seed().await;
-
-        let (status, body) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/policies",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-
-        let policies = body["data"].as_array().expect("data");
-
-        let seed_examples: Vec<_> = policies
-            .iter()
-            .filter(|p| {
-                let name = p["name"].as_str().unwrap_or("");
-                name != "default" && !name.contains("demo") && !name.starts_with("grant:")
-            })
-            .collect();
-
-        for policy in &seed_examples {
-            let cedar = policy["cedar_policy"].as_str().unwrap_or("");
-            let name = policy["name"].as_str().unwrap_or("unknown");
-
-            let is_permit_all = cedar.contains("permit(\n  principal,\n  action,\n  resource\n)")
-                || cedar.contains("permit(principal, action, resource)");
-            assert!(
-                !is_permit_all,
-                "seed policy '{}' should demonstrate restrictions, not permit-all. Cedar: {}",
-                name, cedar
-            );
-        }
     }
 }

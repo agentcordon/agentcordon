@@ -184,7 +184,7 @@ async fn full_oauth_flow(
     let (verifier, challenge) = generate_pkce();
 
     // Compute consent CSRF token from session
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     // POST consent (approve)
     let form = format!(
@@ -685,7 +685,7 @@ async fn test_consent_approve_issues_code() {
     let client_id = body["data"]["client_id"].as_str().unwrap();
 
     let (_verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     let form = format!(
         "client_id={}&redirect_uri={}&scope=credentials:discover&state=test-state-123&code_challenge={}&code_challenge_method=S256&decision=approve&csrf_token={}",
@@ -745,7 +745,7 @@ async fn test_consent_deny_returns_error() {
     let client_id = body["data"]["client_id"].as_str().unwrap();
 
     let (_verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     let form = format!(
         "client_id={}&redirect_uri={}&scope=credentials:discover&state=deny-state&code_challenge={}&code_challenge_method=S256&decision=deny&csrf_token={}",
@@ -804,7 +804,7 @@ async fn test_auth_code_single_use() {
     let client_secret = body["data"]["client_secret"].as_str().unwrap().to_string();
 
     let (verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     // Get code via consent
     let form = format!(
@@ -955,7 +955,7 @@ async fn test_token_exchange_wrong_pkce_verifier() {
     let client_secret = body["data"]["client_secret"].as_str().unwrap().to_string();
 
     let (_verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     // Consent
     let form = format!(
@@ -1015,7 +1015,7 @@ async fn test_token_exchange_missing_pkce_verifier() {
     let client_secret = body["data"]["client_secret"].as_str().unwrap().to_string();
 
     let (_verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     let form = format!(
         "client_id={}&redirect_uri={}&scope=credentials:discover&state=s&code_challenge={}&code_challenge_method=S256&decision=approve&csrf_token={}",
@@ -1267,7 +1267,6 @@ async fn test_access_token_accepted_by_resource_endpoints() {
     let workspace = agent_cordon_core::domain::workspace::Workspace {
         id: agent_cordon_core::domain::workspace::WorkspaceId(uuid::Uuid::new_v4()),
         name: "token-validation-ws".to_string(),
-        enabled: true,
         status: agent_cordon_core::domain::workspace::WorkspaceStatus::Active,
         pk_hash: Some(TEST_PK_HASH.to_string()),
         encryption_public_key: None,
@@ -1322,6 +1321,7 @@ async fn test_expired_access_token_rejected() {
         workspace_name: "expired-ws".to_string(),
         public_key_hash: "e1e2e3e4e5e6e7e8e1e2e3e4e5e6e7e8e1e2e3e4e5e6e7e8e1e2e3e4e5e6e7e8"
             .to_string(),
+        workspace_id: None,
         redirect_uris: vec![TEST_REDIRECT_URI.to_string()],
         allowed_scopes: vec![OAuthScope::CredentialsDiscover],
         created_by_user: admin.id.clone(),
@@ -1384,6 +1384,7 @@ async fn test_revoked_access_token_rejected() {
         workspace_name: "revoked-ws".to_string(),
         public_key_hash: "f1f2f3f4f5f6f7f8f1f2f3f4f5f6f7f8f1f2f3f4f5f6f7f8f1f2f3f4f5f6f7f8"
             .to_string(),
+        workspace_id: None,
         redirect_uris: vec![TEST_REDIRECT_URI.to_string()],
         allowed_scopes: vec![OAuthScope::CredentialsDiscover],
         created_by_user: admin.id.clone(),
@@ -1465,7 +1466,6 @@ async fn test_revoked_token_rejected_on_next_request() {
     let workspace = agent_cordon_core::domain::workspace::Workspace {
         id: agent_cordon_core::domain::workspace::WorkspaceId(uuid::Uuid::new_v4()),
         name: "revoke-test-ws".to_string(),
-        enabled: true,
         status: agent_cordon_core::domain::workspace::WorkspaceStatus::Active,
         pk_hash: Some(TEST_PK_HASH.to_string()),
         encryption_public_key: None,
@@ -1679,7 +1679,7 @@ async fn test_pkce_prevents_code_interception() {
     let client_secret = body["data"]["client_secret"].as_str().unwrap().to_string();
 
     let (_verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     // Get a code
     let form = format!(
@@ -1736,7 +1736,6 @@ async fn test_refresh_token_revocation_cascades_to_access_token() {
     let workspace = agent_cordon_core::domain::workspace::Workspace {
         id: agent_cordon_core::domain::workspace::WorkspaceId(uuid::Uuid::new_v4()),
         name: "cascade-ws".to_string(),
-        enabled: true,
         status: agent_cordon_core::domain::workspace::WorkspaceStatus::Active,
         pk_hash: Some(TEST_PK_HASH.to_string()),
         encryption_public_key: None,
@@ -1825,7 +1824,7 @@ async fn test_consent_new_workspace_approve_creates_client_and_issues_code() {
     let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (_verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     let form = format!(
         "client_id=&redirect_uri={}&scope=credentials:discover&state=new-ws-state&code_challenge={}&code_challenge_method=S256&decision=approve&csrf_token={}&public_key_hash={}&workspace_name=consent-created-ws&is_new_workspace=true",
@@ -1884,7 +1883,7 @@ async fn test_consent_new_workspace_full_token_exchange() {
 
     let pk_hash = "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4";
     let (verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     // Approve consent for new workspace
     let form = format!(
@@ -1943,7 +1942,7 @@ async fn test_consent_new_workspace_deny() {
     let (cookie, _csrf) = login(&app, "admin", TEST_PASSWORD).await;
 
     let (_verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
     let pk_hash = "d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5";
 
     let form = format!(
@@ -2022,7 +2021,7 @@ async fn test_consent_existing_client_still_works() {
     let client_secret = body["data"]["client_secret"].as_str().unwrap();
 
     let (verifier, challenge) = generate_pkce();
-    let consent_csrf = compute_consent_csrf(&cookie, &state.session_hash_key);
+    let consent_csrf = compute_consent_csrf(&cookie, &state.crypto.session_hash_key);
 
     // Approve with existing client_id (backward compat path)
     let form = format!(

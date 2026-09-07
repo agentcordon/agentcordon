@@ -3,6 +3,8 @@ use async_trait::async_trait;
 use super::helpers::*;
 use super::SqliteStore;
 
+use crate::domain::oidc::OidcProviderId;
+use crate::domain::time::format_timestamp;
 use crate::domain::user::{User, UserId};
 use crate::error::StoreError;
 use crate::storage::shared::USER_COLUMNS;
@@ -16,8 +18,8 @@ impl SqliteStore {
             .call(move |conn| {
                 let id_str = user.id.0.hyphenated().to_string();
                 let role_str = serialize_user_role(&user.role);
-                let created_at = user.created_at.to_rfc3339();
-                let updated_at = user.updated_at.to_rfc3339();
+                let created_at = format_timestamp(&user.created_at);
+                let updated_at = format_timestamp(&user.updated_at);
 
                 conn.execute(
                     "INSERT INTO users (id, username, display_name, password_hash, role, is_root, enabled, created_at, updated_at) \
@@ -38,7 +40,7 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_user(&self, id: &UserId) -> Result<Option<User>, StoreError> {
@@ -61,7 +63,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_user_by_username(
@@ -90,7 +92,7 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn list_users(&self) -> Result<Vec<User>, StoreError> {
@@ -114,7 +116,7 @@ impl SqliteStore {
                 Ok(users)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn update_user(&self, user: &User) -> Result<(), StoreError> {
@@ -124,7 +126,7 @@ impl SqliteStore {
             .call(move |conn| {
                 let id_str = user.id.0.hyphenated().to_string();
                 let role_str = serialize_user_role(&user.role);
-                let updated_at = user.updated_at.to_rfc3339();
+                let updated_at = format_timestamp(&user.updated_at);
 
                 let changed = conn
                     .execute(
@@ -152,7 +154,7 @@ impl SqliteStore {
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn delete_user(&self, id: &UserId) -> Result<bool, StoreError> {
@@ -166,21 +168,34 @@ impl SqliteStore {
                 Ok(changed > 0)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
-    pub(crate) async fn get_root_user(&self) -> Result<Option<User>, StoreError> {
+    pub(crate) async fn get_user_by_oidc_identity(
+        &self,
+        provider_id: &OidcProviderId,
+        subject: &str,
+    ) -> Result<Option<User>, StoreError> {
+        let provider_str = provider_id.0.hyphenated().to_string();
+        let subject = subject.to_string();
+
         self.conn()
             .call(move |conn| {
                 let mut stmt = conn
                     .prepare(&format!(
-                        "SELECT {} FROM users WHERE is_root = 1 LIMIT 1",
+                        "SELECT {} FROM users u \
+                         JOIN user_oidc_identities i ON i.user_id = u.id \
+                         WHERE i.provider_id = ?1 AND i.subject = ?2",
                         USER_COLUMNS
+                            .split(", ")
+                            .map(|c| format!("u.{c}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ))
                     .map_err(tokio_rusqlite::Error::Rusqlite)?;
 
                 let mut rows = stmt
-                    .query_map([], row_to_user)
+                    .query_map(rusqlite::params![provider_str, subject], row_to_user)
                     .map_err(tokio_rusqlite::Error::Rusqlite)?;
 
                 match rows.next() {
@@ -190,12 +205,72 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
+    }
+
+    pub(crate) async fn link_oidc_identity(
+        &self,
+        user_id: &UserId,
+        provider_id: &OidcProviderId,
+        subject: &str,
+    ) -> Result<(), StoreError> {
+        let user_str = user_id.0.hyphenated().to_string();
+        let provider_str = provider_id.0.hyphenated().to_string();
+        let subject = subject.to_string();
+        let now = format_timestamp(&chrono::Utc::now());
+
+        self.conn()
+            .call(move |conn| {
+                // Same triple again is a no-op; a different user for the
+                // same (provider, subject) is a conflict, never an overwrite.
+                let existing: Option<String> = conn
+                    .query_row(
+                        "SELECT user_id FROM user_oidc_identities \
+                         WHERE provider_id = ?1 AND subject = ?2",
+                        rusqlite::params![provider_str, subject],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                match existing {
+                    Some(u) if u == user_str => Ok(()),
+                    Some(_) => Err(store_err_to_tokio(StoreError::Conflict {
+                        message: "OIDC identity is already linked to another user".to_string(),
+                        existing_id: None,
+                    })),
+                    None => {
+                        conn.execute(
+                            "INSERT INTO user_oidc_identities \
+                             (provider_id, subject, user_id, created_at) \
+                             VALUES (?1, ?2, ?3, ?4)",
+                            rusqlite::params![provider_str, subject, user_str, now],
+                        )
+                        .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                        Ok(())
+                    }
+                }
+            })
+            .await
+            .map_err(map_store_error)
     }
 }
 
 #[async_trait]
 impl UserStore for SqliteStore {
+    async fn get_user_by_oidc_identity(
+        &self,
+        provider_id: &OidcProviderId,
+        subject: &str,
+    ) -> Result<Option<User>, StoreError> {
+        self.get_user_by_oidc_identity(provider_id, subject).await
+    }
+    async fn link_oidc_identity(
+        &self,
+        user_id: &UserId,
+        provider_id: &OidcProviderId,
+        subject: &str,
+    ) -> Result<(), StoreError> {
+        self.link_oidc_identity(user_id, provider_id, subject).await
+    }
     async fn create_user(&self, user: &User) -> Result<(), StoreError> {
         self.create_user(user).await
     }
@@ -213,8 +288,5 @@ impl UserStore for SqliteStore {
     }
     async fn delete_user(&self, id: &UserId) -> Result<bool, StoreError> {
         self.delete_user(id).await
-    }
-    async fn get_root_user(&self) -> Result<Option<User>, StoreError> {
-        self.get_root_user().await
     }
 }

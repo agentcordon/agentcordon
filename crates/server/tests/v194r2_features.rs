@@ -54,7 +54,6 @@ mod agent_device_display {
         let workspace = Workspace {
             id: WorkspaceId(uuid::Uuid::new_v4()),
             name: "system-workspace-test".to_string(),
-            enabled: true,
             status: WorkspaceStatus::Active,
             pk_hash: None,
             encryption_public_key: None,

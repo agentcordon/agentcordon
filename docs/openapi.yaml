@@ -17,82 +17,67 @@ servers:
     description: Local development server
 
 tags:
-  - name: Auth (Agent)
-    description: Agent authentication — workspace identity challenge-response and JWT-based identity
   - name: Auth (User)
     description: User authentication — password login, logout, session info
-  - name: Agents
-    description: Agent lifecycle management (list, get, update, delete, rotate key)
+  - name: Workspaces
+    description: Workspace lifecycle — list, update, disable, revoke, tags, consents
   - name: Credentials
-    description: Credential storage, retrieval, update, and secret history
+    description: Credential storage, retrieval, update, secret history, and vending
   - name: Permissions
     description: Credential permission management (grant, revoke, set)
-  - name: Grants
-    description: Short-lived credential access grants and redemption
-  - name: Proxy
-    description: Credential-injecting HTTP proxy for upstream API calls
   - name: Policies
-    description: Cedar policy management (CRUD, schema, validation)
+    description: Cedar policy management (CRUD, schema, validation, RSOP, templates)
   - name: Audit
-    description: Audit event log queries
-  - name: Enrollment
-    description: Device-flow agent enrollment (initiate, poll, approve, deny)
+    description: Audit event log queries and exports
   - name: Users
     description: User account management (CRUD, password changes)
   - name: Vaults
-    description: Vault grouping and sharing for credentials
+    description: >-
+      Vaults: named, owned rows that group credentials, plus their read-only
+      shares. A vault is named by id, never by its display name, which is not
+      unique.
   - name: OIDC
-    description: OpenID Connect authentication and provider management
+    description: OpenID Connect login and identity-provider management
   - name: MCP
-    description: Model Context Protocol server management and JSON-RPC proxy
-  - name: Servers
-    description: OAuth 2.1 server (client) registration
-  - name: Devices
-    description: Device lifecycle — create, enroll, key rotation
+    description: MCP server management, marketplace catalog, workspace sync, OAuth provider clients
   - name: OAuth
-    description: OAuth 2.1 authorization server endpoints (authorize, token, metadata)
-  - name: JWKS
-    description: JSON Web Key Set endpoint for token verification
+    description: OAuth 2.0 authorization server — authorize, token, device grant, revocation, clients
   - name: Admin
-    description: Administrative operations (encryption key rotation)
+    description: Administrative operations (master-key re-seal)
   - name: Stats
     description: Dashboard statistics — aggregate counts and recent activity
+  - name: Install
+    description: Platform installers served by the server
   - name: Settings
-    description: User preference management (e.g., advanced mode toggle)
+    description: Server settings, template catalogs, live event stream, spec and health
   - name: Docs
-    description: Self-discovery API documentation endpoints
-
+    description: Machine-readable API overview and quickstart
 security:
   - SessionCookie: []
   - BearerJWT: []
 
 components:
   securitySchemes:
-    WorkspaceIdentity:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: Agent workspace identity JWT obtained via Ed25519 challenge-response
     SessionCookie:
       type: apiKey
       in: cookie
       name: agtcrdn_session
-      description: Session cookie set after user login
+      description: |
+        Session cookie set after user login. Every unsafe method authenticated
+        this way is also CSRF-protected by a double-submit rule: the request
+        must carry an `X-CSRF-Token` header whose value matches the readable
+        `agtcrdn_csrf` cookie, or it is refused with
+        `403 csrf_validation_failed`.
     BearerJWT:
       type: http
       scheme: bearer
-      bearerFormat: JWT
-      description: JWT obtained via workspace identity challenge-response or OAuth 2.1 token endpoint
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: Agent JWT or Device JWT
-    SessionAuth:
-      type: apiKey
-      in: cookie
-      name: session
-      description: User session cookie from login
+      description: |
+        An **opaque** OAuth 2.0 access token issued to a workspace by
+        `POST /api/v1/oauth/token`. Despite the scheme name this is not a JWT
+        and carries no claims a client can read: the server stores only its
+        SHA-256 hash and resolves the workspace by token id. The ES256 JWT
+        issuer, its JWKS endpoint, and the permissions-token endpoint were
+        removed.
 
   schemas:
     ApiResponse:
@@ -105,7 +90,6 @@ components:
           description: Response payload (present when status is ok)
         error:
           $ref: '#/components/schemas/ApiError'
-
     ApiError:
       type: object
       properties:
@@ -113,46 +97,6 @@ components:
           type: string
         message:
           type: string
-
-    Agent:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        description:
-          type: string
-          nullable: true
-        tags:
-          type: array
-          items:
-            type: string
-        enabled:
-          type: boolean
-        owner_id:
-          type: string
-          format: uuid
-          nullable: true
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-        last_token_issued_at:
-          type: string
-          format: date-time
-          nullable: true
-        last_token_expires_at:
-          type: string
-          format: date-time
-          nullable: true
-        status:
-          type: string
-          enum: [active, inactive, disabled]
-
     CredentialSummary:
       type: object
       properties:
@@ -197,11 +141,29 @@ components:
         transform_name:
           type: string
           nullable: true
-        vault:
+        vault_id:
           type: string
+          format: uuid
+          description: >-
+            The vault this credential lives in. The system default vault is
+            00000000-0000-0000-0000-000000000001.
+        vault_name:
+          type: string
+          description: >-
+            The vault's display name, denormalized for display. Not unique --
+            vault_id is what names the vault.
         credential_type:
           type: string
-          enum: [generic, aws, oauth2_client_credentials]
+          description: >-
+            One of six values; the type decides how the broker injects the
+            secret. See "Credential Types" in docs/credential-encryption.md.
+          enum:
+            - generic
+            - aws
+            - api_key_header
+            - api_key_query
+            - oauth2_client_credentials
+            - oauth2_user_authorization
         tags:
           type: array
           items:
@@ -209,7 +171,6 @@ components:
         owner_username:
           type: string
           nullable: true
-
     SecretHistoryEntry:
       type: object
       properties:
@@ -226,75 +187,6 @@ components:
         changed_by_agent:
           type: string
           nullable: true
-
-    AccessGrantRequest:
-      type: object
-      required: [credential_id, scopes]
-      properties:
-        credential_id:
-          type: string
-          format: uuid
-        scopes:
-          type: array
-          items:
-            type: string
-        reason:
-          type: string
-        ttl_seconds:
-          type: integer
-
-    AccessGrantResponse:
-      type: object
-      properties:
-        grant_id:
-          type: string
-          format: uuid
-        credential_name:
-          type: string
-        service:
-          type: string
-        grant_token:
-          type: string
-          description: Opaque JWT token to redeem for the secret
-        scopes:
-          type: array
-          items:
-            type: string
-        issued_at:
-          type: string
-          format: date-time
-        expires_at:
-          type: string
-          format: date-time
-
-    GrantRedemptionRequest:
-      type: object
-      required: [grant_token]
-      properties:
-        grant_token:
-          type: string
-
-    GrantRedemptionResponse:
-      type: object
-      properties:
-        grant_id:
-          type: string
-          format: uuid
-        credential_name:
-          type: string
-        service:
-          type: string
-        secret_value:
-          type: string
-          description: The decrypted credential secret (internal endpoint only)
-        scopes:
-          type: array
-          items:
-            type: string
-        expires_at:
-          type: string
-          format: date-time
-
     StoredPolicy:
       type: object
       properties:
@@ -317,7 +209,6 @@ components:
         updated_at:
           type: string
           format: date-time
-
     AuditEvent:
       type: object
       properties:
@@ -358,7 +249,6 @@ components:
           nullable: true
         metadata:
           type: object
-
     UserInfo:
       type: object
       properties:
@@ -383,27 +273,66 @@ components:
         updated_at:
           type: string
           format: date-time
-
+    Vault:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: >-
+            Display name, 1-100 characters. Unique among the vaults one user
+            owns; free across owners, so two users may each have a `team`.
+        owner_user_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The owner, or null for the system default vault.
+        is_default:
+          type: boolean
+          description: >-
+            true for the one vault (00000000-0000-0000-0000-000000000001) every
+            user may put a credential in and nobody may rename, share or delete.
+        shared_by:
+          type: string
+          description: >-
+            Present only when the caller sees this vault through a share: the
+            username of whoever shared it.
+        permission:
+          type: string
+          enum: [read]
+          description: Present only on a vault shared with the caller.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     VaultShare:
       type: object
       properties:
         id:
           type: string
-        vault_name:
+        vault_id:
           type: string
+          format: uuid
         shared_with_user_id:
           type: string
           format: uuid
         permission_level:
           type: string
-          enum: [read, write, admin]
+          enum: [read]
+          description: >-
+            read is the only level the authorization model keeps. write and
+            admin are refused with 400 rather than stored as a promise nothing
+            keeps.
         shared_by_user_id:
           type: string
           format: uuid
         created_at:
           type: string
           format: date-time
-
     OidcProviderResponse:
       type: object
       properties:
@@ -432,7 +361,6 @@ components:
         updated_at:
           type: string
           format: date-time
-
     McpServerResponse:
       type: object
       properties:
@@ -442,17 +370,28 @@ components:
         workspace_id:
           type: string
           format: uuid
+          nullable: true
           description: |
-            **Immutable audit anchor.** The workspace this MCP was first
-            provisioned for. Set once at provision time and never mutated —
-            not by share, not by unshare, not by workspace renames, not even
-            by removing the binding for this workspace. Preserved so audit
-            reports can always answer "who first provisioned this?".
+            **Legacy field. `null` for every MCP provisioned since the
+            junction consolidation.** It carried the workspace an older
+            record was first provisioned for, and is preserved unchanged on
+            those records so audit reports over old data still resolve.
+            Provisioning no longer writes it.
 
-            This is **not** the current routing key and **not** the current
-            binding set. Current bindings live in the `mcp_server_workspaces`
-            junction table — see `McpServerDetailResponse.installed_workspaces`
-            for the live list.
+            It is **not** the routing key and **not** the binding set. Every
+            binding, the provisioning one included, is a row in the
+            `mcp_server_workspaces` junction; read them from
+            `installed_workspaces` (on this response) or from
+            `GET /api/v1/mcp-servers/{id}/workspaces`.
+        installed_workspaces:
+          type: array
+          description: |
+            Every workspace currently bound to this MCP through the
+            `mcp_server_workspaces` junction, disabled workspaces filtered
+            out. Reported by both the list and the detail endpoint — the
+            admin UI's Workspaces column is rendered from it.
+          items:
+            $ref: '#/components/schemas/InstalledWorkspaceInfo'
         name:
           type: string
         upstream_url:
@@ -479,31 +418,24 @@ components:
         updated_at:
           type: string
           format: date-time
-
     InstalledWorkspaceInfo:
       type: object
       description: |
         A workspace currently bound to an MCP server via the
         mcp_server_workspaces junction. The list can contain zero or more
-        entries — it is no longer a 0-or-1-element vec derived from
-        mcp_servers.workspace_id.
+        entries — it is the junction's own answer, not a 0-or-1-element vec
+        derived from the legacy mcp_servers.workspace_id.
       properties:
         id:
           type: string
           format: uuid
         name:
           type: string
-
     McpServerDetailResponse:
       allOf:
         - $ref: '#/components/schemas/McpServerResponse'
         - type: object
           properties:
-            installed_workspaces:
-              type: array
-              description: All workspaces bound to this MCP via the junction.
-              items:
-                $ref: '#/components/schemas/InstalledWorkspaceInfo'
             tools:
               type: array
               items:
@@ -514,7 +446,6 @@ components:
                   description:
                     type: string
                     nullable: true
-
     McpServerWorkspacesAddRequest:
       type: object
       required: [workspace_ids]
@@ -529,7 +460,6 @@ components:
             Workspaces to bind to this MCP. All must be owned by the caller,
             or the caller must be admin/root. Cross-user sharing is out of
             scope and returns 404 for workspaces owned by a different user.
-
     McpServerWorkspacesAddResponse:
       type: object
       properties:
@@ -550,7 +480,6 @@ components:
               items:
                 type: string
                 format: uuid
-
     CredentialBinding:
       type: object
       properties:
@@ -563,113 +492,6 @@ components:
           type: string
         injection_template:
           type: string
-
-    ServerResponse:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        client_id:
-          type: string
-        expected_audience:
-          type: string
-          nullable: true
-        enabled:
-          type: boolean
-        tags:
-          type: array
-          items:
-            type: string
-        created_by:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-
-    CreateServerResponse:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        client_id:
-          type: string
-        client_secret:
-          type: string
-          description: Only returned on creation. Cannot be retrieved again.
-        expected_audience:
-          type: string
-          nullable: true
-        enabled:
-          type: boolean
-        tags:
-          type: array
-          items:
-            type: string
-        created_by:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-
-    DeviceResponse:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        status:
-          type: string
-          enum: [pending, active, disabled]
-        tags:
-          type: array
-          items:
-            type: string
-        has_public_key:
-          type: boolean
-        created_by:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-        last_authenticated_at:
-          type: string
-          format: date-time
-          nullable: true
-
-    CreateDeviceResponse:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        status:
-          type: string
-        bootstrap_token:
-          type: string
-          description: JWT token for device enrollment. One-time use.
-
     CredentialPermissionsResponse:
       type: object
       properties:
@@ -688,7 +510,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PermissionEntry'
-
     PermissionEntry:
       type: object
       properties:
@@ -709,37 +530,6 @@ components:
         granted_at:
           type: string
           format: date-time
-
-    ProxyExecuteRequest:
-      type: object
-      required: [method, url]
-      properties:
-        method:
-          type: string
-          enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
-        url:
-          type: string
-          description: URL with credential placeholders e.g. {{cred_name}}
-        headers:
-          type: object
-          additionalProperties:
-            type: string
-        body:
-          type: string
-
-    ProxyExecuteResponse:
-      type: object
-      properties:
-        status_code:
-          type: integer
-        headers:
-          type: object
-          additionalProperties:
-            type: string
-        body:
-          type: string
-          nullable: true
-
     JsonRpcRequest:
       type: object
       required: [mcp_server, jsonrpc, method]
@@ -757,7 +547,6 @@ components:
           type: object
         id:
           description: JSON-RPC request ID
-
     JsonRpcResponse:
       type: object
       properties:
@@ -774,89 +563,6 @@ components:
               type: string
         id:
           description: Matches the request ID
-
-    EnrollmentSessionSummary:
-      type: object
-      properties:
-        id:
-          type: string
-        approval_ref:
-          type: string
-        approval_code:
-          type: string
-        agent_name:
-          type: string
-        agent_description:
-          type: string
-          nullable: true
-        agent_tags:
-          type: array
-          items:
-            type: string
-        status:
-          type: string
-          enum: [pending, approved, claimed, expired, denied]
-        created_at:
-          type: string
-          format: date-time
-        expires_at:
-          type: string
-          format: date-time
-        client_ip:
-          type: string
-          nullable: true
-
-    AuthorizationServerMetadata:
-      type: object
-      properties:
-        issuer:
-          type: string
-        authorization_endpoint:
-          type: string
-        token_endpoint:
-          type: string
-        jwks_uri:
-          type: string
-        response_types_supported:
-          type: array
-          items:
-            type: string
-        grant_types_supported:
-          type: array
-          items:
-            type: string
-        code_challenge_methods_supported:
-          type: array
-          items:
-            type: string
-        token_endpoint_auth_methods_supported:
-          type: array
-          items:
-            type: string
-
-    JwkSet:
-      type: object
-      properties:
-        keys:
-          type: array
-          items:
-            type: object
-            properties:
-              kty:
-                type: string
-              crv:
-                type: string
-              x:
-                type: string
-              y:
-                type: string
-              kid:
-                type: string
-              use:
-                type: string
-              alg:
-                type: string
-
     TokenResponse:
       type: object
       properties:
@@ -869,7 +575,6 @@ components:
         issued_at:
           type: string
           format: date-time
-
     OAuthTokenResponse:
       type: object
       properties:
@@ -883,174 +588,7 @@ components:
         scope:
           type: string
           nullable: true
-
 paths:
-  # ============================================================================
-  # Auth (Agent)
-  # ============================================================================
-
-  /api/v1/agents/identify:
-    post:
-      tags: [Auth (Agent)]
-      summary: Request authentication challenge
-      description: |
-        Agent sends its public key hash to request a 32-byte random challenge.
-        The challenge has a 60-second TTL and is single-use.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [public_key_hash]
-              properties:
-                public_key_hash:
-                  type: string
-                  description: "SHA-256 hash of the agent's Ed25519 public key, prefixed with 'sha256:'"
-      responses:
-        '200':
-          description: Challenge issued
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          challenge:
-                            type: string
-                          issued_at:
-                            type: string
-                          expires_at:
-                            type: string
-                          audience:
-                            type: string
-        '404':
-          description: Workspace identity not found
-
-  /api/v1/agents/identify/verify:
-    post:
-      tags: [Auth (Agent)]
-      summary: Submit signed challenge for identity JWT
-      description: |
-        Agent submits its Ed25519 signature over the challenge. On success,
-        receives a short-lived identity JWT (5-minute TTL).
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [public_key, signature, signed_payload]
-              properties:
-                public_key:
-                  type: string
-                  description: Hex-encoded Ed25519 public key
-                signature:
-                  type: string
-                  description: Hex-encoded Ed25519 signature
-                signed_payload:
-                  type: string
-                  description: Hex-encoded signed payload
-      responses:
-        '200':
-          description: Identity JWT issued
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          identity_jwt:
-                            type: string
-        '401':
-          description: Invalid signature or expired challenge
-        '404':
-          description: Workspace identity not found
-
-  /api/v1/agents/register:
-    post:
-      tags: [Auth (Agent)]
-      summary: Register workspace identity
-      description: |
-        One-time registration of an agent's Ed25519 workspace identity.
-        Requires a valid approval code from the browser approval flow.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [approval_code, public_key, nonce, timestamp, signature]
-              properties:
-                approval_code:
-                  type: string
-                public_key:
-                  type: string
-                nonce:
-                  type: string
-                timestamp:
-                  type: integer
-                signature:
-                  type: string
-      responses:
-        '200':
-          description: Registration successful
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          agent_id:
-                            type: string
-                          identity_jwt:
-                            type: string
-        '401':
-          description: Invalid approval code or signature
-        '409':
-          description: Workspace already registered
-
-  /api/v1/auth/whoami:
-    get:
-      tags: [Auth (Agent)]
-      summary: Get current agent identity
-      description: Returns the authenticated agent's identity from the JWT.
-      security:
-        - BearerJWT: []
-      responses:
-        '200':
-          description: Agent identity
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        $ref: '#/components/schemas/Agent'
-        '401':
-          description: Missing or invalid JWT
-
-  # ============================================================================
-  # Auth (User)
-  # ============================================================================
-
   /api/v1/auth/login:
     post:
       tags: [Auth (User)]
@@ -1095,7 +633,6 @@ paths:
           description: Invalid username or password
         '429':
           description: Too many failed login attempts
-
   /api/v1/auth/logout:
     post:
       tags: [Auth (User)]
@@ -1108,7 +645,6 @@ paths:
           description: Logged out successfully
         '401':
           description: Not authenticated
-
   /api/v1/auth/me:
     get:
       tags: [Auth (User)]
@@ -1134,169 +670,14 @@ paths:
   # ============================================================================
   # Agents
   # ============================================================================
-
-  /api/v1/agents:
-    get:
-      tags: [Agents]
-      summary: List all agents
-      description: |
-        Returns all registered agents. Requires manage_agents Cedar policy.
-        Note: agents are created via the enrollment flow, not directly.
-      security:
-        - SessionCookie: []
-      responses:
-        '200':
-          description: List of agents
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: array
-                        items:
-                          $ref: '#/components/schemas/Agent'
-        '403':
-          description: Access denied by policy
-
-  /api/v1/agents/{id}:
-    get:
-      tags: [Agents]
-      summary: Get agent by ID
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Agent details
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        $ref: '#/components/schemas/Agent'
-        '404':
-          description: Agent not found
-        '403':
-          description: Access denied by policy
-
-    put:
-      tags: [Agents]
-      summary: Update agent
-      description: Update agent properties (name, description, tags, enabled).
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                description:
-                  type: string
-                tags:
-                  type: array
-                  items:
-                    type: string
-                enabled:
-                  type: boolean
-      responses:
-        '200':
-          description: Agent updated
-        '404':
-          description: Agent not found
-        '403':
-          description: Access denied by policy
-
-    delete:
-      tags: [Agents]
-      summary: Delete agent
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Agent deleted
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          deleted:
-                            type: boolean
-        '404':
-          description: Agent not found
-        '403':
-          description: Access denied by policy
-
-  /api/v1/agents/{id}/rotate-key:
-    post:
-      tags: [Agents]
-      summary: Rotate agent workspace key
-      description: |
-        Rotates the agent's workspace public key hash. The old key is invalidated.
-        Accessible by admin users (via Cedar policy).
-      security:
-        - SessionCookie: []
-        - BearerJWT: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Workspace key rotated
-        '404':
-          description: Agent not found
-        '403':
-          description: Access denied
-
-  # ============================================================================
-  # Credentials
-  # ============================================================================
-
   /api/v1/credentials:
     post:
       tags: [Credentials]
       summary: Store a new credential
       description: |
-        Creates a new encrypted credential. Supports types: generic, aws,
-        oauth2_client_credentials. Agents auto-receive owner permissions.
+        Creates a new encrypted credential. Supports all six credential types:
+        generic, aws, api_key_header, api_key_query, oauth2_client_credentials
+        and oauth2_user_authorization. Agents auto-receive owner permissions.
       security:
         - BearerJWT: []
         - SessionCookie: []
@@ -1334,12 +715,26 @@ paths:
                 transform_name:
                   type: string
                   description: Built-in transform name (identity, basic-auth, bearer, aws-sigv4)
-                vault:
+                vault_id:
                   type: string
-                  default: default
+                  format: uuid
+                  description: >-
+                    The vault to place the credential in. Omit for the system
+                    default vault. A vault owned by another user answers 403.
+                  default: 00000000-0000-0000-0000-000000000001
                 credential_type:
                   type: string
-                  enum: [generic, aws, oauth2_client_credentials]
+                  description: >-
+                    One of six values; anything else answers 400. api_key_header
+                    requires metadata.header_name and api_key_query requires
+                    metadata.param_name.
+                  enum:
+                    - generic
+                    - aws
+                    - api_key_header
+                    - api_key_query
+                    - oauth2_client_credentials
+                    - oauth2_user_authorization
                   default: generic
                 aws_access_key_id:
                   type: string
@@ -1402,7 +797,6 @@ paths:
                           $ref: '#/components/schemas/CredentialSummary'
         '403':
           description: Access denied by policy
-
   /api/v1/credentials/{id}:
     get:
       tags: [Credentials]
@@ -1471,8 +865,10 @@ paths:
                   type: string
                 transform_name:
                   type: string
-                vault:
+                vault_id:
                   type: string
+                  format: uuid
+                  description: Move the credential into another vault, by id.
                 tags:
                   type: array
                   items:
@@ -1505,7 +901,6 @@ paths:
           description: Credential not found
         '403':
           description: Access denied by policy
-
   /api/v1/credentials/{id}/secret-history:
     get:
       tags: [Credentials]
@@ -1539,7 +934,6 @@ paths:
           description: Credential not found
         '403':
           description: Access denied by policy
-
   /api/v1/credentials/{id}/secret-history/{history_id}/restore:
     post:
       tags: [Credentials]
@@ -1587,7 +981,6 @@ paths:
   # ============================================================================
   # Permissions
   # ============================================================================
-
   /api/v1/credentials/{id}/permissions:
     get:
       tags: [Permissions]
@@ -1697,7 +1090,6 @@ paths:
       responses:
         '200':
           description: Permissions set
-
   /api/v1/credentials/{id}/permissions/{agent_id}/{permission}:
     delete:
       tags: [Permissions]
@@ -1731,126 +1123,6 @@ paths:
   # ============================================================================
   # Grants
   # ============================================================================
-
-  /api/v1/grants:
-    post:
-      tags: [Grants]
-      summary: Request a credential access grant
-      description: |
-        Requests a short-lived grant for a credential. Returns an opaque grant
-        token (JWT) that can be redeemed once for the actual secret. The agent
-        never receives the raw credential directly from this endpoint.
-      security:
-        - BearerJWT: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AccessGrantRequest'
-      responses:
-        '200':
-          description: Grant issued
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        $ref: '#/components/schemas/AccessGrantResponse'
-        '400':
-          description: Invalid scopes
-        '403':
-          description: Access denied by policy or credential expired
-        '404':
-          description: Credential not found
-
-  /api/v1/internal/grants/redeem:
-    post:
-      tags: [Grants]
-      summary: Redeem a grant token for the secret (internal)
-      description: |
-        **Internal endpoint** — must not be exposed to external traffic.
-        Redeems a one-time grant token and returns the decrypted secret value.
-        The grant is marked as redeemed and cannot be used again.
-      security:
-        - BearerJWT: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GrantRedemptionRequest'
-      responses:
-        '200':
-          description: Grant redeemed, secret returned
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        $ref: '#/components/schemas/GrantRedemptionResponse'
-        '401':
-          description: Invalid or expired grant token
-        '403':
-          description: Agent mismatch or credential expired
-        '404':
-          description: Grant not found
-        '409':
-          description: Grant already redeemed
-
-  # ============================================================================
-  # Proxy
-  # ============================================================================
-
-  /api/v1/proxy/execute:
-    post:
-      tags: [Proxy]
-      summary: Execute a proxied HTTP request with credential injection
-      description: |
-        Sends an HTTP request to an upstream API with credential values injected
-        via placeholders ({{credential_name}}). Enforces Cedar policy, URL
-        whitelisting, SSRF protection, and credential leak scanning on responses.
-      security:
-        - BearerJWT: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ProxyExecuteRequest'
-      responses:
-        '200':
-          description: Upstream response
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        $ref: '#/components/schemas/ProxyExecuteResponse'
-        '400':
-          description: No placeholders found or invalid method
-        '403':
-          description: Access denied by policy, URL not allowed, or credential expired
-        '404':
-          description: Credential not found
-        '451':
-          description: Credential leak detected in upstream response
-        '502':
-          description: Upstream request failed
-
-  # ============================================================================
-  # Policies
-  # ============================================================================
-
   /api/v1/policies:
     post:
       tags: [Policies]
@@ -1915,7 +1187,6 @@ paths:
                           $ref: '#/components/schemas/StoredPolicy'
         '403':
           description: Access denied by policy
-
   /api/v1/policies/schema:
     get:
       tags: [Policies]
@@ -1928,7 +1199,6 @@ paths:
           description: Cedar schema JSON text
         '403':
           description: Access denied by policy
-
   /api/v1/policies/{id}:
     get:
       tags: [Policies]
@@ -2004,7 +1274,6 @@ paths:
           description: Policy deleted
         '404':
           description: Policy not found
-
   /api/v1/policies/rsop:
     post:
       tags: [Policies]
@@ -2120,7 +1389,6 @@ paths:
           description: Access denied by policy
         '404':
           description: Resource not found
-
   /api/v1/policies/schema/reference:
     get:
       tags: [Policies]
@@ -2197,7 +1465,6 @@ paths:
   # ============================================================================
   # Audit
   # ============================================================================
-
   /api/v1/audit:
     get:
       tags: [Audit]
@@ -2250,7 +1517,6 @@ paths:
                           $ref: '#/components/schemas/AuditEvent'
         '403':
           description: Access denied by policy
-
   /api/v1/audit/{id}:
     get:
       tags: [Audit]
@@ -2276,196 +1542,6 @@ paths:
   # ============================================================================
   # Enrollment
   # ============================================================================
-
-  /api/v1/enroll/agent:
-    post:
-      tags: [Enrollment]
-      summary: Initiate agent enrollment
-      description: |
-        Unauthenticated. An agent initiates a device-flow enrollment session.
-        Returns a session token (for polling), an approval URL, and an approval
-        code. Rate limited per IP and globally.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name]
-              properties:
-                name:
-                  type: string
-                  maxLength: 128
-                description:
-                  type: string
-                tags:
-                  type: array
-                  items:
-                    type: string
-      responses:
-        '200':
-          description: Enrollment session created
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          session_token:
-                            type: string
-                          approval_url:
-                            type: string
-                          approval_code:
-                            type: string
-                          poll_url:
-                            type: string
-                          expires_in:
-                            type: integer
-        '403':
-          description: Enrollment is disabled
-        '429':
-          description: Rate limited
-
-  /api/v1/enroll/session/{session_token}/status:
-    get:
-      tags: [Enrollment]
-      summary: Poll enrollment session status
-      description: |
-        Unauthenticated. Polls for enrollment session approval status.
-      security: []
-      parameters:
-        - name: session_token
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Session status
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          status:
-                            type: string
-                            enum: [pending, approved, claimed, expired, denied]
-                          agent_id:
-                            type: string
-                            nullable: true
-                          reason:
-                            type: string
-                            nullable: true
-                            description: Reason for denial (if denied)
-        '404':
-          description: Session not found
-
-  /api/v1/enroll/approve:
-    post:
-      tags: [Enrollment]
-      summary: Approve enrollment session
-      description: Admin approves a pending enrollment session, creating the agent.
-      security:
-        - SessionCookie: []
-        - BearerJWT: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [approval_ref]
-              properties:
-                approval_ref:
-                  type: string
-      responses:
-        '200':
-          description: Enrollment approved
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          approved:
-                            type: boolean
-                          agent_id:
-                            type: string
-                          agent_name:
-                            type: string
-        '404':
-          description: Session not found
-        '409':
-          description: Session is not pending or has expired
-
-  /api/v1/enroll/deny:
-    post:
-      tags: [Enrollment]
-      summary: Deny enrollment session
-      security:
-        - SessionCookie: []
-        - BearerJWT: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [approval_ref]
-              properties:
-                approval_ref:
-                  type: string
-      responses:
-        '200':
-          description: Enrollment denied
-        '404':
-          description: Session not found
-        '409':
-          description: Session is not pending
-
-  /api/v1/enroll/sessions:
-    get:
-      tags: [Enrollment]
-      summary: List pending enrollment sessions
-      description: Admin only. Returns all pending enrollment sessions.
-      security:
-        - SessionCookie: []
-        - BearerJWT: []
-      responses:
-        '200':
-          description: List of enrollment sessions
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: array
-                        items:
-                          $ref: '#/components/schemas/EnrollmentSessionSummary'
-        '403':
-          description: Access denied by policy
-
-  # ============================================================================
-  # Users
-  # ============================================================================
-
   /api/v1/users:
     get:
       tags: [Users]
@@ -2524,7 +1600,6 @@ paths:
           description: Invalid input
         '409':
           description: Username already exists
-
   /api/v1/users/{id}:
     get:
       tags: [Users]
@@ -2606,7 +1681,6 @@ paths:
           description: User not found
         '409':
           description: Cannot delete your own account
-
   /api/v1/users/{id}/change-password:
     post:
       tags: [Users]
@@ -2650,20 +1724,22 @@ paths:
   # ============================================================================
   # Vaults
   # ============================================================================
-
   /api/v1/vaults:
     get:
       tags: [Vaults]
-      summary: List vault names
+      summary: List vaults
       description: |
-        Returns distinct vault names. Non-root users only see vaults they own
-        credentials in or that have been shared with them.
+        The vaults the caller can see: the ones they own, the system default,
+        the ones shared with them (each naming `shared_by` and `permission`),
+        and -- for a holder of `manage_vaults` -- every vault on the install.
+        A workspace owns no vaults and is party to no shares, so it gets an
+        empty list.
       security:
         - BearerJWT: []
         - SessionCookie: []
       responses:
         '200':
-          description: List of vault names
+          description: List of vaults
           content:
             application/json:
               schema:
@@ -2674,40 +1750,157 @@ paths:
                       data:
                         type: array
                         items:
-                          type: string
-
-  /api/v1/vaults/{name}/credentials:
+                          $ref: '#/components/schemas/Vault'
+    post:
+      tags: [Vaults]
+      summary: Create a vault
+      description: |
+        Creates a vault owned by the caller. Anyone the policy engine lets
+        create credentials may create somewhere to put them. A name is unique
+        among the caller's own vaults and free across owners.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 100
+      responses:
+        '200':
+          description: Vault created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Vault'
+        '400':
+          description: Name is empty or longer than 100 characters
+        '403':
+          description: Workspaces cannot create vaults
+        '409':
+          description: The caller already owns a vault with this name
+  /api/v1/vaults/{id}:
+    patch:
+      tags: [Vaults]
+      summary: Rename a vault
+      description: |
+        The vault's owner, or root. The name is a label, so this changes
+        nothing else.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 100
+      responses:
+        '200':
+          description: Vault renamed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Vault'
+        '403':
+          description: >-
+            Not the owner, or the system default vault, which cannot be
+            renamed
+        '404':
+          description: Vault not found
+        '409':
+          description: The owner already has another vault with this name
+    delete:
+      tags: [Vaults]
+      summary: Delete an empty vault
+      description: |
+        The vault's owner, or root. A vault that still holds credentials is a
+        conflict, not a cascade: deleting it would take the credentials with
+        it, which is never what "remove this grouping" meant. Move or delete
+        them first.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Vault deleted
+        '403':
+          description: >-
+            Not the owner, or the system default vault, which cannot be deleted
+        '404':
+          description: Vault not found
+        '409':
+          description: The vault still holds credentials
+  /api/v1/vaults/{id}/credentials:
     get:
       tags: [Vaults]
       summary: List credentials in a vault
       description: |
-        Returns credential summaries in the named vault. Non-root users only
-        see credentials they created or in shared vaults.
+        Credential summaries for the vault. Non-root users only see
+        credentials they created, in vaults they own, or in vaults shared with
+        them.
       security:
         - BearerJWT: []
         - SessionCookie: []
       parameters:
-        - name: name
+        - name: id
           in: path
           required: true
           schema:
             type: string
+            format: uuid
       responses:
         '200':
           description: Credentials in vault
-
-  /api/v1/vaults/{name}/shares:
+  /api/v1/vaults/{id}/shares:
     get:
       tags: [Vaults]
       summary: List vault shares
+      description: |
+        The share list names every user this vault reaches, so a signed-in
+        stranger is refused rather than handed the roster: the caller must own
+        the vault, be root, or hold `manage_vaults`.
       security:
         - SessionCookie: []
       parameters:
-        - name: name
+        - name: id
           in: path
           required: true
           schema:
             type: string
+            format: uuid
       responses:
         '200':
           description: List of vault shares
@@ -2722,19 +1915,32 @@ paths:
                         type: array
                         items:
                           $ref: '#/components/schemas/VaultShare'
+        '403':
+          description: Not the owner and not a manage_vaults holder
+        '404':
+          description: Vault not found
 
     post:
       tags: [Vaults]
-      summary: Share vault with a user
-      description: Users only (agents cannot share vaults). Requires manage_vaults policy.
+      summary: Share a vault with a user
+      description: |
+        Granting is the vault owner's act and nobody else's, whatever role they
+        hold. Holding `manage_vaults` is deliberately **not** enough: it reads
+        and revokes, it does not give away another user's credentials.
+
+        `read` is the only level the authorization model supports; `write` and
+        `admin` are refused with 400 rather than stored as a promise nothing
+        keeps. A read share makes the vault's credentials visible in the
+        recipient's list and detail, and nothing more.
       security:
         - SessionCookie: []
       parameters:
-        - name: name
+        - name: id
           in: path
           required: true
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         content:
@@ -2748,27 +1954,44 @@ paths:
                   format: uuid
                 permission:
                   type: string
-                  enum: [read, write, admin]
+                  enum: [read]
                   default: read
       responses:
         '200':
           description: Vault shared
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/VaultShare'
+        '400':
+          description: permission was 'write' or 'admin', or user_id is malformed
+        '403':
+          description: >-
+            Not the owner, or the system default vault, which cannot be shared
         '404':
           description: Target user not found
-
-  /api/v1/vaults/{name}/shares/{user_id}:
+  /api/v1/vaults/{id}/shares/{user_id}:
     delete:
       tags: [Vaults]
       summary: Revoke vault sharing
-      description: Users only (agents cannot unshare). Requires manage_vaults policy.
+      description: |
+        The vault's owner, root, or a holder of `manage_vaults` -- unlike
+        granting, revoking is also an admin power, so someone can cut off a
+        share they did not make.
       security:
         - SessionCookie: []
       parameters:
-        - name: name
+        - name: id
           in: path
           required: true
           schema:
             type: string
+            format: uuid
         - name: user_id
           in: path
           required: true
@@ -2778,13 +2001,14 @@ paths:
       responses:
         '200':
           description: Share revoked
+        '403':
+          description: Not the owner and not a manage_vaults holder
         '404':
           description: Vault share not found
 
   # ============================================================================
   # OIDC
   # ============================================================================
-
   /api/v1/auth/oidc/authorize:
     get:
       tags: [OIDC]
@@ -2808,7 +2032,6 @@ paths:
           description: Provider not found
         '400':
           description: Provider is disabled
-
   /api/v1/auth/oidc/callback:
     get:
       tags: [OIDC]
@@ -2838,7 +2061,6 @@ paths:
       responses:
         '302':
           description: Redirect to UI with session cookies set
-
   /api/v1/auth/oidc/providers:
     get:
       tags: [OIDC]
@@ -2866,7 +2088,6 @@ paths:
                               type: string
                             name:
                               type: string
-
   /api/v1/oidc-providers:
     post:
       tags: [OIDC]
@@ -2928,7 +2149,6 @@ paths:
       responses:
         '200':
           description: List of providers
-
   /api/v1/oidc-providers/{id}:
     get:
       tags: [OIDC]
@@ -3013,18 +2233,31 @@ paths:
   # ============================================================================
   # MCP
   # ============================================================================
-
   /api/v1/mcp-servers:
     get:
       tags: [MCP]
       summary: List MCP servers
-      description: Admin only.
+      description: |
+        Admin only. Each row carries `installed_workspaces`, the workspaces
+        bound to that MCP through the `mcp_server_workspaces` junction — the
+        same field the detail endpoint reports, and what the admin UI's
+        Workspaces column renders.
       security:
         - SessionCookie: []
       responses:
         '200':
           description: List of MCP servers
-
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/McpServerResponse'
   /api/v1/mcp-servers/{id}:
     get:
       tags: [MCP]
@@ -3032,8 +2265,8 @@ paths:
       description: |
         Returns full MCP server detail including every workspace currently
         bound via the mcp_server_workspaces junction. `installed_workspaces`
-        can contain zero or more entries; it is no longer a 0-or-1 vec
-        derived from `mcp_servers.workspace_id`.
+        can contain zero or more entries; it is the junction's own answer,
+        not a 0-or-1 vec derived from the legacy `mcp_servers.workspace_id`.
       security:
         - SessionCookie: []
       parameters:
@@ -3116,8 +2349,42 @@ paths:
           description: MCP server deleted
         '404':
           description: Not found
-
   /api/v1/mcp-servers/{id}/workspaces:
+    get:
+      tags: [MCP]
+      summary: List the workspaces bound to an MCP server
+      description: |
+        The bindings the share and unshare endpoints write, read back.
+        Requires `manage_mcp_servers` on this server, so a user who does not
+        own it gets 403. Disabled workspaces are filtered out, so this is
+        the same list as `installed_workspaces` on the server responses.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The bound workspaces
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/InstalledWorkspaceInfo'
+        '403':
+          description: The caller does not manage this MCP server.
+        '404':
+          description: No such MCP server.
     post:
       tags: [MCP]
       summary: Share an MCP server with additional workspaces
@@ -3202,7 +2469,6 @@ paths:
         '422':
           description: |
             `workspace_ids` was empty or contained invalid UUIDs.
-
   /api/v1/mcp-servers/{id}/workspaces/{workspace_id}:
     delete:
       tags: [MCP]
@@ -3232,10 +2498,10 @@ paths:
         revocation; use MCP disable (`PUT /api/v1/mcp-servers/{id}` with
         `enabled=false`) or MCP delete for that.
 
-        The `mcp_servers.workspace_id` field (original-provisioning
-        workspace) is preserved for audit history regardless of which
-        workspace the binding being removed points at. It is an immutable
-        audit anchor; unshare never updates it.
+        The legacy `mcp_servers.workspace_id` field is left alone by this
+        call, as it is by every other. It is `null` on anything provisioned
+        since the junction consolidation and is not the binding set; read
+        the bindings from `GET /api/v1/mcp-servers/{id}/workspaces`.
       security:
         - SessionCookie: []
       parameters:
@@ -3278,7 +2544,6 @@ paths:
                       message:
                         type: string
                         example: "cannot remove last workspace binding — delete the MCP server instead"
-
   /api/v1/mcp-servers/import:
     post:
       tags: [MCP]
@@ -3315,7 +2580,6 @@ paths:
           description: MCP servers imported
         '400':
           description: Invalid input
-
   /api/v1/mcp-servers/provision:
     post:
       tags: [MCP]
@@ -3343,7 +2607,13 @@ paths:
                   description: Workspace to provision the server for
       responses:
         '200':
-          description: MCP server provisioned from template
+          description: |
+            MCP server provisioned from template. Tool discovery runs
+            best-effort as part of the install; when its probe fails the
+            install still stands and `tool_discovery_error` carries the
+            reason (an `mcp_tool_discovery_failed` audit event records it
+            too). Retry with
+            `POST /api/v1/mcp-servers/{id}/discover-tools`.
           content:
             application/json:
               schema:
@@ -3352,12 +2622,19 @@ paths:
                   - type: object
                     properties:
                       data:
-                        $ref: '#/components/schemas/McpServerResponse'
+                        allOf:
+                          - $ref: '#/components/schemas/McpServerResponse'
+                          - type: object
+                            properties:
+                              tool_discovery_error:
+                                type: string
+                                description: |
+                                  Why the install-time tool-discovery probe
+                                  failed. Absent when it succeeded.
         '400':
           description: Invalid template key or input
         '404':
           description: Template not found
-
   /api/v1/mcp-servers/oauth/initiate:
     post:
       tags: [MCP]
@@ -3398,7 +2675,6 @@ paths:
                             format: uri
         '400':
           description: AGTCRDN_BASE_URL not configured or invalid input
-
   /api/v1/mcp-servers/oauth/callback:
     get:
       tags: [MCP]
@@ -3424,7 +2700,6 @@ paths:
           description: Redirects to MCP server detail page on success
         '400':
           description: Invalid or expired state/code
-
   /api/v1/mcp-servers/{id}/permissions:
     get:
       tags: [MCP]
@@ -3479,7 +2754,6 @@ paths:
           description: Permission granted
         '404':
           description: MCP server not found
-
   /api/v1/mcp-servers/{id}/permissions/{agent_id}/{permission}:
     delete:
       tags: [MCP]
@@ -3514,63 +2788,22 @@ paths:
           description: MCP server or permission not found
 
   # ── MCP OAuth Apps ─────────────────────────────────────────────────────────
-
-  /api/v1/mcp-oauth-apps:
+  /api/v1/mcp-servers/{id}/discover-tools:
     post:
       tags: [MCP]
-      summary: Create MCP OAuth App
+      summary: Re-run tool discovery against an MCP server's upstream
       description: |
-        Creates an OAuth app configuration (client_id/client_secret) for use
-        with MCP server marketplace templates. Client secret is encrypted at rest.
-        Requires manage_mcp_servers policy.
-      security:
-        - SessionCookie: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name, client_id, client_secret]
-              properties:
-                name:
-                  type: string
-                client_id:
-                  type: string
-                client_secret:
-                  type: string
-                provider:
-                  type: string
-                auth_url:
-                  type: string
-                  format: uri
-                token_url:
-                  type: string
-                  format: uri
-                scopes:
-                  type: string
-      responses:
-        '200':
-          description: OAuth app created
-        '400':
-          description: Invalid input
-    get:
-      tags: [MCP]
-      summary: List MCP OAuth Apps
-      description: |
-        Lists all MCP OAuth Apps. Client secrets are not returned in the response.
-        Requires manage_mcp_servers policy.
-      security:
-        - SessionCookie: []
-      responses:
-        '200':
-          description: List of OAuth apps
+        Requires `manage_mcp_servers` on this server. Probes the upstream
+        with the MCP handshake (`initialize` → `notifications/initialized` →
+        `tools/list`), presenting the credential the broker would present —
+        an upstream OAuth credential is exchanged for a fresh access token
+        first — and writes what comes back onto the record.
 
-  /api/v1/mcp-oauth-apps/{id}:
-    get:
-      tags: [MCP]
-      summary: Get MCP OAuth App by ID
-      description: Requires manage_mcp_servers policy.
+        Install-time discovery is best-effort, so a server installed while
+        its upstream was unreachable (down, or refused by the SSRF guard)
+        has no tools; this is the retry, behind **Rediscover tools** on the
+        server's detail page. A probe that fails answers 502 with the reason
+        and emits an `mcp_tool_discovery_failed` audit event.
       security:
         - SessionCookie: []
       parameters:
@@ -3582,71 +2815,25 @@ paths:
             format: uuid
       responses:
         '200':
-          description: OAuth app details
+          description: The probe succeeded; `tool_count` is what was stored.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tool_count:
+                            type: integer
+        '403':
+          description: The caller does not manage this MCP server.
         '404':
-          description: Not found
-    put:
-      tags: [MCP]
-      summary: Update MCP OAuth App
-      description: |
-        Updates an MCP OAuth App. If a new client_secret is provided, it is
-        re-encrypted. Requires manage_mcp_servers policy.
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                client_id:
-                  type: string
-                client_secret:
-                  type: string
-                provider:
-                  type: string
-                auth_url:
-                  type: string
-                  format: uri
-                token_url:
-                  type: string
-                  format: uri
-                scopes:
-                  type: string
-      responses:
-        '200':
-          description: OAuth app updated
-        '404':
-          description: Not found
-    delete:
-      tags: [MCP]
-      summary: Delete MCP OAuth App
-      description: Requires manage_mcp_servers policy.
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: OAuth app deleted
-        '404':
-          description: Not found
-
+          description: No such MCP server.
+        '502':
+          description: The upstream probe failed; the message carries the reason.
   /api/v1/mcp-servers/{id}/generate-policies:
     post:
       tags: [MCP]
@@ -3708,554 +2895,6 @@ paths:
                                   type: string
         '404':
           description: MCP server not found
-
-  /api/v1/mcp/proxy:
-    post:
-      tags: [MCP]
-      summary: MCP JSON-RPC proxy
-      description: |
-        Proxies JSON-RPC requests (tools/list, tools/call) to a registered MCP
-        server. Resolves credentials, injects headers, enforces Cedar policy
-        and tool allowlists, and scans responses for credential leaks.
-      security:
-        - BearerJWT: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/JsonRpcRequest'
-      responses:
-        '200':
-          description: JSON-RPC response from upstream
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/JsonRpcResponse'
-
-  # ============================================================================
-  # Servers (OAuth Clients)
-  # ============================================================================
-
-  /api/v1/servers:
-    post:
-      tags: [Servers]
-      summary: Register an OAuth server (client)
-      description: |
-        Admin only. Creates a server with generated client_id and client_secret.
-        The client_secret is only returned on creation and cannot be retrieved again.
-      security:
-        - SessionCookie: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name]
-              properties:
-                name:
-                  type: string
-                expected_audience:
-                  type: string
-                enabled:
-                  type: boolean
-                  default: true
-                tags:
-                  type: array
-                  items:
-                    type: string
-      responses:
-        '200':
-          description: Server created with client credentials
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        $ref: '#/components/schemas/CreateServerResponse'
-        '400':
-          description: Invalid input
-
-    get:
-      tags: [Servers]
-      summary: List registered servers
-      description: Admin only.
-      security:
-        - SessionCookie: []
-      responses:
-        '200':
-          description: List of servers
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: array
-                        items:
-                          $ref: '#/components/schemas/ServerResponse'
-
-  /api/v1/servers/{id}:
-    get:
-      tags: [Servers]
-      summary: Get server by ID
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Server details
-        '404':
-          description: Not found
-
-    put:
-      tags: [Servers]
-      summary: Update server
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                expected_audience:
-                  type: string
-                enabled:
-                  type: boolean
-                tags:
-                  type: array
-                  items:
-                    type: string
-      responses:
-        '200':
-          description: Server updated
-        '404':
-          description: Not found
-
-    delete:
-      tags: [Servers]
-      summary: Delete server
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Server deleted
-        '404':
-          description: Not found
-
-  # ============================================================================
-  # Devices
-  # ============================================================================
-
-  /api/v1/devices:
-    post:
-      tags: [Devices]
-      summary: Create a device
-      description: |
-        Admin only. Creates a device in "pending" status and returns a
-        bootstrap token (JWT). The device uses this token to enroll by
-        providing its P-256 public key.
-      security:
-        - SessionCookie: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name]
-              properties:
-                name:
-                  type: string
-                tags:
-                  type: array
-                  items:
-                    type: string
-      responses:
-        '200':
-          description: Device created with bootstrap token
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        $ref: '#/components/schemas/CreateDeviceResponse'
-
-    get:
-      tags: [Devices]
-      summary: List devices
-      description: Admin only.
-      security:
-        - SessionCookie: []
-      responses:
-        '200':
-          description: List of devices
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: array
-                        items:
-                          $ref: '#/components/schemas/DeviceResponse'
-
-  /api/v1/devices/whoami:
-    get:
-      tags: [Devices]
-      summary: Device startup handshake
-      description: |
-        Authenticated by device self-signed ES256 JWT. Returns the device's
-        identity and current status. Used during device startup to verify
-        enrollment and connectivity.
-      security:
-        - BearerJWT: []
-      responses:
-        '200':
-          description: Device identity
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          device_id:
-                            type: string
-                            format: uuid
-                          name:
-                            type: string
-                          status:
-                            type: string
-                            enum: [pending, active, disabled]
-                          tags:
-                            type: array
-                            items:
-                              type: string
-                          authenticated_at:
-                            type: string
-                            format: date-time
-        '401':
-          description: Invalid or missing device JWT
-
-  /api/v1/devices/enroll:
-    post:
-      tags: [Devices]
-      summary: Enroll a device
-      description: |
-        Completes device enrollment by providing the bootstrap token and a
-        P-256 EC public key (JWK format). Transitions device to "active" status.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [bootstrap_token, public_key]
-              properties:
-                bootstrap_token:
-                  type: string
-                public_key:
-                  type: object
-                  description: P-256 JWK with kty, crv, x, y fields
-                  properties:
-                    kty:
-                      type: string
-                      enum: [EC]
-                    crv:
-                      type: string
-                      enum: [P-256]
-                    x:
-                      type: string
-                      description: Base64url-encoded 32-byte X coordinate
-                    y:
-                      type: string
-                      description: Base64url-encoded 32-byte Y coordinate
-      responses:
-        '200':
-          description: Device enrolled
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          device_id:
-                            type: string
-                          status:
-                            type: string
-        '401':
-          description: Invalid bootstrap token
-        '409':
-          description: Device not in pending status
-
-  /api/v1/devices/{id}:
-    get:
-      tags: [Devices]
-      summary: Get device by ID
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Device details
-        '404':
-          description: Not found
-
-    put:
-      tags: [Devices]
-      summary: Update device
-      description: Update name, tags, or enabled status.
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                tags:
-                  type: array
-                  items:
-                    type: string
-                enabled:
-                  type: boolean
-      responses:
-        '200':
-          description: Device updated
-        '404':
-          description: Not found
-
-    delete:
-      tags: [Devices]
-      summary: Delete device
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Device deleted
-        '404':
-          description: Not found
-
-  /api/v1/devices/{id}/rotate-key:
-    post:
-      tags: [Devices]
-      summary: Rotate device public key
-      description: |
-        Authenticated by device self-signed ES256 JWT in Authorization header.
-        Replaces the device's public key with a new P-256 JWK.
-      security:
-        - BearerJWT: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [new_public_key]
-              properties:
-                new_public_key:
-                  type: object
-                  description: New P-256 JWK
-      responses:
-        '200':
-          description: Key rotated
-        '401':
-          description: Invalid device JWT
-        '403':
-          description: Device ID mismatch
-
-  /api/v1/devices/{id}/agents:
-    get:
-      tags: [Devices]
-      summary: List agents enrolled through a device
-      description: |
-        Returns all agents that were enrolled through the specified device.
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: List of agents enrolled through this device
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            id:
-                              type: string
-                              format: uuid
-                            name:
-                              type: string
-                            enabled:
-                              type: boolean
-                            tags:
-                              type: array
-                              items:
-                                type: string
-                            device_id:
-                              type: string
-                              format: uuid
-        '404':
-          description: Device not found
-
-  # ============================================================================
-  # OAuth 2.1
-  # ============================================================================
-
-  /authorize:
-    get:
-      tags: [OAuth]
-      summary: OAuth authorization endpoint
-      description: |
-        Issues an authorization code for the given client. Requires PKCE with
-        S256 challenge method (plain is rejected). Currently returns JSON
-        (redirect flow deferred until consent UI exists).
-      security: []
-      parameters:
-        - name: client_id
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: redirect_uri
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: response_type
-          in: query
-          required: true
-          schema:
-            type: string
-            enum: [code]
-        - name: code_challenge
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: code_challenge_method
-          in: query
-          required: true
-          schema:
-            type: string
-            enum: [S256]
-        - name: state
-          in: query
-          schema:
-            type: string
-        - name: scope
-          in: query
-          schema:
-            type: string
-            description: Space-delimited scopes
-      responses:
-        '200':
-          description: Authorization code issued
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          code:
-                            type: string
-                          state:
-                            type: string
-                            nullable: true
-        '400':
-          description: Invalid parameters or unknown client
-
   /api/v1/oauth/token:
     post:
       tags: [OAuth]
@@ -4330,92 +2969,6 @@ paths:
           description: Invalid grant, expired code, PKCE mismatch
         '401':
           description: Invalid client credentials
-
-  /oauth/device/code:
-    post:
-      tags: [OAuth]
-      summary: RFC 8628 Device Authorization Grant — request a device code
-      description: |
-        Initiates the OAuth 2.0 Device Authorization Grant (RFC 8628) used
-        by the AgentCordon broker to register a workspace without a
-        loopback redirect. Returns a short 4-word passphrase `user_code`
-        (drawn from the EFF short wordlist, ~43 bits entropy), an opaque
-        `device_code` the broker polls with, and a `verification_uri`
-        the user opens in any browser.
-
-        After calling this endpoint, the broker MUST poll
-        `POST /oauth/token` with
-        `grant_type=urn:ietf:params:oauth:grant-type:device_code` at the
-        returned `interval` (default 5 seconds) until the user approves
-        or denies the code at `/activate`, or the device code expires
-        (default 600 seconds).
-
-        Public endpoint. Rate-limited per source IP.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              required: [client_id]
-              properties:
-                client_id:
-                  type: string
-                  description: Public client identifier, typically `broker`.
-                scope:
-                  type: string
-                  description: Space-delimited scopes being requested.
-      responses:
-        '200':
-          description: Device code issued
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - device_code
-                  - user_code
-                  - verification_uri
-                  - expires_in
-                  - interval
-                properties:
-                  device_code:
-                    type: string
-                    description: |
-                      Opaque high-entropy token the broker polls with.
-                      Never displayed to the user. Single-use.
-                  user_code:
-                    type: string
-                    example: tidy-zoned-zit-ramp
-                    description: |
-                      4-word passphrase drawn from the EFF short wordlist.
-                      Case-insensitive. Displayed to the user to paste into
-                      the `/activate` page.
-                  verification_uri:
-                    type: string
-                    format: uri
-                    example: https://server.example.com/activate
-                  verification_uri_complete:
-                    type: string
-                    format: uri
-                    description: |
-                      Convenience URL that pre-fills the user_code in the
-                      activation form, e.g.
-                      `https://server.example.com/activate?user_code=tidy-zoned-zit-ramp`.
-                  expires_in:
-                    type: integer
-                    example: 600
-                    description: Device code TTL in seconds. Fixed at 600.
-                  interval:
-                    type: integer
-                    example: 5
-                    description: Minimum polling interval in seconds.
-        '400':
-          description: Invalid client_id or malformed request
-        '429':
-          description: Rate limit exceeded
-
   /activate:
     get:
       tags: [OAuth]
@@ -4472,7 +3025,6 @@ paths:
           description: Not authenticated
         '429':
           description: Rate limit exceeded
-
   /activate/success:
     get:
       tags: [OAuth]
@@ -4487,7 +3039,6 @@ paths:
             text/html:
               schema:
                 type: string
-
   /install.ps1:
     get:
       tags: [Install]
@@ -4514,46 +3065,6 @@ paths:
             text/plain:
               schema:
                 type: string
-
-  /.well-known/oauth-authorization-server:
-    get:
-      tags: [OAuth]
-      summary: OAuth authorization server metadata (RFC 8414)
-      description: Returns the OAuth 2.1 authorization server metadata document.
-      security: []
-      responses:
-        '200':
-          description: Authorization server metadata
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthorizationServerMetadata'
-
-  # ============================================================================
-  # JWKS
-  # ============================================================================
-
-  /.well-known/jwks.json:
-    get:
-      tags: [JWKS]
-      summary: JSON Web Key Set
-      description: |
-        Returns the ES256 public signing key in standard JWK Set format.
-        Unauthenticated. Used by resource servers to verify AgentCordon-issued JWTs.
-        Cached with max-age=3600.
-      security: []
-      responses:
-        '200':
-          description: JWK Set
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/JwkSet'
-
-  # ============================================================================
-  # Admin
-  # ============================================================================
-
   /api/v1/admin/rotate-key:
     post:
       tags: [Admin]
@@ -4591,7 +3102,6 @@ paths:
   # ============================================================================
   # Stats (v1.8.0)
   # ============================================================================
-
   /api/v1/stats:
     get:
       tags: [Stats]
@@ -4658,122 +3168,6 @@ paths:
   # ============================================================================
   # Agent Tags (v1.8.0)
   # ============================================================================
-
-  /api/v1/agents/{id}/tags:
-    post:
-      tags: [Agents]
-      summary: Add a tag to an agent
-      description: |
-        Add a tag to the specified agent. Requires `manage_tags` Cedar policy
-        on the agent resource. Emits a `TagAdded` audit event.
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [tag]
-              properties:
-                tag:
-                  type: string
-                  minLength: 1
-                  maxLength: 128
-      responses:
-        '200':
-          description: Tag added
-        '403':
-          description: Denied by policy
-        '404':
-          description: Agent not found
-
-  /api/v1/agents/{id}/tags/{tag}:
-    delete:
-      tags: [Agents]
-      summary: Remove a tag from an agent
-      description: |
-        Remove a tag from the specified agent. Requires `manage_tags` Cedar
-        policy on the agent resource. Emits a `TagRemoved` audit event.
-      security:
-        - SessionCookie: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: tag
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Tag removed
-        '403':
-          description: Denied by policy
-        '404':
-          description: Agent not found
-
-  # ============================================================================
-  # Agent Permissions (v1.8.0)
-  # ============================================================================
-
-  /api/v1/agents/{id}/permissions:
-    get:
-      tags: [Agents]
-      summary: Issue MCP permissions JWT for an agent
-      description: |
-        Authenticates the calling device, validates the agent, evaluates Cedar
-        policies for each enabled MCP server, and returns a server-signed JWT
-        with 3-part scopes (`{device}.{server}.{action}`). TTL is 300 seconds.
-        Requires device authentication via Authorization header.
-      security:
-        - DeviceJWT: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: MCP permissions JWT
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  data:
-                    type: object
-                    properties:
-                      token:
-                        type: string
-                        description: Server-signed JWT containing MCP scopes
-                      expires_in:
-                        type: integer
-                        description: Token TTL in seconds
-        '403':
-          description: Agent disabled or access denied
-        '404':
-          description: Agent not found
-
-  # ============================================================================
-  # Docs
-  # ============================================================================
-
   /api/v1/docs:
     get:
       tags: [Docs]
@@ -4785,7 +3179,6 @@ paths:
       responses:
         '200':
           description: API documentation
-
   /api/v1/docs/quickstart:
     get:
       tags: [Docs]
@@ -4802,27 +3195,872 @@ paths:
   # Enrollment Approval Page (HTML, not under /api/v1)
   # ============================================================================
 
-  /enroll/approve:
+  # ============================================================================
+  # Workspaces
+  # ============================================================================
+
+  /api/v1/workspaces:
     get:
-      tags: [Enrollment]
-      summary: Enrollment approval page (HTML)
-      description: |
-        Browser-based approval page for enrollment sessions. Requires an
-        authenticated session. Returns HTML with approve/deny buttons.
+      tags: [Workspaces]
+      summary: List workspaces
+      description: Cedar-filtered to the workspaces the caller may manage.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: List of workspaces
+        '403':
+          description: Access denied by policy
+
+  /api/v1/workspaces/{id}:
+    get:
+      tags: [Workspaces]
+      summary: Get a workspace
       security:
         - SessionCookie: []
       parameters:
-        - name: ref
-          in: query
+        - name: id
+          in: path
           required: true
-          schema:
-            type: string
-          description: Approval reference code
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Workspace detail }
+        '403': { description: Access denied by policy }
+        '404': { description: Workspace not found }
+    put:
+      tags: [Workspaces]
+      summary: Update a workspace
+      description: |
+        `enabled: false` disables the workspace (reversible); `enabled: true`
+        re-enables it. A revoked workspace cannot be re-enabled and answers 409.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                enabled: { type: boolean }
+                tags:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200': { description: Updated workspace }
+        '403': { description: Access denied by policy }
+        '404': { description: Workspace not found }
+        '409': { description: "workspace is revoked; cannot enable" }
+    delete:
+      tags: [Workspaces]
+      summary: Delete a workspace
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Deleted }
+        '403': { description: Access denied by policy }
+        '404': { description: Workspace not found }
+
+  /api/v1/workspaces/{id}/revoke:
+    post:
+      tags: [Workspaces]
+      summary: Revoke a workspace (final)
+      description: |
+        Sets `status = revoked` and, in the same transaction, revokes the
+        workspace's OAuth clients and every access and refresh token issued
+        against them. Irreversible: a later `PUT {"enabled": true}` answers
+        409 `workspace is revoked; cannot enable`. Authorizes
+        `manage_workspaces` against the workspace and its owner.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
       responses:
         '200':
-          description: HTML approval page
+          description: Workspace revoked
           content:
-            text/html:
+            application/json:
               schema:
-                type: string
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id: { type: string, format: uuid }
+                          status: { type: string, enum: [revoked] }
+                          revoked_clients: { type: integer }
+                          revoked_tokens: { type: integer }
+        '403': { description: Access denied by policy }
+        '404': { description: Workspace not found }
+
+  /api/v1/workspaces/{id}/tags:
+    post:
+      tags: [Workspaces]
+      summary: Add a tag to a workspace
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tag]
+              properties:
+                tag: { type: string }
+      responses:
+        '200': { description: Updated tag list }
+        '403': { description: Access denied by policy }
+
+  /api/v1/workspaces/{id}/tags/{tag}:
+    delete:
+      tags: [Workspaces]
+      summary: Remove a tag from a workspace
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: tag
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Updated tag list }
+        '403': { description: Access denied by policy }
+
+  /api/v1/workspaces/{id}/consents:
+    get:
+      tags: [Workspaces]
+      summary: List OAuth consents granted for this workspace
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: List of consents }
+        '403': { description: Access denied by policy }
+
+  /api/v1/workspaces/{id}/consents/{user_id}:
+    delete:
+      tags: [Workspaces]
+      summary: Withdraw one user's consent for this workspace
+      description: Requires `manage_workspaces` on the workspace, checked before the lookup.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Consent withdrawn }
+        '403': { description: Access denied by policy }
+        '404': { description: Consent not found }
+
+  # ============================================================================
+  # Workspace sync (broker-facing; OAuth bearer access token)
+  # ============================================================================
+
+  /api/v1/workspaces/mcp-servers:
+    get:
+      tags: [MCP]
+      summary: MCP servers bound to the calling workspace
+      description: |
+        Cedar-filtered to servers the workspace may list, and enabled ones only.
+        With `include_credentials=true` each entry carries ECIES-encrypted
+        credential envelopes. For an OAuth-backed credential the envelope holds a
+        short-lived upstream access token the **server** exchanged; the refresh
+        token and the provider client secret never leave the server.
+      security:
+        - BearerJWT: []
+      parameters:
+        - name: include_credentials
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200': { description: MCP server configurations }
+        '401': { description: Invalid or revoked access token }
+
+  /api/v1/workspaces/mcp-tools:
+    get:
+      tags: [MCP]
+      summary: Tools across every MCP server the calling workspace may list
+      description: |
+        Each entry carries the tool's `description` and `input_schema` as
+        discovery found them.
+      security:
+        - BearerJWT: []
+      responses:
+        '200': { description: Tool list }
+        '401': { description: Invalid or revoked access token }
+
+  /api/v1/workspaces/mcp-authorize:
+    post:
+      tags: [MCP]
+      summary: Authorize one MCP tool call
+      description: Cedar `mcp_tool_call` check, audited, before the broker forwards.
+      security:
+        - BearerJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [server_name, tool_name]
+              properties:
+                server_name: { type: string }
+                tool_name: { type: string }
+      responses:
+        '200': { description: Permit }
+        '403': { description: Forbid }
+
+  # ============================================================================
+  # Credential vending and reveal
+  # ============================================================================
+
+  /api/v1/credentials/by-name/{name}:
+    get:
+      tags: [Credentials]
+      summary: Look a credential up by name
+      description: Names are not unique; an ambiguous name answers 409 listing the matching ids.
+      security:
+        - BearerJWT: []
+        - SessionCookie: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Credential summary }
+        '404': { description: No such credential }
+        '409': { description: Ambiguous credential name }
+
+  /api/v1/credentials/{id}/reveal:
+    post:
+      tags: [Credentials]
+      summary: Reveal a credential secret in the admin UI
+      description: Emits a `CredentialSecretViewed` audit event.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Plaintext secret }
+        '403': { description: Access denied by policy }
+
+  /api/v1/credentials/{id}/vend:
+    post:
+      tags: [Credentials]
+      summary: Vend a credential by id as an ECIES envelope
+      description: |
+        The request names the call it serves (`method`, `target_url`) so the
+        server can check the credential's `allowed_url_pattern` before any
+        secret is decrypted. A target outside the pattern answers 403.
+      security:
+        - BearerJWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                method: { type: string }
+                target_url: { type: string, format: uri }
+      responses:
+        '200': { description: ECIES vend envelope }
+        '403': { description: Denied by Cedar policy or by allowed_url_pattern }
+
+  /api/v1/credentials/vend-device/{name}:
+    post:
+      tags: [Credentials]
+      summary: Vend a credential by name for the calling workspace
+      description: |
+        The broker's vend path. Carries `method` and `target_url`; the response
+        includes the credential's `allowed_url_pattern` so the broker can
+        re-check before injecting. For an `oauth2_client_credentials`
+        credential the **server** performs the token exchange and seals only the
+        resulting access token.
+      security:
+        - BearerJWT: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                method: { type: string }
+                target_url: { type: string, format: uri }
+      responses:
+        '200': { description: ECIES vend envelope }
+        '403': { description: Denied by Cedar policy or by allowed_url_pattern }
+        '404': { description: No such credential }
+        '409': { description: Ambiguous credential name }
+
+  /api/v1/credentials/agent-store:
+    post:
+      tags: [Credentials]
+      summary: Store a credential from an enrolled workspace
+      description: Backs `agentcordon credentials create`.
+      security:
+        - BearerJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, service, secret_value]
+              properties:
+                name: { type: string }
+                service: { type: string }
+                secret_value: { type: string }
+      responses:
+        '201': { description: Credential created }
+        '403': { description: Access denied by policy }
+
+  # ============================================================================
+  # Audit export
+  # ============================================================================
+
+  /api/v1/audit/export:
+    get:
+      tags: [Audit]
+      summary: Export audit events as CSV
+      description: Tenant-scoped exactly like the list endpoint, and CSV-injection safe.
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: CSV export
+          content:
+            text/csv: {}
+        '403': { description: Access denied by policy }
+
+  /api/v1/audit/export/syslog:
+    get:
+      tags: [Audit]
+      summary: Export audit events as RFC 5424 syslog
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Syslog export
+          content:
+            text/plain: {}
+        '403': { description: Access denied by policy }
+
+  /api/v1/audit/export/jsonl:
+    get:
+      tags: [Audit]
+      summary: Export audit events as JSON Lines
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: JSONL export
+          content:
+            application/x-ndjson: {}
+        '403': { description: Access denied by policy }
+
+  # ============================================================================
+  # Policy testing
+  # ============================================================================
+
+  /api/v1/policies/test:
+    post:
+      tags: [Policies]
+      summary: Evaluate a hypothetical request against the loaded policy set
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                principal: { type: string }
+                action: { type: string }
+                resource: { type: string }
+                context: { type: object }
+      responses:
+        '200': { description: Decision with contributing policies }
+        '403': { description: Access denied by policy }
+
+  /api/v1/policies/validate:
+    post:
+      tags: [Policies]
+      summary: Validate Cedar policy text against the schema
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cedar_policy]
+              properties:
+                cedar_policy: { type: string }
+      responses:
+        '200': { description: Validation result }
+        '400': { description: Policy does not parse or does not validate }
+
+  # ============================================================================
+  # Template catalogs
+  # ============================================================================
+
+  /api/v1/credential-templates:
+    get:
+      tags: [Settings]
+      summary: Credential template catalog
+      description: Built-ins plus anything in `AGTCRDN_CREDENTIAL_TEMPLATES_DIR`, read at startup.
+      security:
+        - SessionCookie: []
+      responses:
+        '200': { description: Template list }
+
+  /api/v1/mcp-templates:
+    get:
+      tags: [MCP]
+      summary: MCP marketplace catalog
+      description: |
+        Built-ins plus anything in `AGTCRDN_MCP_TEMPLATES_DIR`, keyed by
+        template `key` so an override replaces a built-in. Read once at startup.
+      security:
+        - SessionCookie: []
+      responses:
+        '200': { description: Template list }
+
+  /api/v1/policy-templates:
+    get:
+      tags: [Policies]
+      summary: Policy template catalog
+      description: Built-ins plus anything in `AGTCRDN_POLICY_TEMPLATES_DIR`, read at startup.
+      security:
+        - SessionCookie: []
+      responses:
+        '200': { description: Template list }
+
+  # ============================================================================
+  # OAuth provider clients (upstream providers AgentCordon registers with)
+  # ============================================================================
+
+  /api/v1/oauth-provider-clients:
+    get:
+      tags: [MCP]
+      summary: List OAuth provider clients
+      description: |
+        Requires `manage_mcp_servers`, so an operator can see which client an
+        origin uses. The client secret is never part of the response.
+      security:
+        - SessionCookie: []
+      responses:
+        '200': { description: Provider clients (client secrets never returned) }
+        '403': { description: Caller does not hold manage_mcp_servers }
+    post:
+      tags: [MCP]
+      summary: Create an OAuth provider client by hand
+      description: |
+        For an authorization server that does not support RFC 7591 Dynamic
+        Client Registration. `authorization_server_url` is the lookup key and
+        must be the bare origin (`scheme://host[:port]`, lowercase, no path,
+        no trailing slash) — discovery normalizes the value it reads from the
+        resource metadata and compares it to this field as stored.
+
+        Requires `manage_oauth_provider_clients`, which the default policy
+        grants to enabled admins only — the row is shared by every tenant with
+        an MCP server at that origin.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [authorization_server_url, client_id]
+              properties:
+                label: { type: string }
+                authorization_server_url: { type: string, format: uri }
+                authorize_endpoint: { type: string, format: uri }
+                token_endpoint: { type: string, format: uri }
+                client_id: { type: string }
+                client_secret: { type: string }
+                scopes: { type: string }
+      responses:
+        '201': { description: Provider client created }
+        '403': { description: Caller does not hold manage_oauth_provider_clients }
+        '409': { description: A client already exists for that authorization server origin }
+
+  /api/v1/oauth-provider-clients/{id}:
+    get:
+      tags: [MCP]
+      summary: Get an OAuth provider client
+      description: Requires `manage_mcp_servers`. The client secret is never returned.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Provider client }
+        '403': { description: Caller does not hold manage_mcp_servers }
+        '404': { description: Not found }
+    put:
+      tags: [MCP]
+      summary: Update an OAuth provider client
+      description: |
+        Requires `manage_oauth_provider_clients` (admins only). Allowed even
+        while credentials and MCP servers depend on the row — this is how a
+        rotated provider secret gets in. The audit event names which fields
+        changed and how many credentials and MCP servers were depending on the
+        client, never the secret value.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Updated }
+        '403': { description: Caller does not hold manage_oauth_provider_clients }
+        '404': { description: Not found }
+        '409': { description: The row was created by dynamic client registration; re-register it instead }
+    delete:
+      tags: [MCP]
+      summary: Delete an OAuth provider client
+      description: |
+        Requires `manage_oauth_provider_clients` (admins only). Refused while
+        anything still authenticates at that origin.
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Deleted }
+        '403': { description: Caller does not hold manage_oauth_provider_clients }
+        '404': { description: Not found }
+        '409':
+          description: |
+            Still in use. The message names both counts — the
+            `oauth2_user_authorization` credentials issued against this
+            authorization server, and the OAuth2 MCP servers that authenticate
+            with them.
+
+  /api/v1/oauth-provider-clients/{id}/reregister:
+    post:
+      tags: [MCP]
+      summary: Re-run discovery and dynamic client registration
+      description: Requires `manage_oauth_provider_clients` (admins only).
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Row updated in place }
+        '403': { description: Caller does not hold manage_oauth_provider_clients }
+        '404': { description: Not found }
+
+  # ============================================================================
+  # OAuth 2.0 authorization server
+  # ============================================================================
+
+  /api/v1/oauth/authorize:
+    get:
+      tags: [OAuth]
+      summary: Authorization endpoint (consent page)
+      description: Authorization code flow with PKCE S256.
+      parameters:
+        - name: client_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: redirect_uri
+          in: query
+          required: true
+          schema: { type: string, format: uri }
+        - name: response_type
+          in: query
+          required: true
+          schema: { type: string, enum: [code] }
+        - name: scope
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { type: string }
+        - name: code_challenge
+          in: query
+          schema: { type: string }
+        - name: code_challenge_method
+          in: query
+          schema: { type: string, enum: [S256] }
+      responses:
+        '200': { description: Consent page }
+        '302': { description: Redirect to redirect_uri with a code }
+        '400': { description: Invalid request }
+    post:
+      tags: [OAuth]
+      summary: Record the user's consent decision
+      security:
+        - SessionCookie: []
+      responses:
+        '302': { description: Redirect to redirect_uri }
+        '400': { description: Invalid request }
+
+  /api/v1/oauth/device/code:
+    post:
+      tags: [OAuth]
+      summary: RFC 8628 device authorization request
+      description: |
+        Rate-limited per source address. `verification_uri` and
+        `verification_uri_complete` are built from `AGTCRDN_BASE_URL`; with that
+        unset the server falls back to `http://` plus its listen address, which
+        is not reachable from a browser in a container.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id: { type: string }
+                scope: { type: string }
+                workspace_name: { type: string }
+                public_key_hash: { type: string }
+      responses:
+        '200':
+          description: Device code issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_code: { type: string }
+                  user_code: { type: string }
+                  verification_uri: { type: string, format: uri }
+                  verification_uri_complete: { type: string, format: uri }
+                  expires_in: { type: integer }
+                  interval: { type: integer }
+        '400': { description: invalid_scope or invalid_client }
+        '429': { description: Rate limited }
+
+  /api/v1/oauth/device/approve:
+    post:
+      tags: [OAuth]
+      summary: Approve a device authorization by user code
+      description: |
+        Requires `manage_workspaces`. The presented `public_key_hash` must match
+        the hash bound at issue time. Rate-limited per client address.
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code]
+              properties:
+                user_code: { type: string }
+                public_key_hash: { type: string }
+      responses:
+        '200': { description: Approved }
+        '403': { description: Access denied by policy }
+        '404': { description: Unknown or expired user code }
+        '429': { description: Rate limited }
+
+  /api/v1/oauth/device/deny:
+    post:
+      tags: [OAuth]
+      summary: Deny a device authorization by user code
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code]
+              properties:
+                user_code: { type: string }
+      responses:
+        '200': { description: Denied }
+        '403': { description: Access denied by policy }
+        '404': { description: Unknown or expired user code }
+
+  /api/v1/oauth/revoke:
+    post:
+      tags: [OAuth]
+      summary: RFC 7009 token revocation
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+                token_type_hint: { type: string, enum: [access_token, refresh_token] }
+      responses:
+        '200': { description: Revoked (or already unknown) }
+
+  /api/v1/oauth/clients:
+    get:
+      tags: [OAuth]
+      summary: List OAuth clients
+      security:
+        - SessionCookie: []
+      responses:
+        '200': { description: Client list }
+    post:
+      tags: [OAuth]
+      summary: Register an OAuth client
+      security:
+        - SessionCookie: []
+      responses:
+        '201': { description: Client created }
+
+  /api/v1/oauth/clients/{id}:
+    delete:
+      tags: [OAuth]
+      summary: Revoke an OAuth client
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Revoked }
+        '404': { description: Not found }
+
+  # ============================================================================
+  # Server-sent events, spec, health
+  # ============================================================================
+
+  /api/v1/events/ui:
+    get:
+      tags: [Settings]
+      summary: Server-sent event stream backing the admin UI's live updates
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream: {}
+
+  /api/v1/openapi.yaml:
+    get:
+      tags: [Settings]
+      summary: This specification
+      description: Unauthenticated, so an agent or developer can self-discover the API.
+      responses:
+        '200':
+          description: OpenAPI 3.1 document
+          content:
+            text/yaml: {}
+
+  /health:
+    get:
+      tags: [Settings]
+      summary: Health check
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+
+  /metrics:
+    get:
+      tags: [Settings]
+      summary: Prometheus metrics
+      responses:
+        '200':
+          description: Metrics in the Prometheus text exposition format
+          content:
+            text/plain: {}
+
+  /install.sh:
+    get:
+      tags: [Settings]
+      summary: POSIX sh installer for the CLI and the broker
+      description: |
+        `curl -fsSL <server>/install.sh | sh`. Detects the OS and architecture,
+        downloads `agentcordon` and `agentcordon-broker` from the matching GitHub
+        release, verifies both against the release's `SHA256SUMS` before
+        installing, and puts them in `~/.local/bin`. The script never re-fetches
+        itself, so it works from whatever URL you piped it from. Templated with
+        `AGTCRDN_BASE_URL`, falling back to the request `Host`.
+      responses:
+        '200':
+          description: The installer script
+          content:
+            text/x-shellscript: {}
 

@@ -58,7 +58,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "GET".to_string(),
         path: "/api/v1/mcp-servers".to_string(),
-        description: "List registered MCP servers. When filtered by `workspace_id`, results join through the `mcp_server_workspaces` junction so an MCP bound to multiple workspaces appears in each of their lists. Unfiltered, admins see all servers; non-admin users see servers whose owner is the caller. Requires admin role or a workspace actor. `device_id` is accepted as a legacy alias for `workspace_id`.".to_string(),
+        description: "List registered MCP servers, each with its live bindings as `installed_workspaces`. When filtered by `workspace_id`, results join through the `mcp_server_workspaces` junction so an MCP bound to multiple workspaces appears in each of their lists. Unfiltered, admins see all servers; non-admin users see servers whose owner is the caller. Requires admin role or a workspace actor. `device_id` is accepted as a legacy alias for `workspace_id`.".to_string(),
         auth_required: true,
         request_body: None,
         response_body: Some(json!({
@@ -67,7 +67,8 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                 "type": "object",
                 "properties": {
                     "id": { "type": "string", "format": "uuid" },
-                    "workspace_id": { "type": "string", "format": "uuid", "description": "Immutable audit anchor — the workspace the MCP was first provisioned for. NOT the current binding set. Live bindings live in `mcp_server_workspaces` (see GET /api/v1/mcp-servers/{id}.installed_workspaces)." },
+                    "workspace_id": { "type": "string", "format": "uuid", "description": "Legacy field, `null` for every MCP provisioned since the junction consolidation. NOT the binding set — read the bindings from `installed_workspaces` or GET /api/v1/mcp-servers/{id}/workspaces." },
+                    "installed_workspaces": { "type": "array", "description": "Every workspace bound to this MCP through the `mcp_server_workspaces` junction, disabled workspaces filtered out. The admin UI's Workspaces column is rendered from this.", "items": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "name": { "type": "string" } } } },
                     "name": { "type": "string" },
                     "upstream_url": { "type": "string" },
                     "transport": { "type": "string" },
@@ -90,14 +91,14 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "GET".to_string(),
         path: "/api/v1/mcp-servers/{id}".to_string(),
-        description: "Get details of a registered MCP server. Includes all workspaces the MCP is currently bound to via the `mcp_server_workspaces` junction. `installed_workspaces` can contain zero or more entries; it is no longer a derived 0-or-1 vec from `workspace_id`. Requires admin role.".to_string(),
+        description: "Get details of a registered MCP server. Includes all workspaces the MCP is currently bound to via the `mcp_server_workspaces` junction. `installed_workspaces` can contain zero or more entries; it is the junction's own answer, not a 0-or-1 vec derived from the legacy `workspace_id`. Requires admin role.".to_string(),
         auth_required: true,
         request_body: None,
         response_body: Some(json!({
             "type": "object",
             "properties": {
                 "id": { "type": "string", "format": "uuid" },
-                "workspace_id": { "type": "string", "format": "uuid", "description": "Immutable audit anchor: the workspace the MCP was first provisioned for. Set once at provision time and never mutated — not by share, not by unshare, not by removing the original workspace's binding. NOT the current routing key. Current bindings live in `installed_workspaces` (populated from the `mcp_server_workspaces` junction)." },
+                "workspace_id": { "type": "string", "format": "uuid", "description": "Legacy field, `null` for every MCP provisioned since the junction consolidation. NOT the binding set — read the bindings from `installed_workspaces` or GET /api/v1/mcp-servers/{id}/workspaces." },
                 "name": { "type": "string" },
                 "upstream_url": { "type": "string" },
                 "transport": { "type": "string" },
@@ -129,6 +130,27 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     // -----------------------------------------------------------------------
     // MCP Server Workspace Bindings (M:N sharing)
     // -----------------------------------------------------------------------
+
+    endpoints.push(EndpointDoc {
+        method: "GET".to_string(),
+        path: "/api/v1/mcp-servers/{id}/workspaces".to_string(),
+        description: "The workspaces currently bound to this MCP server through the `mcp_server_workspaces` junction — the bindings the share and unshare endpoints write, read back. Requires `manage_mcp_servers` on this server, so a user who does not own it is refused with 403. Disabled workspaces are filtered out, so this is the same list as `installed_workspaces` on the server responses.".to_string(),
+        auth_required: true,
+        request_body: None,
+        response_body: Some(json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "format": "uuid" },
+                    "name": { "type": "string" }
+                }
+            }
+        })),
+        query_params: None,
+        path_params: Some(vec![uuid_param("id", "MCP server UUID")]),
+        error_codes: vec!["unauthorized".to_string(), "forbidden".to_string(), "not_found".to_string()],
+    });
 
     endpoints.push(EndpointDoc {
         method: "POST".to_string(),
@@ -251,6 +273,23 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
 
     endpoints.push(EndpointDoc {
         method: "POST".to_string(),
+        path: "/api/v1/mcp-servers/{id}/discover-tools".to_string(),
+        description: "Re-run tool discovery against the server's upstream, presenting the credential the broker would present (an upstream OAuth credential is exchanged for a fresh access token first). Install-time discovery is best-effort, so a server installed while its upstream was unreachable — down, or refused by the SSRF guard — has no tools; this is the retry behind the detail page's **Rediscover tools** button. Requires `manage_mcp_servers` on this server. A probe that fails answers 502 with the reason and emits an `mcp_tool_discovery_failed` audit event.".to_string(),
+        auth_required: true,
+        request_body: None,
+        response_body: Some(json!({
+            "type": "object",
+            "properties": {
+                "tool_count": { "type": "integer", "description": "How many tools the probe found and stored" }
+            }
+        })),
+        query_params: None,
+        path_params: Some(vec![uuid_param("id", "MCP server UUID")]),
+        error_codes: vec!["unauthorized".to_string(), "forbidden".to_string(), "not_found".to_string(), "bad_gateway".to_string()],
+    });
+
+    endpoints.push(EndpointDoc {
+        method: "POST".to_string(),
         path: "/api/v1/mcp-servers/{id}/generate-policies".to_string(),
         description: "Generates Cedar policies for selected tools on an MCP server. Creates one policy per tool/tag combination. Requires admin role.".to_string(),
         auth_required: true,
@@ -351,57 +390,6 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
             "not_found".to_string(),
             "bad_request".to_string(),
             "conflict".to_string(),
-        ],
-    });
-
-    // -----------------------------------------------------------------------
-    // MCP Proxy
-    // -----------------------------------------------------------------------
-    endpoints.push(EndpointDoc {
-        method: "POST".to_string(),
-        path: "/api/v1/mcp/proxy".to_string(),
-        description: "Proxy an MCP JSON-RPC call to a registered MCP server. Authenticates the agent (JWT), evaluates Cedar policy (mcp_tool_call or mcp_list_tools), injects credentials, forwards to upstream, leak-scans the response, and emits audit events. Returns a JSON-RPC response.".to_string(),
-        auth_required: true,
-        request_body: Some(json!({
-            "type": "object",
-            "required": ["mcp_server", "jsonrpc", "method"],
-            "properties": {
-                "mcp_server": { "type": "string", "description": "Name of the registered MCP server to call" },
-                "jsonrpc": { "type": "string", "enum": ["2.0"] },
-                "method": { "type": "string", "description": "MCP method name (e.g., \"tools/call\", \"tools/list\")" },
-                "params": { "type": "object", "description": "MCP method parameters (optional)" },
-                "id": { "description": "JSON-RPC request ID (string or number)" }
-            }
-        })),
-        response_body: Some(json!({
-            "type": "object",
-            "description": "JSON-RPC 2.0 response (not wrapped in ApiResponse envelope)",
-            "properties": {
-                "jsonrpc": { "type": "string", "enum": ["2.0"] },
-                "result": { "description": "Result from the upstream MCP server (on success)" },
-                "error": {
-                    "type": "object",
-                    "properties": {
-                        "code": { "type": "integer", "description": "JSON-RPC error code" },
-                        "message": { "type": "string" }
-                    },
-                    "description": "JSON-RPC error (on failure)"
-                },
-                "id": { "description": "Echoed request ID" }
-            }
-        })),
-        query_params: None,
-        path_params: None,
-        error_codes: vec![
-            "unauthorized".to_string(),
-            "-32600 (invalid request)".to_string(),
-            "-32601 (method not found)".to_string(),
-            "-32002 (policy denied)".to_string(),
-            "-32003 (server not found)".to_string(),
-            "-32004 (server disabled)".to_string(),
-            "-32005 (tool not allowed)".to_string(),
-            "-32006 (credential failed)".to_string(),
-            "-32007 (upstream error)".to_string(),
         ],
     });
 }

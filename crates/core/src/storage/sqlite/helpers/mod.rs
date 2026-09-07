@@ -1,18 +1,20 @@
+mod errors;
 mod extended;
+pub(crate) use errors::*;
 pub(crate) use extended::*;
 
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::domain::credential::{CredentialId, CredentialSummary, StoredCredential};
 use crate::domain::policy::{PolicyId, StoredPolicy};
 use crate::domain::session::Session;
+use crate::domain::time::parse_timestamp;
 use crate::domain::user::{User, UserId};
-use crate::domain::vault::VaultShare;
+use crate::domain::vault::{Vault, VaultShare};
 use crate::domain::workspace::WorkspaceId;
 
 // ---------------------------------------------------------------------------
-// Re-export shared serialization helpers (used by both SQLite and Postgres)
+// Re-export the backend-independent serialization helpers
 // ---------------------------------------------------------------------------
 
 pub(crate) use crate::storage::shared::{
@@ -23,8 +25,7 @@ pub(crate) use crate::storage::shared::{
 
 // ---------------------------------------------------------------------------
 // SQLite-specific row mapping functions (below)
-// These cannot be shared because SQLite uses rusqlite::Row with string-encoded
-// UUIDs/dates, while Postgres uses sqlx::FromRow with native types.
+// These read a `rusqlite::Row`, in which UUIDs and dates are string-encoded.
 // ---------------------------------------------------------------------------
 
 pub(crate) fn row_to_stored_credential(
@@ -45,12 +46,13 @@ pub(crate) fn row_to_stored_credential(
     let expires_at_str: Option<String> = row.get(12)?;
     let transform_script: Option<String> = row.get(13)?;
     let transform_name: Option<String> = row.get(14)?;
-    let vault: String = row.get(15)?;
-    let credential_type: String = row.get(16)?;
-    let tags_json: String = row.get(17)?;
-    let key_version: i64 = row.get(18)?;
-    let description: Option<String> = row.get(19)?;
-    let target_identity: Option<String> = row.get(20)?;
+    let vault_id: String = row.get(15)?;
+    let vault_name: Option<String> = row.get(16)?;
+    let credential_type: String = row.get(17)?;
+    let tags_json: String = row.get(18)?;
+    let key_version: i64 = row.get(19)?;
+    let description: Option<String> = row.get(20)?;
+    let target_identity: Option<String> = row.get(21)?;
 
     let id = Uuid::parse_str(&id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -62,7 +64,7 @@ pub(crate) fn row_to_stored_credential(
         rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
     })?;
     let tags: Vec<String> = serde_json::from_str(&tags_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(17, rusqlite::types::Type::Text, Box::new(e))
+        rusqlite::Error::FromSqlConversionFailure(18, rusqlite::types::Type::Text, Box::new(e))
     })?;
     let created_by = created_by_str
         .map(|s| Uuid::parse_str(&s).map(WorkspaceId))
@@ -76,18 +78,14 @@ pub(crate) fn row_to_stored_credential(
         .map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(11, rusqlite::types::Type::Text, Box::new(e))
         })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let updated_at = parse_timestamp(&updated_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     let expires_at = expires_at_str
-        .map(|s| DateTime::parse_from_rfc3339(&s).map(|dt| dt.with_timezone(&Utc)))
+        .map(|s| parse_timestamp(&s))
         .transpose()
         .map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(e))
@@ -109,7 +107,8 @@ pub(crate) fn row_to_stored_credential(
         expires_at,
         transform_script,
         transform_name,
-        vault,
+        vault_id,
+        vault_name: vault_name.unwrap_or_default(),
         credential_type,
         tags,
         description,
@@ -133,11 +132,12 @@ pub(crate) fn row_to_credential_summary(
     let expires_at_str: Option<String> = row.get(9)?;
     let transform_script: Option<String> = row.get(10)?;
     let transform_name: Option<String> = row.get(11)?;
-    let vault: String = row.get(12)?;
-    let credential_type: String = row.get(13)?;
-    let tags_json: String = row.get(14)?;
-    let description: Option<String> = row.get(15)?;
-    let target_identity: Option<String> = row.get(16)?;
+    let vault_id: String = row.get(12)?;
+    let vault_name: Option<String> = row.get(13)?;
+    let credential_type: String = row.get(14)?;
+    let tags_json: String = row.get(15)?;
+    let description: Option<String> = row.get(16)?;
+    let target_identity: Option<String> = row.get(17)?;
 
     let id = Uuid::parse_str(&id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -149,7 +149,7 @@ pub(crate) fn row_to_credential_summary(
         rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
     })?;
     let tags: Vec<String> = serde_json::from_str(&tags_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(14, rusqlite::types::Type::Text, Box::new(e))
+        rusqlite::Error::FromSqlConversionFailure(15, rusqlite::types::Type::Text, Box::new(e))
     })?;
     let created_by = created_by_str
         .map(|s| Uuid::parse_str(&s).map(WorkspaceId))
@@ -163,13 +163,11 @@ pub(crate) fn row_to_credential_summary(
         .map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
         })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     let expires_at = expires_at_str
-        .map(|s| DateTime::parse_from_rfc3339(&s).map(|dt| dt.with_timezone(&Utc)))
+        .map(|s| parse_timestamp(&s))
         .transpose()
         .map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e))
@@ -192,18 +190,49 @@ pub(crate) fn row_to_credential_summary(
         expired,
         transform_script,
         transform_name,
-        vault,
+        vault_id,
+        vault_name: vault_name.unwrap_or_default(),
         credential_type,
         tags,
         description,
         target_identity,
         owner_username: None, // Populated at the route layer
+        access: None,         // Populated at the route layer
+    })
+}
+
+pub(crate) fn row_to_vault(row: &rusqlite::Row<'_>) -> Result<Vault, rusqlite::Error> {
+    let id: String = row.get(0)?;
+    let name: String = row.get(1)?;
+    let owner_str: Option<String> = row.get(2)?;
+    let created_at_str: String = row.get(3)?;
+    let updated_at_str: String = row.get(4)?;
+
+    let owner_user_id = owner_str
+        .map(|s| Uuid::parse_str(&s).map(UserId))
+        .transpose()
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let updated_at = parse_timestamp(&updated_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+
+    Ok(Vault {
+        id,
+        name,
+        owner_user_id,
+        created_at,
+        updated_at,
     })
 }
 
 pub(crate) fn row_to_vault_share(row: &rusqlite::Row<'_>) -> Result<VaultShare, rusqlite::Error> {
     let id: String = row.get(0)?;
-    let vault_name: String = row.get(1)?;
+    let vault_id: String = row.get(1)?;
     let shared_with_str: String = row.get(2)?;
     let permission_level: String = row.get(3)?;
     let shared_by_str: String = row.get(4)?;
@@ -215,15 +244,13 @@ pub(crate) fn row_to_vault_share(row: &rusqlite::Row<'_>) -> Result<VaultShare, 
     let shared_by_user_id = Uuid::parse_str(&shared_by_str).map(UserId).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
     })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     Ok(VaultShare {
         id,
-        vault_name,
+        vault_id,
         shared_with_user_id,
         permission_level,
         shared_by_user_id,
@@ -246,16 +273,12 @@ pub(crate) fn row_to_stored_policy(
     let id = Uuid::parse_str(&id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let updated_at = parse_timestamp(&updated_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     Ok(StoredPolicy {
         id: PolicyId(id),
@@ -286,16 +309,12 @@ pub(crate) fn row_to_user(row: &rusqlite::Row<'_>) -> Result<User, rusqlite::Err
     let role = deserialize_user_role(&role_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
     })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let updated_at = parse_timestamp(&updated_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     Ok(User {
         id: UserId(id),
@@ -320,21 +339,15 @@ pub(crate) fn row_to_session(row: &rusqlite::Row<'_>) -> Result<Session, rusqlit
     let user_id = Uuid::parse_str(&user_id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
     })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let expires_at = DateTime::parse_from_rfc3339(&expires_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let last_seen_at = DateTime::parse_from_rfc3339(&last_seen_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let expires_at = parse_timestamp(&expires_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let last_seen_at = parse_timestamp(&last_seen_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     Ok(Session {
         id,

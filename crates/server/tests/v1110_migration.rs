@@ -4,16 +4,12 @@
 //! UNIQUE(workspace_id, name) constraint, FK RESTRICT, field preservation,
 //! and Cedar policy compatibility.
 
-use axum::http::{Method, StatusCode};
 use uuid::Uuid;
 
 use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
-use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
-use agent_cordon_core::policy::PolicyEngine;
 use agent_cordon_core::storage::Store;
 
-use crate::common::*;
 use agent_cordon_server::test_helpers::TestAppBuilder;
 
 // ---------------------------------------------------------------------------
@@ -30,7 +26,6 @@ async fn create_workspace_with_time(
     let workspace = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled: status == WorkspaceStatus::Active,
         status,
         pk_hash: None,
         encryption_public_key: None,

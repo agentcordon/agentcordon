@@ -21,22 +21,7 @@ use tower::ServiceExt;
 // ---------------------------------------------------------------------------
 
 async fn setup() -> (agent_cordon_server::test_helpers::TestContext, String) {
-    let ctx = TestAppBuilder::new()
-        .with_admin()
-        .with_config(|c| {
-            c.seed_demo = true;
-        })
-        .build()
-        .await;
-
-    agent_cordon_server::seed::seed_demo_data(
-        &ctx.store,
-        &ctx.encryptor,
-        &ctx.state.config,
-        &ctx.jwt_issuer,
-    )
-    .await
-    .expect("seed demo data");
+    let ctx = TestAppBuilder::new().with_admin().build().await;
 
     let _user = common::create_test_user(
         &*ctx.store,
@@ -343,10 +328,33 @@ async fn test_policy_list_search_param_populates_input() {
     let (status, body) = get_html(&ctx.app, "/security?search=grant%3Acred1", &cookie).await;
 
     assert_eq!(status, StatusCode::OK);
-    // The rendered HTML should contain the search value for Alpine.js to pick up
+    // The page is a shell: the search box reads its initial value from the
+    // URL's `search` param, and the rows it filters come from the API.
     assert!(
-        body.contains("grant:cred1") || body.contains("grant%3Acred1"),
-        "page should contain the search term 'grant:cred1' in the rendered HTML"
+        body.contains("new URLSearchParams(window.location.search).get('search')"),
+        "page should seed the search box from the URL's search param"
+    );
+    assert!(
+        !body.contains("grant:cred1:agent1:access"),
+        "page must not embed policy data; it comes from the API"
+    );
+    let (status, api) = common::send_json_auto_csrf(
+        &ctx.app,
+        Method::GET,
+        "/api/v1/policies",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        api["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "grant:cred1:agent1:access"),
+        "the policies API lists the grant policy the search targets: {api}"
     );
 }
 

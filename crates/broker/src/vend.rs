@@ -13,20 +13,24 @@ use agent_cordon_core::crypto::ecies::{
     CredentialEnvelopeDecryptor, EciesEncryptor, EncryptedEnvelope,
 };
 
-use crate::server_client::VendEnvelope;
+use crate::server_client::EncryptedEnvelopeWire;
 
 /// Decrypted credential material.
 ///
 /// NOTE: `credential_type` is NOT in the envelope plaintext — it's a field on
-/// the outer `VendResponse` (server_client::VendResponse). The envelope only
-/// carries the secret `value` + `metadata`. Callers should read the type from
-/// the vend response, not from here.
+/// the outer `VendResponse` (`agent_cordon_core::wire::credentials`). The envelope only
+/// carries the secret `value` + `metadata`, and for OAuth-backed credentials
+/// the `expires_at` of the access token in `value`. Callers should read the
+/// type from the vend response, not from here.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VendedCredential {
     pub value: String,
     pub username: Option<String>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+    /// When `value` stops being usable; set for upstream access tokens.
+    #[serde(default)]
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Errors from vend operations.
@@ -37,8 +41,8 @@ pub enum VendError {
 }
 
 /// Decrypt a vend envelope using the broker's P-256 private key.
-pub fn decrypt_vend_envelope(
-    envelope: &VendEnvelope,
+pub async fn decrypt_vend_envelope(
+    envelope: &EncryptedEnvelopeWire,
     encryption_key: &p256::SecretKey,
 ) -> Result<VendedCredential, VendError> {
     let encrypted = EncryptedEnvelope {
@@ -60,11 +64,10 @@ pub fn decrypt_vend_envelope(
     let enc_key_bytes = encryption_key.to_bytes();
     let ecies = EciesEncryptor::new();
 
-    let plaintext = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(ecies.decrypt_envelope(enc_key_bytes.as_ref(), &encrypted))
-    })
-    .map_err(|_| VendError::DecryptionFailed("ECIES decryption failed".to_string()))?;
+    let plaintext = ecies
+        .decrypt_envelope(enc_key_bytes.as_ref(), &encrypted)
+        .await
+        .map_err(|_| VendError::DecryptionFailed("ECIES decryption failed".to_string()))?;
 
     serde_json::from_slice(&plaintext)
         .map_err(|e| VendError::DecryptionFailed(format!("invalid credential material: {}", e)))

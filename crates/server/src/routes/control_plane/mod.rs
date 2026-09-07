@@ -1,10 +1,6 @@
-//! Control-plane routes — agent/device-facing API (auth, sync, JWKS).
+//! Control-plane routes — broker-facing API (MCP sync and authorization).
 
-pub mod audit_stream;
-pub mod jwks;
 pub mod mcp_authorize;
-mod rotate_refresh_token;
-pub mod workspace_identity;
 mod workspace_sync;
 
 use axum::{
@@ -17,28 +13,10 @@ use crate::state::AppState;
 /// API routes for the control plane (nested under `/api/v1`).
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .merge(workspace_identity::routes())
-        .route("/workspaces/policies", get(workspace_sync::sync_policies))
         .route(
             "/workspaces/mcp-servers",
             get(workspace_sync::sync_mcp_servers),
         )
         .route("/workspaces/mcp-tools", get(workspace_sync::sync_mcp_tools))
         .route("/workspaces/mcp-authorize", post(mcp_authorize::authorize))
-        .route(
-            "/workspaces/mcp/rotate-refresh-token",
-            post(rotate_refresh_token::rotate),
-        )
-        .route(
-            "/workspaces/audit-stream",
-            get(audit_stream::audit_stream_ws),
-        )
-        .route(
-            "/workspaces/audit-events",
-            post(audit_stream::audit_ingest_post),
-        )
-        .route(
-            "/workspaces/mcp-report-tools",
-            post(workspace_sync::report_tools),
-        )
 }

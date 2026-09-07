@@ -81,7 +81,7 @@ async fn device_code_grant_returns_per_workspace_client_id() {
     let user_code = body["user_code"].as_str().unwrap().to_string();
 
     // 2. Approve via UI (mints the per-workspace OAuth client).
-    let csrf = compute_consent_csrf(&session_cookie, &ctx.state.session_hash_key);
+    let csrf = compute_consent_csrf(&session_cookie, &ctx.state.crypto.session_hash_key);
     let activate_body = format!(
         "csrf_token={}&user_code={}&decision=approve",
         urlencoding::encode(&csrf),

@@ -9,13 +9,11 @@
 //! Tests use store-level insertion for setup.
 
 use axum::http::{Method, StatusCode};
-use serde_json::json;
 use uuid::Uuid;
 
 use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
-use agent_cordon_core::policy::PolicyEngine;
 use agent_cordon_core::storage::Store;
 
 use crate::common::*;
@@ -75,7 +73,6 @@ async fn create_device_at_time(
     let workspace = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled: true,
         status,
         pk_hash: None,
         encryption_public_key: None,

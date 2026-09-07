@@ -1,20 +1,15 @@
 mod callback;
-#[cfg(test)]
-mod tests;
 
 use axum::{
     extract::{Query, State},
-    http::header::HeaderMap,
-    response::{IntoResponse, Redirect, Response},
+    http::{header::HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 
 use agent_cordon_core::auth::oidc::OidcClient;
-use agent_cordon_core::crypto::session::generate_session_token;
-use agent_cordon_core::domain::oidc::OidcAuthState;
-use agent_cordon_core::domain::user::UserRole;
 
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
@@ -85,25 +80,13 @@ async fn authorize(
         .await
         .map_err(|e| ApiError::BadGateway(format!("OIDC discovery failed: {}", e)))?;
 
-    // Generate random state and nonce
-    let random_state = generate_session_token();
-    let nonce = generate_session_token();
-
-    // Build the callback redirect_uri
+    // Build the callback redirect_uri, then mint the single-use state/nonce
     let redirect_uri = build_callback_uri(&state, &headers);
-
-    // Store auth state
-    let now = chrono::Utc::now();
-    let ttl = chrono::Duration::seconds(state.config.oidc_state_ttl_seconds as i64);
-    let auth_state = OidcAuthState {
-        state: random_state.clone(),
-        nonce: nonce.clone(),
-        provider_id: provider_id.clone(),
-        redirect_uri: redirect_uri.clone(),
-        created_at: now,
-        expires_at: now + ttl,
-    };
-    state.store.create_oidc_auth_state(&auth_state).await?;
+    let auth_state = state
+        .services
+        .identity_providers
+        .create_login_state(&provider_id, &redirect_uri)
+        .await?;
 
     // Build the authorization URL
     let scopes = provider.scopes.join(" ");
@@ -113,11 +96,18 @@ async fn authorize(
         urlencoding::encode(&provider.client_id),
         urlencoding::encode(&redirect_uri),
         urlencoding::encode(&scopes),
-        urlencoding::encode(&random_state),
-        urlencoding::encode(&nonce),
+        urlencoding::encode(&auth_state.state),
+        urlencoding::encode(&auth_state.nonce),
     );
 
-    Ok(Redirect::temporary(&auth_url).into_response())
+    // 302 Found, the status a browser starting an SSO sign-in expects from the
+    // login page's link. Built by hand because axum's `Redirect` offers only
+    // 303, 307 and 308.
+    Ok((
+        StatusCode::FOUND,
+        [(axum::http::header::LOCATION, auth_url)],
+    )
+        .into_response())
 }
 
 /// GET /api/v1/auth/oidc/providers — unauthenticated
@@ -153,83 +143,4 @@ pub(crate) fn build_callback_uri(state: &AppState, headers: &HeaderMap) -> Strin
         format!("{}://{}", scheme, host)
     };
     format!("{}/api/v1/auth/oidc/callback", base)
-}
-
-/// Resolve the username from the ID token using the provider's configured `username_claim`.
-pub(crate) fn resolve_username_claim(
-    claim_name: &str,
-    claims: &agent_cordon_core::auth::oidc::IdTokenClaims,
-) -> String {
-    let resolved = match claim_name {
-        "preferred_username" => claims.preferred_username.clone(),
-        "email" => claims.email.clone(),
-        "name" => claims.name.clone(),
-        "sub" => Some(claims.sub.clone()),
-        other => claims
-            .extra
-            .get(other)
-            .and_then(|v| v.as_str().map(|s| s.to_string())),
-    };
-    resolved
-        .or_else(|| claims.preferred_username.clone())
-        .or_else(|| claims.email.clone())
-        .unwrap_or_else(|| claims.sub.clone())
-}
-
-/// Parse a role string into a UserRole enum value.
-pub(crate) fn parse_role(role_str: &str) -> UserRole {
-    match role_str {
-        "admin" => UserRole::Admin,
-        "operator" => UserRole::Operator,
-        _ => UserRole::Viewer,
-    }
-}
-
-/// Resolve the user role from the OIDC provider's role_mapping config and the ID token claims.
-pub(crate) fn resolve_role(
-    role_mapping: &serde_json::Value,
-    claims: &agent_cordon_core::auth::oidc::IdTokenClaims,
-) -> UserRole {
-    let obj = match role_mapping.as_object() {
-        Some(o) if !o.is_empty() => o,
-        _ => return UserRole::Viewer,
-    };
-
-    let default_role = obj
-        .get("default_role")
-        .and_then(|v| v.as_str())
-        .map(parse_role)
-        .unwrap_or(UserRole::Viewer);
-
-    let claim_name = match obj.get("claim").and_then(|v| v.as_str()) {
-        Some(c) => c,
-        None => return default_role,
-    };
-    let mappings = match obj.get("mappings").and_then(|v| v.as_object()) {
-        Some(m) if !m.is_empty() => m,
-        _ => return default_role,
-    };
-
-    let claim_strings: Vec<String> = match claim_name {
-        "sub" => vec![claims.sub.clone()],
-        "email" => claims.email.clone().into_iter().collect(),
-        "preferred_username" => claims.preferred_username.clone().into_iter().collect(),
-        "name" => claims.name.clone().into_iter().collect(),
-        other => match claims.extra.get(other) {
-            Some(serde_json::Value::String(s)) => vec![s.clone()],
-            Some(serde_json::Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect(),
-            _ => vec![],
-        },
-    };
-
-    for val in &claim_strings {
-        if let Some(role_str) = mappings.get(val).and_then(|r| r.as_str()) {
-            return parse_role(role_str);
-        }
-    }
-
-    default_role
 }

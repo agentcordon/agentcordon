@@ -4,15 +4,11 @@
 //! construct a test application without starting a TCP listener.
 
 pub mod authz;
-pub mod compose;
 pub mod config;
-pub mod credential_service;
 pub mod crypto_helpers;
-pub mod device_code_service;
 pub mod docs;
 pub mod events;
 pub mod extractors;
-pub mod grants;
 pub mod install_script;
 pub mod metrics;
 pub mod middleware;
@@ -21,9 +17,10 @@ pub mod oauth_discovery;
 pub mod rate_limit;
 pub mod response;
 pub mod routes;
-pub mod seed;
+pub mod services;
 pub mod state;
 pub mod swagger;
+pub mod templates;
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers;
 pub mod ui;
@@ -39,10 +36,6 @@ pub fn build_router(app_state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics_handler))
-        .route(
-            "/.well-known/jwks.json",
-            get(routes::control_plane::jwks::jwks),
-        )
         .merge(swagger::routes())
         .nest(
             "/api/v1",
@@ -50,6 +43,7 @@ pub fn build_router(app_state: AppState) -> Router {
         )
         .merge(routes::admin_ui::pages::page_routes(app_state.clone()))
         .route("/install.sh", get(install_script::handler))
+        .route("/install.ps1", get(install_script::ps1_handler))
         .fallback(ui::static_handler)
         // CSRF middleware runs after request-id (closer to routes).
         // In Axum, layers are applied outside-in, so this layer is added

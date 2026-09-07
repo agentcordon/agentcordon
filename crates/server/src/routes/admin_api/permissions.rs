@@ -8,14 +8,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use agent_cordon_core::domain::credential::CredentialId;
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::workspace::WorkspaceId;
-use agent_cordon_core::policy::PolicyResource;
-use agent_cordon_core::policy::{actions, templates};
+use agent_cordon_core::policy::actions;
 
-use crate::events::UiEvent;
 use crate::extractors::AuthenticatedActor;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::policies::PermissionGrant as ServiceGrant;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -172,118 +170,6 @@ fn validate_permission(perm: &str) -> Result<(), ApiError> {
     }
 }
 
-/// Map a permission name to the Cedar action(s) it grants.
-fn permission_to_cedar_actions(perm: &str) -> Vec<&'static str> {
-    templates::permission_to_actions(perm)
-}
-
-/// Load credential, then check manage_permissions policy or credential ownership.
-async fn load_and_authorize(
-    state: &AppState,
-    actor: &AuthenticatedActor,
-    cred_id: &CredentialId,
-) -> Result<(), ApiError> {
-    let cred = state
-        .store
-        .get_credential(cred_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
-
-    // Try Cedar manage_permissions first (admin path). Use
-    // check_with_reasons because we want to fall back to ownership rather
-    // than raise on Forbid here.
-    if let Ok(decision) = state
-        .authz
-        .request(actor, &uuid::Uuid::new_v4().to_string())
-        .check_with_reasons(
-            actions::MANAGE_PERMISSIONS,
-            &PolicyResource::Credential {
-                credential: cred.clone(),
-            },
-        )
-        .await
-    {
-        if decision.decision != PolicyDecisionResult::Forbid {
-            return Ok(());
-        }
-    }
-
-    // Fallback: allow if the actor owns the credential
-    match actor {
-        AuthenticatedActor::User(user) => {
-            if cred.created_by_user.as_ref() == Some(&user.id) {
-                return Ok(());
-            }
-        }
-        AuthenticatedActor::Workspace { workspace, .. } => {
-            if cred
-                .created_by
-                .as_ref()
-                .map(|id| id.0 == workspace.id.0)
-                .unwrap_or(false)
-            {
-                return Ok(());
-            }
-        }
-    }
-
-    Err(ApiError::Forbidden("access denied by policy".to_string()))
-}
-
-/// Read-only authorization: allows manage_permissions OR credential ownership.
-/// Credential owners and workspace owners can view permissions on their resources.
-async fn authorize_read(
-    state: &AppState,
-    actor: &AuthenticatedActor,
-    cred_id: &CredentialId,
-) -> Result<(), ApiError> {
-    let cred = state
-        .store
-        .get_credential(cred_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
-
-    // Try Cedar manage_permissions first (admin path). Use
-    // check_with_reasons because we want to fall back to ownership rather
-    // than raise on Forbid here.
-    if let Ok(decision) = state
-        .authz
-        .request(actor, &uuid::Uuid::new_v4().to_string())
-        .check_with_reasons(
-            actions::MANAGE_PERMISSIONS,
-            &PolicyResource::Credential {
-                credential: cred.clone(),
-            },
-        )
-        .await
-    {
-        if decision.decision != PolicyDecisionResult::Forbid {
-            return Ok(());
-        }
-    }
-
-    // Fallback: allow if the actor owns the credential
-    match actor {
-        AuthenticatedActor::User(user) => {
-            if cred.created_by_user.as_ref() == Some(&user.id) {
-                return Ok(());
-            }
-        }
-        AuthenticatedActor::Workspace { workspace, .. } => {
-            if cred
-                .created_by
-                .as_ref()
-                .map(|id| id.0 == workspace.id.0)
-                .unwrap_or(false)
-            {
-                return Ok(());
-            }
-        }
-    }
-
-    Err(ApiError::Forbidden("access denied by policy".to_string()))
-}
-
 async fn get_permissions(
     State(state): State<AppState>,
     actor: AuthenticatedActor,
@@ -291,13 +177,13 @@ async fn get_permissions(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<CredentialPermissionsResponse>>, ApiError> {
     let cred_id = CredentialId(id);
-    authorize_read(&state, &actor, &cred_id).await?;
-
+    // Read-only authorization: allows manage_permissions OR credential ownership.
+    // Credential owners and workspace owners can view permissions on their resources.
     let cred = state
-        .store
-        .get_credential(&cred_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
+        .services
+        .policies
+        .load_and_authorize_permissions(&actor, &cred_id)
+        .await?;
 
     // Load grant and deny policies to derive permission entries
     let all_policies = state.store.list_policies().await?;
@@ -333,8 +219,7 @@ async fn get_permissions(
     }
     enrich_permission_names(state.store.as_ref(), &mut entries).await;
 
-    // Policy decision audit is emitted automatically by the Authz seam
-    // (via the evaluate() calls in authorize_read above).
+    // Policy decision audit is emitted automatically by the Authz seam.
 
     let response = CredentialPermissionsResponse {
         credential_id: id,
@@ -377,9 +262,9 @@ async fn grant_permission(
     }
 
     // Validate mode
-    let is_deny = match req.mode.as_str() {
-        "grant" => false,
-        "deny" => true,
+    let mode = match req.mode.as_str() {
+        "grant" => "grant",
+        "deny" => "deny",
         _ => {
             return Err(ApiError::BadRequest(
                 "mode must be 'grant' or 'deny'".to_string(),
@@ -387,81 +272,18 @@ async fn grant_permission(
         }
     };
 
-    let cred_id = CredentialId(id);
-    load_and_authorize(&state, &actor, &cred_id).await?;
-
-    let target_agent_id = WorkspaceId(req.workspace_id);
-
-    // Verify target workspace exists
-    state
-        .store
-        .get_workspace(&target_agent_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("target workspace not found".to_string()))?;
-
-    // Grant each permission by creating Cedar policies via grant service
-    let mode = if is_deny { "deny" } else { "grant" };
-    let mut granted = Vec::new();
-    for perm in &perms_to_grant {
-        let cedar_actions = permission_to_cedar_actions(perm);
-
-        for cedar_action in &cedar_actions {
-            crate::grants::ensure_credential_grant(
-                &state,
-                &cred_id,
-                &target_agent_id,
-                cedar_action,
-                perm,
-                mode,
-            )
-            .await?;
-        }
-
-        granted.push(perm.clone());
-
-        // Audit event per permission
-        let (ws_id, ws_name, u_id, u_name) = actor.audit_actor_fields();
-        let event = agent_cordon_core::domain::audit::AuditEvent::builder(
-            agent_cordon_core::domain::audit::AuditEventType::CredentialUpdated,
+    let granted = state
+        .services
+        .policies
+        .grant_credential_permissions(
+            &actor,
+            &corr.0,
+            &CredentialId(id),
+            &WorkspaceId(req.workspace_id),
+            &perms_to_grant,
+            mode,
         )
-        .action("grant_permission")
-        .actor_fields(ws_id, ws_name, u_id, u_name)
-        .resource("credential", &id.to_string())
-        .correlation_id(&corr.0)
-        .decision(
-            agent_cordon_core::domain::audit::AuditDecision::Permit,
-            Some("bypass:manage_permissions"),
-        )
-        .details(serde_json::json!({
-            "target_agent_id": req.workspace_id.to_string(),
-            "permission": perm,
-            "mode": req.mode,
-        }))
-        .build();
-        if let Err(e) = state.store.append_audit_event(&event).await {
-            tracing::warn!(error = %e, "Failed to write audit event");
-        }
-    }
-
-    // Notify devices that policies changed (grants/denies ARE Cedar policies)
-    let event_prefix = if is_deny { "deny" } else { "grant" };
-    for perm in &granted {
-        let cedar_actions = permission_to_cedar_actions(perm);
-        for cedar_action in &cedar_actions {
-            let policy_name = format!(
-                "{}:{}:{}:{}",
-                event_prefix, cred_id.0, req.workspace_id, cedar_action
-            );
-            state
-                .event_bus
-                .emit(crate::events::DeviceEvent::PolicyChanged { policy_name });
-        }
-    }
-
-    // Emit UI event for browser auto-refresh (credential detail page)
-    state
-        .ui_event_bus
-        .emit(UiEvent::CredentialUpdated { credential_id: id });
+        .await?;
 
     Ok(Json(ApiResponse::ok(GrantPermissionResponse { granted })))
 }
@@ -477,72 +299,20 @@ async fn set_permissions(
         validate_permission(&grant.permission)?;
     }
 
-    let cred_id = CredentialId(id);
-    load_and_authorize(&state, &actor, &cred_id).await?;
+    let grants: Vec<ServiceGrant> = req
+        .permissions
+        .into_iter()
+        .map(|g| ServiceGrant {
+            workspace_id: WorkspaceId(g.workspace_id),
+            permission: g.permission,
+        })
+        .collect();
 
-    // Delete all existing grant policies for this credential
-    let prefix = format!("grant:{}:", cred_id.0);
-    state.store.delete_policies_by_name_prefix(&prefix).await?;
-
-    // Create new grant policies via grant service
-    for grant in &req.permissions {
-        let cedar_actions = permission_to_cedar_actions(&grant.permission);
-        let target_ws = WorkspaceId(grant.workspace_id);
-        for cedar_action in &cedar_actions {
-            crate::grants::ensure_credential_grant(
-                &state,
-                &cred_id,
-                &target_ws,
-                cedar_action,
-                &grant.permission,
-                "grant",
-            )
-            .await?;
-        }
-    }
-
-    // Audit event for bulk permission set
-    let (ws_id, ws_name, u_id, u_name) = actor.audit_actor_fields();
-    let event = agent_cordon_core::domain::audit::AuditEvent::builder(
-        agent_cordon_core::domain::audit::AuditEventType::CredentialUpdated,
-    )
-    .action("set_permissions")
-    .actor_fields(ws_id, ws_name, u_id, u_name)
-    .resource("credential", &id.to_string())
-    .correlation_id(&corr.0)
-    .decision(
-        agent_cordon_core::domain::audit::AuditDecision::Permit,
-        Some("bypass:manage_permissions"),
-    )
-    .details(serde_json::json!({
-        "permissions": req.permissions.iter().map(|g| serde_json::json!({
-            "workspace_id": g.workspace_id.to_string(),
-            "permission": g.permission,
-        })).collect::<Vec<_>>(),
-    }))
-    .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
-
-    // Notify devices that policies changed (grants ARE Cedar policies)
-    for grant in &req.permissions {
-        let cedar_actions = permission_to_cedar_actions(&grant.permission);
-        for cedar_action in &cedar_actions {
-            let policy_name = format!(
-                "grant:{}:{}:{}",
-                cred_id.0, grant.workspace_id, cedar_action
-            );
-            state
-                .event_bus
-                .emit(crate::events::DeviceEvent::PolicyChanged { policy_name });
-        }
-    }
-
-    // Emit UI event for browser auto-refresh (credential detail page)
     state
-        .ui_event_bus
-        .emit(UiEvent::CredentialUpdated { credential_id: id });
+        .services
+        .policies
+        .set_credential_permissions(&actor, &corr.0, &CredentialId(id), &grants)
+        .await?;
 
     Ok(Json(ApiResponse::ok(
         serde_json::json!({ "updated": true }),
@@ -556,54 +326,18 @@ async fn revoke_permission(
     Path((id, agent_id, permission)): Path<(Uuid, Uuid, String)>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
     validate_permission(&permission)?;
-    let cred_id = CredentialId(id);
-    load_and_authorize(&state, &actor, &cred_id).await?;
 
-    // Delete the Cedar grant policies for this permission
-    let cedar_actions = permission_to_cedar_actions(&permission);
-    for cedar_action in &cedar_actions {
-        let policy_name = format!("grant:{}:{}:{}", cred_id.0, agent_id, cedar_action);
-        state.store.delete_policy_by_name(&policy_name).await?;
-    }
-
-    // Reload policy engine
-    super::policies::reload_engine(&state).await?;
-
-    // Audit event for permission revocation
-    let (ws_id, ws_name, u_id, u_name) = actor.audit_actor_fields();
-    let event = agent_cordon_core::domain::audit::AuditEvent::builder(
-        agent_cordon_core::domain::audit::AuditEventType::CredentialUpdated,
-    )
-    .action("revoke_permission")
-    .actor_fields(ws_id, ws_name, u_id, u_name)
-    .resource("credential", &id.to_string())
-    .correlation_id(&corr.0)
-    .decision(
-        agent_cordon_core::domain::audit::AuditDecision::Permit,
-        Some("bypass:manage_permissions"),
-    )
-    .details(serde_json::json!({
-        "target_agent_id": agent_id.to_string(),
-        "permission": permission,
-    }))
-    .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
-
-    // Notify devices that policies changed (grants ARE Cedar policies)
-    let cedar_actions_rev = permission_to_cedar_actions(&permission);
-    for cedar_action in &cedar_actions_rev {
-        let policy_name = format!("grant:{}:{}:{}", cred_id.0, agent_id, cedar_action);
-        state
-            .event_bus
-            .emit(crate::events::DeviceEvent::PolicyChanged { policy_name });
-    }
-
-    // Emit UI event for browser auto-refresh (credential detail page)
     state
-        .ui_event_bus
-        .emit(UiEvent::CredentialUpdated { credential_id: id });
+        .services
+        .policies
+        .revoke_credential_permission(
+            &actor,
+            &corr.0,
+            &CredentialId(id),
+            &WorkspaceId(agent_id),
+            &permission,
+        )
+        .await?;
 
     Ok(Json(ApiResponse::ok(
         serde_json::json!({ "revoked": true }),

@@ -2,6 +2,14 @@
 name = "agentcordon-broker"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Not on crates.io: the release artifacts are the tagged binaries and the
+# container image, not a registry upload.
+publish = false
+# One integration-test binary (tests/main.rs lists the modules); see the
+# server crate for the same shape.
+autotests = false
 
 [[bin]]
 name = "agentcordon-broker"
@@ -9,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 agent-cordon-core = { path = "../core" }
+agentcordon-identity = { path = "../identity" }
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full", "signal"] }
 serde = { version = "1", features = ["derive"] }
@@ -32,11 +41,51 @@ hex = "0.4"
 thiserror = "2"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 async-trait = "0.1"
-futures-util = "0.3"
 urlencoding = "2"
 dirs = "5"
-dashmap = { workspace = true }
+subtle = "2"
+# TLS termination on the broker's own listener. `ring` (not aws-lc-rs) to
+# match the provider reqwest's `rustls-tls` feature selects, so one provider
+# is linked and neither side depends on a process-wide default.
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "tls12",
+    "logging",
+] }
+rustls-pki-types = { version = "1", features = ["std"] }
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = [
+    "server",
+    "server-auto",
+    "server-graceful",
+    "service",
+    "tokio",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+# Form decoding, so a wire-contract test can read a recorded request back
+# into the server's own request type.
+serde_urlencoded = "0.7"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+
+[package.metadata.release]
+# The CHANGELOG is the workspace's, not this crate's. cargo-release runs
+# pre-release-replacements once per released package, so only
+# agent-cordon-server rewrites it (see release.toml).
+pre-release-replacements = []

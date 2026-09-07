@@ -23,7 +23,7 @@
 use crate::common;
 
 use agent_cordon_core::domain::user::UserRole;
-use agent_cordon_server::routes::admin_api::mcp_templates::McpServerTemplate;
+use agent_cordon_server::templates::McpServerTemplate;
 use agent_cordon_server::test_helpers::{TestAppBuilder, TestContext};
 use axum::http::{Method, StatusCode};
 use serde_json::{json, Value};
@@ -951,8 +951,8 @@ async fn test_audit_events_for_dcr() {
     assert!(
         serialized
             .iter()
-            .any(|s| s.contains("o_auth_provider_client_created")),
-        "expected an OAuthProviderClientCreated audit event; got: {serialized:?}"
+            .any(|s| s.contains("\"oauth_provider_client_created\"")),
+        "expected an oauth_provider_client_created audit event; got: {serialized:?}"
     );
 
     // Failure path: timeout should emit a discovery-failure event.
@@ -978,7 +978,278 @@ async fn test_audit_events_for_dcr() {
     assert!(
         serialized2
             .iter()
-            .any(|s| s.contains("o_auth_provider_discovery_failed")),
-        "expected an OAuthProviderDiscoveryFailed audit event on timeout; got: {serialized2:?}"
+            .any(|s| s.contains("\"oauth_provider_discovery_failed\"")),
+        "expected an oauth_provider_discovery_failed audit event on timeout; got: {serialized2:?}"
+    );
+}
+
+// ===========================================================================
+// D9 — RFC 9728: the authorization server lives on its own origin
+//
+// The MCP resource server and its authorization server are normally different
+// origins; that is precisely what `authorization_servers` in protected-resource
+// metadata is for. The origin lock belongs between the AS `issuer` and the
+// endpoints the AS advertises, not between the resource and the AS.
+// ===========================================================================
+
+/// A standalone RFC 8414 authorization server on its own origin.
+///
+/// `issuer_override` and `token_endpoint_override` let a test publish metadata
+/// that violates RFC 8414 (the issuer must identify the metadata URL) or that
+/// points an endpoint at a third origin.
+async fn start_mock_as(
+    issuer_override: Option<&str>,
+    token_endpoint_override: Option<&str>,
+) -> MockServer {
+    let server = MockServer::start().await;
+    let origin = server.uri();
+    let issuer = issuer_override.map_or_else(|| origin.clone(), ToString::to_string);
+    let token_endpoint =
+        token_endpoint_override.map_or_else(|| format!("{origin}/token"), ToString::to_string);
+
+    let metadata = json!({
+        "issuer": issuer,
+        "authorization_endpoint": format!("{origin}/authorize"),
+        "token_endpoint": token_endpoint,
+        "registration_endpoint": format!("{origin}/register"),
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": ["read", "write"],
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+    });
+
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/.well-known/oauth-authorization-server"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(&metadata)
+                .insert_header("content-type", "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(wm_method("POST"))
+        .and(wm_path("/register"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({
+                    "client_id": "dcr-client-123",
+                    "client_id_issued_at": 1_700_000_000_u64,
+                }))
+                .insert_header("content-type", "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    server
+}
+
+/// A resource server that publishes RFC 9728 metadata naming an AS elsewhere.
+async fn start_mock_resource(as_url: &str) -> MockServer {
+    let server = MockServer::start().await;
+    let body = json!({
+        "resource": server.uri(),
+        "authorization_servers": [as_url],
+    });
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/.well-known/oauth-protected-resource"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(&body)
+                .insert_header("content-type", "application/json"),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+/// Template with no `oauth2_resource_url` — discovery must start from the MCP
+/// endpoint's own 401 challenge.
+fn make_template_without_resource_url(key: &str, upstream_url: &str) -> McpServerTemplate {
+    serde_json::from_value(json!({
+        "key": key,
+        "name": key,
+        "description": format!("test template for {key}"),
+        "upstream_url": upstream_url,
+        "transport": "http",
+        "auth_method": "oauth2",
+        "category": "test",
+        "tags": [],
+        "icon": "",
+        "sort_order": 0_u32,
+        "oauth2_scopes": "read write",
+        "oauth2_prefer_dcr": true,
+    }))
+    .expect("template deserializes")
+}
+
+fn error_message(body: &Value) -> String {
+    body["error"]["message"]
+        .as_str()
+        .or_else(|| body["error"].as_str())
+        .or_else(|| body["message"].as_str())
+        .unwrap_or_default()
+        .to_lowercase()
+}
+
+// ---------------------------------------------------------------------------
+// D9 (a) — resource on origin A, authorization server on origin B
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_rfc9728_authorization_server_on_other_origin_is_accepted() {
+    let as_mock = start_mock_as(None, None).await;
+    let resource = start_mock_resource(&as_mock.uri()).await;
+
+    let template = make_template("rfc9728-cross-origin-as", &resource.uri());
+    let (ctx, cookie, ws_id) =
+        setup_with_template(template, "http://localhost:3140".to_string()).await;
+
+    let (status, body) = initiate_oauth(&ctx, &cookie, "rfc9728-cross-origin-as", &ws_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an AS on a different origin from the resource is the RFC 9728 shape: {body}"
+    );
+
+    let authorize_url = body["data"]["authorize_url"]
+        .as_str()
+        .or_else(|| body["authorize_url"].as_str())
+        .expect("authorize_url in response");
+    assert!(
+        authorize_url.starts_with(&format!("{}/authorize", as_mock.uri())),
+        "must redirect to the authorization server's own authorize endpoint, got {authorize_url}"
+    );
+
+    let (_, list) = list_provider_clients(&ctx, &cookie).await;
+    let items = list["data"].as_array().or_else(|| list.as_array()).unwrap();
+    let row = items
+        .iter()
+        .find(|r| {
+            r["authorization_server_url"]
+                .as_str()
+                .map(|u| u.trim_end_matches('/'))
+                == Some(as_mock.uri().trim_end_matches('/'))
+        })
+        .expect("provider client row keyed by the authorization server origin");
+    assert_eq!(row["registration_source"].as_str(), Some("dcr"));
+}
+
+// ---------------------------------------------------------------------------
+// D9 (b) — discovery through `WWW-Authenticate: Bearer resource_metadata="..."`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_discovery_follows_www_authenticate_resource_metadata() {
+    let as_mock = start_mock_as(None, None).await;
+
+    // The MCP server answers 401 with the RFC 9728 hint. Its metadata sits at a
+    // non-default path, so only a client that reads the header can find it.
+    let mcp = MockServer::start().await;
+    let prm_url = format!("{}/custom/prm", mcp.uri());
+    Mock::given(wm_method("GET"))
+        .and(wm_path("/custom/prm"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "resource": mcp.uri(),
+                    "authorization_servers": [as_mock.uri()],
+                }))
+                .insert_header("content-type", "application/json"),
+        )
+        .mount(&mcp)
+        .await;
+    Mock::given(wm_path("/mcp"))
+        .respond_with(ResponseTemplate::new(401).insert_header(
+            "WWW-Authenticate",
+            format!(r#"Bearer realm="mcp", resource_metadata="{prm_url}""#).as_str(),
+        ))
+        .mount(&mcp)
+        .await;
+
+    let template =
+        make_template_without_resource_url("rfc9728-challenge", &format!("{}/mcp", mcp.uri()));
+    let (ctx, cookie, ws_id) =
+        setup_with_template(template, "http://localhost:3140".to_string()).await;
+
+    let (status, body) = initiate_oauth(&ctx, &cookie, "rfc9728-challenge", &ws_id).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the 401 challenge names the resource metadata document: {body}"
+    );
+
+    let authorize_url = body["data"]["authorize_url"]
+        .as_str()
+        .or_else(|| body["authorize_url"].as_str())
+        .expect("authorize_url in response");
+    assert!(
+        authorize_url.starts_with(&format!("{}/authorize", as_mock.uri())),
+        "must redirect to the discovered authorization server, got {authorize_url}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D9 (c) — the AS may not scatter its endpoints across other origins
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_as_token_endpoint_on_third_origin_rejected() {
+    let as_mock = start_mock_as(None, Some("https://evil.example/token")).await;
+    let resource = start_mock_resource(&as_mock.uri()).await;
+
+    let template = make_template("rfc9728-third-origin-token", &resource.uri());
+    let (ctx, cookie, ws_id) =
+        setup_with_template(template, "http://localhost:3140".to_string()).await;
+
+    let (status, body) = initiate_oauth(&ctx, &cookie, "rfc9728-third-origin-token", &ws_id).await;
+    assert!(
+        status.is_client_error() || status == StatusCode::BAD_GATEWAY,
+        "a token_endpoint on a third origin must be refused, got {status} body={body}"
+    );
+    let err = error_message(&body);
+    assert!(
+        err.contains("origin"),
+        "error should name the origin violation, got: {err}"
+    );
+
+    let (_, list) = list_provider_clients(&ctx, &cookie).await;
+    let items = list["data"].as_array().or_else(|| list.as_array()).unwrap();
+    assert!(
+        items.is_empty(),
+        "no provider client should be stored, got {items:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D9 (d) — RFC 8414: the issuer must identify the metadata URL
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_as_issuer_not_matching_metadata_url_rejected() {
+    let as_mock = start_mock_as(Some("https://issuer.evil.example"), None).await;
+    let resource = start_mock_resource(&as_mock.uri()).await;
+
+    let template = make_template("rfc8414-issuer-mismatch", &resource.uri());
+    let (ctx, cookie, ws_id) =
+        setup_with_template(template, "http://localhost:3140".to_string()).await;
+
+    let (status, body) = initiate_oauth(&ctx, &cookie, "rfc8414-issuer-mismatch", &ws_id).await;
+    assert!(
+        status.is_client_error() || status == StatusCode::BAD_GATEWAY,
+        "an issuer that does not match the metadata URL must be refused, got {status} body={body}"
+    );
+    let err = error_message(&body);
+    assert!(
+        err.contains("issuer"),
+        "error should name the issuer mismatch, got: {err}"
+    );
+
+    let (_, list) = list_provider_clients(&ctx, &cookie).await;
+    let items = list["data"].as_array().or_else(|| list.as_array()).unwrap();
+    assert!(
+        items.is_empty(),
+        "no provider client should be stored, got {items:?}"
     );
 }

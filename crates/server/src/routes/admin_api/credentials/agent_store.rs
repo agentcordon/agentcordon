@@ -5,15 +5,12 @@
 use axum::{extract::State, Json};
 use serde::Deserialize;
 
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::CredentialSummary;
-use agent_cordon_core::policy::actions;
-use agent_cordon_core::policy::{PolicyPrincipal, PolicyResource};
 
-use crate::credential_service::{self, NewCredentialParams};
 use crate::extractors::AuthenticatedWorkspace;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::credentials::NewCredentialParams;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -25,7 +22,12 @@ pub(crate) struct AgentStoreRequest {
     tags: Option<Vec<String>>,
     scopes: Option<Vec<String>>,
     metadata: Option<serde_json::Value>,
-    vault: Option<String>,
+    /// Optional vault, by id. A workspace may only use the system default,
+    /// so anything else is refused by the placement rule.
+    vault_id: Option<String>,
+    /// Fences the credential to a URL pattern, checked on every vend. Absent
+    /// or blank means unrestricted: the credential may be proxied anywhere.
+    allowed_url_pattern: Option<String>,
     /// Workspace ID from caller (ignored — derived from JWT for security).
     #[allow(dead_code)]
     workspace_id: Option<String>,
@@ -48,13 +50,9 @@ pub(crate) async fn agent_store_credential(
     auth.require_scope(agent_cordon_core::oauth2::types::OAuthScope::CredentialsVend)?;
     let workspace = &auth.workspace;
 
-    if !workspace.enabled {
+    if !workspace.is_active() {
         return Err(ApiError::Forbidden("workspace is disabled".to_string()));
     }
-
-    // Use workspace identity from validated JWT
-    let workspace_id = workspace.id.clone();
-    let workspace_name = workspace.name.clone();
 
     // Validate required fields
     if req.name.trim().is_empty() {
@@ -67,25 +65,14 @@ pub(crate) async fn agent_store_credential(
         return Err(ApiError::BadRequest("secret_value is required".to_string()));
     }
 
-    // Validate credential_type
     let credential_type = req.credential_type.unwrap_or_else(|| "generic".to_string());
-    credential_service::validate_credential_type(&credential_type)?;
 
-    // Cedar policy evaluation — workspace must be authorized to create
-    // credentials. The Authz seam auto-emits a PolicyEvaluated audit
-    // event on both permit and deny, so we no longer need a separate
-    // CredentialCreated/Forbid event here.
-    state
-        .authz
-        .request(
-            crate::authz::PolicyCaller::Principal {
-                principal: PolicyPrincipal::Workspace(workspace),
-                oauth_claims: auth.oauth_claims.clone(),
-            },
-            &corr.0,
-        )
-        .check(actions::CREATE, &PolicyResource::System)
-        .await?;
+    // A blank pattern is "unrestricted", not "a pattern that matches
+    // nothing" — the same normalisation the update route applies.
+    let allowed_url_pattern = req
+        .allowed_url_pattern
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
 
     // Auto-add llm_exposed tag
     let mut tags = req.tags.unwrap_or_default();
@@ -93,66 +80,34 @@ pub(crate) async fn agent_store_credential(
         tags.push("llm_exposed".to_string());
     }
 
-    // Build credential via shared service (generates ID, encrypts secret)
-    let cred = credential_service::build_credential(
-        state.encryptor.as_ref(),
-        NewCredentialParams {
-            name: req.name.clone(),
-            service: req.service.clone(),
-            secret_value: req.secret_value,
-            credential_type,
-            scopes: req.scopes.unwrap_or_default(),
-            metadata: req
-                .metadata
-                .unwrap_or(serde_json::Value::Object(Default::default())),
-            tags,
-            vault: req.vault.unwrap_or_else(|| "default".to_string()),
-            created_by: Some(workspace_id.clone()),
-            created_by_user: workspace.owner_id.clone(),
-            allowed_url_pattern: None,
-            expires_at: None,
-            transform_script: None,
-            transform_name: None,
-            description: None,
-            target_identity: None,
-        },
-    )?;
-
-    // Try to store the credential; on conflict, return 409.
-    // Do NOT return metadata about the existing credential — that would leak
-    // information about other workspaces' credentials on name collision.
-    match state.store.store_credential(&cred).await {
-        Ok(()) => {}
-        Err(agent_cordon_core::error::StoreError::Conflict { .. }) => {
-            return Err(ApiError::Conflict(
-                "credential with this name already exists".to_string(),
-            ));
-        }
-        Err(e) => return Err(e.into()),
-    };
-
-    // Audit event
-    let event = AuditEvent::builder(AuditEventType::CredentialCreated)
-        .action("create")
-        .workspace_actor(&workspace_id, &workspace_name)
-        .resource("credential", &cred.id.0.to_string())
-        .correlation_id(&corr.0)
-        .decision(
-            AuditDecision::Permit,
-            Some("workspace-initiated credential creation"),
+    let cred = state
+        .services
+        .credentials
+        .create_from_workspace(
+            &auth,
+            &corr.0,
+            NewCredentialParams {
+                name: req.name,
+                service: req.service,
+                secret_value: req.secret_value,
+                credential_type,
+                scopes: req.scopes.unwrap_or_default(),
+                metadata: req
+                    .metadata
+                    .unwrap_or(serde_json::Value::Object(Default::default())),
+                tags,
+                vault_id: req.vault_id,
+                created_by: Some(workspace.id.clone()),
+                created_by_user: workspace.owner_id.clone(),
+                allowed_url_pattern,
+                expires_at: None,
+                transform_script: None,
+                transform_name: None,
+                description: None,
+                target_identity: None,
+            },
         )
-        .details(serde_json::json!({
-            "credential_name": req.name,
-            "service": req.service,
-            "source": "workspace",
-            "llm_exposed": true,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
-
-    credential_service::emit_credential_created(&state, cred.id.0, req.name.clone());
+        .await?;
 
     Ok(Json(ApiResponse::ok(CredentialSummary::from(cred))))
 }

@@ -30,9 +30,9 @@
     },
     {
       "key": "aws_service",
-      "label": "Service",
+      "label": "AWS service",
       "placeholder": "s3",
-      "help": "Default AWS service name (e.g. s3, execute-api). Optional.",
+      "help": "The AWS service the signature is scoped to (e.g. s3, execute-api). Not the credential's own Service above. Optional.",
       "mono": true
     }
   ],

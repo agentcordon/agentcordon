@@ -1,16 +1,12 @@
 use std::collections::HashMap;
 
 use axum::{extract::State, Json};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
-use agent_cordon_core::domain::mcp::{McpServer, McpServerId, McpTransport};
-use agent_cordon_core::policy::{actions, PolicyResource};
-
-use crate::events::UiEvent;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::mcp_servers::{ImportEntry, ImportOutcome};
 use crate::state::AppState;
 
 // --- Request/Response Types ---
@@ -49,13 +45,6 @@ pub(super) struct ImportToolEntry {
     input_schema: Option<serde_json::Value>,
 }
 
-#[derive(Serialize)]
-pub(super) struct ImportMcpServerResult {
-    name: String,
-    id: String,
-    status: String, // "created" | "existing" | "updated"
-}
-
 /// `POST /api/v1/mcp-servers/import` -- workspace-authenticated bulk MCP import.
 ///
 /// Workspaces forward agent MCP uploads to this endpoint. For each server entry:
@@ -69,7 +58,7 @@ pub(super) async fn import_mcp_servers(
     actor: crate::extractors::AuthenticatedActor,
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<ImportMcpServersRequest>,
-) -> Result<Json<ApiResponse<Vec<ImportMcpServerResult>>>, ApiError> {
+) -> Result<Json<ApiResponse<Vec<ImportOutcome>>>, ApiError> {
     // For workspace auth: verify the workspace_id matches the authenticated workspace
     if let crate::extractors::AuthenticatedActor::Workspace { ref workspace, .. } = actor {
         if workspace.id.0 != req.workspace_id {
@@ -79,168 +68,30 @@ pub(super) async fn import_mcp_servers(
         }
     }
 
-    // Cedar policy check: actor must be authorized to create resources.
-    let _policy_context = actor.policy_context(Some(corr.0.clone()));
-    state
-        .authz
-        .request(
-            crate::authz::PolicyCaller::Principal {
-                principal: actor.policy_principal(),
-                oauth_claims: None,
-            },
-            &uuid::Uuid::new_v4().to_string(),
-        )
-        .check(actions::CREATE, &PolicyResource::System)
-        .await?;
-
-    let ws_id = agent_cordon_core::domain::workspace::WorkspaceId(req.workspace_id);
-    let now = chrono::Utc::now();
-
-    // Resolve the workspace owner to set created_by_user on imported servers.
-    let created_by_user = state
-        .store
-        .get_workspace(&ws_id)
-        .await?
-        .and_then(|ws| ws.owner_id);
-
-    let mut results = Vec::new();
-
-    for entry in &req.servers {
-        let name = entry.name.trim().to_string();
-        if name.is_empty() {
-            continue;
-        }
-        if name.contains('.') {
-            continue; // dots break scope format
-        }
-
-        // Check if (device_id, name) already exists
-        if let Some(existing) = state
-            .store
-            .get_mcp_server_by_workspace_and_name(&ws_id, &name)
-            .await?
-        {
-            // Update tools on existing server if it has none and import provides them
-            let status = if existing.allowed_tools.is_none() {
-                if let Some(ref tools) = entry.tools {
-                    if !tools.is_empty() {
-                        let mut updated = existing.clone();
-                        updated.allowed_tools =
-                            Some(tools.iter().map(|t| t.name.clone()).collect());
-                        state.store.update_mcp_server(&updated).await?;
-                        "updated"
-                    } else {
-                        "existing"
-                    }
-                } else {
-                    "existing"
-                }
-            } else {
-                "existing"
-            };
-            results.push(ImportMcpServerResult {
-                name,
-                id: existing.id.0.to_string(),
-                status: status.to_string(),
-            });
-            continue;
-        }
-
-        let transport = match entry.transport.as_deref() {
-            Some("sse") => McpTransport::Sse,
-            Some("http") | None => McpTransport::Http,
-            Some(other) => {
-                return Err(ApiError::BadRequest(format!(
-                    "unsupported transport '{}' for MCP server '{}'",
-                    other, name
-                )));
-            }
-        };
-        let upstream_url = entry.url.clone().unwrap_or_default();
-
-        let allowed_tools = entry
-            .tools
-            .as_ref()
-            .map(|tools| tools.iter().map(|t| t.name.clone()).collect());
-
-        let server = McpServer {
-            id: McpServerId(Uuid::new_v4()),
-            // #37: junction is the source of truth — legacy column stays None
-            // and the binding is created below via add_mcp_server_workspace.
-            workspace_id: None,
-            name: name.clone(),
-            upstream_url,
-            transport,
-            allowed_tools,
-            enabled: true,
-            created_by: req
-                .uploading_workspace_id
+    let entries = req
+        .servers
+        .into_iter()
+        .map(|e| ImportEntry {
+            name: e.name,
+            transport: e.transport,
+            url: e.url,
+            tools: e
+                .tools
+                .map(|tools| tools.into_iter().map(|t| t.name).collect()),
+            required_credentials: e.required_credentials,
+        })
+        .collect();
+    let results = state
+        .services
+        .mcp_servers
+        .import(
+            &actor,
+            &corr.0,
+            agent_cordon_core::domain::workspace::WorkspaceId(req.workspace_id),
+            req.uploading_workspace_id
                 .map(agent_cordon_core::domain::workspace::WorkspaceId),
-            created_at: now,
-            updated_at: now,
-            tags: vec![],
-            required_credentials: entry.required_credentials.as_ref().map(|creds| {
-                creds
-                    .iter()
-                    .filter_map(|s| {
-                        uuid::Uuid::parse_str(s)
-                            .ok()
-                            .map(agent_cordon_core::domain::credential::CredentialId)
-                    })
-                    .collect()
-            }),
-            auth_method: agent_cordon_core::domain::mcp::McpAuthMethod::None,
-            template_key: None,
-            discovered_tools: None,
-            created_by_user: created_by_user.clone(),
-        };
-
-        state.store.create_mcp_server(&server).await?;
-
-        // Bind the imported MCP to its target workspace in the junction.
-        // Migration 010 only backfills pre-existing rows; newly imported MCPs
-        // need their own junction row or broker sync won't see them.
-        // See provision.rs §7a.
-        state
-            .store
-            .add_mcp_server_workspace(&server.id, &ws_id, created_by_user.as_ref())
-            .await?;
-
-        // Audit event -- record the Cedar policy decision instead of a bypass marker
-        let mut builder = AuditEvent::builder(AuditEventType::McpServerRegistered)
-            .action("import")
-            .resource("mcp_server", &server.id.0.to_string())
-            .correlation_id(&corr.0)
-            .decision(AuditDecision::Permit, None)
-            .details(serde_json::json!({
-                "server_name": name,
-                "device_id": req.workspace_id.to_string(),
-                "source": "agent_upload",
-            }));
-        if let Some(ws_id) = req.uploading_workspace_id {
-            builder = builder.actor_fields(
-                Some(agent_cordon_core::domain::workspace::WorkspaceId(ws_id)),
-                None,
-                None,
-                None,
-            );
-        }
-        let event = builder.build();
-        if let Err(e) = state.store.append_audit_event(&event).await {
-            tracing::warn!(error = %e, "Failed to write audit event");
-        }
-
-        // Notify UI of new MCP server
-        state.ui_event_bus.emit(UiEvent::McpServerChanged {
-            server_name: name.clone(),
-        });
-
-        results.push(ImportMcpServerResult {
-            name,
-            id: server.id.0.to_string(),
-            status: "created".to_string(),
-        });
-    }
-
+            entries,
+        )
+        .await?;
     Ok(Json(ApiResponse::ok(results)))
 }

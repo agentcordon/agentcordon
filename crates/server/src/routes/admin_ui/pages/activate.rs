@@ -27,9 +27,9 @@ use agent_cordon_core::domain::user::User;
 use agent_cordon_core::oauth2::eff_wordlist::normalize_user_code;
 use agent_cordon_core::oauth2::types::DeviceCodeStatus;
 
-use crate::device_code_service::DeviceCodeService;
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
+use crate::response::ApiError;
 use crate::routes::oauth::authorize::{compute_csrf_token, extract_session_token};
 use crate::routes::oauth::device::provision_workspace_for_approved_device_code;
 use crate::state::AppState;
@@ -51,6 +51,12 @@ struct ActivatePage {
     /// they are authorizing — critical in cross-context flows where the code
     /// was generated on a different machine than the browser.
     workspace_name: Option<String>,
+    /// Raw-hex key hash the code binds, when the issuer supplied one, so the
+    /// approver can compare it with the terminal.
+    pk_hash: Option<String>,
+    /// Name of the workspace that already holds `pk_hash`, when one does.
+    /// Approving then re-registers that workspace rather than creating one.
+    existing_workspace: Option<String>,
     scopes_description: Vec<String>,
     csrf_token: String,
 }
@@ -111,13 +117,15 @@ pub async fn get(
             error_message: None,
             user_code_prefill: None,
             workspace_name: None,
+            pk_hash: None,
+            existing_workspace: None,
             scopes_description: vec![],
             csrf_token: csrf,
         });
     };
 
     let user_code = normalize_user_code(user_code_raw);
-    let service = DeviceCodeService::new(state.store.clone());
+    let service = &state.services.device_codes;
     match service.get_by_user_code(&user_code).await {
         Ok(None) => Redirect::to("/activate/expired").into_response(),
         Ok(Some(row)) => match row.status {
@@ -126,13 +134,33 @@ pub async fn get(
             }
             DeviceCodeStatus::Denied => Redirect::to("/activate/denied").into_response(),
             DeviceCodeStatus::Approved => Redirect::to("/activate/success").into_response(),
-            DeviceCodeStatus::Pending => render_template(&ActivatePage {
-                error_message: None,
-                user_code_prefill: Some(user_code),
-                workspace_name: row.workspace_name_prefill.clone(),
-                scopes_description: row.scopes.iter().map(|s| s.to_string()).collect(),
-                csrf_token: csrf,
-            }),
+            DeviceCodeStatus::Pending => {
+                let pk_hash = row
+                    .pk_hash_prefill
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|h| !h.is_empty())
+                    .map(|h| h.strip_prefix("sha256:").unwrap_or(h).to_string());
+                let existing_workspace = match pk_hash.as_deref() {
+                    Some(hash) => match state.store.get_workspace_by_pk_hash(hash).await {
+                        Ok(found) => found.map(|ws| ws.name),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "workspace lookup by key hash failed on GET /activate");
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                render_template(&ActivatePage {
+                    error_message: None,
+                    user_code_prefill: Some(user_code),
+                    workspace_name: row.workspace_name_prefill.clone(),
+                    pk_hash,
+                    existing_workspace,
+                    scopes_description: row.scopes.iter().map(|s| s.to_string()).collect(),
+                    csrf_token: csrf,
+                })
+            }
         },
         Err(e) => {
             tracing::error!(error = %e, "device_code lookup failed on GET /activate");
@@ -140,6 +168,8 @@ pub async fn get(
                 error_message: Some("Something went wrong. Please try again.".to_string()),
                 user_code_prefill: Some(user_code),
                 workspace_name: None,
+                pk_hash: None,
+                existing_workspace: None,
                 scopes_description: vec![],
                 csrf_token: csrf,
             })
@@ -162,10 +192,10 @@ pub async fn post(
     // Validate CSRF: recompute from the session cookie using HMAC, compare
     // constant-time against the submitted hidden form field.
     let Some(expected) = compute_expected_csrf(&state, &headers) else {
-        return (StatusCode::UNAUTHORIZED, "session required").into_response();
+        return ApiError::Unauthorized("session required".to_string()).into_html_response();
     };
     if !bool::from(form.csrf_token.as_bytes().ct_eq(expected.as_bytes())) {
-        return (StatusCode::FORBIDDEN, "invalid csrf_token").into_response();
+        return ApiError::Forbidden("invalid csrf_token".to_string()).into_html_response();
     }
 
     // Policy gate — mirrors the API `/oauth/device/approve` endpoint. Without
@@ -181,26 +211,31 @@ pub async fn post(
         is_root: user.is_root,
         user: user.clone(),
     };
-    if let Err(e) = crate::routes::admin_api::check_cedar_permission(
-        &state,
-        &auth,
-        agent_cordon_core::policy::actions::MANAGE_WORKSPACES,
-        agent_cordon_core::policy::PolicyResource::System,
-    )
-    .await
+    if let Err(e) = state
+        .authz
+        .authorize(
+            &auth,
+            agent_cordon_core::policy::actions::MANAGE_WORKSPACES,
+            &agent_cordon_core::policy::PolicyResource::System,
+        )
+        .await
     {
         return match e {
             // HTML-first UX: re-render the activate page with a user-friendly
             // message instead of the raw 403 JSON payload the API sibling
             // returns. The audit event was already emitted inside evaluate().
-            crate::response::ApiError::Forbidden(_) => render_with_error(
-                &state,
-                &headers,
-                Some(normalize_user_code(form.user_code.trim())),
-                "You do not have permission to approve device activations. \
-                 Contact your administrator.",
-            ),
-            other => other.into_response(),
+            ApiError::Forbidden(_) => {
+                let mut response = render_with_error(
+                    &state,
+                    &headers,
+                    Some(normalize_user_code(form.user_code.trim())),
+                    "You do not have permission to approve device activations. \
+                     Contact your administrator.",
+                );
+                *response.status_mut() = StatusCode::FORBIDDEN;
+                response
+            }
+            other => other.into_html_response(),
         };
     }
 
@@ -209,7 +244,7 @@ pub async fn post(
         return render_with_error(&state, &headers, None, "Enter an activation code.");
     }
 
-    let service = DeviceCodeService::new(state.store.clone());
+    let service = &state.services.device_codes;
     let row = match service.get_by_user_code(&user_code).await {
         Ok(Some(r)) => r,
         Ok(None) => {
@@ -240,6 +275,24 @@ pub async fn post(
             Some(user_code),
             "This activation code is no longer valid.",
         );
+    }
+
+    // Same rule as the API approve route: a key hash already bound to a
+    // workspace is re-bound only by that workspace's owner or an admin, and
+    // never when the workspace is revoked. Decided before the row flips.
+    if let Err(e) = crate::routes::oauth::device::refuse_if_bound_workspace_is_not_reregisterable(
+        &state, &auth, &row,
+    )
+    .await
+    {
+        return match e {
+            ApiError::Forbidden(msg) => {
+                let mut response = render_with_error(&state, &headers, Some(user_code), &msg);
+                *response.status_mut() = StatusCode::FORBIDDEN;
+                response
+            }
+            other => other.into_html_response(),
+        };
     }
 
     match form.decision.as_str() {
@@ -321,7 +374,7 @@ pub async fn post(
                 )
             }
         },
-        _ => (StatusCode::BAD_REQUEST, "invalid decision").into_response(),
+        _ => ApiError::BadRequest("invalid decision".to_string()).into_html_response(),
     }
 }
 
@@ -351,7 +404,10 @@ pub async fn expired_page() -> Response {
 /// server-side CSRF state is needed.
 fn compute_expected_csrf(state: &AppState, headers: &HeaderMap) -> Option<String> {
     let session_token = extract_session_token(headers)?;
-    Some(compute_csrf_token(&session_token, &state.session_hash_key))
+    Some(compute_csrf_token(
+        &session_token,
+        &state.crypto.session_hash_key,
+    ))
 }
 
 /// Same as `compute_expected_csrf` but returns an empty string when the
@@ -371,20 +427,27 @@ fn csrf_for_request(state: &AppState, request: &Request) -> String {
 /// We don't re-look-up the scopes here — once the user hit Approve / Deny
 /// they've already seen the consent panel, and keeping the fallback path
 /// simple avoids extra DB round-trips.
+/// Re-render the form with an error. The status is 400 rather than 200 so
+/// a rejected code is visible as a failure to the rate limiter in front of
+/// this route; browsers render the body either way.
 fn render_with_error(
     state: &AppState,
     headers: &HeaderMap,
     user_code_prefill: Option<String>,
     error_message: &str,
 ) -> Response {
-    render_template(&ActivatePage {
+    let mut response = render_template(&ActivatePage {
         error_message: Some(error_message.to_string()),
         user_code_prefill,
         // On error re-render we don't re-look-up the device_code row, so we
         // don't have workspace_name_prefill available — leave blank. The
         // happy path GET /activate above is where the user sees it.
         workspace_name: None,
+        pk_hash: None,
+        existing_workspace: None,
         scopes_description: vec![],
         csrf_token: csrf_from_headers(state, headers),
-    })
+    });
+    *response.status_mut() = StatusCode::BAD_REQUEST;
+    response
 }

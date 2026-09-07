@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 
 use crate::domain::user::UserId;
+use crate::domain::workspace::WorkspaceId;
 use crate::error::StoreError;
 use crate::oauth2::types::{
-    OAuthAccessToken, OAuthAuthCode, OAuthClient, OAuthConsent, OAuthRefreshToken,
+    BearerResolution, OAuthAccessToken, OAuthAuthCode, OAuthClient, OAuthConsent, OAuthRefreshToken,
 };
 
 /// Storage trait for OAuth 2.0 Authorization Server data.
@@ -23,6 +24,15 @@ pub trait OAuthStore: Send + Sync {
     async fn revoke_oauth_client(&self, client_id: &str) -> Result<bool, StoreError>;
     /// Hard-delete an OAuth client and all associated tokens, auth codes, and consents.
     async fn delete_oauth_client(&self, client_id: &str) -> Result<bool, StoreError>;
+    /// Insert `client`, deleting whichever client already holds its
+    /// `public_key_hash` (together with that client's tokens, auth codes,
+    /// and consents) in the same immediate transaction, so a failed insert
+    /// leaves the previous client in place. Returns the replaced client's
+    /// `client_id`.
+    async fn replace_oauth_client(
+        &self,
+        client: &OAuthClient,
+    ) -> Result<Option<String>, StoreError>;
 
     // --- Auth Codes ---
     async fn create_oauth_auth_code(&self, code: &OAuthAuthCode) -> Result<(), StoreError>;
@@ -31,6 +41,16 @@ pub trait OAuthStore: Send + Sync {
         code_hash: &str,
     ) -> Result<Option<OAuthAuthCode>, StoreError>;
     async fn consume_oauth_auth_code(&self, code_hash: &str) -> Result<bool, StoreError>;
+    /// Consume an unused code and mint the tokens it earns in one immediate
+    /// transaction. `Ok(false)` when the code was already consumed, in which
+    /// case nothing is minted; when a token insert fails the code stays
+    /// unconsumed.
+    async fn consume_oauth_auth_code_and_issue_tokens(
+        &self,
+        code_hash: &str,
+        access: &OAuthAccessToken,
+        refresh: &OAuthRefreshToken,
+    ) -> Result<bool, StoreError>;
 
     // --- Access Tokens ---
     async fn create_oauth_access_token(&self, token: &OAuthAccessToken) -> Result<(), StoreError>;
@@ -38,6 +58,19 @@ pub trait OAuthStore: Send + Sync {
         &self,
         token_hash: &str,
     ) -> Result<Option<OAuthAccessToken>, StoreError>;
+    /// Resolve a bearer token to its client state and workspace in one call.
+    /// `None` when no such token exists.
+    async fn resolve_bearer(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<BearerResolution>, StoreError>;
+    /// Point a client (and the tokens it has issued) at a workspace. Used
+    /// when a client that predates the binding is reused on re-registration.
+    async fn bind_oauth_client_workspace(
+        &self,
+        client_id: &str,
+        workspace_id: &WorkspaceId,
+    ) -> Result<(), StoreError>;
     async fn revoke_oauth_access_token(&self, token_hash: &str) -> Result<bool, StoreError>;
     async fn revoke_access_tokens_for_client(&self, client_id: &str) -> Result<u32, StoreError>;
 
@@ -50,6 +83,10 @@ pub trait OAuthStore: Send + Sync {
     ) -> Result<Option<OAuthRefreshToken>, StoreError>;
     async fn revoke_oauth_refresh_token(&self, token_hash: &str) -> Result<bool, StoreError>;
     async fn revoke_refresh_tokens_for_client(&self, client_id: &str) -> Result<u32, StoreError>;
+    /// Revoke every refresh token in a family and the access tokens minted
+    /// with them. Used when a retired refresh token is presented again.
+    /// Returns the number of refresh tokens revoked.
+    async fn revoke_oauth_refresh_token_family(&self, family_id: &str) -> Result<u32, StoreError>;
     /// Revoke all access tokens associated with a given refresh token.
     async fn revoke_access_tokens_for_refresh_token(
         &self,

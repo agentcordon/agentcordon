@@ -163,35 +163,9 @@
     font-size: var(--text-base);
 }
 
-.btn-approve {
-    background: var(--safe);
-    color: #fff;
-    border: none;
-}
-
-.btn-approve:hover:not(:disabled) {
-    background: #246632;
-}
-
-.btn-approve:focus-visible {
-    outline: 2px solid var(--safe);
-    outline-offset: 2px;
-}
-
-.btn-deny {
-    background: transparent;
-    color: var(--danger);
-    border: 1px solid rgba(194,48,48,0.3);
-}
-
-.btn-deny:hover:not(:disabled) {
-    background: var(--danger-hover-bg);
-}
-
-.btn-deny:focus-visible {
-    outline: 2px solid var(--danger);
-    outline-offset: 2px;
-}
+/* .btn-approve / .btn-deny live in vault.css: activate.html and
+   activate_confirm_replace.html use them too, and while they were private to
+   this page the device-activation buttons rendered as bare text. */
 
 /* Footer */
 .consent-footer {

@@ -42,6 +42,19 @@ impl CedarPolicyEngine {
 
         let policy_set = Self::parse_policies(&initial_policies)?;
 
+        // The same strict check the add/replace paths run. Without it, a
+        // policy seeded or edited directly in the database that names an
+        // unknown entity type or attribute would load, and every request it
+        // touched would fail evaluation (and so be denied) at runtime.
+        let result = validator.validate(&policy_set, ValidationMode::Strict);
+        if !result.validation_passed() {
+            let errors: Vec<String> = result.validation_errors().map(|e| format!("{e}")).collect();
+            return Err(PolicyError::Validation(format!(
+                "policy validation failed: {}",
+                errors.join("; ")
+            )));
+        }
+
         Ok(Self {
             schema,
             validator,
@@ -143,21 +156,32 @@ impl PolicyEngine for CedarPolicyEngine {
             .map_err(|e| PolicyError::Evaluation(format!("lock poisoned: {e}")))?;
         let response = authorizer.is_authorized(&request, &policy_set, &entities);
 
-        // Map decision
+        let diagnostics = response.diagnostics();
+        let mut reasons: Vec<String> = diagnostics.reason().map(|pid| pid.to_string()).collect();
+        let errors: Vec<String> = diagnostics.errors().map(|e| e.to_string()).collect();
+
+        // Cedar skips a policy that errors while evaluating and decides from
+        // the rest. For a `forbid` that means a typo in an attribute name
+        // silently stops forbidding. A decision the engine could not fully
+        // evaluate is not a decision this service acts on: fail closed.
         let decision = match response.decision() {
+            Decision::Allow if errors.is_empty() => PolicyDecisionResult::Permit,
             Decision::Allow => {
-                metrics::counter!("policy_evaluations_total", "decision" => "permit").increment(1);
-                PolicyDecisionResult::Permit
-            }
-            Decision::Deny => {
-                metrics::counter!("policy_evaluations_total", "decision" => "forbid").increment(1);
+                tracing::warn!(
+                    action = %action,
+                    errors = ?errors,
+                    "policy evaluation errored; treating Cedar's permit as a deny"
+                );
+                reasons.push("evaluation_error".to_string());
                 PolicyDecisionResult::Forbid
             }
+            Decision::Deny => PolicyDecisionResult::Forbid,
         };
-
-        let diagnostics = response.diagnostics();
-        let reasons: Vec<String> = diagnostics.reason().map(|pid| pid.to_string()).collect();
-        let errors: Vec<String> = diagnostics.errors().map(|e| e.to_string()).collect();
+        let label = match decision {
+            PolicyDecisionResult::Permit => "permit",
+            PolicyDecisionResult::Forbid => "forbid",
+        };
+        metrics::counter!("policy_evaluations_total", "decision" => label).increment(1);
 
         Ok(PolicyDecision {
             decision,

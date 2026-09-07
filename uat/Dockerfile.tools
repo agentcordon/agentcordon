@@ -1,0 +1,70 @@
+# UAT tools image: agentcordon-broker + agentcordon (CLI) built from this worktree.
+#
+# The builder stage is intentionally byte-identical to the repo Dockerfile's
+# builder up to the dependency-cache build, so `docker build` reuses those
+# layers from the server image build instead of recompiling every dependency.
+
+FROM rust:1-bookworm AS builder
+
+WORKDIR /build
+
+# Copy manifests first for dependency caching. Every workspace member must be
+# present or Cargo refuses to resolve the workspace.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/identity/Cargo.toml crates/identity/Cargo.toml
+COPY crates/core/Cargo.toml crates/core/Cargo.toml
+COPY crates/server/Cargo.toml crates/server/Cargo.toml
+COPY crates/broker/Cargo.toml crates/broker/Cargo.toml
+COPY crates/cli/Cargo.toml crates/cli/Cargo.toml
+
+# Stub every target the manifests declare so the dependency build succeeds
+# without real sources.
+RUN mkdir -p crates/identity/src crates/core/src crates/server/src crates/broker/src crates/cli/src \
+    && echo "pub fn _dummy() {}" > crates/identity/src/lib.rs \
+    && echo "pub fn _dummy() {}" > crates/core/src/lib.rs \
+    && echo "pub fn _dummy() {}" > crates/server/src/lib.rs \
+    && echo "fn main() {}" > crates/server/src/main.rs \
+    && echo "pub fn _dummy() {}" > crates/broker/src/lib.rs \
+    && echo "fn main() {}" > crates/broker/src/main.rs \
+    && echo "fn main() {}" > crates/cli/src/main.rs \
+    && mkdir -p policies migrations \
+    && touch policies/default.cedar \
+    && touch migrations/001_init.sql
+
+RUN cargo build --release --bin agent-cordon-server 2>/dev/null || true
+
+# Copy real source
+COPY crates/ crates/
+COPY policies/ policies/
+COPY migrations/ migrations/
+COPY docs/ docs/
+COPY data/ data/
+
+# Touch entry points so the stubs' fingerprints are invalidated
+RUN touch crates/identity/src/lib.rs crates/core/src/lib.rs crates/server/src/lib.rs crates/server/src/main.rs \
+    crates/broker/src/lib.rs crates/broker/src/main.rs crates/cli/src/main.rs
+
+RUN cargo build --release --bin agentcordon-broker --bin agentcordon
+
+# Runtime stage
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    python3 \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --home-dir /home/uat --shell /bin/bash uat
+
+COPY --from=builder /build/target/release/agentcordon-broker /usr/local/bin/agentcordon-broker
+COPY --from=builder /build/target/release/agentcordon /usr/local/bin/agentcordon
+
+RUN mkdir -p /data /home/uat/workspace && chown -R uat:uat /data /home/uat
+
+USER uat
+ENV HOME=/home/uat
+WORKDIR /home/uat/workspace
+
+CMD ["sleep", "infinity"]

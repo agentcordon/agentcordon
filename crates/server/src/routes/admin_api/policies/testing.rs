@@ -2,7 +2,6 @@ use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
 use agent_cordon_core::domain::policy::PolicyDecisionResult;
 use agent_cordon_core::domain::user::{User, UserId, UserRole};
@@ -13,8 +12,7 @@ use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
 use crate::state::AppState;
-
-use super::check_manage_policies;
+use agent_cordon_core::policy::actions;
 
 // --- Policy test endpoint types ---
 
@@ -134,7 +132,8 @@ fn build_test_resource(
                 expires_at: None,
                 transform_script: None,
                 transform_name: None,
-                vault: "default".to_string(),
+                vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+                vault_name: "default".to_string(),
                 credential_type: "generic".to_string(),
                 tags: attrs.tags.clone().unwrap_or_default(),
                 description: None,
@@ -151,8 +150,11 @@ fn build_test_resource(
                 id: WorkspaceId(resource_id),
                 name: attrs.name.clone().unwrap_or_default(),
                 tags: vec![],
-                enabled: attrs.enabled.unwrap_or(true),
-                status: WorkspaceStatus::Active,
+                status: if attrs.enabled.unwrap_or(true) {
+                    WorkspaceStatus::Active
+                } else {
+                    WorkspaceStatus::Disabled
+                },
                 pk_hash: None,
                 encryption_public_key: None,
                 owner_id: attrs.owner.as_ref().map(|o| UserId(id_to_uuid(o))),
@@ -186,7 +188,14 @@ pub(super) async fn test_policy(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<TestPolicyRequest>,
 ) -> Result<Json<ApiResponse<TestPolicyResponse>>, ApiError> {
-    let policy_decision = check_manage_policies(&state, &auth).await?;
+    let policy_decision = state
+        .authz
+        .authorize(
+            &auth,
+            actions::MANAGE_POLICIES,
+            &PolicyResource::PolicyAdmin,
+        )
+        .await?;
 
     // Validate required fields
     let principal_req = req
@@ -243,8 +252,11 @@ pub(super) async fn test_policy(
                 id: WorkspaceId(principal_id),
                 name: attrs.name.clone().unwrap_or_default(),
                 tags: attrs.tags.clone().unwrap_or_default(),
-                enabled: attrs.enabled.unwrap_or(true),
-                status: WorkspaceStatus::Active,
+                status: if attrs.enabled.unwrap_or(true) {
+                    WorkspaceStatus::Active
+                } else {
+                    WorkspaceStatus::Disabled
+                },
                 pk_hash: None,
                 encryption_public_key: None,
                 owner_id: attrs.owner.as_ref().map(|o| UserId(id_to_uuid(o))),
@@ -266,7 +278,8 @@ pub(super) async fn test_policy(
             for (k, v) in policy_context.claims.iter() {
                 req = req.claim(k.clone(), v.clone());
             }
-            req.check_with_reasons_blocking(&action, &resource)
+            req.check_with_reasons(&action, &resource)
+                .await
                 .map_err(|e| ApiError::BadRequest(format!("policy evaluation error: {e:?}")))?
         }
         "User" => {
@@ -295,7 +308,8 @@ pub(super) async fn test_policy(
             for (k, v) in policy_context.claims.iter() {
                 req = req.claim(k.clone(), v.clone());
             }
-            req.check_with_reasons_blocking(&action, &resource)
+            req.check_with_reasons(&action, &resource)
+                .await
                 .map_err(|e| ApiError::BadRequest(format!("policy evaluation error: {e:?}")))?
         }
         other => {
@@ -317,26 +331,20 @@ pub(super) async fn test_policy(
     };
 
     // Audit log
-    let audit_decision = match decision.decision {
-        PolicyDecisionResult::Permit => AuditDecision::Permit,
-        PolicyDecisionResult::Forbid => AuditDecision::Forbid,
-    };
-    let event = AuditEvent::builder(AuditEventType::PolicyEvaluated)
-        .action("test_policy")
-        .user_actor(&auth.user)
-        .resource_type("policy")
-        .correlation_id(&corr.0)
-        .decision(audit_decision, Some(&policy_decision.reasons.join(", ")))
-        .details(serde_json::json!({
-            "test_action": action,
-            "test_principal_type": principal_req.entity_type,
-            "test_resource_type": resource_req.entity_type,
-            "test_decision": decision_str,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+    state
+        .services
+        .policies
+        .record_policy_test(
+            &auth,
+            &corr.0,
+            &policy_decision.reasons,
+            decision.decision.clone(),
+            &action,
+            &principal_req.entity_type,
+            &resource_req.entity_type,
+            decision_str,
+        )
+        .await;
 
     let diagnostic_details: Vec<DiagnosticDetail> = decision
         .reasons

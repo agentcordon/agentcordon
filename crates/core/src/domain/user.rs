@@ -21,12 +21,51 @@ pub struct User {
     pub updated_at: DateTime<Utc>,
 }
 
+impl User {
+    /// Administrative privilege: the admin role, or the root flag, which
+    /// grants it regardless of role. The one definition every "is this an
+    /// admin" question in the server goes through.
+    pub fn is_admin(&self) -> bool {
+        self.is_root || self.role == UserRole::Admin
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UserRole {
     Admin,
     Operator,
     Viewer,
+}
+
+#[cfg(test)]
+mod is_admin_tests {
+    use super::*;
+
+    fn user(role: UserRole, is_root: bool) -> User {
+        User {
+            id: UserId(Uuid::new_v4()),
+            username: "u".to_string(),
+            display_name: None,
+            password_hash: String::new(),
+            role,
+            is_root,
+            enabled: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn admin_role_or_root_flag_is_admin() {
+        assert!(user(UserRole::Admin, false).is_admin());
+        assert!(
+            user(UserRole::Viewer, true).is_admin(),
+            "root outranks role"
+        );
+        assert!(!user(UserRole::Operator, false).is_admin());
+        assert!(!user(UserRole::Viewer, false).is_admin());
+    }
 }
 
 /// Represents an actor that can be either a User or an Agent.

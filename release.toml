@@ -1,0 +1,54 @@
+# cargo-release configuration. See docs/releasing.md for the full flow.
+#
+# Cutting a release is one command, run from a clean `main`:
+#
+#     cargo release <version> --execute
+#
+# It bumps `[workspace.package] version` (the single source of truth for all
+# five crates and every `--version` string), rewrites CHANGELOG.md, commits,
+# tags `v<version>` and pushes. The pushed tag is what drives
+# .github/workflows/release.yml — binaries, checksums, the GitHub Release and
+# the GHCR image are all built there, never from a laptop.
+
+# Releases come off `main` only.
+allow-branch = ["main"]
+
+# All five crates carry `version.workspace = true`; they move together and get
+# one tag and one commit.
+shared-version = true
+consolidate-commits = true
+
+# The crates are not on crates.io. GitHub Releases and ghcr.io are the
+# artifacts, and the tag push is what produces them.
+publish = false
+
+push = true
+tag = true
+tag-name = "v{{version}}"
+tag-message = "AgentCordon {{version}}"
+pre-release-commit-message = "chore: release v{{version}}"
+
+# No signing key is configured for releases yet. Flip both to true (and set
+# `user.signingkey`) once one is.
+sign-commit = false
+sign-tag = false
+
+# Keep a Changelog upkeep. `## [Unreleased]` stays on top and empty; the
+# released section is inserted directly under it, and the compare links at the
+# bottom of the file are re-pointed at the new tag.
+#
+# Two things to know about these:
+#
+#   * Paths are relative to the *package* root, not the workspace root, hence
+#     `../../`. cargo-release runs the replacements once per released package,
+#     so every member except `agent-cordon-server` sets
+#     `pre-release-replacements = []` in its own `[package.metadata.release]`;
+#     otherwise a release would insert five copies of the section. A new
+#     workspace member must do the same.
+#   * `prerelease = true` keeps the rewrite running for `-rc.N` tags, because
+#     the release workflow's `verify` job insists on a CHANGELOG section for
+#     whatever tag it is building.
+pre-release-replacements = [
+  { file = "../../CHANGELOG.md", search = "^## \\[Unreleased\\]$", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1, prerelease = true },
+  { file = "../../CHANGELOG.md", search = "^\\[Unreleased\\]: https://github\\.com/agentcordon/agentcordon/compare/.*\\.\\.\\.HEAD$", replace = "[Unreleased]: https://github.com/agentcordon/agentcordon/compare/{{tag_name}}...HEAD\n[{{version}}]: https://github.com/agentcordon/agentcordon/compare/v{{prev_version}}...{{tag_name}}", exactly = 1, prerelease = true },
+]

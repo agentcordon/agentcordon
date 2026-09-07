@@ -279,6 +279,7 @@ async fn test_all_page_routes_handle_missing_user_gracefully() {
         "/audit",
         "/settings",
         "/mcp-servers",
+        "/mcp-servers/marketplace",
     ];
 
     for route in &routes {

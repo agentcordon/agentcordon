@@ -6,22 +6,13 @@ use axum::{routing::get, Router};
 use serde::Serialize;
 
 use agent_cordon_core::domain::workspace::Workspace;
-use agent_cordon_core::policy::{actions, PolicyResource};
 
 use agent_cordon_core::storage::Store;
 
-use crate::extractors::AuthenticatedUser;
-use crate::response::ApiError;
 use crate::state::AppState;
 
 use crud::{delete_workspace, get_workspace, list_workspaces, update_workspace};
-use operations::{add_workspace_tag, get_workspace_permissions, remove_workspace_tag};
-
-#[derive(Serialize)]
-pub(super) struct PermissionsResponse {
-    token: String,
-    expires_in: u64,
-}
+use operations::{add_workspace_tag, remove_workspace_tag, revoke_workspace};
 
 /// Workspace response with computed `status` field.
 #[derive(Serialize)]
@@ -29,15 +20,19 @@ pub(crate) struct WorkspaceResponse {
     #[serde(flatten)]
     pub(crate) workspace: Workspace,
     pub(crate) computed_status: String,
+    /// `status == active`, kept for readers of the old two-field shape.
+    pub(crate) enabled: bool,
     pub(crate) owner_username: Option<String>,
 }
 
 impl WorkspaceResponse {
     pub(crate) fn from_workspace(workspace: Workspace) -> Self {
         let computed_status = workspace.status.as_str().to_string();
+        let enabled = workspace.is_active();
         Self {
             workspace,
             computed_status,
+            enabled,
             owner_username: None,
         }
     }
@@ -65,8 +60,8 @@ pub fn routes() -> Router<AppState> {
                 .delete(delete_workspace),
         )
         .route(
-            "/workspaces/{id}/permissions",
-            get(get_workspace_permissions),
+            "/workspaces/{id}/revoke",
+            axum::routing::post(revoke_workspace),
         )
         .route(
             "/workspaces/{id}/tags",
@@ -81,18 +76,4 @@ pub fn routes() -> Router<AppState> {
             "/workspaces/{id}/consents/{user_id}",
             axum::routing::delete(consents::delete_consent),
         )
-}
-
-/// Check Cedar policy for `manage_workspaces` on `System` resource.
-pub(crate) async fn check_manage_workspaces(
-    state: &AppState,
-    auth: &AuthenticatedUser,
-) -> Result<agent_cordon_core::domain::policy::PolicyDecision, ApiError> {
-    super::check_cedar_permission(
-        state,
-        auth,
-        actions::MANAGE_WORKSPACES,
-        PolicyResource::System,
-    )
-    .await
 }

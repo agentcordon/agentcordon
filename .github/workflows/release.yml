@@ -1,61 +1,126 @@
 name: Release
 
+# A pushed tag is the whole trigger. The maintainer runs
+# `cargo release <version> --execute` from a clean `main` (see
+# docs/releasing.md); everything below happens because of the tag that
+# command pushes. `workflow_dispatch` exists only to re-run this workflow
+# against a tag that already exists, after a transient job failure.
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version to release (e.g. 0.1.0, without v prefix)"
+      tag:
+        description: "Existing tag to (re-)build, e.g. v0.4.0"
         required: true
         type: string
 
 permissions: {}
 
 concurrency:
-  group: release
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  # ghcr.io/agentcordon/agentcordon upstream; correct in a fork without editing.
+  REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
-  validate:
-    name: Validate
+  # ---------------------------------------------------------------------
+  # Nothing is built until the tag, the manifest and the CHANGELOG agree.
+  # ---------------------------------------------------------------------
+  verify:
+    name: Verify tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
-      - name: Check version format
+      # The tag is read from the environment, never interpolated into the
+      # script, and is checked against a strict pattern before any later job
+      # is allowed to check it out or name an image with it.
+      - name: Resolve tag
+        id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [[ ! "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-            echo "::error::Invalid version: '${{ inputs.version }}'. Expected semver (e.g. 0.1.0 or 0.1.0-rc.1)"
+          tag="${INPUT_TAG:-$REF_NAME}"
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$tag' is not a release tag (expected v<major>.<minor>.<patch>[-pre])"
             exit 1
           fi
+          version="${tag#v}"
+          case "$version" in
+            *-rc*|*-beta*|*-alpha*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag (version $version, prerelease $prerelease)"
 
-  build-gateway:
-    name: Gateway (${{ matrix.target }})
-    needs: validate
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+
+      # Same script CI runs on every push: the tag must equal `v` + the
+      # `[workspace.package]` version, and CHANGELOG.md must have a section
+      # for it (the release body is cut from that section below).
+      - name: Tag matches Cargo version and CHANGELOG
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: scripts/check-version.sh --tag "$TAG"
+
+  # ---------------------------------------------------------------------
+  # Binaries. Asset names are the contract with the installers:
+  # crates/server/src/install_script.sh and tools/install.ps1 download
+  # `agentcordon-<target>` and `agentcordon-broker-<target>` (with `.exe`
+  # on Windows) from releases/download/v<version>.
+  # ---------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Pin Linux builds to 22.04 (glibc 2.35) for broad distro compatibility.
-          # ubuntu-latest is 24.04 (glibc 2.39) which breaks on Debian 12 / Ubuntu 22.04.
+          # Linux builds are pinned to 22.04 (glibc 2.35) for broad distro
+          # compatibility. ubuntu-latest is 24.04 (glibc 2.39), which breaks
+          # on Debian 12 / Ubuntu 22.04.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
+            server: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04
             cross: true
+            server: true
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            ext: ".exe"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -65,7 +130,7 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: gateway-${{ matrix.target }}-${{ matrix.os }}
+          key: release-${{ matrix.target }}-${{ matrix.os }}
 
       - name: Install cross-compilation tools
         if: matrix.cross
@@ -73,155 +138,142 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      # The server binary is only built for the two Linux targets: it is what
+      # the container image ships, and nobody installs it on macOS or Windows.
       - name: Build
+        shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
-        run: cargo build --release --bin agentcordon --target ${{ matrix.target }}
+        run: |
+          bins=(--bin agentcordon --bin agentcordon-broker)
+          if [ "${{ matrix.server }}" = "true" ]; then
+            bins+=(--bin agent-cordon-server)
+          fi
+          cargo build --release --locked --target ${{ matrix.target }} "${bins[@]}"
 
-      - name: Upload artifact (Unix)
-        if: runner.os != 'Windows'
+      - name: Stage release assets
+        shell: bash
+        run: |
+          mkdir -p dist
+          src="target/${{ matrix.target }}/release"
+          ext="${{ matrix.ext }}"
+          cp "$src/agentcordon$ext"        "dist/agentcordon-${{ matrix.target }}$ext"
+          cp "$src/agentcordon-broker$ext" "dist/agentcordon-broker-${{ matrix.target }}$ext"
+          if [ "${{ matrix.server }}" = "true" ]; then
+            cp "$src/agent-cordon-server" "dist/agent-cordon-server-${{ matrix.target }}"
+          fi
+          chmod +x dist/* || true
+          ls -l dist/
+
+      # Signed provenance for every binary we publish, so a downloaded asset
+      # can be traced back to this workflow, this commit and this runner.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: agentcordon-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/agentcordon
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
 
-      - name: Upload artifact (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v6
-        with:
-          name: agentcordon-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/agentcordon.exe
-
-  build-broker:
-    name: Broker (${{ matrix.target }})
-    needs: validate
-    runs-on: ${{ matrix.os }}
+  # ---------------------------------------------------------------------
+  # SHA256SUMS + the GitHub Release. `install_script.sh` fetches SHA256SUMS
+  # from the release and reads it with awk as `<hex>  <asset>`, which is
+  # exactly what `sha256sum` writes; install.ps1 splits the same lines on
+  # whitespace.
+  # ---------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
     permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Pin Linux builds to 22.04 (glibc 2.35) for broad distro compatibility.
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-            cross: true
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          ref: ${{ needs.verify.outputs.tag }}
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
         with:
-          key: broker-${{ matrix.target }}-${{ matrix.os }}
+          path: staging
+          pattern: dist-*
+          merge-multiple: true
 
-      - name: Install cross-compilation tools
-        if: matrix.cross
+      - name: Assemble checksums
+        working-directory: staging
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          chmod +x agentcordon-* agent-cordon-server-* 2>/dev/null || true
+          # One file, sha256sum format, every asset in it.
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
 
-      - name: Build
+      # The release body is this version's CHANGELOG section, verbatim:
+      # everything between `## [<version>]` and the next `## [` heading.
+      - name: Extract release notes
+        id: notes
         env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
-        run: cargo build --release --bin agentcordon-broker --target ${{ matrix.target }}
-
-      - name: Upload artifact (Unix)
-        if: runner.os != 'Windows'
-        uses: actions/upload-artifact@v6
-        with:
-          name: agentcordon-broker-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/agentcordon-broker
-
-      - name: Upload artifact (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v6
-        with:
-          name: agentcordon-broker-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/agentcordon-broker.exe
-
-  build-server:
-    name: Server (${{ matrix.target }})
-    needs: validate
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-          - target: aarch64-unknown-linux-gnu
-            cross: true
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: server-${{ matrix.target }}-22.04
-
-      - name: Install cross-compilation tools
-        if: matrix.cross
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          version="$VERSION"
+          # Literal prefix match, not a regex: a version has dots in it.
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && /^## \[/           { exit }
+            found                        { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::CHANGELOG.md section for $version is empty"
+            exit 1
+          fi
+          head -20 release-notes.md
 
-      - name: Build
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
-        run: cargo build --release --bin agent-cordon-server --target ${{ matrix.target }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
         with:
-          name: agent-cordon-server-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/agent-cordon-server
+          tag_name: ${{ needs.verify.outputs.tag }}
+          name: ${{ needs.verify.outputs.tag }}
+          body_path: release-notes.md
+          prerelease: ${{ needs.verify.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+          files: staging/*
 
-  docker:
-    name: Docker
-    needs: build-server
+  # ---------------------------------------------------------------------
+  # Multi-arch server image. Built from the Linux binaries the matrix
+  # already produced (Dockerfile.release), so the image and the release
+  # assets are the same bytes and no arm64 build runs under QEMU.
+  # ---------------------------------------------------------------------
+  container:
+    name: Container image
+    needs: [verify, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
 
-      - name: Download server artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v7
         with:
-          path: docker-bin
-          pattern: agent-cordon-server-*
+          path: staging
+          pattern: dist-*
+          merge-multiple: true
 
-      - name: Prepare binaries
+      - name: Lay out binaries for the image
         run: |
           mkdir -p bin/linux/amd64 bin/linux/arm64
-          cp docker-bin/agent-cordon-server-x86_64-unknown-linux-gnu/agent-cordon-server bin/linux/amd64/
-          cp docker-bin/agent-cordon-server-aarch64-unknown-linux-gnu/agent-cordon-server bin/linux/arm64/
+          cp staging/agent-cordon-server-x86_64-unknown-linux-gnu bin/linux/amd64/agent-cordon-server
+          cp staging/agent-cordon-server-aarch64-unknown-linux-gnu bin/linux/arm64/agent-cordon-server
           chmod +x bin/linux/amd64/agent-cordon-server bin/linux/arm64/agent-cordon-server
 
       - name: Set up QEMU
@@ -237,17 +289,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # `latest` and the `<major>.<minor>` moving tag are for stable releases
+      # only — an -rc must never become what `docker compose up` pulls.
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            type=raw,value=${{ inputs.version }}
-            type=raw,value=latest
-            type=sha
+            type=semver,pattern={{version}},value=${{ needs.verify.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.verify.outputs.tag }},enable=${{ needs.verify.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ needs.verify.outputs.prerelease == 'false' }}
+            type=sha,format=short,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=AgentCordon
+            org.opencontainers.image.description=Credential brokering and policy enforcement for autonomous AI agents
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
 
       - name: Build and push
+        id: push
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -256,80 +319,106 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.verify.outputs.version }}
+            VCS_REF=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
 
-  release:
-    name: Release
-    needs: [build-gateway, build-broker, build-server, docker]
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # ---------------------------------------------------------------------
+  # Does what we published actually run, and does it point users at this
+  # release? Cheap, and it catches the failure that matters: an image or a
+  # binary that reports the wrong version, or an /install.sh pinned to a
+  # release that does not exist.
+  # ---------------------------------------------------------------------
+  smoke:
+    name: Smoke test
+    needs: [verify, release, container]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-
+      contents: read
+      packages: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Download gateway artifacts
-        uses: actions/download-artifact@v7
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
         with:
-          path: artifacts
-          pattern: agentcordon-*
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download broker artifacts
-        uses: actions/download-artifact@v7
-        with:
-          path: artifacts
-          pattern: agentcordon-broker-*
+      - name: Pull the published image
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: docker pull "${REGISTRY_IMAGE}:${VERSION}"
 
-      - name: Download server artifacts
-        uses: actions/download-artifact@v7
-        with:
-          path: artifacts
-          pattern: agent-cordon-server-*
-
-      - name: Prepare release assets
+      - name: Image reports the release version
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
-          mkdir -p release
-          # Broker first — its directory prefix overlaps with the CLI glob
-          # below, so handle it explicitly to avoid double-copying.
-          for dir in artifacts/agentcordon-broker-*/; do
-            target=$(basename "$dir" | sed 's/agentcordon-broker-//')
-            if [[ "$target" == *"windows"* ]]; then
-              cp "$dir"agentcordon-broker.exe "release/agentcordon-broker-${target}.exe"
-            else
-              cp "$dir"agentcordon-broker "release/agentcordon-broker-${target}"
-              chmod +x "release/agentcordon-broker-${target}"
-            fi
-          done
-          for dir in artifacts/agentcordon-*/; do
-            # Skip broker dirs (already handled above)
-            case "$(basename "$dir")" in
-              agentcordon-broker-*) continue ;;
-            esac
-            target=$(basename "$dir" | sed 's/agentcordon-//')
-            if [[ "$target" == *"windows"* ]]; then
-              cp "$dir"agentcordon.exe "release/agentcordon-${target}.exe"
-            else
-              cp "$dir"agentcordon "release/agentcordon-${target}"
-              chmod +x "release/agentcordon-${target}"
-            fi
-          done
-          for dir in artifacts/agent-cordon-server-*/; do
-            target=$(basename "$dir" | sed 's/agent-cordon-server-//')
-            cp "$dir"agent-cordon-server "release/agent-cordon-server-${target}"
-            chmod +x "release/agent-cordon-server-${target}"
-          done
-          ls -la release/
+          version="$VERSION"
+          out=$(docker run --rm --entrypoint agent-cordon-server "${REGISTRY_IMAGE}:${version}" --version)
+          echo "$out"
+          case "$out" in
+            *"$version") ;;
+            *) echo "::error::image reports '$out', expected version $version"; exit 1 ;;
+          esac
 
-      - name: Generate checksums
-        working-directory: release
-        run: sha256sum * > SHA256SUMS
-
-      - name: Create GitHub release
+      - name: Download the linux CLI from the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          REPO: ${{ github.repository }}
         run: |
-          gh release create "v${{ inputs.version }}" \
-            --target "${{ github.sha }}" \
-            --title "v${{ inputs.version }}" \
-            --generate-notes \
-            release/*
+          gh release download "$TAG" \
+            --repo "$REPO" \
+            --pattern "agentcordon-x86_64-unknown-linux-gnu" \
+            --output agentcordon
+          chmod +x agentcordon
+
+      - name: CLI reports the release version
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          version="$VERSION"
+          out=$(./agentcordon --version)
+          echo "$out"
+          case "$out" in
+            *"$version") ;;
+            *) echo "::error::CLI reports '$out', expected version $version"; exit 1 ;;
+          esac
+
+      # /install.sh is templated with the server's own version at request
+      # time. If it does not point at this tag, users get a 404 installer.
+      - name: /install.sh points at this release
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          version="$VERSION"
+          docker run -d --name agentcordon-smoke -p 3140:3140 \
+            -e AGTCRDN_BASE_URL=http://localhost:3140 \
+            "${REGISTRY_IMAGE}:${version}"
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3140/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:3140/install.sh -o install.sh
+          grep -q "releases/download/v${version}" install.sh \
+            || { echo "::error::/install.sh does not reference v${version}"; docker logs agentcordon-smoke; exit 1; }
+          grep -q "AGTCRDN_VERSION=\"${version}\"" install.sh \
+            || { echo "::error::/install.sh is not pinned to ${version}"; exit 1; }
+          echo "/install.sh is pinned to v${version}"
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs agentcordon-smoke || true
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f agentcordon-smoke || true

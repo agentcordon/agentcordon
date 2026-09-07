@@ -351,11 +351,6 @@ permit(
 ) when {
   principal.role == "admin"
 };
-permit(
-  principal is AgentCordon::User,
-  action == AgentCordon::Action::"login",
-  resource
-);
 "#;
     let ctx = TestAppBuilder::new()
         .with_policy(restrictive_policy)

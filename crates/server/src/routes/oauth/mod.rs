@@ -10,6 +10,12 @@ pub mod device;
 pub mod revoke;
 pub mod token;
 
+/// Device-code issuance budget per (source address, client_id) per minute.
+/// A broker registers once per workspace; this bounds table fill and
+/// user-code minting from one source, including when every caller shares
+/// the `unknown` address because no proxy is trusted.
+pub const DEVICE_CODE_ISSUE_MAX_PER_MINUTE: u32 = 30;
+
 use axum::{
     middleware::from_fn_with_state,
     routing::{delete, get, post},
@@ -52,28 +58,12 @@ pub fn routes(state: AppState) -> Router<AppState> {
 }
 
 // ---------------------------------------------------------------------------
-// Re-export core token/hash/PKCE helpers — single source of truth
+// Re-export the token hash — single source of truth for bearer lookups
 // ---------------------------------------------------------------------------
 
-pub(crate) use agent_cordon_core::oauth2::tokens::{
-    generate_access_token, generate_auth_code, generate_client_secret, generate_refresh_token,
-    hash_token, validate_pkce,
-};
+pub(crate) use agent_cordon_core::oauth2::tokens::hash_token;
 
-/// Validate that a redirect URI is localhost-only.
-pub(crate) fn is_localhost_uri(uri: &str) -> bool {
-    if let Ok(parsed) = url::Url::parse(uri) {
-        if parsed.scheme() != "http" {
-            return false;
-        }
-        matches!(
-            parsed.host_str(),
-            Some("localhost") | Some("127.0.0.1") | Some("[::1]")
-        )
-    } else {
-        false
-    }
-}
+pub(crate) use crate::services::oauth::is_localhost_uri;
 
 /// Scope description for the consent page.
 pub(crate) struct ScopeDisplay {

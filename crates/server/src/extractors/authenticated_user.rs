@@ -22,6 +22,13 @@ pub struct AuthenticatedUser {
     pub is_root: bool,
 }
 
+impl AuthenticatedUser {
+    /// Admin role or root flag. See `User::is_admin`.
+    pub fn is_admin(&self) -> bool {
+        self.is_root || self.user.is_admin()
+    }
+}
+
 impl<S> FromRequestParts<S> for AuthenticatedUser
 where
     AppState: FromRef<S>,
@@ -43,7 +50,7 @@ where
             .ok_or_else(|| ApiError::Unauthorized("authentication required".to_string()))?;
 
         // Hash token and look up session
-        let token_hash = hash_session_token_hmac(session_token, &app_state.session_hash_key);
+        let token_hash = hash_session_token_hmac(session_token, &app_state.crypto.session_hash_key);
 
         let session = app_state
             .store
@@ -71,7 +78,7 @@ where
         }
 
         // Touch session (update last_seen_at)
-        let _ = app_state.store.touch_session(&token_hash).await;
+        app_state.services.users.touch_session(&token_hash).await;
 
         tracing::debug!(
             user_id = %user.id.0,

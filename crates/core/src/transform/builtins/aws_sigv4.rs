@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
@@ -35,10 +35,37 @@ pub(super) fn sha256_hex(data: &[u8]) -> String {
 struct AwsCredential {
     access_key_id: String,
     secret_access_key: String,
+    /// Temporary-credential session token. Sent and signed as
+    /// `x-amz-security-token`. Either JSON key is accepted.
+    #[serde(default, alias = "aws_session_token")]
+    session_token: Option<String>,
     #[serde(default)]
     region: Option<String>,
     #[serde(default)]
     service: Option<String>,
+}
+
+/// Caller headers that are never signed: they are hop-by-hop, or the HTTP
+/// client rewrites them before the request leaves the broker, so a signature
+/// over them would not match what the service receives.
+const UNSIGNABLE_HEADERS: &[&str] = &[
+    "authorization",
+    "connection",
+    "content-length",
+    "expect",
+    "transfer-encoding",
+    "user-agent",
+    "x-amzn-trace-id",
+];
+
+/// Services that follow the S3 signing conventions: the canonical URI is
+/// encoded once, and the payload hash is also sent as `x-amz-content-sha256`.
+/// Every other service double-encodes the path and needs no payload header.
+fn uses_s3_conventions(service: &str) -> bool {
+    matches!(
+        service,
+        "s3" | "s3express" | "s3-object-lambda" | "s3-outposts"
+    )
 }
 
 /// Infer AWS region and service from a target URL hostname.
@@ -91,17 +118,23 @@ pub fn infer_aws_region_service(url: &str) -> Result<(String, String), Transform
 
 /// AWS SigV4 signing transform.
 ///
-/// `secret` is a JSON string with fields: access_key_id, secret_access_key, region, service.
+/// `secret` is a JSON string with fields: access_key_id, secret_access_key,
+/// optional session_token (alias aws_session_token), region, service.
 /// `timestamp_override` allows injecting a fixed timestamp for deterministic testing.
+///
+/// Signed headers are `host`, `x-amz-date`, `x-amz-security-token` (when the
+/// credential has a session token), `x-amz-content-sha256` (S3-family services
+/// only), and every caller header except the unsignable set (`UNSIGNABLE_HEADERS`).
 ///
 /// Returns a `TransformOutput` with:
 /// - `value`: The Authorization header value
-/// - `extra_headers`: x-amz-date, x-amz-content-sha256, host
+/// - `extra_headers`: host, x-amz-date, and the x-amz-security-token /
+///   x-amz-content-sha256 headers when they were signed
 pub fn aws_sigv4(
     secret: &str,
     method: &str,
     url: &str,
-    _headers: &HashMap<String, String>,
+    headers: &HashMap<String, String>,
     body: &str,
     timestamp_override: Option<&str>,
 ) -> Result<TransformOutput, TransformError> {
@@ -110,7 +143,7 @@ pub fn aws_sigv4(
     // material appearing in error messages or logs (defense-in-depth).
     let cred: AwsCredential = serde_json::from_str(secret).map_err(|_| {
         TransformError::ScriptError(
-            "aws-sigv4: invalid credential JSON: expected object with fields: access_key_id, secret_access_key (region and service are optional)".to_string()
+            "aws-sigv4: invalid credential JSON: expected object with fields: access_key_id, secret_access_key (session_token, region and service are optional)".to_string()
         )
     })?;
 
@@ -125,6 +158,7 @@ pub fn aws_sigv4(
             "aws-sigv4: secret_access_key is empty".to_string(),
         ));
     }
+    let session_token = cred.session_token.as_deref().filter(|t| !t.is_empty());
 
     // Resolve region and service: credential JSON takes precedence, then infer from URL
     let (service, region): (String, String) = match (&cred.region, &cred.service) {
@@ -143,6 +177,7 @@ pub fn aws_sigv4(
             (service, region)
         }
     };
+    let s3_conventions = uses_s3_conventions(&service);
 
     // Parse URL
     let parsed_url = url::Url::parse(url)
@@ -169,25 +204,24 @@ pub fn aws_sigv4(
     // Payload hash
     let payload_hash = sha256_hex(body.as_bytes());
 
+    // Headers this signer computes; they replace any caller header of the same name.
+    let mut computed: Vec<(&str, &str)> =
+        vec![("host", &host_with_port), ("x-amz-date", &amz_date)];
+    if s3_conventions {
+        computed.push(("x-amz-content-sha256", &payload_hash));
+    }
+    if let Some(token) = session_token {
+        computed.push(("x-amz-security-token", token));
+    }
+
     // --- Step 1: Canonical Request ---
-    let canonical_uri = canonical_uri_path(&parsed_url);
-    let canonical_querystring = canonical_query_string(&parsed_url);
-
-    // Canonical headers — we sign host, x-amz-content-sha256, x-amz-date
-    let canonical_headers = format!(
-        "host:{}\nx-amz-content-sha256:{}\nx-amz-date:{}\n",
-        host_with_port, payload_hash, amz_date
-    );
-    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
-
-    let canonical_request = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}",
-        method.to_uppercase(),
-        canonical_uri,
-        canonical_querystring,
-        canonical_headers,
-        signed_headers,
-        payload_hash
+    let headers_to_sign = canonical_headers(headers, &computed);
+    let canonical = canonical_request(
+        method,
+        &parsed_url,
+        &headers_to_sign,
+        &payload_hash,
+        !s3_conventions,
     );
 
     // --- Step 2: String to Sign ---
@@ -196,7 +230,7 @@ pub fn aws_sigv4(
         "AWS4-HMAC-SHA256\n{}\n{}\n{}",
         amz_date,
         credential_scope,
-        sha256_hex(canonical_request.as_bytes())
+        sha256_hex(canonical.request.as_bytes())
     );
 
     // --- Step 3: Signing Key (raw bytes chain) ---
@@ -214,13 +248,13 @@ pub fn aws_sigv4(
     // --- Step 5: Authorization Header ---
     let auth_header = format!(
         "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
-        cred.access_key_id, credential_scope, signed_headers, signature
+        cred.access_key_id, credential_scope, canonical.signed_headers, signature
     );
 
-    let mut extra_headers = HashMap::new();
-    extra_headers.insert("x-amz-date".to_string(), amz_date);
-    extra_headers.insert("x-amz-content-sha256".to_string(), payload_hash);
-    extra_headers.insert("host".to_string(), host_with_port);
+    let extra_headers: HashMap<String, String> = computed
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
 
     Ok(TransformOutput {
         value: auth_header,
@@ -228,9 +262,96 @@ pub fn aws_sigv4(
     })
 }
 
+/// The canonical request and the `SignedHeaders` list derived from it.
+pub(super) struct CanonicalRequest {
+    pub request: String,
+    pub signed_headers: String,
+}
+
+/// Build the SigV4 canonical request.
+///
+/// `headers` must already be canonical (see [`canonical_headers`]).
+/// `double_encode` selects the non-S3 path encoding.
+pub(super) fn canonical_request(
+    method: &str,
+    url: &url::Url,
+    headers: &BTreeMap<String, String>,
+    payload_hash: &str,
+    double_encode: bool,
+) -> CanonicalRequest {
+    let canonical_header_lines: String = headers
+        .iter()
+        .map(|(name, value)| format!("{}:{}\n", name, value))
+        .collect();
+    let signed_headers = headers.keys().cloned().collect::<Vec<_>>().join(";");
+
+    let request = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        method.to_uppercase(),
+        canonical_uri_path(url, double_encode),
+        canonical_query_string(url),
+        canonical_header_lines,
+        signed_headers,
+        payload_hash
+    );
+
+    CanonicalRequest {
+        request,
+        signed_headers,
+    }
+}
+
+/// Canonicalize headers for signing: names lowercased, values trimmed with
+/// internal whitespace runs collapsed to one space, sorted by name.
+///
+/// `computed` headers always win over a caller header of the same name;
+/// caller headers in `UNSIGNABLE_HEADERS` are left out. When the caller map
+/// carries the same name in different casings, the values are joined with
+/// commas in name order.
+pub(super) fn canonical_headers(
+    caller: &HashMap<String, String>,
+    computed: &[(&str, &str)],
+) -> BTreeMap<String, String> {
+    let mut merged: BTreeMap<String, Vec<(&String, &String)>> = BTreeMap::new();
+    for (name, value) in caller {
+        let lower = name.to_ascii_lowercase();
+        if UNSIGNABLE_HEADERS.contains(&lower.as_str()) || computed.iter().any(|(c, _)| *c == lower)
+        {
+            continue;
+        }
+        merged.entry(lower).or_default().push((name, value));
+    }
+
+    let mut out: BTreeMap<String, String> = merged
+        .into_iter()
+        .map(|(name, mut values)| {
+            values.sort_by(|a, b| a.0.cmp(b.0));
+            let joined = values
+                .into_iter()
+                .map(|(_, v)| canonical_header_value(v))
+                .collect::<Vec<_>>()
+                .join(",");
+            (name, joined)
+        })
+        .collect();
+
+    for (name, value) in computed {
+        out.insert(name.to_string(), canonical_header_value(value));
+    }
+    out
+}
+
+/// Trim a header value and collapse runs of whitespace to a single space.
+fn canonical_header_value(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Canonicalize the URI path per AWS SigV4 spec.
-/// Each path segment is URI-encoded (except '/').
-fn canonical_uri_path(url: &url::Url) -> String {
+///
+/// Each path segment is URI-encoded (except '/'). With `double_encode` the
+/// encoded segment is encoded a second time, which is the rule for every
+/// service other than S3.
+pub(super) fn canonical_uri_path(url: &url::Url, double_encode: bool) -> String {
     let path = url.path();
     if path.is_empty() || path == "/" {
         return "/".to_string();
@@ -241,7 +362,12 @@ fn canonical_uri_path(url: &url::Url) -> String {
         .map(|segment| {
             // Decode first (in case the URL already has some encoding), then re-encode
             let decoded = percent_decode(segment);
-            uri_encode(&decoded, false)
+            let once = uri_encode(&decoded, false);
+            if double_encode {
+                uri_encode(&once, false)
+            } else {
+                once
+            }
         })
         .collect();
 
@@ -284,7 +410,10 @@ fn percent_decode(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
+            if let Some(byte) = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            {
                 result.push(byte);
                 i += 3;
                 continue;

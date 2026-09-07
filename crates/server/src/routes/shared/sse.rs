@@ -61,12 +61,12 @@ async fn ui_event_stream(
     let user_id = auth.user.id.0;
 
     // Enforce per-user connection limit
-    let guard = state.sse_tracker.try_acquire(user_id).map_err(|()| {
+    let guard = state.limits.sse.try_acquire(user_id).map_err(|()| {
         tracing::warn!(%user_id, "SSE connection limit exceeded");
         ApiError::TooManyRequests("too many SSE connections".to_string())
     })?;
 
-    let rx = state.ui_event_bus.subscribe();
+    let rx = state.realtime.ui_event_bus.subscribe();
     let stream = BroadcastStream::new(rx);
 
     let event_stream = stream.filter_map(|result| match result {

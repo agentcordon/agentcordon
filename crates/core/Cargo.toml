@@ -2,12 +2,14 @@
 name = "agent-cordon-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Not on crates.io: the release artifacts are the tagged binaries and the
+# container image, not a registry upload.
+publish = false
 
 [features]
-default = ["sqlite", "transforms", "http-client"]
-sqlite = ["dep:rusqlite", "dep:tokio-rusqlite"]
-postgres = ["dep:sqlx"]
-test-crypto = []
+default = ["transforms", "http-client"]
 transforms = ["dep:rhai"]
 http-client = ["dep:reqwest"]
 
@@ -25,9 +27,8 @@ argon2 = "0.5"
 sha2 = "0.10"
 rand = "0.8"
 base64 = "0.22"
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
-tokio-rusqlite = { version = "0.6", optional = true }
-sqlx = { workspace = true, optional = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+tokio-rusqlite = "0.6"
 cedar-policy = "4"
 jsonwebtoken = { workspace = true }
 regex = "1"
@@ -37,10 +38,16 @@ rhai = { version = "1", features = ["sync"], optional = true }
 hkdf = "0.12"
 hmac = "0.12"
 zeroize = "1"
-p256 = { version = "0.13", features = ["ecdh", "ecdsa", "jwk", "pkcs8", "pem"] }
+p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8", "pem"] }
 hex = "0.4"
 subtle = "2"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 tempfile = "3"
 dashmap = { workspace = true }
+
+[package.metadata.release]
+# The CHANGELOG is the workspace's, not this crate's. cargo-release runs
+# pre-release-replacements once per released package, so only
+# agent-cordon-server rewrites it (see release.toml).
+pre-release-replacements = []

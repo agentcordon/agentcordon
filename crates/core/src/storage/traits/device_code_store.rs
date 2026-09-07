@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::error::StoreError;
-use crate::oauth2::types::DeviceCode;
+use crate::oauth2::types::{DeviceCode, OAuthAccessToken, OAuthRefreshToken};
 
 /// Storage trait for RFC 8628 Device Authorization Grant records.
 ///
@@ -42,6 +42,18 @@ pub trait DeviceCodeStore: Send + Sync {
     /// Atomically transition an approved row to `consumed` (single-use).
     /// Returns true only if the CAS update affected exactly one row.
     async fn consume_device_code(&self, device_code: &str) -> Result<bool, StoreError>;
+
+    /// Consume an approved row and mint the tokens it earns in one
+    /// immediate transaction. The compare-and-swap of
+    /// [`consume_device_code`](Self::consume_device_code) is kept: `Ok(false)`
+    /// when the row was not `approved`, in which case nothing is minted.
+    /// When a token insert fails the row stays `approved`.
+    async fn consume_device_code_and_issue_tokens(
+        &self,
+        device_code: &str,
+        access: &OAuthAccessToken,
+        refresh: &OAuthRefreshToken,
+    ) -> Result<bool, StoreError>;
 
     /// Update the poll bookkeeping for a pending row: set `last_polled_at = now`
     /// and optionally increase `interval_secs` (used when returning `slow_down`).

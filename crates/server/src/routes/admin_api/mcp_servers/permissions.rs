@@ -5,18 +5,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::mcp::McpServerId;
 use agent_cordon_core::domain::workspace::WorkspaceId;
 use agent_cordon_core::policy::actions;
 
-use crate::events::UiEvent;
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
 use crate::state::AppState;
-
-use super::check_manage_mcp_servers;
 
 // --- Request/Response types ---
 
@@ -93,14 +89,12 @@ pub(super) async fn get_permissions(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<McpPermissionsResponse>>, ApiError> {
-    check_manage_mcp_servers(&state, &auth).await?;
-
     let server_id = McpServerId(id);
-    let server = state
-        .store
-        .get_mcp_server(&server_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("MCP server not found".to_string()))?;
+    let (server, _) = state
+        .services
+        .mcp_servers
+        .load_and_authorize(&auth, &server_id)
+        .await?;
 
     // Load policies matching prefix grant:mcp:{server_id}: or deny:mcp:{server_id}:
     let all_policies = state.store.list_policies().await?;
@@ -148,20 +142,12 @@ pub(super) async fn get_permissions(
         })
         .collect();
 
-    // Audit
-    let event = AuditEvent::builder(AuditEventType::PolicyEvaluated)
-        .action("query_mcp_permissions")
-        .user_actor(&auth.user)
-        .resource("mcp_server", &id.to_string())
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some("bypass:manage_mcp_servers"))
-        .details(serde_json::json!({
-            "permission_count": entries.len(),
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+    // Audit the read: which server's permissions were listed.
+    state
+        .services
+        .mcp_servers
+        .record_permissions_query(&auth, &corr.0, &id, entries.len())
+        .await;
 
     Ok(Json(ApiResponse::ok(McpPermissionsResponse {
         mcp_server_id: id,
@@ -184,26 +170,10 @@ pub(super) async fn grant_permission(
     ApiError,
 > {
     validate_mcp_permission(&req.permission)?;
-    check_manage_mcp_servers(&state, &auth).await?;
 
-    let server_id = McpServerId(id);
-    let server = state
-        .store
-        .get_mcp_server(&server_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("MCP server not found".to_string()))?;
-
-    // Verify workspace exists
-    let target_workspace_id = WorkspaceId(req.workspace_id);
-    state
-        .store
-        .get_workspace(&target_workspace_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("workspace not found".to_string()))?;
-
-    let is_deny = match req.mode.as_str() {
-        "grant" => false,
-        "deny" => true,
+    let mode = match req.mode.as_str() {
+        "grant" => "grant",
+        "deny" => "deny",
         _ => {
             return Err(ApiError::BadRequest(
                 "mode must be 'grant' or 'deny'".to_string(),
@@ -211,54 +181,24 @@ pub(super) async fn grant_permission(
         }
     };
 
-    let mode = if is_deny { "deny" } else { "grant" };
-
-    // Create grant/deny policy via grant service (idempotent + engine reload)
-    let stored_policy = crate::grants::ensure_mcp_grant(
-        &state,
-        &server.id,
-        &target_workspace_id,
-        &req.permission,
-        mode,
-    )
-    .await?;
-
-    let policy_name = stored_policy.name.clone();
-    let policy_uuid = stored_policy.id.0;
-
-    // Emit PolicyChanged (not PermissionChanged — grants ARE Cedar policies)
-    state
-        .event_bus
-        .emit(crate::events::DeviceEvent::PolicyChanged {
-            policy_name: policy_name.clone(),
-        });
-
-    // Emit UI event
-    state.ui_event_bus.emit(UiEvent::McpServerChanged {
-        server_name: policy_name.clone(),
-    });
-
-    // Audit
-    let event = AuditEvent::builder(AuditEventType::McpServerUpdated)
-        .action("grant_mcp_permission")
-        .user_actor(&auth.user)
-        .resource("mcp_server", &id.to_string())
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some("bypass:manage_mcp_servers"))
-        .details(serde_json::json!({
-            "target_agent_id": req.workspace_id.to_string(),
-            "permission": req.permission,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+    let stored_policy = state
+        .services
+        .mcp_servers
+        .grant_permission(
+            &auth,
+            &corr.0,
+            &McpServerId(id),
+            &WorkspaceId(req.workspace_id),
+            &req.permission,
+            mode,
+        )
+        .await?;
 
     Ok((
         axum::http::StatusCode::CREATED,
         Json(ApiResponse::ok(GrantPermissionResponse {
-            policy_id: policy_uuid.to_string(),
-            policy_name,
+            policy_id: stored_policy.id.0.to_string(),
+            policy_name: stored_policy.name,
         })),
     ))
 }
@@ -271,62 +211,12 @@ pub(super) async fn revoke_permission(
     Path((id, agent_id, permission)): Path<(Uuid, Uuid, String)>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
     validate_mcp_permission(&permission)?;
-    check_manage_mcp_servers(&state, &auth).await?;
 
-    let server_id = McpServerId(id);
-    let server = state
-        .store
-        .get_mcp_server(&server_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("MCP server not found".to_string()))?;
-
-    // Try grant first, then deny — matches the naming format used in grant_permission().
-    let grant_name = format!("grant:mcp:{}:{}:{}", server.id.0, agent_id, permission);
-    let deny_name = format!("deny:mcp:{}:{}:{}", server.id.0, agent_id, permission);
-
-    let deleted_grant = state.store.delete_policy_by_name(&grant_name).await?;
-    let policy_name = if deleted_grant {
-        grant_name
-    } else {
-        let deleted_deny = state.store.delete_policy_by_name(&deny_name).await?;
-        if !deleted_deny {
-            return Err(ApiError::NotFound(
-                "permission policy not found".to_string(),
-            ));
-        }
-        deny_name
-    };
-
-    // Reload policy engine
-    super::super::policies::reload_engine(&state).await?;
-
-    // Emit PolicyChanged
     state
-        .event_bus
-        .emit(crate::events::DeviceEvent::PolicyChanged {
-            policy_name: policy_name.clone(),
-        });
-
-    // Emit UI event
-    state.ui_event_bus.emit(UiEvent::McpServerChanged {
-        server_name: policy_name.clone(),
-    });
-
-    // Audit
-    let event = AuditEvent::builder(AuditEventType::McpServerUpdated)
-        .action("revoke_mcp_permission")
-        .user_actor(&auth.user)
-        .resource("mcp_server", &id.to_string())
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, Some("bypass:manage_mcp_servers"))
-        .details(serde_json::json!({
-            "target_agent_id": agent_id.to_string(),
-            "permission": permission,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
+        .services
+        .mcp_servers
+        .revoke_permission(&auth, &corr.0, &McpServerId(id), agent_id, &permission)
+        .await?;
 
     Ok(Json(ApiResponse::ok(
         serde_json::json!({ "revoked": true }),

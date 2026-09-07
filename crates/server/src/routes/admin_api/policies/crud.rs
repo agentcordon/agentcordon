@@ -5,17 +5,16 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
 use agent_cordon_core::domain::policy::{PolicyId, StoredPolicy};
 use agent_cordon_core::policy::actions;
 
-use crate::events::UiEvent;
 use crate::extractors::AuthenticatedUser;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
+use crate::services::policies::{NewPolicy, PolicyChanges};
 use crate::state::AppState;
 
-use super::{check_manage_policies, reload_engine};
+use agent_cordon_core::policy::PolicyResource;
 
 #[derive(Deserialize)]
 pub(super) struct CreatePolicyRequest {
@@ -55,7 +54,14 @@ pub(super) async fn validate_policy(
     auth: AuthenticatedUser,
     Json(req): Json<ValidatePolicyRequest>,
 ) -> Result<Json<ApiResponse<ValidateResult>>, ApiError> {
-    check_manage_policies(&state, &auth).await?;
+    state
+        .authz
+        .authorize(
+            &auth,
+            actions::MANAGE_POLICIES,
+            &PolicyResource::PolicyAdmin,
+        )
+        .await?;
 
     if req.cedar_policy.is_empty() {
         return Err(ApiError::BadRequest("cedar_policy is required".to_string()));
@@ -78,7 +84,14 @@ pub(super) async fn get_schema(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    check_manage_policies(&state, &auth).await?;
+    state
+        .authz
+        .authorize(
+            &auth,
+            actions::MANAGE_POLICIES,
+            &PolicyResource::PolicyAdmin,
+        )
+        .await?;
     let schema_text = agent_cordon_core::policy::schema::CEDAR_SCHEMA_JSON.to_string();
     Ok(Json(ApiResponse::ok(schema_text)))
 }
@@ -139,6 +152,10 @@ pub(super) async fn get_schema_reference(
         (
             actions::MANAGE_OIDC_PROVIDERS,
             "Manage OIDC identity providers",
+        ),
+        (
+            actions::MANAGE_OAUTH_PROVIDER_CLIENTS,
+            "Manage the OAuth client registrations AgentCordon holds at upstream              authorization servers",
         ),
         (actions::MANAGE_VAULTS, "Share or unshare credential vaults"),
         (
@@ -259,58 +276,20 @@ pub(super) async fn create_policy(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Json(req): Json<CreatePolicyRequest>,
 ) -> Result<Json<ApiResponse<StoredPolicy>>, ApiError> {
-    let policy_decision = check_manage_policies(&state, &auth).await?;
-
-    // Validate the Cedar policy text: syntax parse + schema validation (structured errors)
-    state
-        .authz
-        .validate_policy_text_detailed(&req.cedar_policy)
-        .map_err(|errors| ApiError::PolicyValidation { errors })?;
-
-    let now = chrono::Utc::now();
-    let policy = StoredPolicy {
-        id: PolicyId(Uuid::new_v4()),
-        name: req.name,
-        description: req.description,
-        cedar_policy: req.cedar_policy,
-        enabled: req.enabled.unwrap_or(true),
-        is_system: false,
-        created_at: now,
-        updated_at: now,
-    };
-
-    state.store.store_policy(&policy).await?;
-
-    // Reload policy engine
-    reload_engine(&state).await?;
-
-    // Notify devices of policy change
-    state
-        .event_bus
-        .emit(crate::events::DeviceEvent::PolicyChanged {
-            policy_name: policy.name.clone(),
-        });
-
-    // Audit log
-    let event = AuditEvent::builder(AuditEventType::PolicyCreated)
-        .action("create")
-        .user_actor(&auth.user)
-        .resource("policy", &policy.id.0.to_string())
-        .correlation_id(&corr.0)
-        .decision(
-            AuditDecision::Permit,
-            Some(&policy_decision.reasons.join(", ")),
+    let policy = state
+        .services
+        .policies
+        .create(
+            &auth,
+            &corr.0,
+            NewPolicy {
+                name: req.name,
+                description: req.description,
+                cedar_policy: req.cedar_policy,
+                enabled: req.enabled,
+            },
         )
-        .details(serde_json::json!({ "policy_name": policy.name }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
-
-    // Emit UI event for browser auto-refresh
-    state.ui_event_bus.emit(UiEvent::PolicyChanged {
-        policy_name: policy.name.clone(),
-    });
+        .await?;
 
     Ok(Json(ApiResponse::ok(policy)))
 }
@@ -319,14 +298,20 @@ pub(super) async fn list_policies(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
 ) -> Result<Json<ApiResponse<Vec<StoredPolicy>>>, ApiError> {
-    check_manage_policies(&state, &auth).await?;
+    state
+        .authz
+        .authorize(
+            &auth,
+            actions::MANAGE_POLICIES,
+            &PolicyResource::PolicyAdmin,
+        )
+        .await?;
 
     let all_policies = state.store.list_policies().await?;
 
     // Tenant scoping: non-admin users only see grant policies
     // that reference their owned workspaces.
-    let is_admin =
-        auth.user.role == agent_cordon_core::domain::user::UserRole::Admin || auth.is_root;
+    let is_admin = auth.is_admin();
     let policies = if is_admin {
         all_policies
     } else {
@@ -347,12 +332,15 @@ pub(super) async fn get_policy(
     auth: AuthenticatedUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<StoredPolicy>>, ApiError> {
-    check_manage_policies(&state, &auth).await?;
-    let policy = state
-        .store
-        .get_policy(&PolicyId(id))
-        .await?
-        .ok_or_else(|| ApiError::NotFound("policy not found".to_string()))?;
+    state
+        .authz
+        .authorize(
+            &auth,
+            actions::MANAGE_POLICIES,
+            &PolicyResource::PolicyAdmin,
+        )
+        .await?;
+    let policy = state.services.policies.load(&PolicyId(id)).await?;
     Ok(Json(ApiResponse::ok(policy)))
 }
 
@@ -363,65 +351,21 @@ pub(super) async fn update_policy(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdatePolicyRequest>,
 ) -> Result<Json<ApiResponse<StoredPolicy>>, ApiError> {
-    let policy_decision = check_manage_policies(&state, &auth).await?;
-
-    let mut policy = state
-        .store
-        .get_policy(&PolicyId(id))
-        .await?
-        .ok_or_else(|| ApiError::NotFound("policy not found".to_string()))?;
-
-    if let Some(name) = req.name {
-        policy.name = name;
-    }
-    if let Some(desc) = req.description {
-        policy.description = Some(desc);
-    }
-    if let Some(cedar) = req.cedar_policy {
-        // Validate updated Cedar policy text: syntax parse + schema validation (structured errors)
-        state
-            .authz
-            .validate_policy_text_detailed(&cedar)
-            .map_err(|errors| ApiError::PolicyValidation { errors })?;
-        policy.cedar_policy = cedar;
-    }
-    if let Some(enabled) = req.enabled {
-        policy.enabled = enabled;
-    }
-    policy.updated_at = chrono::Utc::now();
-
-    state.store.update_policy(&policy).await?;
-
-    // Reload policy engine
-    reload_engine(&state).await?;
-
-    // Notify devices of policy change
-    state
-        .event_bus
-        .emit(crate::events::DeviceEvent::PolicyChanged {
-            policy_name: policy.name.clone(),
-        });
-
-    // Audit log
-    let event = AuditEvent::builder(AuditEventType::PolicyUpdated)
-        .action("update")
-        .user_actor(&auth.user)
-        .resource("policy", &policy.id.0.to_string())
-        .correlation_id(&corr.0)
-        .decision(
-            AuditDecision::Permit,
-            Some(&policy_decision.reasons.join(", ")),
+    let policy = state
+        .services
+        .policies
+        .update(
+            &auth,
+            &corr.0,
+            &PolicyId(id),
+            PolicyChanges {
+                name: req.name,
+                description: req.description,
+                cedar_policy: req.cedar_policy,
+                enabled: req.enabled,
+            },
         )
-        .details(serde_json::json!({ "policy_name": policy.name }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
-
-    // Emit UI event for browser auto-refresh
-    state.ui_event_bus.emit(UiEvent::PolicyChanged {
-        policy_name: policy.name.clone(),
-    });
+        .await?;
 
     Ok(Json(ApiResponse::ok(policy)))
 }
@@ -432,46 +376,11 @@ pub(super) async fn delete_policy(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let policy_decision = check_manage_policies(&state, &auth).await?;
-
-    let policy = state
-        .store
-        .get_policy(&PolicyId(id))
-        .await?
-        .ok_or_else(|| ApiError::NotFound("policy not found".to_string()))?;
-
-    state.store.delete_policy(&PolicyId(id)).await?;
-
-    // Reload policy engine
-    reload_engine(&state).await?;
-
-    // Notify devices of policy change
     state
-        .event_bus
-        .emit(crate::events::DeviceEvent::PolicyChanged {
-            policy_name: policy.name.clone(),
-        });
-
-    // Audit log
-    let event = AuditEvent::builder(AuditEventType::PolicyDeleted)
-        .action("delete")
-        .user_actor(&auth.user)
-        .resource("policy", &id.to_string())
-        .correlation_id(&corr.0)
-        .decision(
-            AuditDecision::Permit,
-            Some(&policy_decision.reasons.join(", ")),
-        )
-        .details(serde_json::json!({ "policy_name": policy.name }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
-
-    // Emit UI event for browser auto-refresh
-    state.ui_event_bus.emit(UiEvent::PolicyChanged {
-        policy_name: policy.name.clone(),
-    });
+        .services
+        .policies
+        .delete(&auth, &corr.0, &PolicyId(id))
+        .await?;
 
     Ok(Json(ApiResponse::ok(
         serde_json::json!({ "deleted": true }),

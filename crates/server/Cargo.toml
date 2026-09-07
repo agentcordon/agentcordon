@@ -2,6 +2,11 @@
 name = "agent-cordon-server"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Not on crates.io: the release artifacts are the tagged binaries and the
+# container image, not a registry upload.
+publish = false
 autotests = false
 
 [lib]
@@ -12,9 +17,6 @@ name = "agent-cordon-server"
 path = "src/main.rs"
 
 [features]
-default = ["sqlite"]
-sqlite = ["agent-cordon-core/sqlite"]
-postgres = ["agent-cordon-core/postgres"]
 test-helpers = []
 
 [dependencies]
@@ -26,7 +28,7 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-axum = { version = "0.8", features = ["ws"] }
+axum = "0.8"
 tower-http = { version = "0.6", features = ["trace", "request-id", "util", "set-header", "fs"] }
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 clap = { version = "4", features = ["derive"] }
@@ -43,6 +45,7 @@ sha2 = "0.10"
 hkdf = "0.12"
 rand = "0.8"
 hex = "0.4"
+libc = "0.2"
 zeroize = "1"
 base64 = "0.22"
 subtle = "2"
@@ -52,17 +55,18 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
 
 [dev-dependencies]
 agent-cordon-server = { path = ".", features = ["test-helpers"] }
-agent-cordon-core = { path = "../core", features = ["test-crypto"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 wiremock = "0.6"
 tempfile = "3"
 serial_test = "3"
 serde_yaml = "0.9"
-tokio-tungstenite = "0.24"
 futures-util = "0.3"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 regex-lite = "0.1"
+# Form encoding, so the wire-contract tests can put exactly the bytes
+# reqwest's `.form()` produces in the broker on the server's routes.
+serde_urlencoded = "0.7"
 
 # Single consolidated integration test binary.
 # All test files in tests/ are included as modules of main.rs,

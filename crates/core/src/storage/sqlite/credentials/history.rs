@@ -4,11 +4,17 @@ use super::super::helpers::*;
 use super::super::SqliteStore;
 
 use crate::domain::credential::{CredentialId, SecretHistoryEntry, StoredCredential};
+use crate::domain::time::{format_timestamp, parse_timestamp};
 use crate::error::StoreError;
-use crate::storage::shared::CREDENTIAL_COLUMNS;
-use crate::storage::SecretHistoryStore;
-use chrono::{DateTime, Utc};
+use crate::storage::shared::{CREDENTIAL_COLUMNS, CREDENTIAL_SOURCE};
+use crate::storage::{SecretHistoryCiphertext, SecretHistoryStore};
 use uuid::Uuid;
+
+fn parse_credential_id(raw: &str, column: usize) -> rusqlite::Result<CredentialId> {
+    Uuid::parse_str(raw).map(CredentialId).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(e))
+    })
+}
 
 impl SqliteStore {
     // ---- Credential Secret History ----
@@ -18,12 +24,13 @@ impl SqliteStore {
         credential_id: &CredentialId,
         encrypted_value: &[u8],
         nonce: &[u8],
+        key_version: i64,
         changed_by_user: Option<&str>,
         changed_by_agent: Option<&str>,
     ) -> Result<(), StoreError> {
         let cred_id_str = credential_id.0.hyphenated().to_string();
         let id_str = Uuid::new_v4().hyphenated().to_string();
-        let changed_at = chrono::Utc::now().to_rfc3339();
+        let changed_at = format_timestamp(&chrono::Utc::now());
         let encrypted_value = encrypted_value.to_vec();
         let nonce = nonce.to_vec();
         let changed_by_user = changed_by_user.map(|s| s.to_string());
@@ -32,8 +39,9 @@ impl SqliteStore {
         self.conn()
             .call(move |conn| {
                 conn.execute(
-                    "INSERT INTO credential_secret_history (id, credential_id, encrypted_value, nonce, changed_at, changed_by_user, changed_by_agent) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO credential_secret_history \
+                       (id, credential_id, encrypted_value, nonce, changed_at, changed_by_user, changed_by_agent, key_version) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     rusqlite::params![
                         id_str,
                         cred_id_str,
@@ -42,13 +50,14 @@ impl SqliteStore {
                         changed_at,
                         changed_by_user,
                         changed_by_agent,
+                        key_version,
                     ],
                 )
                 .map_err(tokio_rusqlite::Error::Rusqlite)?;
                 Ok(())
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn list_secret_history(
@@ -82,22 +91,14 @@ impl SqliteStore {
                                 Box::new(e),
                             )
                         })?;
-                        let credential_id = Uuid::parse_str(&cred_id_str).map_err(|e| {
+                        let credential_id = parse_credential_id(&cred_id_str, 1)?.0;
+                        let changed_at = parse_timestamp(&changed_at_str).map_err(|e| {
                             rusqlite::Error::FromSqlConversionFailure(
-                                1,
+                                2,
                                 rusqlite::types::Type::Text,
                                 Box::new(e),
                             )
                         })?;
-                        let changed_at = DateTime::parse_from_rfc3339(&changed_at_str)
-                            .map(|dt| dt.with_timezone(&Utc))
-                            .map_err(|e| {
-                                rusqlite::Error::FromSqlConversionFailure(
-                                    2,
-                                    rusqlite::types::Type::Text,
-                                    Box::new(e),
-                                )
-                            })?;
 
                         Ok(SecretHistoryEntry {
                             id,
@@ -116,29 +117,32 @@ impl SqliteStore {
                 Ok(entries)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn get_secret_history_value(
         &self,
+        credential_id: &CredentialId,
         history_id: &str,
-    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, StoreError> {
+    ) -> Result<Option<SecretHistoryCiphertext>, StoreError> {
+        let credential_id = credential_id.0.hyphenated().to_string();
         let history_id = history_id.to_string();
 
         self.conn()
             .call(move |conn| {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT encrypted_value, nonce FROM credential_secret_history WHERE id = ?1",
+                        "SELECT id, credential_id, encrypted_value, nonce, key_version \
+                         FROM credential_secret_history \
+                         WHERE id = ?1 AND credential_id = ?2",
                     )
                     .map_err(tokio_rusqlite::Error::Rusqlite)?;
 
                 let mut rows = stmt
-                    .query_map(rusqlite::params![history_id], |row| {
-                        let encrypted_value: Vec<u8> = row.get(0)?;
-                        let nonce: Vec<u8> = row.get(1)?;
-                        Ok((encrypted_value, nonce))
-                    })
+                    .query_map(
+                        rusqlite::params![history_id, credential_id],
+                        row_to_history_ciphertext,
+                    )
                     .map_err(tokio_rusqlite::Error::Rusqlite)?;
 
                 match rows.next() {
@@ -148,7 +152,56 @@ impl SqliteStore {
                 }
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
+    }
+
+    pub(crate) async fn list_all_secret_history_ciphertexts(
+        &self,
+    ) -> Result<Vec<SecretHistoryCiphertext>, StoreError> {
+        self.conn()
+            .call(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, credential_id, encrypted_value, nonce, key_version \
+                         FROM credential_secret_history ORDER BY changed_at, id",
+                    )
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                let rows = stmt
+                    .query_map([], row_to_history_ciphertext)
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row.map_err(tokio_rusqlite::Error::Rusqlite)?);
+                }
+                Ok(out)
+            })
+            .await
+            .map_err(map_store_error)
+    }
+
+    pub(crate) async fn update_secret_history_ciphertext(
+        &self,
+        history_id: &str,
+        encrypted_value: &[u8],
+        nonce: &[u8],
+        key_version: i64,
+    ) -> Result<bool, StoreError> {
+        let history_id = history_id.to_string();
+        let encrypted_value = encrypted_value.to_vec();
+        let nonce = nonce.to_vec();
+        self.conn()
+            .call(move |conn| {
+                let changed = conn
+                    .execute(
+                        "UPDATE credential_secret_history \
+                         SET encrypted_value = ?1, nonce = ?2, key_version = ?3 WHERE id = ?4",
+                        rusqlite::params![encrypted_value, nonce, key_version, history_id],
+                    )
+                    .map_err(tokio_rusqlite::Error::Rusqlite)?;
+                Ok(changed > 0)
+            })
+            .await
+            .map_err(map_store_error)
     }
 
     // ---- Batch credential loading ----
@@ -161,8 +214,8 @@ impl SqliteStore {
         self.conn()
             .call(move |conn| {
                 let sql = format!(
-                    "SELECT {} FROM credentials WHERE name = ?1 ORDER BY created_at",
-                    CREDENTIAL_COLUMNS
+                    "SELECT {CREDENTIAL_COLUMNS} FROM {CREDENTIAL_SOURCE} \
+                     WHERE c.name = ?1 ORDER BY c.created_at"
                 );
                 let mut stmt = conn
                     .prepare(&sql)
@@ -179,7 +232,7 @@ impl SqliteStore {
                 Ok(creds)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
 
     pub(crate) async fn list_all_stored_credentials(
@@ -187,10 +240,8 @@ impl SqliteStore {
     ) -> Result<Vec<StoredCredential>, StoreError> {
         self.conn()
             .call(move |conn| {
-                let sql = format!(
-                    "SELECT {} FROM credentials ORDER BY name",
-                    CREDENTIAL_COLUMNS
-                );
+                let sql =
+                    format!("SELECT {CREDENTIAL_COLUMNS} FROM {CREDENTIAL_SOURCE} ORDER BY c.name");
                 let mut stmt = conn
                     .prepare(&sql)
                     .map_err(tokio_rusqlite::Error::Rusqlite)?;
@@ -206,8 +257,21 @@ impl SqliteStore {
                 Ok(creds)
             })
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(map_store_error)
     }
+}
+
+/// Row shape: `id, credential_id, encrypted_value, nonce, key_version`.
+fn row_to_history_ciphertext(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecretHistoryCiphertext> {
+    let id: String = row.get(0)?;
+    let cred_id_str: String = row.get(1)?;
+    Ok(SecretHistoryCiphertext {
+        id,
+        credential_id: parse_credential_id(&cred_id_str, 1)?,
+        encrypted_value: row.get(2)?,
+        nonce: row.get(3)?,
+        key_version: row.get(4)?,
+    })
 }
 
 #[async_trait]
@@ -217,6 +281,7 @@ impl SecretHistoryStore for SqliteStore {
         credential_id: &CredentialId,
         encrypted_value: &[u8],
         nonce: &[u8],
+        key_version: i64,
         changed_by_user: Option<&str>,
         changed_by_agent: Option<&str>,
     ) -> Result<(), StoreError> {
@@ -224,6 +289,7 @@ impl SecretHistoryStore for SqliteStore {
             credential_id,
             encrypted_value,
             nonce,
+            key_version,
             changed_by_user,
             changed_by_agent,
         )
@@ -237,8 +303,25 @@ impl SecretHistoryStore for SqliteStore {
     }
     async fn get_secret_history_value(
         &self,
+        credential_id: &CredentialId,
         history_id: &str,
-    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, StoreError> {
-        self.get_secret_history_value(history_id).await
+    ) -> Result<Option<SecretHistoryCiphertext>, StoreError> {
+        self.get_secret_history_value(credential_id, history_id)
+            .await
+    }
+    async fn list_all_secret_history_ciphertexts(
+        &self,
+    ) -> Result<Vec<SecretHistoryCiphertext>, StoreError> {
+        self.list_all_secret_history_ciphertexts().await
+    }
+    async fn update_secret_history_ciphertext(
+        &self,
+        history_id: &str,
+        encrypted_value: &[u8],
+        nonce: &[u8],
+        key_version: i64,
+    ) -> Result<bool, StoreError> {
+        self.update_secret_history_ciphertext(history_id, encrypted_value, nonce, key_version)
+            .await
     }
 }

@@ -6,17 +6,15 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-use agent_cordon_core::domain::audit::{AuditDecision, AuditEvent, AuditEventType};
-use agent_cordon_core::domain::credential::{CredentialId, CredentialUpdate, SecretHistoryEntry};
+use agent_cordon_core::domain::credential::{CredentialId, SecretHistoryEntry};
+use agent_cordon_core::domain::user::UserId;
+use agent_cordon_core::domain::workspace::WorkspaceId;
 use agent_cordon_core::policy::{actions, PolicyResource};
 
-use crate::events::UiEvent;
 use crate::extractors::AuthenticatedActor;
 use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
 use crate::state::AppState;
-
-use super::actor_identity_strings;
 
 /// Response type for secret history list entries (no secret values).
 #[derive(Serialize)]
@@ -26,6 +24,11 @@ pub(crate) struct SecretHistoryResponse {
     changed_at: DateTime<Utc>,
     changed_by_user: Option<String>,
     changed_by_agent: Option<String>,
+    /// Who rotated the secret, as a reader would recognise them: the user's
+    /// display name (else their username), or the workspace's name. The stored
+    /// columns are UUIDs, and the History tab showed one of them — which is to
+    /// say "-" — where the actor belongs (uat/artifacts/reviews/UI-REVIEW-live.md M10).
+    changed_by_name: Option<String>,
 }
 
 impl From<SecretHistoryEntry> for SecretHistoryResponse {
@@ -36,6 +39,38 @@ impl From<SecretHistoryEntry> for SecretHistoryResponse {
             changed_at: entry.changed_at,
             changed_by_user: entry.changed_by_user,
             changed_by_agent: entry.changed_by_agent,
+            changed_by_name: None,
+        }
+    }
+}
+
+/// Fill in `changed_by_name` for each row, the same way `owner_username` is
+/// resolved on a credential: display name, else username; a workspace-authored
+/// rotation names the workspace. An id that no longer resolves is left unnamed
+/// rather than shown raw.
+async fn enrich_actor_names(
+    store: &dyn agent_cordon_core::storage::Store,
+    entries: &mut [SecretHistoryResponse],
+) {
+    for entry in entries.iter_mut() {
+        if let Some(id) = entry
+            .changed_by_user
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok())
+        {
+            if let Ok(Some(user)) = store.get_user(&UserId(id)).await {
+                entry.changed_by_name = user.display_name.or(Some(user.username));
+                continue;
+            }
+        }
+        if let Some(id) = entry
+            .changed_by_agent
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok())
+        {
+            if let Ok(Some(workspace)) = store.get_workspace(&WorkspaceId(id)).await {
+                entry.changed_by_name = Some(workspace.name);
+            }
         }
     }
 }
@@ -50,11 +85,7 @@ pub(crate) async fn list_secret_history(
     let cred_id = CredentialId(id);
 
     // Load the credential to verify it exists and for policy check
-    let cred = state
-        .store
-        .get_credential(&cred_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
+    let cred = state.services.credentials.load(&cred_id).await?;
 
     // Policy check: use "update" action on the credential resource
     state
@@ -73,7 +104,8 @@ pub(crate) async fn list_secret_history(
         .await?;
 
     let entries = state.store.list_secret_history(&cred_id).await?;
-    let response: Vec<SecretHistoryResponse> = entries.into_iter().map(Into::into).collect();
+    let mut response: Vec<SecretHistoryResponse> = entries.into_iter().map(Into::into).collect();
+    enrich_actor_names(state.store.as_ref(), &mut response).await;
 
     Ok(Json(ApiResponse::ok(response)))
 }
@@ -87,90 +119,11 @@ pub(crate) async fn restore_secret_history(
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path((id, history_id)): Path<(Uuid, String)>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let cred_id = CredentialId(id);
-
-    // Load the credential to verify it exists and for policy check
-    let cred = state
-        .store
-        .get_credential(&cred_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("credential not found".to_string()))?;
-
-    // Policy check: require "update" action (delegated_use-level access is checked via policy)
     state
-        .authz
-        .request(&actor, &uuid::Uuid::new_v4().to_string())
-        .check(
-            actions::UPDATE,
-            &PolicyResource::Credential {
-                credential: cred.clone(),
-            },
-        )
+        .services
+        .credentials
+        .restore_secret_history(&actor, &corr.0, &CredentialId(id), &history_id)
         .await?;
-
-    // Get the historical encrypted value + nonce
-    let (historical_encrypted, historical_nonce) = state
-        .store
-        .get_secret_history_value(&history_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("secret history entry not found".to_string()))?;
-
-    // Store the CURRENT encrypted value in history before restoring
-    let (changed_by_user, changed_by_agent) = actor_identity_strings(&actor);
-    state
-        .store
-        .store_secret_history(
-            &cred_id,
-            &cred.encrypted_value,
-            &cred.nonce,
-            changed_by_user.as_deref(),
-            changed_by_agent.as_deref(),
-        )
-        .await?;
-
-    // Update the credential with the historical value
-    let updates = CredentialUpdate {
-        name: None,
-        service: None,
-        scopes: None,
-        metadata: None,
-        allowed_url_pattern: None,
-        expires_at: None,
-        transform_script: None,
-        transform_name: None,
-        vault: None,
-        tags: None,
-        description: None,
-        target_identity: None,
-        encrypted_value: Some(historical_encrypted),
-        nonce: Some(historical_nonce),
-        key_version: None,
-    };
-
-    state.store.update_credential(&cred_id, &updates).await?;
-
-    // Audit log
-    let (ws_id, ws_name, u_id, u_name) = actor.audit_actor_fields();
-    let event = AuditEvent::builder(AuditEventType::CredentialSecretRestored)
-        .action("update")
-        .actor_fields(ws_id, ws_name, u_id, u_name)
-        .resource("credential", &id.to_string())
-        .correlation_id(&corr.0)
-        .decision(AuditDecision::Permit, None)
-        .details(serde_json::json!({
-            "credential_name": cred.name,
-            "service": cred.service,
-            "restored_from_history_id": history_id,
-        }))
-        .build();
-    if let Err(e) = state.store.append_audit_event(&event).await {
-        tracing::warn!(error = %e, "Failed to write audit event");
-    }
-
-    // Emit UI event for browser auto-refresh
-    state
-        .ui_event_bus
-        .emit(UiEvent::CredentialUpdated { credential_id: id });
 
     Ok(Json(ApiResponse::ok(serde_json::json!({
         "restored": true,

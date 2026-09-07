@@ -32,7 +32,6 @@ async fn make_workspace(ctx: &TestContext, name: &str, owner: &User) -> Workspac
     let ws = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -130,104 +129,6 @@ async fn create_mcp_server_does_not_write_legacy_workspace_id_column() {
 }
 
 #[tokio::test]
-async fn report_tools_accepts_reports_for_junction_bound_mcps() {
-    let ctx = TestAppBuilder::new().with_admin().build().await;
-    let admin = make_admin(&ctx, "report-admin").await;
-
-    let ws_caller = make_workspace(&ctx, "report-caller", &admin).await;
-    let ws_anchor = make_workspace(&ctx, "report-anchor", &admin).await;
-
-    // M1's legacy column points at ws_anchor; junction binds to ws_caller.
-    let mcp = make_mcp_bound_to(&ctx, "report-mcp", &ws_anchor, &ws_caller, &admin).await;
-
-    let jwt = common::issue_agent_jwt(&ctx.state, &ws_caller).await;
-
-    let body = serde_json::json!({
-        "server_name": mcp.name,
-        "tools": [
-            { "name": "echo", "description": "echo back input" }
-        ]
-    });
-    let (status, response) = common::send_json(
-        &ctx.app,
-        Method::POST,
-        "/api/v1/workspaces/mcp-report-tools",
-        Some(&jwt),
-        None,
-        None,
-        Some(body),
-    )
-    .await;
-
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "report-tools should accept reports for MCPs bound to the caller via the junction, \
-         even when the legacy workspace_id points elsewhere. Got: {}",
-        response
-    );
-    assert_eq!(
-        response["data"]["tools_updated"]
-            .as_u64()
-            .expect("tools_updated"),
-        1,
-        "should record one tool"
-    );
-}
-
-/// Decode a JWT's middle (payload) segment to a serde_json::Value. Skips
-/// signature verification — we only care about the claim shape under test.
-fn decode_jwt_payload(token: &str) -> Value {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-    let parts: Vec<&str> = token.split('.').collect();
-    assert_eq!(parts.len(), 3, "expected 3-segment JWT, got: {}", token);
-    let bytes = URL_SAFE_NO_PAD
-        .decode(parts[1])
-        .expect("decode JWT payload");
-    serde_json::from_slice(&bytes).expect("parse JWT payload as JSON")
-}
-
-#[tokio::test]
-async fn workspace_permissions_starts_from_junction_bound_mcps_only() {
-    let ctx = TestAppBuilder::new().with_admin().build().await;
-    let admin = make_admin(&ctx, "perm-admin").await;
-
-    let ws_caller = make_workspace(&ctx, "caller-ws", &admin).await;
-    let ws_other = make_workspace(&ctx, "other-ws", &admin).await;
-
-    // M1: legacy column = ws_other; junction binds ONLY to ws_other.
-    // Both workspaces share `admin` as owner, so default Cedar policy 3a would
-    // permit `mcp_tool_call` for ws_caller if the code iterated all MCPs.
-    let _mcp = make_mcp_bound_to(&ctx, "other-mcp", &ws_other, &ws_other, &admin).await;
-
-    let jwt = common::issue_agent_jwt(&ctx.state, &ws_caller).await;
-
-    let uri = format!("/api/v1/workspaces/{}/permissions", ws_caller.id.0);
-    let (status, body) =
-        common::send_json(&ctx.app, Method::GET, &uri, Some(&jwt), None, None, None).await;
-    assert_eq!(status, StatusCode::OK, "permissions endpoint: {}", body);
-
-    let token = body["data"]["token"]
-        .as_str()
-        .expect("response should contain token");
-    let payload = decode_jwt_payload(token);
-    let scopes: Vec<String> = payload["scopes"]
-        .as_array()
-        .expect("payload should have scopes array")
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
-
-    assert!(
-        !scopes.iter().any(|s| s.contains("other-mcp")),
-        "scopes for caller-ws must not include MCPs bound only to other workspaces; \
-         got: {:?}",
-        scopes
-    );
-}
-
-#[tokio::test]
 async fn list_mcp_servers_filtered_by_workspace_reads_junction_not_legacy_column() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let admin = make_admin(&ctx, "consol-admin").await;
@@ -263,13 +164,12 @@ async fn list_mcp_servers_filtered_by_workspace_reads_junction_not_legacy_column
 }
 
 /// Parity test (#41): for a workspace bound to N MCPs via the junction, the
-/// three independent consumer paths must all see the same set —
+/// two independent consumer paths must see the same set —
 ///   * admin filter   `GET /api/v1/mcp-servers?workspace_id=W`
 ///   * broker sync    `GET /api/v1/workspaces/mcp-servers` (workspace JWT)
-///   * token scopes   `GET /api/v1/workspaces/W/permissions` (workspace JWT)
 /// This pins the "single source of truth" invariant from #37.
 #[tokio::test]
-async fn admin_filter_broker_sync_and_token_scopes_agree_on_junction_bound_mcps() {
+async fn admin_filter_and_broker_sync_agree_on_junction_bound_mcps() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let admin = make_admin(&ctx, "parity-admin").await;
     let (session, csrf) = common::login_user(&ctx.app, "parity-admin", common::TEST_PASSWORD).await;
@@ -333,41 +233,5 @@ async fn admin_filter_broker_sync_and_token_scopes_agree_on_junction_bound_mcps(
     assert_eq!(
         broker_names, expected,
         "broker sync set diverges from junction bindings"
-    );
-
-    // Path 3: token scopes
-    let (status, body) = common::send_json(
-        &ctx.app,
-        Method::GET,
-        &format!("/api/v1/workspaces/{}/permissions", ws.id.0),
-        Some(&jwt),
-        None,
-        None,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "permissions: {}", body);
-    let token = body["data"]["token"].as_str().unwrap();
-    let payload = decode_jwt_payload(token);
-    let scope_strs: Vec<String> = payload["scopes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
-    // Each MCP yields `<workspace_name>.<mcp_name>.*` and `<workspace_name>.<mcp_name>.tools/list`.
-    let scoped_mcp_names: std::collections::HashSet<String> = scope_strs
-        .iter()
-        .filter_map(|s| {
-            let prefix = format!("{}.", ws.name);
-            s.strip_prefix(&prefix)
-                .and_then(|rest| rest.split('.').next())
-                .map(|n| n.to_string())
-        })
-        .collect();
-    assert_eq!(
-        scoped_mcp_names, expected,
-        "token scope MCP set diverges from junction bindings; got scopes {:?}",
-        scope_strs
     );
 }

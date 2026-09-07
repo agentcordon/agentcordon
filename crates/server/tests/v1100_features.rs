@@ -39,35 +39,6 @@ mod schema_cleanup {
         (ctx, cookie)
     }
 
-    async fn setup_with_seed() -> (agent_cordon_server::test_helpers::TestContext, String) {
-        let ctx = TestAppBuilder::new()
-            .with_config(|c| {
-                c.seed_demo = true;
-            })
-            .build()
-            .await;
-
-        agent_cordon_server::seed::seed_demo_data(
-            &ctx.store,
-            &ctx.encryptor,
-            &ctx.state.config,
-            &ctx.jwt_issuer,
-        )
-        .await
-        .expect("seed demo data");
-
-        let _user = common::create_test_user(
-            &*ctx.store,
-            "schema-seed-user",
-            common::TEST_PASSWORD,
-            UserRole::Admin,
-        )
-        .await;
-        let cookie =
-            common::login_user_combined(&ctx.app, "schema-seed-user", common::TEST_PASSWORD).await;
-        (ctx, cookie)
-    }
-
     // ===========================================================================
     // 1A. Schema endpoint returns valid JSON
     // ===========================================================================
@@ -254,47 +225,6 @@ mod schema_cleanup {
             body
         );
     }
-
-    // ===========================================================================
-    // 1F. Curated seed policies use vend_credential, not proxy_access
-    // ===========================================================================
-
-    #[tokio::test]
-    async fn test_curated_policies_use_vend_credential() {
-        let (ctx, cookie) = setup_with_seed().await;
-
-        let (status, body) = common::send_json_auto_csrf(
-            &ctx.app,
-            Method::GET,
-            "/api/v1/policies",
-            None,
-            Some(&cookie),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-
-        let policies = body["data"].as_array().expect("data should be array");
-
-        for policy in policies {
-            let cedar = policy["cedar_policy"].as_str().unwrap_or("");
-            let name = policy["name"].as_str().unwrap_or("unknown");
-
-            assert!(
-                !cedar.contains("proxy_access"),
-                "policy '{}' should NOT contain deprecated proxy_access",
-                name
-            );
-
-            if cedar.contains("vend") {
-                assert!(
-                    cedar.contains("vend_credential"),
-                    "policy '{}' references 'vend' but not 'vend_credential'",
-                    name
-                );
-            }
-        }
-    }
 }
 
 mod rsop_ui {
@@ -312,21 +242,7 @@ mod rsop_ui {
     // ---------------------------------------------------------------------------
 
     async fn setup() -> (agent_cordon_server::test_helpers::TestContext, String) {
-        let ctx = TestAppBuilder::new()
-            .with_config(|c| {
-                c.seed_demo = true;
-            })
-            .build()
-            .await;
-
-        agent_cordon_server::seed::seed_demo_data(
-            &ctx.store,
-            &ctx.encryptor,
-            &ctx.state.config,
-            &ctx.jwt_issuer,
-        )
-        .await
-        .expect("seed demo data");
+        let ctx = TestAppBuilder::new().build().await;
 
         let _user = common::create_test_user(
             &*ctx.store,

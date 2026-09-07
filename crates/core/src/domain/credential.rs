@@ -35,8 +35,12 @@ pub struct StoredCredential {
     pub transform_script: Option<String>,
     /// Optional named built-in transform (e.g., "identity", "basic-auth", "bearer").
     pub transform_name: Option<String>,
-    /// Vault grouping. Defaults to "default".
-    pub vault: String,
+    /// The id of the vault this credential lives in. Defaults to
+    /// [`crate::domain::vault::DEFAULT_VAULT_ID`].
+    pub vault_id: String,
+    /// The vault's display name, read back with the row. Denormalized for
+    /// display only — `vault_id` is what names the vault.
+    pub vault_name: String,
     /// Credential type: "generic" (default), "aws", etc.
     pub credential_type: String,
     /// User-defined tags for categorization and policy matching.
@@ -58,8 +62,28 @@ impl StoredCredential {
     }
 }
 
+/// How a caller reached a credential in a response.
+///
+/// A read share on a vault makes its credentials *visible* and grants nothing
+/// else -- no reveal, no edit, no delete, no re-share, no vending. That is a
+/// property of the reader, not of the row, so it is answered per response and
+/// never stored. A page reads it to decide which controls to offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialAccess {
+    /// Policy grants the caller this credential.
+    Full,
+    /// The only route is a read share on the credential's vault.
+    SharedRead,
+}
+
 /// Public view of a credential -- no secret material.
-#[derive(Debug, Clone, Serialize)]
+///
+/// `Deserialize` as well as `Serialize`: this is the wire type of
+/// `GET /api/v1/credentials`, which the broker reads back, so a renamed
+/// field breaks compilation on both sides rather than silently emptying a
+/// column.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialSummary {
     pub id: CredentialId,
     pub name: String,
@@ -81,8 +105,10 @@ pub struct CredentialSummary {
     pub transform_script: Option<String>,
     /// Optional named built-in transform (e.g., "identity", "basic-auth", "bearer").
     pub transform_name: Option<String>,
-    /// Vault grouping. Defaults to "default".
-    pub vault: String,
+    /// The id of the vault this credential lives in.
+    pub vault_id: String,
+    /// The vault's display name, for showing next to the credential.
+    pub vault_name: String,
     /// Credential type: "generic" (default), "aws", "oauth2_client_credentials", etc.
     pub credential_type: String,
     /// User-defined tags for categorization and policy matching.
@@ -94,6 +120,12 @@ pub struct CredentialSummary {
     /// Resolved owner username (populated at response time, not stored).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_username: Option<String>,
+    /// How this caller reaches the credential (populated at response time by
+    /// the list and detail reads, not stored). Absent means the question was
+    /// not asked, which a reader must treat as unrestricted rather than as
+    /// restricted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<CredentialAccess>,
 }
 
 impl From<StoredCredential> for CredentialSummary {
@@ -113,12 +145,14 @@ impl From<StoredCredential> for CredentialSummary {
             expired,
             transform_script: cred.transform_script,
             transform_name: cred.transform_name,
-            vault: cred.vault,
+            vault_id: cred.vault_id,
+            vault_name: cred.vault_name,
             credential_type: cred.credential_type,
             tags: cred.tags,
             description: cred.description,
             target_identity: cred.target_identity,
             owner_username: None,
+            access: None,
         }
     }
 }
@@ -134,7 +168,8 @@ pub struct CredentialUpdate {
     pub expires_at: Option<DateTime<Utc>>,
     pub transform_script: Option<String>,
     pub transform_name: Option<String>,
-    pub vault: Option<String>,
+    /// Move the credential into another vault, by id.
+    pub vault_id: Option<String>,
     /// Optional tags update. When provided, replaces the existing tags entirely.
     pub tags: Option<Vec<String>>,
     pub description: Option<String>,
@@ -197,7 +232,8 @@ mod tests {
             expires_at,
             transform_script: None,
             transform_name: None,
-            vault: "default".to_string(),
+            vault_id: crate::domain::vault::DEFAULT_VAULT_ID.to_string(),
+            vault_name: "default".to_string(),
             credential_type: "generic".to_string(),
             tags: vec!["test".to_string()],
             description: None,

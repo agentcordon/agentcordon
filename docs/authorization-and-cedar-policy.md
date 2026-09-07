@@ -32,7 +32,7 @@ The Cedar schema defines these entity types in the `AgentCordon` namespace:
 
 | Entity Type | Key Attributes | Purpose |
 |-------------|---------------|---------|
-| `Workspace` | `name`, `enabled`, `tags`, `owner` (User, optional), `parent` (Workspace, optional) | Autonomous agents and devices |
+| `Workspace` | `name`, `enabled` (true only when the workspace status is `active`), `tags`, `owner` (User, optional), `parent` (Workspace, optional) | Autonomous agents and devices |
 | `User` | `name`, `role` (admin/operator/viewer), `enabled`, `is_root` | Human operators |
 | `Credential` | `name`, `service`, `scopes`, `owner` (User), `tags` | API credentials and secrets |
 | `System` | -- (no attributes) | System-level resource (creating credentials, listing, etc.) |
@@ -64,7 +64,7 @@ AgentCordon::PolicyResource::"policies"
 | **MCP** | `mcp_tool_call`, `mcp_list_tools` |
 | **Policy** | `manage_policies` |
 | **User** | `manage_users` |
-| **Workspace** | `manage_workspaces`, `view_audit`, `rotate_key`, `manage_mcp_servers`, `manage_tags`, `manage_oidc_providers`, `manage_vaults`, `rotate_encryption_key` |
+| **Workspace** | `manage_workspaces`, `view_audit`, `rotate_key`, `manage_mcp_servers`, `manage_tags`, `manage_oidc_providers`, `manage_oauth_provider_clients`, `manage_vaults`, `rotate_encryption_key` |
 | **Registration** | `register_workspace` |
 
 ---
@@ -103,6 +103,8 @@ evaluate(principal, action, resource, context) -> PolicyDecision
 > Users with `is_root: true` bypass Cedar evaluation entirely. This is handled in code before the policy engine is called -- the root bypass is **not** a Cedar policy. It returns `Permit` with reason `"root_bypass"`.
 
 ### Decision Flow
+
+Routes call one function, `Authz::authorize(caller, action, resource)`, which returns the decision (for the audit row) or refuses with 403. Routes that add context claims use the fluent `Authz::request(...).check(...)`, which `authorize` delegates to. Every route that names a resource in its path authorizes against that resource (credential, workspace, MCP server, policy administration); `System` is only for actions with no resource yet (create, list). `crates/server/tests/route_authorization.rs` enumerates every parameterized admin route and records which ones are still `System`-scoped.
 
 ```
 1. Build Cedar entities (principal, resource) from domain objects
@@ -167,11 +169,13 @@ permit(
 
 | Policy | Role | Permissions |
 |--------|------|-------------|
-| 2a (4 rules) | Admin | All actions on System, WorkspaceResource, McpServer, and PolicyResource |
+| 2a (3 rules) | Admin | All actions on System, WorkspaceResource, and PolicyResource |
 | 2b | Admin | All actions on own credentials only (`resource.owner == principal`) |
 | 2c | Operator | `list`, `update`, `delete`, `unprotect` on own credentials |
 | 2d | Operator | `create`, `list`, `view_audit`, `manage_mcp_servers` on System |
-| 2e | Operator | `manage_workspaces` on any resource |
+| 2e | Operator | `manage_workspaces` on System (approve registrations, list) |
+| 2e-owner | Operator | `manage_workspaces` on own workspaces only (`resource.owner == principal`) |
+| 2e-mcp | Admin / Operator | `manage_mcp_servers` on any McpServer (admin) or on own MCP servers only (operator, `resource.owner == principal`) |
 | 2f | Viewer | `list`, `view_audit` on System |
 | 2g | Viewer | `list` on own credentials only |
 
@@ -256,6 +260,17 @@ Policies are stored in the database (`policies` table) and loaded at startup:
 | GET | `/api/v1/policies/schema` | Get Cedar schema |
 | GET | `/api/v1/policies/schema/reference` | Get Cedar schema reference |
 
+### Policy pages in the admin UI
+
+The nav item is **Policies**; the paths are under `/security` (`/policies` redirects there).
+
+| Page | What is on it |
+|------|---------------|
+| `/security` | The policy table. Header: **Open tester** (outlined) and **New Policy** (the page's one primary). Above the table, a search box and one filter select -- *All except grants* / *Grants only* / *System only* / *Custom only*. Name, Enabled and Updated are sortable column headers. Each row is a link to the policy; there is no per-row enable/disable. |
+| `/security/{id}` | One policy. The header carries **Disable** / **Enable**, **Edit**, and a **&hellip;** overflow holding **Delete**. Enabling and disabling never needs edit mode, and the last enabled policy refuses both disable and delete, saying why. The body shows Status, then Policy Statements -- per statement, or all at once via **View all as Cedar**. Edit mode adds a **Raw Cedar** / **Structured** toggle over the statement builder. Below: the **Affected Principals** card, loaded on demand with **Load** / **Refresh** because the query is expensive, and a **Test this policy &rarr;** link into the tester, prefilled with this policy. |
+| `/security/new` | Name, Description, the Cedar source, an **Enabled** checkbox, **Cancel** and **Create Policy**, plus template cards that preview into the editor with **Use this template**. |
+| `/security/tester` | The only policy tester -- there is no second one embedded in a policy page. Pick a **Principal** (workspaces and users, users carrying their role), an **Action** and a **Resource** (a concrete credential or MCP server, or *Any credential* / *Any MCP server* / *Any workspace* / *Any policy*), optionally override the principal's role and tags, then **Test** (Ctrl+Enter) or **Test All Workspaces** for the access matrix. The header's **Scenarios** menu saves the current form, reloads a saved one, and clears the list; scenarios live in the browser's local storage, so they are per-browser and not shared. |
+
 ---
 
 ## Policy Templates
@@ -273,17 +288,19 @@ Pre-built templates are available in `data/policy-templates/`:
 `policies/shared-tag-access.cedar` demonstrates tag-based credential sharing:
 
 ```cedar
-// Workspaces can vend credentials that share a tag
+// Enabled workspaces can vend credentials that share a tag
 permit(
   principal is AgentCordon::Workspace,
   action == AgentCordon::Action::"vend_credential",
   resource is AgentCordon::Credential
 ) when {
-  principal.tags.containsAny(resource.tags)
+  principal.enabled && principal.tags.containsAny(resource.tags)
 };
 ```
 
-This file also grants `access` and `list` for tag-matched credentials.
+This file also grants `access` and `list` for tag-matched credentials. Every permit checks `principal.enabled`, as the default policy does, so disabling a workspace revokes its tag-based access too.
+
+Every `.cedar` file under `policies/` is loaded through the engine in the core test suite, so CI refuses a shipped policy that fails schema validation.
 
 ---
 

@@ -2,8 +2,6 @@ use axum::{extract::State, routing::get, Json, Router};
 use serde::Serialize;
 
 use agent_cordon_core::domain::credential::{CredentialId, StoredCredential};
-use agent_cordon_core::domain::policy::PolicyDecisionResult;
-use agent_cordon_core::domain::workspace::WorkspaceStatus;
 use agent_cordon_core::policy::{actions, claim_keys, PolicyPrincipal, PolicyResource};
 
 use crate::extractors::AuthenticatedUser;
@@ -66,8 +64,7 @@ async fn get_stats(
         )
         .check(actions::VIEW_AUDIT, &PolicyResource::System)
         .await?; // Tenant scoping: admins see all data, non-admins see only their own
-    let is_admin =
-        auth.user.role == agent_cordon_core::domain::user::UserRole::Admin || auth.is_root;
+    let is_admin = auth.is_admin();
     let workspaces = if is_admin {
         state.store.list_workspaces().await?
     } else {
@@ -84,64 +81,72 @@ async fn get_stats(
         let cred_map: std::collections::HashMap<CredentialId, StoredCredential> =
             all_stored.into_iter().map(|c| (c.id.clone(), c)).collect();
 
+        // A credential counts if the user may list it, or any workspace the
+        // user owns may. Each principal is one Cedar filter over the whole
+        // set (one audit row per principal), then the results are unioned.
+        let corr = uuid::Uuid::new_v4().to_string();
+        let mut visible: std::collections::HashSet<CredentialId> = std::collections::HashSet::new();
+        let stored: Vec<StoredCredential> = cred_map.values().cloned().collect();
+
+        let as_user = state
+            .authz
+            .request(
+                crate::authz::PolicyCaller::Principal {
+                    principal: PolicyPrincipal::User(&auth.user),
+                    oauth_claims: None,
+                },
+                &corr,
+            )
+            .with_claim(
+                claim_keys::REQUESTED_SCOPES,
+                serde_json::json!(Vec::<String>::new()),
+            )
+            .filter(actions::LIST, stored.clone(), |c| {
+                PolicyResource::Credential {
+                    credential: c.clone(),
+                }
+            })
+            .await?;
+        visible.extend(as_user.into_iter().map(|c| c.id));
+
+        for ws in &workspaces {
+            let as_ws = state
+                .authz
+                .request(
+                    crate::authz::PolicyCaller::Principal {
+                        principal: PolicyPrincipal::Workspace(ws),
+                        oauth_claims: None,
+                    },
+                    &corr,
+                )
+                .with_claim(
+                    claim_keys::REQUESTED_SCOPES,
+                    serde_json::json!(Vec::<String>::new()),
+                )
+                .filter(actions::LIST, stored.clone(), |c| {
+                    PolicyResource::Credential {
+                        credential: c.clone(),
+                    }
+                })
+                .await?;
+            visible.extend(as_ws.into_iter().map(|c| c.id));
+        }
+
+        // A vault read share is the vault owner's own decision and Cedar has
+        // no `Vault` resource to carry it, so `/api/v1/credentials` unions the
+        // shared vaults in after the policy filter. The tile is described by
+        // the same sentence in `docs/admin-ui.md § Dashboard`, so it counts
+        // the same rows (uat/artifacts/fresh-user-native-2.md F9).
+        let shared_vaults = state
+            .services
+            .credentials
+            .shared_vault_ids_for_user(&auth.user.id)
+            .await?;
+
         all_summaries
             .into_iter()
             .filter(|summary| {
-                if let Some(cred) = cred_map.get(&summary.id) {
-                    // 1. Check Cedar with User principal (sync via Authz seam)
-                    if state
-                        .authz
-                        .request(
-                            crate::authz::PolicyCaller::Principal {
-                                principal: PolicyPrincipal::User(&auth.user),
-                                oauth_claims: None,
-                            },
-                            &uuid::Uuid::new_v4().to_string(),
-                        )
-                        .with_claim(
-                            claim_keys::REQUESTED_SCOPES,
-                            serde_json::json!(Vec::<String>::new()),
-                        )
-                        .check_with_reasons_blocking(
-                            actions::LIST,
-                            &PolicyResource::Credential {
-                                credential: cred.clone(),
-                            },
-                        )
-                        .ok()
-                        .is_some_and(|d| d.decision != PolicyDecisionResult::Forbid)
-                    {
-                        return true;
-                    }
-                    // 2. Check Cedar with each owned Workspace principal (sync)
-                    for ws in &workspaces {
-                        if state
-                            .authz
-                            .request(
-                                crate::authz::PolicyCaller::Principal {
-                                    principal: PolicyPrincipal::Workspace(ws),
-                                    oauth_claims: None,
-                                },
-                                &uuid::Uuid::new_v4().to_string(),
-                            )
-                            .with_claim(
-                                claim_keys::REQUESTED_SCOPES,
-                                serde_json::json!(Vec::<String>::new()),
-                            )
-                            .check_with_reasons_blocking(
-                                actions::LIST,
-                                &PolicyResource::Credential {
-                                    credential: cred.clone(),
-                                },
-                            )
-                            .ok()
-                            .is_some_and(|d| d.decision != PolicyDecisionResult::Forbid)
-                        {
-                            return true;
-                        }
-                    }
-                }
-                false
+                visible.contains(&summary.id) || shared_vaults.contains(&summary.vault_id)
             })
             .collect()
     };
@@ -158,10 +163,7 @@ async fn get_stats(
 
     let workspace_stats = WorkspaceStats {
         total: workspaces.len(),
-        active: workspaces
-            .iter()
-            .filter(|w| w.status == WorkspaceStatus::Active && w.enabled)
-            .count(),
+        active: workspaces.iter().filter(|w| w.is_active()).count(),
     };
 
     let credential_stats = CredentialStats {

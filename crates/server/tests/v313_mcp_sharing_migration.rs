@@ -13,11 +13,6 @@
 //!     the SQL it wraps, AND that the foreign-key cascades defined by
 //!     migration 010 actually fire through the trait `delete_*` methods that
 //!     product code uses.
-//!   * The postgres DAO is compiled behind the `postgres` feature and not
-//!     exercised by this binary; it is validated separately in the core
-//!     crate's postgres-only tests (see `crates/core/src/storage/postgres/
-//!     mcp_server_workspaces.rs`). Documenting the gap here rather than
-//!     duplicating the test grid.
 
 use agent_cordon_core::domain::mcp::{McpAuthMethod, McpServer, McpServerId, McpTransport};
 use agent_cordon_core::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
@@ -41,7 +36,6 @@ fn mk_workspace(name: &str) -> Workspace {
     Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,

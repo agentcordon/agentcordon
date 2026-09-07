@@ -16,8 +16,6 @@ use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
 use crate::state::AppState;
 
-use super::policies::check_manage_policies;
-
 pub fn routes() -> Router<AppState> {
     Router::new().route("/policies/rsop", post(rsop))
 }
@@ -163,7 +161,15 @@ async fn rsop(
     Json(req): Json<RsopRequest>,
 ) -> Result<Json<ApiResponse<RsopResponse>>, ApiError> {
     // Allow admin (manage_policies) OR resource owner to view RSoP
-    let is_admin = check_manage_policies(&state, &auth).await.is_ok();
+    let is_admin = state
+        .authz
+        .authorize(
+            &auth,
+            actions::MANAGE_POLICIES,
+            &PolicyResource::PolicyAdmin,
+        )
+        .await
+        .is_ok();
     if !is_admin {
         // Check resource ownership as fallback
         let is_owner = match req.resource_type.as_str() {

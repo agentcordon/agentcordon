@@ -1,9 +1,30 @@
-<div x-data="toastManager()" class="toast-container" aria-live="polite" role="status"
-     @toast.window="addToast($event.detail)">
+<!--
+  Toasts.
+
+  One container carried both kinds of message, `aria-live="polite"`, and every
+  toast vanished after four seconds with no way to stop it. `reportApiError`
+  exists precisely to surface the server's sentence — the 409 that names how
+  many credentials still use an OAuth client — and that sentence was gone
+  before it could be read, and was never announced assertively.
+
+  So: the role is decided per toast. A success is a `status`, polite, and
+  auto-dismisses. An error is an `alert`, assertive, and stays until it is
+  dismissed. Both carry a close button, and the timer pauses while the pointer
+  or the keyboard is on the toast (WCAG 2.2.1, 4.1.3).
+-->
+<div x-data="toastManager()" class="toast-container" @toast.window="addToast($event.detail)">
     <template x-for="t in toasts" :key="t.id">
-        <div class="toast" :class="'toast-' + t.type" x-text="t.message"
+        <div class="toast" :class="'toast-' + t.type"
+             :role="t.type === 'error' ? 'alert' : 'status'"
+             :aria-live="t.type === 'error' ? 'assertive' : 'polite'"
+             @mouseenter="pause(t)" @mouseleave="resume(t)"
+             @focusin="pause(t)" @focusout="resume(t)"
              x-transition:enter="toast-enter"
-             x-transition:leave="toast-leave"></div>
+             x-transition:leave="toast-leave">
+            <span class="toast-message" x-text="t.message"></span>
+            <button type="button" class="toast-close" @click="dismiss(t)"
+                    :aria-label="'Dismiss: ' + t.message"><svg class="icon" aria-hidden="true"><use href="/icons.svg#x"></use></svg></button>
+        </div>
     </template>
 </div>
 <script>
@@ -11,15 +32,34 @@ function toastManager() {
     return {
         toasts: [],
         addToast(detail) {
+            /* An empty toast is a caller bug, not a message. The MCP install
+               modal used to raise two blank rectangles beside the real error. */
+            var message = detail && detail.message ? String(detail.message).trim() : '';
+            if (!message) return;
             var toast = {
                 id: Date.now() + Math.random(),
-                message: detail.message || 'Something happened',
-                type: detail.type || 'info'
+                message: message,
+                type: detail.type || 'info',
+                duration: detail.duration || 4000,
+                timer: null
             };
             this.toasts.push(toast);
-            setTimeout(() => {
-                this.toasts = this.toasts.filter(t => t.id !== toast.id);
-            }, detail.duration || 4000);
+            this.arm(toast);
+        },
+        /* Errors persist: the reader decides when they have read it. */
+        arm(t) {
+            if (t.type === 'error') return;
+            t.timer = setTimeout(() => this.dismiss(t), t.duration);
+        },
+        pause(t) {
+            if (t.timer) { clearTimeout(t.timer); t.timer = null; }
+        },
+        resume(t) {
+            if (!t.timer) this.arm(t);
+        },
+        dismiss(t) {
+            this.pause(t);
+            this.toasts = this.toasts.filter(x => x.id !== t.id);
         }
     };
 }

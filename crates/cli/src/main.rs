@@ -5,6 +5,7 @@ mod broker;
 mod broker_autostart;
 mod commands;
 mod error;
+mod pin;
 mod platform;
 mod signing;
 
@@ -153,6 +154,12 @@ enum CredentialsAction {
         /// Secret value (the credential to store)
         #[arg(long)]
         value: String,
+
+        /// Restrict the URLs this credential may be proxied to, e.g.
+        /// `https://api.github.com/*`. Without it the credential is
+        /// unrestricted and can be sent to any URL.
+        #[arg(long)]
+        allowed_url_pattern: Option<String>,
     },
 }
 
@@ -201,7 +208,8 @@ async fn run_async(command: Command) -> Result<(), CliError> {
                 name,
                 service,
                 value,
-            }) => commands::credentials::create(name, service, value).await,
+                allowed_url_pattern,
+            }) => commands::credentials::create(name, service, value, allowed_url_pattern).await,
         },
         Command::Proxy {
             credential,

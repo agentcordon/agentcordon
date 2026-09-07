@@ -92,8 +92,11 @@ async fn create_agent_in_db(
     let agent = Agent {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled,
-        status: WorkspaceStatus::Active,
+        status: if enabled {
+            WorkspaceStatus::Active
+        } else {
+            WorkspaceStatus::Disabled
+        },
         pk_hash: None,
         encryption_public_key: None,
         tags: tags.into_iter().map(String::from).collect(),
@@ -117,7 +120,8 @@ async fn store_test_credential(
     let now = chrono::Utc::now();
     let cred_id = CredentialId(Uuid::new_v4());
     let (encrypted, nonce) = state
-        .encryptor
+        .crypto
+        .key_ring
         .encrypt(b"test-secret-value", cred_id.0.to_string().as_bytes())
         .expect("encrypt");
     let cred = StoredCredential {
@@ -136,7 +140,8 @@ async fn store_test_credential(
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,

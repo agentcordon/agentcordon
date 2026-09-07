@@ -1,21 +1,35 @@
 {% extends "base.html" %}
 {% block title %}Policy Tester — Agent Cordon{% endblock %}
 {% block content %}
-<div x-data="policyTesterPage()" x-init="init()" @keydown.ctrl.enter.window="testPolicy()">
-    <a href="/security" class="back-link">&larr; Security</a>
+<div x-data="policyTesterPage()" @keydown.ctrl.enter.window="testPolicy()">
+    <a :href="fromPolicyId ? '/security/' + fromPolicyId : '/security'" class="back-link"
+       x-text="fromPolicyName ? '← ' + fromPolicyName : '← Policies'"></a>
     <div class="content-header">
         <h2>Policy Tester</h2>
         <div class="actions">
-            <div class="tester-scenario-controls">
-                <button class="btn btn-ghost btn-sm" @click="saveScenario()" :disabled="!principal || !action || !resource" title="Save current inputs as a scenario">Save Scenario</button>
-                <div x-show="savedScenarios.length > 0" class="tester-scenario-loader">
-                    <select class="form-input form-input-sm" @change="loadScenario($event.target.value); $event.target.value = '';" aria-label="Load saved scenario">
-                        <option value="">Load scenario...</option>
-                        <template x-for="(s, idx) in savedScenarios" :key="idx">
-                            <option :value="idx" x-text="s.name"></option>
-                        </template>
-                    </select>
-                    <button class="btn btn-ghost btn-sm" @click="clearScenarios()" title="Clear all saved scenarios">&times;</button>
+            <!--
+              Save Scenario, a Load select and a bare × were three header
+              controls for a `localStorage` convenience. One menu
+              (uat/artifacts/reviews/DESIGN-REVIEW.md §1.12).
+            -->
+            <div class="overflow-menu" x-data="acOverflowMenu()"
+                 @click.outside="close()" @keydown.escape.stop="close()">
+                <button type="button" class="btn btn-secondary btn-sm"
+                        aria-haspopup="menu" :aria-expanded="open ? 'true' : 'false'"
+                        @click="toggle()">Scenarios</button>
+                <div class="overflow-menu-items" role="menu" x-ref="acMenu" x-show="open" x-cloak>
+                    <button type="button" role="menuitem" class="overflow-menu-item"
+                            :disabled="!principal || !action || !resource"
+                            @click="close(); saveScenario()">Save scenario</button>
+                    <template x-for="(s, idx) in savedScenarios" :key="idx">
+                        <button type="button" role="menuitem" class="overflow-menu-item"
+                                @click="close(); loadScenario(idx)" x-text="s.name"></button>
+                    </template>
+                    <div x-show="savedScenarios.length === 0" class="overflow-menu-note">No saved scenarios yet.</div>
+                    <button type="button" role="menuitem"
+                            class="overflow-menu-item overflow-menu-item-danger"
+                            x-show="savedScenarios.length > 0"
+                            @click="close(); clearScenarios()">Clear all scenarios</button>
                 </div>
             </div>
         </div>
@@ -25,13 +39,24 @@
         <!-- Input Bar -->
         <div class="tester-input-bar">
             <div class="tester-input-row">
+                <!--
+                  Two testers had disjoint vocabularies: the inline card could
+                  say "a User with role operator" but not "on this credential";
+                  this page could say "on this credential" but not "a User".
+                  One tester, both (uat/artifacts/reviews/DESIGN-REVIEW.md §1.11).
+                -->
                 <div class="form-group tester-input-field">
                     <label for="tester-principal" class="tester-input-label">Principal</label>
                     <select id="tester-principal" class="form-input" x-model="principal" @change="clearResults()">
-                        <option value="" disabled>Select a workspace...</option>
+                        <option value="" disabled>Select a principal...</option>
                         <optgroup label="Workspaces">
                             <template x-for="w in workspaces" :key="w.id">
                                 <option :value="'Workspace:' + w.id" x-text="w.name"></option>
+                            </template>
+                        </optgroup>
+                        <optgroup label="Users">
+                            <template x-for="u in users" :key="u.id">
+                                <option :value="'User:' + u.id" x-text="u.username + ' — ' + u.role"></option>
                             </template>
                         </optgroup>
                     </select>
@@ -48,6 +73,15 @@
                     <label for="tester-resource" class="tester-input-label">Resource</label>
                     <select id="tester-resource" class="form-input" x-model="resource" @change="clearResults()">
                         <option value="" disabled>Select a resource...</option>
+                        <!-- A policy usually names a *type*, not a row. The
+                             inline tester could only say "any Credential" and
+                             this one only "that credential"; both, now. -->
+                        <optgroup label="Any resource of a type">
+                            <option value="Credential:*">Any credential</option>
+                            <option value="McpServer:*">Any MCP server</option>
+                            <option value="WorkspaceResource:*">Any workspace</option>
+                            <option value="PolicyResource:*">Any policy</option>
+                        </optgroup>
                         <optgroup label="Credentials">
                             <template x-for="c in credentials" :key="c.id">
                                 <option :value="'Credential:' + c.id" x-text="c.name"></option>
@@ -63,11 +97,37 @@
                 </div>
             </div>
 
+            <!--
+              The principal's attributes. A workspace carries tags into Cedar
+              and a user carries a role, so each field is offered only for the
+              principal that has it.
+            -->
+            <div class="tester-input-row tester-attr-row">
+                <div class="form-group tester-input-field" x-show="principalType === 'User'">
+                    <label for="tester-role" class="tester-input-label">Role</label>
+                    <select id="tester-role" class="form-input" x-model="role" @change="clearResults()">
+                        <option value="">As recorded</option>
+                        <option value="admin">Admin</option>
+                        <option value="operator">Operator</option>
+                        <option value="viewer">Viewer</option>
+                    </select>
+                </div>
+                <div class="form-group tester-input-field" x-show="principalType === 'Workspace'">
+                    <label for="tester-tags" class="tester-input-label">Tags <span class="text-sm opacity-muted">(comma-separated)</span></label>
+                    <input type="text" id="tester-tags" class="form-input" x-model="tags"
+                           placeholder="e.g. production, admin" @input="clearResults()">
+                </div>
+            </div>
+
             <div class="tester-action-row">
                 <button class="btn btn-primary" @click="testPolicy()" :disabled="testing || !principal || !action || !resource">
                     <span x-text="testing ? 'Testing...' : 'Test'"></span>
                 </button>
-                <button class="btn btn-secondary" @click="testAllWorkspaces()" :disabled="testingAllWs || !action || !resource">
+                <!-- The RSoP matrix is per resource row, so it needs a resource
+                     that exists; "Any credential" has no id to ask about. -->
+                <button class="btn btn-secondary" @click="testAllWorkspaces()"
+                        :disabled="testingAllWs || !action || !resourceIsConcrete"
+                        :title="resource && !resourceIsConcrete ? 'Pick one resource — the matrix is per resource, not per type.' : null">
                     <span x-text="testingAllWs ? 'Testing...' : 'Test All Workspaces'"></span>
                 </button>
                 <span class="tester-shortcut-hint">Ctrl+Enter to test</span>
@@ -213,16 +273,6 @@
 }
 
 /* Scenario controls */
-.tester-scenario-controls {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.tester-scenario-loader {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
 
 /* Result card */
 .tester-result-section {
@@ -463,48 +513,88 @@
 <script>
 function policyTesterPage() {
     return {
-        workspaces: [], credentials: [], mcpServers: [], schemaActions: [],
+        workspaces: [], users: [], credentials: [], mcpServers: [], schemaActions: [],
         principal: '', action: '', resource: '',
+        /* The attributes the merged tester inherited from the inline card:
+           a workspace's tags, a user's role. */
+        role: '', tags: '',
         testing: false, testingAllWs: false,
         result: null, contributingPolicies: [],
         allWorkspacesMatrix: [],
         savedScenarios: [],
+        /* Set when the reader arrived from a policy's "Test this policy →". */
+        fromPolicyId: '', fromPolicyName: '',
 
         async init() {
             try {
                 this.savedScenarios = JSON.parse(localStorage.getItem('ac_test_scenarios') || '[]');
             } catch(e) { this.savedScenarios = []; }
+            this.fromPolicyId = new URLSearchParams(window.location.search).get('policy') || '';
             await Promise.all([
-                this.loadWorkspaces(),
+                this.loadWorkspaces(), this.loadUsers(),
                 this.loadCredentials(), this.loadMcpServers(),
                 this.loadSchema()
             ]);
+            if (this.fromPolicyId) await this.loadFromPolicy();
+        },
+
+        /* Which kind of principal is selected, so the attribute row can offer
+           the attributes that kind actually carries into Cedar. */
+        get principalType() {
+            return this.principal ? this.principal.split(':')[0] : '';
+        },
+
+        async loadUsers() {
+            try {
+                var resp = await AC.fetch('/api/v1/users');
+                if (resp.ok) { var data = await resp.json(); this.users = data.data || data || []; }
+            } catch(e) {}
+        },
+
+        /*
+         * Arriving from a policy: name it in the back link, and prefill the
+         * action it talks about so the first Test answers a question about
+         * that policy rather than an empty form.
+         */
+        async loadFromPolicy() {
+            try {
+                var resp = await AC.fetch('/api/v1/policies/' + this.fromPolicyId);
+                if (!resp.ok) { this.fromPolicyId = ''; return; }
+                var data = await resp.json();
+                var policy = data.data || data;
+                this.fromPolicyName = policy.name || '';
+                var match = /Action::"([^"]+)"/.exec(policy.cedar_policy || '');
+                var self = this;
+                if (match && this.schemaActions.some(function(a) { return a.name === match[1]; })) {
+                    self.action = match[1];
+                }
+            } catch(e) { this.fromPolicyId = ''; }
         },
 
         async loadWorkspaces() {
             try {
-                var resp = await fetch('/api/v1/workspaces');
+                var resp = await AC.fetch('/api/v1/workspaces');
                 if (resp.ok) { var data = await resp.json(); this.workspaces = data.data || data || []; }
             } catch(e) {}
         },
 
         async loadCredentials() {
             try {
-                var resp = await fetch('/api/v1/credentials');
+                var resp = await AC.fetch('/api/v1/credentials');
                 if (resp.ok) { var data = await resp.json(); this.credentials = data.data || data || []; }
             } catch(e) {}
         },
 
         async loadMcpServers() {
             try {
-                var resp = await fetch('/api/v1/mcp-servers');
+                var resp = await AC.fetch('/api/v1/mcp-servers');
                 if (resp.ok) { var data = await resp.json(); this.mcpServers = data.data || data || []; }
             } catch(e) {}
         },
 
         async loadSchema() {
             try {
-                var resp = await fetch('/api/v1/policies/schema/reference');
+                var resp = await AC.fetch('/api/v1/policies/schema/reference');
                 if (resp.ok) {
                     var data = await resp.json();
                     this.schemaActions = (data.data && data.data.actions) || data.actions || [];
@@ -514,15 +604,39 @@ function policyTesterPage() {
 
         clearResults() { this.result = null; this.allWorkspacesMatrix = []; this.contributingPolicies = []; },
 
+        /* `Type:id`, or `Type:*` for "any resource of this type" — the API
+           takes an optional resource id, so `*` becomes no id at all. */
         parsePrincipalResource(val) {
             var parts = val.split(':');
-            return { type: parts[0], id: parts.slice(1).join(':') };
+            var id = parts.slice(1).join(':');
+            return { type: parts[0], id: id === '*' ? null : id };
+        },
+
+        /* True while the chosen resource is one row rather than a whole type. */
+        get resourceIsConcrete() {
+            return !!this.resource && this.resource.split(':').slice(1).join(':') !== '*';
+        },
+
+        /* The principal's attributes as the test API spells them: a workspace
+           carries tags, a user carries a role. */
+        principalAttributes(type) {
+            var attrs = {};
+            if (type === 'Workspace' && this.tags.trim()) {
+                attrs.tags = this.tags.split(',').map(function(t) { return t.trim(); }).filter(Boolean);
+            }
+            if (type === 'User' && this.role) attrs.role = this.role;
+            return attrs;
         },
 
         getResourceLabel() {
             if (!this.resource) return '';
             var r = this.parsePrincipalResource(this.resource);
             if (r.type === 'System') return 'System';
+            if (r.id === null) {
+                return r.type === 'Credential' ? 'any credential' :
+                       r.type === 'McpServer' ? 'any MCP server' :
+                       r.type === 'WorkspaceResource' ? 'any workspace' : 'any policy';
+            }
             var items = r.type === 'Credential' ? this.credentials :
                         r.type === 'McpServer' ? this.mcpServers : [];
             var match = items.find(function(i) { return i.id === r.id; });
@@ -532,7 +646,7 @@ function policyTesterPage() {
         async enrichDiagnosticNames() {
             // Fetch all policies once to resolve IDs to names
             try {
-                var resp = await fetch('/api/v1/policies');
+                var resp = await AC.fetch('/api/v1/policies');
                 if (!resp.ok) return;
                 var json = await resp.json();
                 var policies = json.data || [];
@@ -621,11 +735,11 @@ function policyTesterPage() {
             var p = this.parsePrincipalResource(this.principal);
             var r = this.parsePrincipalResource(this.resource);
             try {
-                var resp = await fetch('/api/v1/policies/test', {
+                var resp = await AC.fetch('/api/v1/policies/test', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                     body: JSON.stringify({
-                        principal: { type: p.type, id: p.id, attributes: {} },
+                        principal: { type: p.type, id: p.id, attributes: this.principalAttributes(p.type) },
                         action: this.action,
                         resource: { type: r.type, id: r.id, attributes: {} },
                     }),
@@ -662,7 +776,7 @@ function policyTesterPage() {
             this.contributingPolicies = [];
             var r = this.parsePrincipalResource(this.resource);
             try {
-                var resp = await fetch('/api/v1/policies/rsop', {
+                var resp = await AC.fetch('/api/v1/policies/rsop', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                     body: JSON.stringify({ resource_type: r.type, resource_id: r.id }),
@@ -694,10 +808,18 @@ function policyTesterPage() {
             this.testingAllWs = false;
         },
 
-        saveScenario() {
-            var name = prompt('Scenario name:');
+        async saveScenario() {
+            var name = await AC.prompt({
+                title: 'Save scenario',
+                label: 'Scenario name',
+                confirmLabel: 'Save'
+            });
             if (!name) return;
-            this.savedScenarios.push({ name: name, principal: this.principal, action: this.action, resource: this.resource });
+            this.savedScenarios.push({
+                name: name,
+                principal: this.principal, action: this.action, resource: this.resource,
+                role: this.role, tags: this.tags
+            });
             try {
                 localStorage.setItem('ac_test_scenarios', JSON.stringify(this.savedScenarios));
             } catch(e) {
@@ -712,11 +834,19 @@ function policyTesterPage() {
             this.principal = s.principal;
             this.action = s.action;
             this.resource = s.resource;
+            this.role = s.role || '';
+            this.tags = s.tags || '';
             this.clearResults();
         },
 
-        clearScenarios() {
-            if (!confirm('Clear all saved scenarios?')) return;
+        async clearScenarios() {
+            var ok = await AC.confirm({
+                title: 'Clear saved scenarios',
+                message: 'Every scenario saved in this browser is removed. Nothing on the server changes.',
+                confirmLabel: 'Clear scenarios',
+                danger: true
+            });
+            if (!ok) return;
             this.savedScenarios = [];
             localStorage.removeItem('ac_test_scenarios');
             showToast('Scenarios cleared', 'success');

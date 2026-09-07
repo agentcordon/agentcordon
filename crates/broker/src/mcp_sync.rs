@@ -2,13 +2,20 @@
 //!
 //! Periodically fetches MCP server configurations (with ECIES-encrypted
 //! credentials) from the AgentCordon server and caches them in broker state.
+//!
+//! For OAuth-backed servers the envelope holds a short-lived upstream
+//! access token with its expiry; the server ran the exchange. The broker
+//! never calls a token endpoint itself: when a token is about to expire, or
+//! an upstream answers 401, it syncs again (`sync_workspace_now`).
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use tracing::warn;
 
-use crate::server_client::{McpCredentialEnvelope, McpServerSyncEntry, ServerClient, VendEnvelope};
+use agent_cordon_core::wire::mcp::McpServerSyncEntry;
+
+use crate::server_client::{EncryptedEnvelopeWire, McpCredentialEnvelope, ServerClient};
 use crate::state::{CachedCredential, CachedMcpServer, SharedState};
 use crate::token_refresh;
 use crate::vend::decrypt_vend_envelope;
@@ -107,7 +114,7 @@ async fn sync_workspace(
         .list_mcp_servers_with_credentials(&token, pub_key_b64)
         .await
     {
-        Ok(entries) => return Ok(build_cached_servers(entries, &state.encryption_key)),
+        Ok(entries) => return Ok(build_cached_servers(entries, &state.encryption_key).await),
         Err(crate::server_client::ServerClientError::ServerError { status: 401, .. }) => {
             // Try reactive refresh
             if !token_refresh::try_reactive_refresh(state, pk_hash).await {
@@ -119,11 +126,13 @@ async fn sync_workspace(
 
     // Retry after refresh
     let token = get_token(state, pk_hash).ok_or("no access token after refresh")?;
-    server_client
+    match server_client
         .list_mcp_servers_with_credentials(&token, pub_key_b64)
         .await
-        .map(|entries| build_cached_servers(entries, &state.encryption_key))
-        .map_err(|e| e.to_string())
+    {
+        Ok(entries) => Ok(build_cached_servers(entries, &state.encryption_key).await),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Get a workspace's current access token (blocking-free snapshot).
@@ -136,41 +145,50 @@ fn get_token(state: &SharedState, pk_hash: &str) -> Option<String> {
 }
 
 /// Convert sync entries into cached MCP servers, decrypting credential envelopes.
-fn build_cached_servers(
+async fn build_cached_servers(
     entries: Vec<McpServerSyncEntry>,
     encryption_key: &p256::SecretKey,
 ) -> Vec<CachedMcpServer> {
     let now = chrono::Utc::now();
-    entries
-        .into_iter()
-        .map(|entry| {
-            let credential = entry
-                .credential_envelopes
-                .as_ref()
-                .and_then(|envs| envs.first())
-                .and_then(|env| decrypt_mcp_credential(env, encryption_key));
+    let mut servers = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if let Some(error) = entry.credential_error.as_deref() {
+            warn!(
+                server = %entry.name,
+                error = %error,
+                "server could not produce an upstream credential for this MCP server"
+            );
+        }
+        let credential = match entry
+            .credential_envelopes
+            .as_ref()
+            .and_then(|envs| envs.first())
+        {
+            Some(env) => decrypt_mcp_credential(env, encryption_key).await,
+            None => None,
+        };
 
-            CachedMcpServer {
-                id: entry.id,
-                name: entry.name,
-                url: entry.url.unwrap_or_default(),
-                transport: entry.transport,
-                auth_method: entry.auth_method,
-                tools: entry.tools,
-                enabled: entry.enabled,
-                credential,
-                last_synced: now,
-            }
-        })
-        .collect()
+        servers.push(CachedMcpServer {
+            id: entry.id,
+            name: entry.name,
+            url: entry.url.unwrap_or_default(),
+            transport: entry.transport,
+            auth_method: entry.auth_method,
+            tools: entry.tools,
+            enabled: entry.enabled,
+            credential,
+            last_synced: now,
+        });
+    }
+    servers
 }
 
 /// Decrypt a single MCP credential envelope, returning None on failure.
-fn decrypt_mcp_credential(
+async fn decrypt_mcp_credential(
     env: &McpCredentialEnvelope,
     encryption_key: &p256::SecretKey,
 ) -> Option<CachedCredential> {
-    let vend_envelope = VendEnvelope {
+    let vend_envelope = EncryptedEnvelopeWire {
         version: env.encrypted_envelope.version,
         ephemeral_public_key: env.encrypted_envelope.ephemeral_public_key.clone(),
         ciphertext: env.encrypted_envelope.ciphertext.clone(),
@@ -178,12 +196,13 @@ fn decrypt_mcp_credential(
         aad: env.encrypted_envelope.aad.clone(),
     };
 
-    match decrypt_vend_envelope(&vend_envelope, encryption_key) {
+    match decrypt_vend_envelope(&vend_envelope, encryption_key).await {
         Ok(vended) => Some(CachedCredential {
             credential_type: env.credential_type.clone(),
             value: vended.value,
             transform_name: env.transform_name.clone(),
             metadata: vended.metadata,
+            expires_at: vended.expires_at,
         }),
         Err(e) => {
             warn!(

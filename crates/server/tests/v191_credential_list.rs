@@ -49,7 +49,8 @@ async fn create_credential_in_db(
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags,
         description: None,
@@ -335,7 +336,7 @@ async fn test_disabled_workspace_sees_nothing() {
 
     // Disable the workspace
     let mut workspace = ctx.agents.get("disabled-agent").expect("agent").clone();
-    workspace.enabled = false;
+    workspace.disable().expect("active -> disabled");
     ctx.store
         .update_workspace(&workspace)
         .await

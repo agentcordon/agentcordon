@@ -50,12 +50,25 @@ async fn store_raw_credential(
     service: &str,
     secret: &str,
 ) -> CredentialId {
+    store_raw_credential_owned_by(state, name, service, secret, None).await
+}
+
+/// As [`store_raw_credential`], but with an owning user — the shape a row
+/// written before per-owner name uniqueness has.
+async fn store_raw_credential_owned_by(
+    state: &agent_cordon_server::state::AppState,
+    name: &str,
+    service: &str,
+    secret: &str,
+    owner: Option<agent_cordon_core::domain::user::UserId>,
+) -> CredentialId {
     use agent_cordon_core::crypto::SecretEncryptor;
 
     let now = chrono::Utc::now();
     let cred_id = CredentialId(uuid::Uuid::new_v4());
     let (encrypted, nonce) = state
-        .encryptor
+        .crypto
+        .key_ring
         .encrypt(secret.as_bytes(), cred_id.0.to_string().as_bytes())
         .expect("encrypt");
     let cred = StoredCredential {
@@ -67,14 +80,15 @@ async fn store_raw_credential(
         scopes: vec![],
         metadata: json!({}),
         created_by: None,
-        created_by_user: None,
+        created_by_user: owner,
         created_at: now,
         updated_at: now,
         allowed_url_pattern: None,
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: Some(format!("{} credential", service)),
@@ -146,11 +160,16 @@ async fn test_two_users_same_credential_name() {
 }
 
 // ===========================================================================
-// 2. Same user can create duplicate-named credentials
+// 2. One user cannot create two credentials of the same name
 // ===========================================================================
 
+/// Names are free across owners, but not within one: the CLI addresses a
+/// credential by name (`agentcordon proxy <name>`), so two of a user's own
+/// credentials sharing one is a coin flip at the point of use (UI review M1).
+/// The 300-Multiple-Choices path stays, because duplicates across owners
+/// still happen and old rows still hold them.
 #[tokio::test]
-async fn test_same_user_duplicate_name_succeeds() {
+async fn test_same_user_duplicate_name_is_refused() {
     let ctx = TestAppBuilder::new().build().await;
 
     let _user = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -167,7 +186,6 @@ async fn test_same_user_duplicate_name_succeeds() {
     )
     .await;
     assert_eq!(s1, StatusCode::OK, "first create: {}", b1);
-    let id1 = b1["data"]["id"].as_str().unwrap().to_string();
 
     let (s2, b2) = create_credential_as(
         &ctx.app,
@@ -178,12 +196,14 @@ async fn test_same_user_duplicate_name_succeeds() {
         "ghp_second",
     )
     .await;
-    assert_eq!(s2, StatusCode::OK, "second create: {}", b2);
-    let id2 = b2["data"]["id"].as_str().unwrap().to_string();
-
-    assert_ne!(
-        id1, id2,
-        "duplicate names must produce distinct credentials"
+    assert_eq!(s2, StatusCode::CONFLICT, "second create: {}", b2);
+    assert!(
+        b2["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("github-pat"),
+        "the refusal names the existing credential: {}",
+        b2
     );
 }
 
@@ -317,11 +337,11 @@ async fn test_vend_no_match_returns_404() {
 }
 
 // ===========================================================================
-// 6. Rename to existing name succeeds
+// 6. Rename onto an existing name of the same owner is refused
 // ===========================================================================
 
 #[tokio::test]
-async fn test_rename_to_existing_name_succeeds() {
+async fn test_rename_to_existing_name_is_refused() {
     let ctx = TestAppBuilder::new().build().await;
 
     let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
@@ -338,7 +358,7 @@ async fn test_rename_to_existing_name_succeeds() {
         create_credential_as(&ctx.app, &cookie, &csrf, "cred-b", "slack", "xoxb_bbbb").await;
     assert_eq!(s2, StatusCode::OK, "create cred-b: {}", b2);
 
-    // Rename cred-a to "cred-b" — should succeed since names are not unique
+    // Rename cred-a onto "cred-b": both belong to this user, so it collides.
     let update_uri = format!("/api/v1/credentials/{}", id_a);
     let (status, body) = send_json(
         &ctx.app,
@@ -352,11 +372,24 @@ async fn test_rename_to_existing_name_succeeds() {
     .await;
     assert_eq!(
         status,
-        StatusCode::OK,
-        "rename to existing name should succeed: {}",
+        StatusCode::CONFLICT,
+        "rename onto this owner's existing name must be refused: {}",
         body
     );
-    assert_eq!(body["data"]["name"], "cred-b");
+
+    // Renaming to a name this owner does not use is still fine.
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::PUT,
+        &update_uri,
+        None,
+        Some(&cookie),
+        Some(&csrf),
+        Some(json!({ "name": "cred-c" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "free rename: {}", body);
+    assert_eq!(body["data"]["name"], "cred-c");
 }
 
 // ===========================================================================
@@ -591,7 +624,8 @@ async fn test_vend_expired_credential_authorized() {
         let cred_id = CredentialId(uuid::Uuid::new_v4());
         let (encrypted, nonce) = ctx
             .state
-            .encryptor
+            .crypto
+            .key_ring
             .encrypt(b"expired-secret", cred_id.0.to_string().as_bytes())
             .expect("encrypt");
         let now = chrono::Utc::now();
@@ -612,7 +646,8 @@ async fn test_vend_expired_credential_authorized() {
             expires_at: Some(past),
             transform_script: None,
             transform_name: None,
-            vault: "default".to_string(),
+            vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+            vault_name: "default".to_string(),
             credential_type: "generic".to_string(),
             tags: vec![],
             description: Some("expired credential".to_string()),
@@ -665,24 +700,37 @@ async fn test_vend_expired_credential_authorized() {
 
 /// Call GET /api/v1/credentials when two credentials with the same name exist.
 /// Verify both appear in the response with distinct UUIDs.
+///
+/// The API refuses one owner a second credential of a name they already use
+/// (UI review M1), but duplicates across owners are legal and pre-M1 rows hold
+/// them, so the listing must still carry both. These two are stored directly.
 #[tokio::test]
 async fn test_list_credentials_duplicate_names() {
     let ctx = TestAppBuilder::new().build().await;
 
-    let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let cookie = login_user_combined(&ctx.app, "admin", TEST_PASSWORD).await;
-    let csrf = extract_csrf_from_cookie(&cookie).unwrap();
 
-    // Create two credentials with the same name
-    let (s1, b1) =
-        create_credential_as(&ctx.app, &cookie, &csrf, "dup-name", "github", "ghp_first").await;
-    assert_eq!(s1, StatusCode::OK, "first create: {}", b1);
-    let id1 = b1["data"]["id"].as_str().unwrap().to_string();
-
-    let (s2, b2) =
-        create_credential_as(&ctx.app, &cookie, &csrf, "dup-name", "slack", "xoxb_second").await;
-    assert_eq!(s2, StatusCode::OK, "second create: {}", b2);
-    let id2 = b2["data"]["id"].as_str().unwrap().to_string();
+    let id1 = store_raw_credential_owned_by(
+        &ctx.state,
+        "dup-name",
+        "github",
+        "ghp_first",
+        Some(admin.id.clone()),
+    )
+    .await
+    .0
+    .to_string();
+    let id2 = store_raw_credential_owned_by(
+        &ctx.state,
+        "dup-name",
+        "slack",
+        "xoxb_second",
+        Some(admin.id.clone()),
+    )
+    .await
+    .0
+    .to_string();
 
     assert_ne!(id1, id2);
 
@@ -735,34 +783,32 @@ async fn test_list_credentials_duplicate_names() {
 async fn test_by_name_endpoint_with_duplicates() {
     let ctx = TestAppBuilder::new().build().await;
 
-    let _admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
+    let admin = create_test_user(&*ctx.store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let cookie = login_user_combined(&ctx.app, "admin", TEST_PASSWORD).await;
-    let csrf = extract_csrf_from_cookie(&cookie).unwrap();
 
-    // Create two credentials with the same name
-    let (s1, b1) = create_credential_as(
-        &ctx.app,
-        &cookie,
-        &csrf,
+    // Stored directly: the API refuses one owner a second credential of a name
+    // they already use, but rows written before that rule still collide by
+    // name and by-name lookup must still say so rather than pick one.
+    let id1 = store_raw_credential_owned_by(
+        &ctx.state,
         "byname-dup",
         "github",
         "ghp_first",
+        Some(admin.id.clone()),
     )
-    .await;
-    assert_eq!(s1, StatusCode::OK, "first create: {}", b1);
-    let id1 = b1["data"]["id"].as_str().unwrap().to_string();
-
-    let (s2, b2) = create_credential_as(
-        &ctx.app,
-        &cookie,
-        &csrf,
+    .await
+    .0
+    .to_string();
+    let id2 = store_raw_credential_owned_by(
+        &ctx.state,
         "byname-dup",
         "slack",
         "xoxb_second",
+        Some(admin.id.clone()),
     )
-    .await;
-    assert_eq!(s2, StatusCode::OK, "second create: {}", b2);
-    let id2 = b2["data"]["id"].as_str().unwrap().to_string();
+    .await
+    .0
+    .to_string();
 
     // GET by name — now returns 300 MultipleChoices when both are authorized
     let (status, body) = send_json(

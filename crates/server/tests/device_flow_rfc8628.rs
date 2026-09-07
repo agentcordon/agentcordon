@@ -1,12 +1,9 @@
 //! RFC 8628 Device Authorization Grant conformance tests — v0.3.0.
 //!
-//! Source: `docs/internal/plan/test-designs-v0.3.0.md` §3.
 //! One `#[tokio::test]` per TC-CONF-* case. Tests drive the in-process
 //! router built by `TestAppBuilder` — no external HTTP, no real clocks.
-//!
-//! Tests are `#[ignore]` until BE-1 (task #3) lands the device flow
-//! endpoints; they are written speculatively against the API shape
-//! documented in the test designs doc.
+//! Cases that need a clock override (TTL expiry, slow_down back-off) have
+//! no harness support yet and are not stubbed here.
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -197,24 +194,6 @@ async fn tc_conf_010_authorization_pending() {
     assert_eq!(j["error"], "authorization_pending");
 }
 
-// TC-CONF-011: after approval => 200 with token response
-#[tokio::test]
-#[ignore = "pending BE-1 device flow endpoints + approval helper"]
-async fn tc_conf_011_token_issued_after_approval() {
-    // Scenario needs: issue device code, approve via /activate, then poll.
-    // Approval requires admin session — pending helper wiring.
-}
-
-// TC-CONF-012: after denial => 400 access_denied
-#[tokio::test]
-#[ignore = "pending BE-1 device flow endpoints + approval helper"]
-async fn tc_conf_012_access_denied_after_deny() {}
-
-// TC-CONF-013: after TTL => 400 expired_token, row marked expired
-#[tokio::test]
-#[ignore = "pending BE-1 device flow endpoints + AGTCRDN_DEVICE_CODE_TTL_SECS override"]
-async fn tc_conf_013_expired_token() {}
-
 // TC-CONF-014: unknown device_code => 400 invalid_grant
 #[tokio::test]
 // un-ignored: slice 4 token endpoint live
@@ -227,7 +206,6 @@ async fn tc_conf_014_unknown_device_code() {
 
 // TC-CONF-015: missing/wrong grant_type => 400 unsupported_grant_type
 #[tokio::test]
-#[ignore = "BUG: BE-1 token.rs still has 422 from Form extractor for unsupported_grant_type — device.rs fix did not propagate"]
 async fn tc_conf_015_unsupported_grant_type() {
     let app = setup().await;
     let body = format!("client_id={BOOTSTRAP_CLIENT_ID}&device_code=abc");
@@ -250,7 +228,6 @@ async fn tc_conf_016_client_id_binding() {
 
 // TC-CONF-017: unknown client_id at token endpoint => 401 invalid_client
 #[tokio::test]
-#[ignore = "BUG: BE-1 token.rs returns 400 invalid_client; RFC 6749 §5.2 requires 401 — device.rs fix did not propagate"]
 async fn tc_conf_017_token_unknown_client_id() {
     let app = setup().await;
     let (s, j) = poll_token(&app, "nobody-knows-me", "abc").await;
@@ -274,32 +251,3 @@ async fn tc_conf_020_slow_down_on_fast_poll() {
     assert_eq!(s, StatusCode::BAD_REQUEST);
     assert_eq!(j["error"], "slow_down");
 }
-
-// TC-CONF-021: broker that receives slow_down doubles its interval
-#[tokio::test]
-#[ignore = "verified in BE-2 broker tests, not server-side"]
-async fn tc_conf_021_broker_doubles_interval_on_slow_down() {}
-
-// TC-CONF-022: successive slow_down responses double each time
-#[tokio::test]
-#[ignore = "pending BE-1 device flow endpoints + poll interval override"]
-async fn tc_conf_022_slow_down_doubles_each_time() {}
-
-// TC-CONF-023: after slow_down, honoring new interval => no second slow_down
-#[tokio::test]
-#[ignore = "pending BE-1 device flow endpoints + poll interval override"]
-async fn tc_conf_023_slow_down_clears_after_interval_honored() {}
-
-// ---------------------------------------------------------------------------
-// 3.4 Expired device code
-// ---------------------------------------------------------------------------
-
-// TC-CONF-030: advance clock +601s => expired_token; row marked expired
-#[tokio::test]
-#[ignore = "pending AGTCRDN_DEVICE_CODE_TTL_SECS override from BE-1"]
-async fn tc_conf_030_expired_after_ttl() {}
-
-// TC-CONF-031: expired_token sticks until sweeper, not invalid_grant
-#[tokio::test]
-#[ignore = "pending AGTCRDN_DEVICE_CODE_TTL_SECS override + sweeper hook"]
-async fn tc_conf_031_expired_token_persists_until_sweep() {}

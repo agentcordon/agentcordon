@@ -140,13 +140,33 @@ async fn test_policy_list_links_to_detail() {
     let (status, _, body) = get_authed(&ctx.app, "/security", &cookie).await;
 
     assert_eq!(status, StatusCode::OK);
-    // The list page should contain a link to the policy detail page
-    let expected_href = format!("/security/{}", policy_id);
+    // The list page is a shell: rows come from the policies API and each
+    // links to /security/{id}; the page itself embeds no policy.
     assert!(
-        body.contains(&expected_href),
-        "policy list should contain href to /security/{}: body did not contain '{}'",
-        policy_id,
-        expected_href,
+        body.contains("'/security/' + policy.id"),
+        "policy list rows link to /security/{{id}}"
+    );
+    assert!(
+        !body.contains(&policy_id),
+        "policy list page must not embed policy data; it comes from the API"
+    );
+    let (status, api) = common::send_json_auto_csrf(
+        &ctx.app,
+        Method::GET,
+        "/api/v1/policies",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        api["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == policy_id.as_str()),
+        "the policies API lists the policy the row links to: {api}"
     );
 }
 
@@ -446,8 +466,9 @@ async fn test_policy_detail_xss_prevention() {
         "XSS payload must be escaped in HTML output",
     );
 
-    // It should be HTML-escaped
-    if body.contains("alert") {
+    // It should be HTML-escaped. Match the payload, not the word "alert" —
+    // `role="alert"` is a legitimate attribute on this page.
+    if body.contains("alert(1)") {
         assert!(
             body.contains("&lt;script&gt;") || body.contains("&lt;script"),
             "script tags should be HTML-escaped",

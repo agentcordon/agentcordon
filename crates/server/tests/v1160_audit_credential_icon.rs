@@ -1,9 +1,9 @@
 //! Integration tests — issue #35: audit log credential-icon row hint.
 //!
-//! Verifies that credential lifecycle events render an icon hint
-//! (`icon == "credential"`) in the audit page's embedded events array,
-//! so the unexpanded row can show a credential glyph alongside the
-//! credential name and workspace.
+//! Verifies that the audit page derives an icon hint (`icon == "credential"`)
+//! for credential lifecycle events fetched from `GET /api/v1/audit`, so the
+//! unexpanded row can show a credential glyph alongside the credential name
+//! and workspace the API returns.
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -86,7 +86,7 @@ async fn audit_page_template_renders_credential_icon_svg() {
 }
 
 #[tokio::test]
-async fn audit_page_emits_credential_icon_hint_for_vending_row() {
+async fn audit_page_derives_credential_icon_hint_from_api_events() {
     let ctx = TestAppBuilder::new().with_admin().build().await;
     let _admin = common::create_test_user(
         &*ctx.store,
@@ -99,19 +99,37 @@ async fn audit_page_emits_credential_icon_hint_for_vending_row() {
 
     seed_credential_vended_event(&*ctx.store).await;
 
+    // The page is a shell: no event data, only the rule that maps the API's
+    // `credential_*` event types to the credential glyph.
     let (status, body) = get_page(&ctx.app, "/audit", &cookie).await;
-
     assert_eq!(status, StatusCode::OK);
     assert!(
-        body.contains("\"icon\":\"credential\""),
-        "audit page should embed icon hint for credential events; body did not contain it"
+        body.contains("/^credential_/.test(ev.event_type || '') ? 'credential' : ''"),
+        "audit page derives the icon hint from the API event type"
     );
     assert!(
-        body.contains("github-token"),
-        "audit page should embed the credential name"
+        !body.contains("github-token") && !body.contains("ws-alpha"),
+        "audit page must not embed event data; it comes from the API"
     );
-    assert!(
-        body.contains("ws-alpha"),
-        "audit page should embed the workspace name"
-    );
+
+    // The API returns what the row shows: the event type, the credential
+    // name, and the workspace name.
+    let (status, api) = common::send_json_auto_csrf(
+        &ctx.app,
+        Method::GET,
+        "/api/v1/audit?limit=50",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let row = api["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["metadata"]["credential_name"] == "github-token")
+        .unwrap_or_else(|| panic!("the seeded event is listed: {api}"));
+    assert_eq!(row["event_type"], "credential_vended");
+    assert_eq!(row["workspace_name"], "ws-alpha");
 }

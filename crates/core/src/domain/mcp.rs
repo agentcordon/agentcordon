@@ -111,6 +111,12 @@ pub struct McpServer {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpTool {
     pub name: String,
+    #[serde(default)]
     pub description: Option<String>,
+    /// The MCP specification names this `inputSchema` on the wire, so a
+    /// `tools/list` answer is read through the alias. AgentCordon's own
+    /// wire format — the admin API, the broker sync, stored rows — keeps
+    /// the snake_case name, which is what serialisation emits.
+    #[serde(default, alias = "inputSchema")]
     pub input_schema: Option<serde_json::Value>,
 }

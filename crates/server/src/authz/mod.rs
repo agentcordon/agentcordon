@@ -67,6 +67,15 @@ pub enum PolicyCaller<'a> {
     },
 }
 
+impl<'a> From<&'a crate::extractors::AuthenticatedUser> for PolicyCaller<'a> {
+    fn from(u: &'a crate::extractors::AuthenticatedUser) -> Self {
+        PolicyCaller::Principal {
+            principal: PolicyPrincipal::User(&u.user),
+            oauth_claims: None,
+        }
+    }
+}
+
 impl<'a> From<&'a AuthenticatedActor> for PolicyCaller<'a> {
     fn from(a: &'a AuthenticatedActor) -> Self {
         PolicyCaller::Actor(a)
@@ -94,6 +103,30 @@ impl Authz {
     /// store used for audit emission.
     pub fn new(inner: Arc<CedarPolicyEngine>, store: Arc<dyn Store + Send + Sync>) -> Self {
         Self { inner, store }
+    }
+
+    /// Answer "may this caller do this action to this resource", or refuse
+    /// with 403. The one call a route makes to authorize; routes that need
+    /// extra context claims or a request-scoped correlation id use
+    /// [`Authz::request`], which this delegates to. Returns the decision so
+    /// the caller can record its reasons in an audit row.
+    pub async fn authorize<'a, C: Into<PolicyCaller<'a>>>(
+        &'a self,
+        caller: C,
+        action: &str,
+        resource: &PolicyResource,
+    ) -> Result<PolicyDecision, ApiError> {
+        let corr = uuid::Uuid::new_v4().to_string();
+        let decision = self
+            .request(caller, &corr)
+            .check_with_reasons(action, resource)
+            .await?;
+        match decision.decision {
+            PolicyDecisionResult::Permit => Ok(decision),
+            PolicyDecisionResult::Forbid => {
+                Err(ApiError::Forbidden("access denied by policy".to_string()))
+            }
+        }
     }
 
     /// Begin a fluent evaluation. The caller's OAuth claims (if any) are
@@ -208,30 +241,14 @@ impl<'a> AuthzRequest<'a> {
         self.evaluate_with_audit(action, resource).await
     }
 
-    /// Synchronous variant of [`check_with_reasons`](Self::check_with_reasons).
-    ///
-    /// Necessary for callers stuck in synchronous closures (e.g. inside
-    /// `Iterator::filter`) where introducing `.await` would require
-    /// rewriting the surrounding code. Internally it drives the same
-    /// async pipeline and is therefore a single front door, not a
-    /// parallel path. Only call from within a tokio runtime.
-    pub fn check_with_reasons_blocking(
-        self,
-        action: &str,
-        resource: &PolicyResource,
-    ) -> Result<PolicyDecision, ApiError> {
-        // Run scope check + Cedar evaluate inline, then bridge the audit
-        // emission through the same blocking helper used in async paths.
-        self.check_required_scope()?;
-        let decision = self.evaluate_one(action, resource);
-        self.emit_audit(action, resource, &decision);
-        Ok(decision)
-    }
-
     /// Filter terminal. For each item, evaluates with the resource
     /// derived from a closure; only items that permit pass through.
-    /// Denied items are silently dropped. A single audit event is
-    /// emitted per item.
+    /// Denied items are silently dropped.
+    ///
+    /// One audit row describes the whole batch (how many were evaluated,
+    /// permitted, and denied, with the ids of each), rather than one row
+    /// per item: a list page over hundreds of rows is one request and one
+    /// decision from the caller's point of view.
     pub async fn filter<I, F>(
         self,
         action: &str,
@@ -246,14 +263,16 @@ impl<'a> AuthzRequest<'a> {
         // ran).
         self.check_required_scope()?;
         let mut kept = Vec::with_capacity(items.len());
+        let mut summary = BatchSummary::default();
         for item in items {
             let resource = resource_for(&item);
             let decision = self.evaluate_one(action, &resource);
-            self.emit_audit(action, &resource, &decision);
+            summary.record(&resource, &decision);
             if matches!(decision.decision, PolicyDecisionResult::Permit) {
                 kept.push(item);
             }
         }
+        self.emit_batch_audit(action, &summary).await;
         Ok(kept)
     }
 
@@ -323,13 +342,14 @@ impl<'a> AuthzRequest<'a> {
         // Scope check short-circuits before Cedar.
         self.check_required_scope()?;
         let decision = self.evaluate_one(action, resource);
-        self.emit_audit(action, resource, &decision);
+        self.emit_audit(action, resource, &decision).await;
         Ok(decision)
     }
 
-    fn emit_audit(&self, action: &str, resource: &PolicyResource, decision: &PolicyDecision) {
-        let principal = self.caller_principal();
-        let actor = extract_actor(&principal);
+    /// Persist a `PolicyEvaluated` row for one decision. Awaited so the row
+    /// exists before the caller continues, with no thread or nested runtime
+    /// involved: every caller of the seam is already async.
+    async fn emit_audit(&self, action: &str, resource: &PolicyResource, decision: &PolicyDecision) {
         let (resource_type, resource_id) = extract_resource(resource);
 
         let audit_decision = match decision.decision {
@@ -343,51 +363,129 @@ impl<'a> AuthzRequest<'a> {
             Some(decision.reasons.join(", "))
         };
 
+        let mut metadata = serde_json::json!({});
+        enrich_metadata_with_policy_reasoning(&mut metadata, decision, Some(&self.ctx), None);
+        self.attach_oauth_claims(&mut metadata);
+
+        let event = self
+            .audit_builder(
+                action,
+                resource_type,
+                audit_decision,
+                decision_reason.as_deref(),
+            )
+            .details(metadata)
+            .resource(resource_type, resource_id.as_deref().unwrap_or(""))
+            .build();
+
+        self.write_audit(event).await;
+    }
+
+    /// Persist one `PolicyEvaluated` row summarising a [`filter`](Self::filter)
+    /// call. The decision is `Permit` when anything passed, `Forbid` when
+    /// nothing did (or nothing was evaluated).
+    async fn emit_batch_audit(&self, action: &str, summary: &BatchSummary) {
+        let audit_decision = if summary.permitted.is_empty() {
+            AuditDecision::Forbid
+        } else {
+            AuditDecision::Permit
+        };
+        let reason = format!(
+            "batch: {} evaluated, {} permitted, {} denied",
+            summary.evaluated,
+            summary.permitted.len(),
+            summary.denied.len()
+        );
+        let mut metadata = serde_json::json!({
+            "evaluated": summary.evaluated,
+            "permitted": summary.permitted.len(),
+            "denied": summary.denied.len(),
+            "permitted_ids": summary.permitted,
+            "denied_ids": summary.denied,
+        });
+        self.attach_oauth_claims(&mut metadata);
+        let event = self
+            .audit_builder(
+                action,
+                summary.resource_type.unwrap_or("batch"),
+                audit_decision,
+                Some(&reason),
+            )
+            .details(metadata)
+            .build();
+
+        self.write_audit(event).await;
+    }
+
+    /// The parts of a `PolicyEvaluated` row that every emission shares:
+    /// actor, correlation id, OAuth claims.
+    fn audit_builder(
+        &self,
+        action: &str,
+        resource_type: &str,
+        decision: AuditDecision,
+        reason: Option<&str>,
+    ) -> agent_cordon_core::domain::audit::AuditEventBuilder {
+        let principal = self.caller_principal();
+        let actor = extract_actor(&principal);
         let correlation_id = self
             .ctx
             .correlation_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-        let mut metadata = serde_json::json!({});
-        enrich_metadata_with_policy_reasoning(&mut metadata, decision, Some(&self.ctx), None);
-
-        // Include OAuth claims in audit metadata when present.
-        if let Some(ref claims) = self.ctx.oauth_claims {
-            metadata["oauth_claims"] = claims.clone();
-        }
-
-        let mut builder = AuditEvent::builder(AuditEventType::PolicyEvaluated)
+        AuditEvent::builder(AuditEventType::PolicyEvaluated)
             .action(action)
             .resource_type(resource_type)
             .correlation_id(&correlation_id)
-            .decision(audit_decision, decision_reason.as_deref())
-            .details(metadata)
+            .decision(decision, reason)
             .actor_fields(
                 actor.workspace_id,
                 actor.workspace_name,
                 actor.user_id,
                 actor.user_name,
-            );
+            )
+    }
 
-        if let Some(ref rid) = resource_id {
-            builder = builder.resource(resource_type, rid);
+    /// Include the caller's OAuth claims in audit metadata when present.
+    fn attach_oauth_claims(&self, metadata: &mut serde_json::Value) {
+        if let Some(ref claims) = self.ctx.oauth_claims {
+            metadata["oauth_claims"] = claims.clone();
         }
+    }
 
-        let event = builder.build();
+    async fn write_audit(&self, event: AuditEvent) {
+        if let Err(e) = self.authz.store.append_audit_event(&event).await {
+            tracing::error!(error = %e, "failed to write policy audit event");
+        }
+    }
+}
 
-        // Write audit event synchronously so it is persisted before the
-        // caller continues. We bridge into async via a blocking thread
-        // because this can be called from sync paths (filter loop).
-        let store = self.authz.store.clone();
-        let handle = tokio::runtime::Handle::current();
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                if let Err(e) = handle.block_on(store.append_audit_event(&event)) {
-                    tracing::error!(error = %e, "failed to write policy audit event");
-                }
-            });
-        });
+/// What a [`AuthzRequest::filter`] call decided, for its one audit row.
+#[derive(Default)]
+struct BatchSummary {
+    resource_type: Option<&'static str>,
+    evaluated: usize,
+    permitted: Vec<String>,
+    denied: Vec<String>,
+}
+
+impl BatchSummary {
+    /// Ids beyond this many per outcome are counted but not listed, so a
+    /// very large page cannot bloat the audit row.
+    const MAX_LISTED_IDS: usize = 200;
+
+    fn record(&mut self, resource: &PolicyResource, decision: &PolicyDecision) {
+        let (resource_type, resource_id) = extract_resource(resource);
+        self.resource_type.get_or_insert(resource_type);
+        self.evaluated += 1;
+        let bucket = match decision.decision {
+            PolicyDecisionResult::Permit => &mut self.permitted,
+            PolicyDecisionResult::Forbid => &mut self.denied,
+        };
+        if bucket.len() < Self::MAX_LISTED_IDS {
+            bucket.push(resource_id.unwrap_or_default());
+        }
     }
 }
 

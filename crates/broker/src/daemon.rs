@@ -1,8 +1,14 @@
-//! Daemon lifecycle: startup, signal handling, graceful shutdown.
+//! Daemon lifecycle: startup, single-instance lock, signal handling,
+//! graceful shutdown.
+//!
+//! Every artifact the broker creates under its data directory (key, token
+//! store, recovery store, port, pid, lock) is owner-only: `0700` for the
+//! directory, `0600` for files, set at creation rather than after.
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use p256::elliptic_curve::rand_core::OsRng;
@@ -11,11 +17,8 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-use agent_cordon_core::oauth2::client_credentials::OAuth2TokenManager;
-
 use crate::config::BrokerConfig;
 use crate::mcp_sync;
-use crate::oauth2_refresh::OAuth2RefreshManager;
 use crate::routes;
 use crate::server_client::ServerClient;
 use crate::state::{BrokerState, SharedState, TokenStatus, WorkspaceState};
@@ -24,9 +27,24 @@ use crate::token_store;
 
 /// Run the broker daemon. Blocks until shutdown signal is received.
 pub async fn run(config: BrokerConfig) -> Result<(), String> {
+    // 0. Refuse bad configuration before touching disk or network. A
+    //    non-loopback bind needs TLS or a shared secret (config::validate).
+    config.validate()?;
+
+    // Read the TLS material now, while a bad certificate is still only a
+    // startup error: a broker that gets as far as listening must be able to
+    // complete a handshake.
+    let tls_config = match (&config.tls_cert, &config.tls_key) {
+        (Some(cert), Some(key)) => Some(crate::tls::load_server_config(cert, key)?),
+        _ => None,
+    };
+
     let data_dir = config.data_dir();
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|e| format!("failed to create data dir {}: {}", data_dir.display(), e))?;
+    prepare_data_dir(&data_dir)?;
+
+    // One broker per data directory: the lock is held for the life of the
+    // process and released by the OS if it dies.
+    let instance_lock = InstanceLock::acquire(&config.lock_file_path())?;
 
     // 1. Read or create P-256 keypair
     let encryption_key = load_or_create_keypair(&config.key_path())?;
@@ -34,19 +52,18 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
     // 2. Build HTTP client (needed for recovery before state construction)
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
-        .user_agent("agentcordon-broker/3.0.0")
+        .user_agent(concat!("agentcordon-broker/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| format!("failed to create HTTP client: {}", e))?;
+    let upstream_client = crate::upstream::build_client()
+        .map_err(|e| format!("failed to create upstream HTTP client: {}", e))?;
 
     // 3. Load encrypted token store, falling back to recovery store
     let workspaces = load_with_recovery(&config, &encryption_key, &http_client).await;
     info!(count = workspaces.len(), "loaded workspace tokens");
 
     // 4. Bind (before building state so we know the actual port)
-    let bind_ip: std::net::IpAddr = config
-        .bind
-        .parse()
-        .map_err(|e| format!("invalid bind address '{}': {}", config.bind, e))?;
+    let bind_ip = config.bind_ip()?;
     let addr = SocketAddr::from((bind_ip, config.port));
     let listener = TcpListener::bind(addr)
         .await
@@ -56,7 +73,15 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
         .map_err(|e| format!("failed to get bound address: {}", e))?;
     let bound_port = bound_addr.port();
 
-    info!(port = bound_port, "broker listening on {}", bound_addr);
+    let scheme = if tls_config.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    info!(
+        port = bound_port,
+        scheme, "broker listening on {}://{}", scheme, bound_addr
+    );
 
     // 5. Build shared state (with actual bound port for redirect URIs)
     let state: SharedState = Arc::new(BrokerState {
@@ -66,18 +91,22 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
         mcp_configs: RwLock::new(HashMap::new()),
         server_url: config.server_url.clone(),
         http_client,
+        upstream_client,
         encryption_key,
         config: config.clone(),
-        oauth2_refresh: OAuth2RefreshManager::new(),
-        oauth2_cc: OAuth2TokenManager::new(),
+        nonces: crate::auth::NonceCache::default(),
+        refresh_locks: token_refresh::RefreshLocks::default(),
     });
 
-    // 6. Write port and PID files
-    let port_file = config.data_dir().join("broker.port");
-    let pid_file = config.data_dir().join("broker.pid");
-    std::fs::write(&port_file, bound_port.to_string())
-        .map_err(|e| format!("failed to write port file: {}", e))?;
-    std::fs::write(&pid_file, std::process::id().to_string())
+    // 6. Write port and PID files (owner-only)
+    let port_file = config.port_file_path();
+    let pid_file = config.pid_file_path();
+    token_store::write_private_file(
+        &port_file,
+        port_file_contents(bind_ip, bound_port, config.tls_configured()).as_bytes(),
+    )
+    .map_err(|e| format!("failed to write port file: {}", e))?;
+    token_store::write_private_file(&pid_file, std::process::id().to_string().as_bytes())
         .map_err(|e| format!("failed to write pid file: {}", e))?;
 
     // 7. Start background token refresh
@@ -108,17 +137,37 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
         info!("shutdown signal received");
     };
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal)
-        .await
-        .map_err(|e| format!("server error: {}", e))?;
+    match tls_config {
+        Some(tls) => crate::tls::serve(listener, router, tls, shutdown_signal).await?,
+        None => axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown_signal)
+            .await
+            .map_err(|e| format!("server error: {}", e))?,
+    }
 
     // 9. Graceful shutdown: flush tokens, clean up files
     info!("shutting down...");
     refresh_handle.abort();
     mcp_sync_handle.abort();
 
-    // Flush token store
+    flush_state(&state).await;
+
+    // Remove port and PID files, then release the instance lock last so a
+    // successor cannot start against a half-cleaned directory.
+    let _ = std::fs::remove_file(&port_file);
+    let _ = std::fs::remove_file(&pid_file);
+    drop(instance_lock);
+
+    info!("broker shut down cleanly");
+    Ok(())
+}
+
+/// Write the workspace tokens out: the encrypted store first, then the
+/// plaintext recovery store beside it.
+///
+/// What a clean shutdown does, and the only thing that makes a token
+/// survive a restart. Named so the restart itself is testable.
+pub async fn flush_state(state: &SharedState) {
     {
         let workspaces = state.workspaces.read().await;
         if let Err(e) = token_store::save(
@@ -130,15 +179,84 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
         }
     }
 
-    // Flush recovery store
-    token_store::save_recovery_store(&state).await;
+    token_store::save_recovery_store(state).await;
+}
 
-    // Remove port and PID files
-    let _ = std::fs::remove_file(&port_file);
-    let _ = std::fs::remove_file(&pid_file);
-
-    info!("broker shut down cleanly");
+/// Create the data directory if needed and make it owner-only.
+pub fn prepare_data_dir(data_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| format!("failed to create data dir {}: {}", data_dir.display(), e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700)).map_err(
+            |e| {
+                format!(
+                    "failed to set permissions on data dir {}: {}",
+                    data_dir.display(),
+                    e
+                )
+            },
+        )?;
+    }
     Ok(())
+}
+
+/// Single-instance lock on the data directory.
+///
+/// An advisory `flock(LOCK_EX | LOCK_NB)` on `broker.lock`, held open for
+/// the life of the process. The kernel drops it when the process exits,
+/// however it exits, so there is no stale-lock cleanup. On non-Unix
+/// targets the file is created but not locked.
+#[derive(Debug)]
+pub struct InstanceLock {
+    _file: File,
+    path: PathBuf,
+}
+
+impl InstanceLock {
+    pub fn acquire(path: &Path) -> Result<Self, String> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let file = opts
+            .open(path)
+            .map_err(|e| format!("failed to open lock file {}: {}", path.display(), e))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            // SAFETY: `flock` on a file descriptor we own and keep open for
+            // the lifetime of `Self`.
+            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if rc != 0 {
+                let err = std::io::Error::last_os_error();
+                return Err(if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+                    format!(
+                        "another agentcordon-broker is already running on this data directory \
+                         ({} is locked). Stop it first, or point this one at a different \
+                         --data-dir",
+                        path.display()
+                    )
+                } else {
+                    format!("failed to lock {}: {}", path.display(), err)
+                });
+            }
+        }
+
+        Ok(Self {
+            _file: file,
+            path: path.to_path_buf(),
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// Load an existing P-256 keypair from disk, or create a new one.
@@ -178,18 +296,11 @@ fn load_or_create_keypair(path: &Path) -> Result<p256::SecretKey, String> {
             .map_err(|e| format!("failed to create key directory: {}", e))?;
     }
 
-    // Write atomically: temp file → set permissions → rename into place
+    // Write atomically: owner-only temp file → rename into place. The mode
+    // is set at open(2), so the key never exists readable by others.
     let tmp_path = path.with_extension("tmp");
-    std::fs::write(&tmp_path, pem.as_bytes())
+    token_store::write_private_file(&tmp_path, pem.as_bytes())
         .map_err(|e| format!("failed to write temp key file: {}", e))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&tmp_path, perms)
-            .map_err(|e| format!("failed to set key file permissions: {}", e))?;
-    }
 
     std::fs::rename(&tmp_path, path)
         .map_err(|e| format!("failed to rename key file into place: {}", e))?;
@@ -205,14 +316,15 @@ fn load_or_create_keypair(path: &Path) -> Result<p256::SecretKey, String> {
 /// 3. For each recovery entry, attempt a refresh token exchange.
 /// 4. Successfully recovered workspaces are returned (and will be saved to
 ///    `tokens.enc` once the full state is available).
-async fn load_with_recovery(
+pub async fn load_with_recovery(
     config: &BrokerConfig,
     encryption_key: &p256::SecretKey,
     http_client: &reqwest::Client,
 ) -> HashMap<String, WorkspaceState> {
-    // Try encrypted store first
-    match token_store::load(&config.token_store_path(), encryption_key) {
-        Ok(workspaces) => {
+    // Try encrypted store first. An absent store is the first run; only a
+    // store that exists and will not open is a failure worth a warning.
+    let never_written = match token_store::load(&config.token_store_path(), encryption_key) {
+        Ok(Some(workspaces)) => {
             // Update recovery store from the loaded data so it stays in sync
             let entries: HashMap<String, _> = workspaces
                 .iter()
@@ -223,18 +335,26 @@ async fn load_with_recovery(
             }
             return workspaces;
         }
+        // No `tokens.enc` yet. An older broker may still have left a
+        // recovery store behind, so keep looking, quietly.
+        Ok(None) => true,
         Err(e) => {
             warn!(
                 error = %e,
                 "encrypted token store failed, attempting recovery from workspaces.json"
             );
+            false
         }
-    }
+    };
 
     // Fall back to recovery store
     let entries = token_store::load_recovery(&config.recovery_store_path());
     if entries.is_empty() {
-        info!("no recovery entries found, starting fresh");
+        if never_written {
+            info!("no token store yet, starting fresh");
+        } else {
+            info!("no recovery entries found, starting fresh");
+        }
         return HashMap::new();
     }
 
@@ -271,7 +391,7 @@ async fn recover_from_entries(
                         .unwrap_or_else(|| entry.refresh_token.clone()),
                     scopes: entry.scopes.clone(),
                     token_expires_at: chrono::Utc::now()
-                        + chrono::Duration::seconds(token_resp.expires_in as i64),
+                        + chrono::Duration::seconds(token_resp.expires_in),
                     workspace_name: entry.workspace_name.clone(),
                     token_status: TokenStatus::Valid,
                 };
@@ -315,4 +435,106 @@ async fn recover_from_entries(
     );
 
     recovered
+}
+
+/// What the port file says: the URL a local CLI should dial. A TLS broker
+/// is `https`, and a broker bound to every interface is reached on loopback.
+pub(crate) fn port_file_contents(bind_ip: std::net::IpAddr, port: u16, tls: bool) -> String {
+    let scheme = if tls { "https" } else { "http" };
+    let host = match bind_ip {
+        std::net::IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_string(),
+        std::net::IpAddr::V6(ip) if ip.is_unspecified() => "[::1]".to_string(),
+        std::net::IpAddr::V4(ip) => ip.to_string(),
+        std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+    };
+    format!("{scheme}://{host}:{port}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn second_lock_on_same_data_dir_conflicts_until_first_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broker.lock");
+
+        let first = InstanceLock::acquire(&path).expect("first lock");
+        let err = InstanceLock::acquire(&path).expect_err("second lock must conflict");
+        assert!(err.contains("already running"), "{err}");
+
+        drop(first);
+        InstanceLock::acquire(&path).expect("lock is free after the holder exits");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broker.lock");
+        let lock = InstanceLock::acquire(&path).unwrap();
+        let mode = std::fs::metadata(lock.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn data_dir_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        prepare_data_dir(&data_dir).unwrap();
+        let mode = std::fs::metadata(&data_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    /// The port file names how to reach the broker, not just where: a TLS
+    /// broker must be dialled as https, and a broker bound to every
+    /// interface is reached locally on loopback.
+    #[test]
+    fn port_file_names_scheme_and_loopback_host() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        assert_eq!(
+            port_file_contents(IpAddr::V4(Ipv4Addr::LOCALHOST), 9876, false),
+            "http://127.0.0.1:9876"
+        );
+        assert_eq!(
+            port_file_contents(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 9876, true),
+            "https://127.0.0.1:9876"
+        );
+        assert_eq!(
+            port_file_contents(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 9876, true),
+            "https://[::1]:9876"
+        );
+        assert_eq!(
+            port_file_contents(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)), 443, true),
+            "https://10.0.0.5:443"
+        );
+    }
+
+    #[test]
+    fn port_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broker.port");
+        token_store::write_private_file(&path, b"9876").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "9876");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_key_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broker.key");
+        load_or_create_keypair(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(!dir.path().join("broker.tmp").exists());
+    }
 }

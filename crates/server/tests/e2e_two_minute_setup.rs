@@ -46,7 +46,6 @@ async fn enroll_agent_via_device(
     let agent = Workspace {
         id: agent_id.clone(),
         name: agent_name.to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -137,6 +136,6 @@ async fn test_e2e_concurrent_agent_enrollments() {
             .await
             .expect("get agent")
             .expect("agent must exist");
-        assert!(agent.enabled, "agent {} must be enabled", agent_id,);
+        assert!(agent.is_active(), "agent {} must be active", agent_id,);
     }
 }

@@ -11,7 +11,8 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
         path: "/api/v1/oauth-provider-clients".to_string(),
         description: "Create an MCP OAuth App configuration. Server-wide admin setting \
             for OAuth2 app registrations (client_id/client_secret) used by MCP marketplace \
-            templates. Requires manage_mcp_servers policy. Client secret is encrypted at rest."
+            templates. Requires manage_oauth_provider_clients policy (admins only). Client secret \
+            is encrypted at rest."
             .to_string(),
         auth_required: true,
         request_body: Some(json!({
@@ -43,8 +44,9 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "GET".to_string(),
         path: "/api/v1/oauth-provider-clients".to_string(),
-        description: "List all MCP OAuth Apps. Requires manage_mcp_servers policy. \
-            Returns summaries without client secrets."
+        description: "List all MCP OAuth Apps. Requires manage_mcp_servers policy, so an \
+            operator can see which client an origin uses. Returns summaries without client \
+            secrets."
             .to_string(),
         auth_required: true,
         request_body: None,
@@ -80,7 +82,9 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
         method: "PUT".to_string(),
         path: "/api/v1/oauth-provider-clients/{id}".to_string(),
         description: "Update an MCP OAuth App. All fields are optional. If client_secret \
-            is provided, it is re-encrypted. Requires manage_mcp_servers policy."
+            is provided, it is re-encrypted. Allowed while credentials and MCP servers \
+            depend on the row; the audit event names the counts and the changed fields. \
+            Requires manage_oauth_provider_clients policy (admins only)."
             .to_string(),
         auth_required: true,
         request_body: Some(json!({
@@ -110,7 +114,10 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "DELETE".to_string(),
         path: "/api/v1/oauth-provider-clients/{id}".to_string(),
-        description: "Delete an MCP OAuth App. Requires manage_mcp_servers policy.".to_string(),
+        description: "Delete an MCP OAuth App. Refused with 409 while any \
+            oauth2_user_authorization credential or OAuth2 MCP server still authenticates \
+            at that origin. Requires manage_oauth_provider_clients policy (admins only)."
+            .to_string(),
         auth_required: true,
         request_body: None,
         response_body: Some(json!({ "deleted": true })),
@@ -120,6 +127,7 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
             "unauthorized".to_string(),
             "forbidden".to_string(),
             "not_found".to_string(),
+            "conflict".to_string(),
         ],
     });
 }

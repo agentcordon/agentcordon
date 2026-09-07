@@ -17,8 +17,13 @@ pub struct WorkspaceId(pub Uuid);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceStatus {
+    /// Registered but not yet approved.
     Pending,
+    /// May authenticate and act.
     Active,
+    /// Switched off by an operator; may be switched back on.
+    Disabled,
+    /// Final. A revoked identity never comes back; register a new key.
     Revoked,
 }
 
@@ -27,6 +32,7 @@ impl WorkspaceStatus {
         match self {
             WorkspaceStatus::Pending => "pending",
             WorkspaceStatus::Active => "active",
+            WorkspaceStatus::Disabled => "disabled",
             WorkspaceStatus::Revoked => "revoked",
         }
     }
@@ -39,10 +45,19 @@ impl FromStr for WorkspaceStatus {
         match s {
             "pending" => Ok(WorkspaceStatus::Pending),
             "active" => Ok(WorkspaceStatus::Active),
+            "disabled" => Ok(WorkspaceStatus::Disabled),
             "revoked" => Ok(WorkspaceStatus::Revoked),
             _ => Err(()),
         }
     }
+}
+
+/// A lifecycle transition the workspace's current status does not allow.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("workspace is {from}; cannot {action}")]
+pub struct WorkspaceTransitionError {
+    pub from: WorkspaceStatus,
+    pub action: &'static str,
 }
 
 impl std::fmt::Display for WorkspaceStatus {
@@ -60,7 +75,8 @@ impl std::fmt::Display for WorkspaceStatus {
 pub struct Workspace {
     pub id: WorkspaceId,
     pub name: String,
-    pub enabled: bool,
+    /// The one lifecycle field. Change it through the transition methods so
+    /// the rules (revocation is final, pending needs approval) hold everywhere.
     pub status: WorkspaceStatus,
     /// SHA-256 hex digest of the raw 32-byte Ed25519 public key.
     pub pk_hash: Option<String>,
@@ -77,99 +93,89 @@ pub struct Workspace {
     pub updated_at: DateTime<Utc>,
 }
 
-/// A registration record created when an admin approves workspace registration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkspaceRegistration {
-    pub pk_hash: String,
-    /// SHA-256 hex of the PKCE nonce (code_challenge = SHA-256(nonce)).
-    pub code_challenge: String,
-    /// SHA-256 hex of the approval code (stored hashed, never plaintext).
-    pub code_hash: String,
-    /// Raw approval code, nulled after first read (one-time use).
-    pub approval_code: Option<String>,
-    pub expires_at: DateTime<Utc>,
-    pub attempts: u8,
-    pub max_attempts: u8,
-    /// The user ID of the admin who approved this registration.
-    pub approved_by: Option<String>,
-    pub created_at: DateTime<Utc>,
-}
+impl Workspace {
+    /// Whether the workspace may authenticate and act right now.
+    pub fn is_active(&self) -> bool {
+        self.status == WorkspaceStatus::Active
+    }
 
-/// Curated 256-word list for approval code generation (~8 bits of entropy).
-const APPROVAL_WORDS: [&str; 256] = [
-    "ALPHA", "AMBER", "ANVIL", "APEX", "AQUA", "ARROW", "ATLAS", "AZURE", "BADGE", "BASIL",
-    "BEACON", "BIRCH", "BLAZE", "BOLT", "BRAVE", "BRICK", "CABIN", "CAMEL", "CEDAR", "CHAIN",
-    "CHIME", "CLIFF", "CLOUD", "COBRA", "CORAL", "CRANE", "CREST", "CROWN", "CYCLE", "DELTA",
-    "DENIM", "DIVER", "DRAFT", "DREAM", "DRIFT", "DRUID", "EAGLE", "EBONY", "EMBER", "EPOCH",
-    "EVOKE", "FABLE", "FAWN", "FERRY", "FLAME", "FLEET", "FLINT", "FLORA", "FORGE", "FROST",
-    "GALE", "GARNET", "GHOST", "GLEAM", "GLOBE", "GRACE", "GRAIN", "GROVE", "GUARD", "GUIDE",
-    "HAVEN", "HAZEL", "HELIX", "HERON", "HINGE", "HOLLY", "HOVER", "IVORY", "JEWEL", "KNACK",
-    "LANCE", "LARCH", "LEMON", "LIGHT", "LILAC", "LINEN", "LOTUS", "LUNAR", "MAPLE", "MARSH",
-    "MERIT", "MICA", "MIRTH", "MOCHA", "MORSE", "MURAL", "NEXUS", "NOBLE", "NORTH", "OASIS",
-    "OLIVE", "ONYX", "ORBIT", "OTTER", "OXIDE", "PANDA", "PEARL", "PENNY", "PETAL", "PILOT",
-    "PIXEL", "PLAID", "PLUME", "POLAR", "PRISM", "PULSE", "QUAIL", "QUEST", "RADAR", "RAVEN",
-    "REALM", "RIDGE", "RIVER", "ROBIN", "ROYAL", "RUSTIC", "SABLE", "SAGE", "SCALE", "SCOUT",
-    "SHALE", "SLATE", "SOLAR", "SPARK", "SPEAR", "SPINE", "SPOKE", "STEEL", "STONE", "STORM",
-    "STRUM", "SWIFT", "THORN", "THYME", "TIDAL", "TIGER", "TORCH", "TOWER", "TRACE", "TRAIL",
-    "TROVE", "TULIP", "UNITY", "URBAN", "VALE", "VAPOR", "VAULT", "VERGE", "VIGOR", "VIPER",
-    "VIVID", "VOCAL", "WARDEN", "WHEAT", "WILLOW", "ZINC", "ALDER", "ASPEN", "BASALT", "BERRY",
-    "BLOOM", "BRINE", "CAIRN", "CHALK", "CLOVER", "COMPASS", "COPPER", "COVE", "DAGGER", "DAWN",
-    "DUNE", "ECHO", "EMERALD", "FALCON", "FIELD", "FJORD", "FLARE", "GAVEL", "GLACIER", "GRAVEL",
-    "HARBOR", "HAWK", "HEATH", "HELM", "JASPER", "KITE", "LAGOON", "LAUREL", "LODGE", "MANTLE",
-    "MEADOW", "MIST", "MOSS", "NEEDLE", "OAK", "OCEAN", "OSPREY", "PALM", "PINE", "PLANK",
-    "QUARTZ", "REEF", "RIPPLE", "ROWAN", "RUBY", "QUILL", "SAPPHIRE", "SIERRA", "SILVER", "SPRING",
-    "SUMMIT", "TALON", "TERRA", "TIMBER", "TUNDRA", "VALLEY", "VELVET", "WAVE", "WREN", "YARROW",
-    "ZENITH", "AGATE", "ANCHOR", "BROOK", "BREEZE", "CANYON", "CITRUS", "COBALT", "FLUTE", "CRYPT",
-    "DUSK", "ELM", "FERN", "PIVOT", "GLEN", "GRANITE", "HAZE", "IRIS", "JADE", "KELP", "LICHEN",
-    "LOOM", "MAGNET", "MARBLE", "NEON", "NIMBUS", "OPAL", "ORCHID", "PEBBLE", "PLUM", "QUARRY",
-    "RAPIDS", "SAND", "SPRUCE", "THISTLE", "TOPAZ",
-];
+    fn transition(
+        &mut self,
+        action: &'static str,
+        allowed_from: &[WorkspaceStatus],
+        to: WorkspaceStatus,
+    ) -> Result<(), WorkspaceTransitionError> {
+        if self.status == to {
+            return Ok(());
+        }
+        if !allowed_from.contains(&self.status) {
+            return Err(WorkspaceTransitionError {
+                from: self.status.clone(),
+                action,
+            });
+        }
+        self.status = to;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
 
-/// Generate an approval code in WORD-NNNNNN format (~28-bit entropy).
-pub fn generate_approval_code() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let word = APPROVAL_WORDS[rng.gen_range(0..256)];
-    let digits: u32 = rng.gen_range(0..1_000_000);
-    format!("{}-{:06}", word, digits)
-}
+    /// Pending → Active. Approval of a registration.
+    pub fn activate(&mut self) -> Result<(), WorkspaceTransitionError> {
+        if self.status == WorkspaceStatus::Active {
+            return Err(WorkspaceTransitionError {
+                from: self.status.clone(),
+                action: "activate",
+            });
+        }
+        self.transition(
+            "activate",
+            &[WorkspaceStatus::Pending],
+            WorkspaceStatus::Active,
+        )
+    }
 
-/// Hash an approval code with SHA-256 for storage (never store plaintext).
-pub fn hash_approval_code(code: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(code.as_bytes());
-    hex::encode(hash)
-}
+    /// Disabled → Active. Idempotent when already active.
+    pub fn enable(&mut self) -> Result<(), WorkspaceTransitionError> {
+        self.transition(
+            "enable",
+            &[WorkspaceStatus::Disabled],
+            WorkspaceStatus::Active,
+        )
+    }
 
-/// A single-use provisioning token for CI/CD workspace registration.
-/// The raw token is never stored — only its SHA-256 hash.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProvisioningToken {
-    pub token_hash: String,
-    pub name: String,
-    pub expires_at: DateTime<Utc>,
-    pub used: bool,
-    pub created_at: DateTime<Utc>,
-}
+    /// Active → Disabled. Idempotent when already disabled.
+    pub fn disable(&mut self) -> Result<(), WorkspaceTransitionError> {
+        self.transition(
+            "disable",
+            &[WorkspaceStatus::Active],
+            WorkspaceStatus::Disabled,
+        )
+    }
 
-/// Generate a random provisioning token (32 bytes, hex-encoded).
-pub fn generate_provisioning_token() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let bytes: [u8; 32] = rng.gen();
-    hex::encode(bytes)
-}
-
-/// Hash a provisioning token for storage.
-pub fn hash_provisioning_token(token: &str) -> String {
-    use sha2::{Digest, Sha256};
-    hex::encode(Sha256::digest(token.as_bytes()))
+    /// Any non-revoked status → Revoked. Final; revoking twice is an error
+    /// so a caller notices it is acting on a dead identity.
+    pub fn revoke(&mut self) -> Result<(), WorkspaceTransitionError> {
+        if self.status == WorkspaceStatus::Revoked {
+            return Err(WorkspaceTransitionError {
+                from: self.status.clone(),
+                action: "revoke",
+            });
+        }
+        self.transition(
+            "revoke",
+            &[
+                WorkspaceStatus::Pending,
+                WorkspaceStatus::Active,
+                WorkspaceStatus::Disabled,
+            ],
+            WorkspaceStatus::Revoked,
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
 
     // --- WorkspaceStatus roundtrip ---
 
@@ -205,94 +211,6 @@ mod tests {
         );
     }
 
-    // --- generate_approval_code ---
-
-    #[test]
-    fn test_generate_approval_code_format() {
-        let re = regex::Regex::new(r"^[A-Z]+-\d{6}$").unwrap();
-        for _ in 0..100 {
-            let code = generate_approval_code();
-            assert!(
-                re.is_match(&code),
-                "approval code '{}' does not match WORD-NNNNNN format",
-                code
-            );
-        }
-    }
-
-    #[test]
-    fn test_generate_approval_code_uniqueness() {
-        let codes: HashSet<String> = (0..1000).map(|_| generate_approval_code()).collect();
-        assert!(
-            codes.len() >= 900,
-            "expected at least 900 unique codes out of 1000, got {}",
-            codes.len()
-        );
-    }
-
-    // --- hash_approval_code ---
-
-    #[test]
-    fn test_hash_approval_code_deterministic() {
-        let code = "ALPHA-123456";
-        let h1 = hash_approval_code(code);
-        let h2 = hash_approval_code(code);
-        assert_eq!(h1, h2, "same input must produce same hash");
-        assert_eq!(h1.len(), 64, "SHA-256 hex digest must be 64 chars");
-        // Verify it's valid hex
-        assert!(
-            h1.chars().all(|c| c.is_ascii_hexdigit()),
-            "hash must be hex"
-        );
-    }
-
-    #[test]
-    fn test_hash_approval_code_different_inputs() {
-        let h1 = hash_approval_code("ALPHA-000001");
-        let h2 = hash_approval_code("ALPHA-000002");
-        assert_ne!(h1, h2, "different inputs must produce different hashes");
-    }
-
-    #[test]
-    fn test_hash_approval_code_empty_string() {
-        let h = hash_approval_code("");
-        assert_eq!(h.len(), 64, "empty string hash must still be 64 chars");
-        assert!(
-            h.chars().all(|c| c.is_ascii_hexdigit()),
-            "hash must be valid hex"
-        );
-    }
-
-    // --- generate_provisioning_token ---
-
-    #[test]
-    fn test_generate_provisioning_token_format() {
-        let token = generate_provisioning_token();
-        assert_eq!(token.len(), 64, "32 bytes hex-encoded = 64 chars");
-        assert!(
-            token.chars().all(|c| c.is_ascii_hexdigit()),
-            "token must be hex"
-        );
-    }
-
-    #[test]
-    fn test_generate_provisioning_token_uniqueness() {
-        let t1 = generate_provisioning_token();
-        let t2 = generate_provisioning_token();
-        assert_ne!(t1, t2, "two calls must produce different tokens");
-    }
-
-    // --- hash_provisioning_token ---
-
-    #[test]
-    fn test_hash_provisioning_token_deterministic() {
-        let token = "abc123def456";
-        let h1 = hash_provisioning_token(token);
-        let h2 = hash_provisioning_token(token);
-        assert_eq!(h1, h2, "same input must produce same hash");
-        assert_eq!(h1.len(), 64);
-    }
-
     // --- Backward compatibility type aliases ---
 
     #[test]
@@ -302,7 +220,6 @@ mod tests {
         let agent: crate::domain::agent::Agent = crate::domain::agent::Agent {
             id: WorkspaceId(Uuid::new_v4()),
             name: "test".to_string(),
-            enabled: true,
             status: WorkspaceStatus::Active,
             pk_hash: None,
             encryption_public_key: None,
@@ -323,7 +240,6 @@ mod tests {
         let device: crate::domain::device::Device = crate::domain::device::Device {
             id: WorkspaceId(Uuid::new_v4()),
             name: "test-device".to_string(),
-            enabled: true,
             status: WorkspaceStatus::Active,
             pk_hash: None,
             encryption_public_key: None,
@@ -337,59 +253,70 @@ mod tests {
         accepts_workspace(&device);
     }
 
-    // --- Entropy distribution ---
+    // --- Lifecycle transitions ---
 
-    #[test]
-    fn test_approval_code_entropy_distribution() {
-        let mut word_counts: HashMap<String, usize> = HashMap::new();
-        let n = 10_000;
-        for _ in 0..n {
-            let code = generate_approval_code();
-            let word = code.split('-').next().unwrap().to_string();
-            *word_counts.entry(word).or_insert(0) += 1;
+    fn active_workspace() -> Workspace {
+        Workspace {
+            id: WorkspaceId(Uuid::new_v4()),
+            name: "ws".to_string(),
+            status: WorkspaceStatus::Active,
+            pk_hash: None,
+            encryption_public_key: None,
+            tags: vec![],
+            owner_id: None,
+            parent_id: None,
+            tool_name: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
         }
-        // With 256 words and 10000 samples, expected ~39 per word.
-        // Check no single word has more than 3x the expected value (117).
-        let max_count = word_counts.values().max().copied().unwrap_or(0);
-        assert!(
-            max_count < 120,
-            "word distribution skewed: max count {} (expected ~39 per word)",
-            max_count
-        );
-        // Check we saw a good fraction of all 256 words
-        assert!(
-            word_counts.len() >= 200,
-            "expected at least 200 distinct words in 10000 samples, got {}",
-            word_counts.len()
-        );
     }
 
     #[test]
-    fn test_provisioning_token_entropy() {
-        let tokens: HashSet<String> = (0..100).map(|_| generate_provisioning_token()).collect();
+    fn disable_and_enable_round_trip() {
+        let mut ws = active_workspace();
+        assert!(ws.is_active());
+        ws.disable().expect("active -> disabled");
+        assert_eq!(ws.status, WorkspaceStatus::Disabled);
+        assert!(!ws.is_active());
+        ws.enable().expect("disabled -> active");
+        assert!(ws.is_active());
+    }
+
+    #[test]
+    fn enable_and_disable_are_idempotent() {
+        let mut ws = active_workspace();
+        ws.enable().expect("already active");
+        ws.disable().expect("active -> disabled");
+        ws.disable().expect("already disabled");
+    }
+
+    #[test]
+    fn revoke_is_final() {
+        let mut ws = active_workspace();
+        ws.revoke().expect("active -> revoked");
+        assert_eq!(ws.status, WorkspaceStatus::Revoked);
+        assert!(ws.enable().is_err(), "revoked stays revoked");
+        assert!(ws.disable().is_err(), "revoked stays revoked");
+        assert!(ws.revoke().is_err(), "already revoked");
+    }
+
+    #[test]
+    fn pending_is_activated_not_enabled() {
+        let mut ws = active_workspace();
+        ws.status = WorkspaceStatus::Pending;
+        assert!(ws.enable().is_err(), "pending must go through activation");
+        assert!(ws.disable().is_err());
+        ws.activate().expect("pending -> active");
+        assert!(ws.is_active());
+        assert!(ws.activate().is_err(), "only pending activates");
+    }
+
+    #[test]
+    fn disabled_parses_and_prints() {
         assert_eq!(
-            tokens.len(),
-            100,
-            "100 provisioning tokens must all be unique"
+            "disabled".parse::<WorkspaceStatus>(),
+            Ok(WorkspaceStatus::Disabled)
         );
-        // Verify no predictable sequential pattern: sort and check no two adjacent
-        // tokens share a common prefix of more than 8 hex chars (very unlikely with
-        // 32 random bytes)
-        let mut sorted: Vec<&String> = tokens.iter().collect();
-        sorted.sort();
-        for pair in sorted.windows(2) {
-            let common_prefix = pair[0]
-                .chars()
-                .zip(pair[1].chars())
-                .take_while(|(a, b)| a == b)
-                .count();
-            assert!(
-                common_prefix <= 12,
-                "tokens share suspiciously long common prefix ({} chars): {} vs {}",
-                common_prefix,
-                pair[0],
-                pair[1]
-            );
-        }
+        assert_eq!(WorkspaceStatus::Disabled.as_str(), "disabled");
     }
 }

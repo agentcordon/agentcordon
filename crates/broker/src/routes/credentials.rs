@@ -1,12 +1,54 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+
+use agent_cordon_core::domain::credential::{CredentialId, CredentialSummary};
 
 use crate::auth::AuthenticatedWorkspace;
 use crate::server_client::ServerClient;
 use crate::state::SharedState;
 
-use super::helpers::{error_response, require_scope, with_token_refresh};
+use super::helpers::{error_response, with_token_refresh};
+
+/// What an agent is told about a credential.
+///
+/// The server's [`CredentialSummary`] carries more than an agent has any
+/// business seeing (transform scripts, metadata, ownership, tags), so this
+/// is a deliberate projection of it rather than a passthrough. Because it
+/// is built field-by-field from the server's type, a rename there is a
+/// compile error here instead of a silently empty column.
+#[derive(Serialize)]
+struct CredentialListEntry {
+    id: CredentialId,
+    name: String,
+    service: String,
+    credential_type: String,
+    scopes: Vec<String>,
+    allowed_url_pattern: Option<String>,
+    expires_at: Option<DateTime<Utc>>,
+    expired: bool,
+    /// The vault's display name. An agent groups by what it can read, not by
+    /// the vault's id.
+    vault: String,
+}
+
+impl From<CredentialSummary> for CredentialListEntry {
+    fn from(c: CredentialSummary) -> Self {
+        Self {
+            id: c.id,
+            name: c.name,
+            service: c.service,
+            credential_type: c.credential_type,
+            scopes: c.scopes,
+            allowed_url_pattern: c.allowed_url_pattern,
+            expires_at: c.expires_at,
+            expired: c.expired,
+            vault: c.vault_name,
+        }
+    }
+}
 
 pub async fn get_credentials(
     State(state): State<SharedState>,
@@ -18,18 +60,6 @@ pub async fn get_credentials(
         .cloned()
         .unwrap();
 
-    // Scope pre-check: workspace must have credentials:discover
-    if let Err(e) = require_scope(
-        &state,
-        &auth.pk_hash,
-        "credentials:discover",
-        "credentials.list",
-    )
-    .await
-    {
-        return e;
-    }
-
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
 
     match with_token_refresh(&state, &auth.pk_hash, |token| {
@@ -38,10 +68,14 @@ pub async fn get_credentials(
     })
     .await
     {
-        Ok(creds) => (
-            StatusCode::OK,
-            axum::Json(serde_json::json!({ "data": creds })),
-        ),
+        Ok(creds) => {
+            let entries: Vec<CredentialListEntry> =
+                creds.into_iter().map(CredentialListEntry::from).collect();
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({ "data": entries })),
+            )
+        }
         Err(e) => e,
     }
 }
@@ -59,19 +93,6 @@ pub async fn post_create_credential(
         .get::<AuthenticatedWorkspace>()
         .cloned()
         .unwrap();
-
-    // Scope pre-check: workspace must have credentials:vend (the same scope
-    // the server's agent-store route requires).
-    if let Err(e) = require_scope(
-        &state,
-        &auth.pk_hash,
-        "credentials:vend",
-        "credentials.create",
-    )
-    .await
-    {
-        return e;
-    }
 
     // Read body (cap at 1 MiB — credentials are small).
     let body_bytes = match axum::body::to_bytes(request.into_body(), 1024 * 1024).await {
@@ -105,10 +126,13 @@ pub async fn post_create_credential(
     })
     .await
     {
-        Ok(summary) => (
-            StatusCode::OK,
-            axum::Json(serde_json::json!({ "data": summary })),
-        ),
+        Ok(summary) => {
+            let entry = CredentialListEntry::from(summary);
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({ "data": entry })),
+            )
+        }
         Err(e) => e,
     }
 }

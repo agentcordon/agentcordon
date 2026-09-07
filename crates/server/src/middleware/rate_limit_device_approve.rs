@@ -1,31 +1,25 @@
-//! In-memory per-(IP,user) rate limiter for `/oauth/device/approve` and
-//! `/oauth/device/deny`.
+//! In-memory per-(address, session) rate limiter for guessing device user
+//! codes: `POST /oauth/device/approve`, `POST /oauth/device/deny`, and the
+//! browser form `POST /activate`.
 //!
 //! Caps attempts at 10 per 60-second sliding window per key; the 11th
 //! attempt is short-circuited with `429 Too Many Requests` carrying a
-//! `Retry-After` header. Only 4xx responses are counted — a successful
-//! 200 approval does not consume budget.
+//! `Retry-After` header. A failed attempt is any 4xx response, or a
+//! redirect to anywhere but the success page (the browser form answers a
+//! bad or expired code with a redirect). A successful approval does not
+//! consume budget.
 //!
-//! **Key composition**: `format!("{ip}|{user_fp}")`. The IP comes from
-//! `X-Forwarded-For` if present (dev-server sits behind no proxy so
-//! `ConnectInfo` collapses every caller to 127.0.0.1), else from the
-//! `ConnectInfo<SocketAddr>` extension if the server was bound with
-//! connect-info, else the literal `"unknown"`. The user fingerprint is
-//! a SHA-256 hash of the session cookie (not the userId, which we would
-//! have to do a DB round-trip to resolve). This satisfies the "include
-//! user_id so a malicious user cannot DoS other users from the same IP"
-//! requirement because session cookies are per-user.
-//!
-//! NOTE: `X-Forwarded-For` is trusted unconditionally here because the
-//! local/dev deployment has no proxy. A production deployment must gate
-//! this behind a trusted-proxy allowlist before relying on the header.
+//! **Key composition**: `format!("{addr}|{user_fp}")`. The address comes
+//! from [`ClientAddr`]: the listener's peer address, or `X-Forwarded-For`
+//! only when the deployment trusts its proxy. The user fingerprint is a
+//! SHA-256 hash of the session cookie, so one user cannot spend another's
+//! budget from the same address.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
-    extract::{ConnectInfo, Request, State},
+    extract::{Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -33,6 +27,8 @@ use axum::{
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 
+use crate::extractors::ClientAddr;
+use crate::response::OAuthError;
 use crate::state::AppState;
 use crate::utils::cookies::parse_cookie;
 
@@ -102,20 +98,6 @@ impl DeviceApproveRateLimiter {
     }
 }
 
-fn extract_client_ip(headers: &HeaderMap, connect_info: Option<SocketAddr>) -> String {
-    if let Some(raw) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(first) = raw.split(',').next() {
-            let trimmed = first.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
-        }
-    }
-    connect_info
-        .map(|a| a.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
 fn extract_user_fingerprint(headers: &HeaderMap) -> String {
     let cookie_header = match headers
         .get(axum::http::header::COOKIE)
@@ -141,25 +123,20 @@ pub async fn rate_limit_device_approve(
     request: Request,
     next: Next,
 ) -> Response {
-    let limiter = state.device_approve_limiter.clone();
-    let headers = request.headers().clone();
-    let connect_info = request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0);
-    let ip = extract_client_ip(&headers, connect_info);
-    let user_fp = extract_user_fingerprint(&headers);
-    let key = format!("{ip}|{user_fp}");
+    let limiter = state.limits.device_approve.clone();
+    let (parts, body) = request.into_parts();
+    let ClientAddr(addr) = ClientAddr::resolve(&parts, state.config.trust_forwarded_headers);
+    let user_fp = extract_user_fingerprint(&parts.headers);
+    let key = format!("{addr}|{user_fp}");
+    let request = Request::from_parts(parts, body);
 
     if let Some(retry_after) = limiter.check(&key) {
-        let mut resp = (
+        let mut resp = OAuthError::new(
             StatusCode::TOO_MANY_REQUESTS,
-            axum::Json(serde_json::json!({
-                "error": "too_many_requests",
-                "error_description": "too many device approval attempts; retry later",
-            })),
+            "too_many_requests",
+            "too many device approval attempts; retry later",
         )
-            .into_response();
+        .into_response();
         if let Ok(v) = HeaderValue::from_str(&retry_after.to_string()) {
             resp.headers_mut().insert("retry-after", v);
         }
@@ -167,10 +144,29 @@ pub async fn rate_limit_device_approve(
     }
 
     let response = next.run(request).await;
-    if response.status().is_client_error() {
+    if is_failed_attempt(&response) {
         limiter.record_failure(&key);
     }
     response
+}
+
+/// A 4xx, or a redirect to anywhere but the success page. The JSON routes
+/// answer a bad code with 4xx; the browser form redirects to an
+/// expired/denied page instead.
+fn is_failed_attempt(response: &Response) -> bool {
+    let status = response.status();
+    if status.is_client_error() {
+        return true;
+    }
+    if status.is_redirection() {
+        let location = response
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        return location != "/activate/success";
+    }
+    false
 }
 
 #[cfg(test)]
@@ -203,29 +199,5 @@ mod tests {
         }
         assert!(limiter.check("a").is_some());
         assert!(limiter.check("b").is_none());
-    }
-
-    #[test]
-    fn ip_from_xff_takes_precedence() {
-        let mut h = HeaderMap::new();
-        h.insert(
-            "x-forwarded-for",
-            HeaderValue::from_static("203.0.113.7, 10.0.0.1"),
-        );
-        let ci = "127.0.0.1:1234".parse::<SocketAddr>().ok();
-        assert_eq!(extract_client_ip(&h, ci), "203.0.113.7");
-    }
-
-    #[test]
-    fn ip_falls_back_to_connect_info() {
-        let h = HeaderMap::new();
-        let ci = "10.1.2.3:9999".parse::<SocketAddr>().ok();
-        assert_eq!(extract_client_ip(&h, ci), "10.1.2.3");
-    }
-
-    #[test]
-    fn ip_falls_back_to_unknown() {
-        let h = HeaderMap::new();
-        assert_eq!(extract_client_ip(&h, None), "unknown");
     }
 }

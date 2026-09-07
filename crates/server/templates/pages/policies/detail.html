@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Security Policy — Agent Cordon{% endblock %}
+{% block title %}Policy — Agent Cordon{% endblock %}
 {% block content %}
-<div x-data="policyDetailPage()" x-init="init()">
-    <a href="/security" class="back-link">&larr; Security</a>
-    <h2 class="page-title">Security Policy Details</h2>
+<div x-data="policyDetailPage()">
+    <a href="/security" class="back-link">&larr; Policies</a>
+    <h2 class="page-title">Policy Details</h2>
     <div class="content-body">
         <div x-show="loading" class="page-loader">
             <div class="page-loader-dots"><span class="page-loader-dot"></span><span class="page-loader-dot"></span><span class="page-loader-dot"></span></div>
@@ -13,18 +13,24 @@
         <div x-show="accessDenied && !loading" class="empty-state">
             <h3>Access Denied</h3>
             <p>You don't have permission to view this policy.</p>
-            <a href="/security" class="btn btn-secondary">Back to Security</a>
+            <a href="/security" class="btn btn-secondary">Back to Policies</a>
         </div>
 
         <div x-show="notFound && !loading && !accessDenied" class="empty-state">
             <h3>Policy not found</h3>
-            <a href="/security" class="btn btn-primary">Back to Security</a>
+            <a href="/security" class="btn btn-primary">Back to Policies</a>
         </div>
 
         <div x-show="policy && !loading" class="detail-card detail-card-narrow">
             <div class="detail-header">
                 <template x-if="!editing">
-                    <h3 x-text="policy && policy.name"></h3>
+                    <h3>
+                        <span x-text="policy && policy.name"></span>
+                        <span x-show="isLastEnabled" class="pill pill-warn pill-sm policy-last-enabled-pill"
+                              :title="lockoutReason">last enabled policy</span>
+                        <span x-show="isBuiltInDefault" class="pill pill-scope pill-sm policy-last-enabled-pill"
+                              title="Seeded from the shipped default.cedar on first boot. It can be edited, and disabled once another policy is enabled, but not deleted.">built-in default</span>
+                    </h3>
                 </template>
                 <template x-if="editing">
                     <input x-model="editForm.name" class="form-input inline-edit-title" placeholder="Policy name">
@@ -32,8 +38,39 @@
                 <div class="detail-header-actions">
                     <template x-if="!editing">
                         <div class="inline-actions-group">
+                            <!--
+                              Enable/Disable is a secondary button in a detail
+                              header and nowhere else: not a row button on the
+                              list, not a checkbox behind Edit → Save
+                              (uat/artifacts/reviews/DESIGN-REVIEW.md §2.1). Disabling the only
+                              enabled policy is the same lockout as deleting
+                              it, so the control says so before the click
+                              rather than the API answering 409 after it.
+                            -->
+                            <button class="btn btn-secondary btn-sm policy-toggle-btn"
+                                    data-testid="policy-toggle"
+                                    :disabled="isLastEnabled"
+                                    :title="isLastEnabled ? lockoutReason : null"
+                                    @click="askToggle()"
+                                    x-text="policy && policy.enabled ? 'Disable' : 'Enable'"></button>
                             <button class="btn btn-secondary btn-sm" @click="startEdit()">Edit</button>
-                            <button class="btn btn-danger btn-sm" @click="openDelete()">Delete</button>
+                            <div class="overflow-menu" x-data="acOverflowMenu()"
+                                 @click.outside="close()" @keydown.escape.stop="close()">
+                                <button type="button" class="btn btn-secondary btn-sm overflow-menu-btn"
+                                        aria-haspopup="menu" :aria-expanded="open ? 'true' : 'false'"
+                                        aria-label="More actions" title="More actions" @click="toggle()"><svg class="icon" aria-hidden="true"><use href="/icons.svg#more-horizontal"></use></svg><span class="overflow-menu-btn-label" aria-hidden="true">More</span></button>
+                                <div class="overflow-menu-items" role="menu" x-ref="acMenu"
+                                     x-show="open" x-cloak>
+                                    <!-- The API refuses both cases with 409; the control says
+                                         so before the click (UI review B1). -->
+                                    <button type="button" role="menuitem"
+                                            data-testid="policy-delete"
+                                            class="overflow-menu-item overflow-menu-item-danger policy-delete-btn"
+                                            :disabled="!!deleteRefusal"
+                                            :title="deleteRefusal || null"
+                                            @click="close(); openDelete()">Delete</button>
+                                </div>
+                            </div>
                         </div>
                     </template>
                     <template x-if="editing">
@@ -48,6 +85,20 @@
                     </template>
                 </div>
             </div>
+            <!--
+              Created / Updated / ID were three titled rows competing with the
+              policy itself. One small line under the title says the same
+              (uat/artifacts/reviews/DESIGN-REVIEW.md §1.11).
+            -->
+            <p class="detail-meta-line">
+                <span>Created <span x-text="formatDateTime(policy && policy.created_at)"></span></span>
+                <span>Updated <span x-text="formatDateTime(policy && policy.updated_at)"></span></span>
+                <span class="mono-sm detail-meta-id" x-text="policy && policy.id"></span>
+                <button type="button" class="btn-icon btn-icon-xs detail-meta-copy"
+                        @click="copyId()" aria-label="Copy policy ID" title="Copy policy ID">
+                    <svg class="icon" aria-hidden="true"><use href="/icons.svg#copy"></use></svg>
+                </button>
+            </p>
             <div class="detail-body">
                 <div class="detail-row">
                     <div class="detail-label">Description</div>
@@ -56,17 +107,18 @@
                         <input x-model="editForm.description" class="form-input inline-edit-input" placeholder="Optional description">
                     </div>
                 </div>
+                <!--
+                  Status is read here and changed in the header. It used to be
+                  an edit-mode checkbox as well, which meant the same state had
+                  two affordances and the header's was on the list page
+                  (uat/artifacts/reviews/DESIGN-REVIEW.md §1.11).
+                -->
                 <div class="detail-row">
                     <div class="detail-label">Status</div>
-                    <div class="detail-value" x-show="!editing">
+                    <div class="detail-value">
                         <span class="pill" :class="policy && policy.enabled ? 'pill-ok' : 'pill-warn'"
                               x-text="policy && policy.enabled ? 'Enabled' : 'Disabled'"></span>
-                    </div>
-                    <div class="detail-value" x-show="editing">
-                        <label class="checkbox-label">
-                            <input type="checkbox" x-model="editForm.enabled" class="checkbox-input">
-                            <span x-text="editForm.enabled ? 'Enabled' : 'Disabled'"></span>
-                        </label>
+                        <div x-show="isLastEnabled" class="policy-lockout-hint" x-text="lockoutReason"></div>
                     </div>
                 </div>
                 <!-- Read-only statement view with per-statement UI/Cedar toggle -->
@@ -135,27 +187,97 @@
                     </div>
                 </div>
                 {% include "partials/policy_edit_statements.html" %}
-                <div class="detail-row">
-                    <div class="detail-label">Created</div>
-                    <div class="detail-value timestamp" x-text="formatDateTime(policy && policy.created_at)"></div>
+
+                <!--
+                  Cedar validation detail. The API answers 400 with the
+                  validator's own messages under `error.details.errors`; the
+                  toast used to be the only thing that said "Policy validation
+                  failed" and the messages were dropped (UI review M9).
+                -->
+                <div class="detail-row" x-show="editing && cedarErrors.length > 0">
+                    <div class="detail-label">Validation</div>
+                    <div class="detail-value">
+                        <div class="cedar-error-list" id="policy-cedar-errors" role="alert" aria-live="assertive">
+                            <template x-for="(err, i) in cedarErrors" :key="i">
+                                <div class="cedar-error-item">
+                                    <span class="pill pill-bad pill-sm" x-text="err.severity || 'error'"></span>
+                                    <span class="cedar-error-message" x-text="err.message"></span>
+                                    <span class="cedar-error-where" x-show="err.policy_index !== null && err.policy_index !== undefined"
+                                          x-text="'statement ' + ((err.policy_index || 0) + 1)"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
                 </div>
-                <div class="detail-row">
-                    <div class="detail-label">Updated</div>
-                    <div class="detail-value timestamp" x-text="formatDateTime(policy && policy.updated_at)"></div>
-                </div>
-                <div class="detail-row">
-                    <div class="detail-label">ID</div>
-                    <div class="detail-value mono-sm" x-text="policy && policy.id"></div>
-                </div>
+
             </div>
         </div>
 
         {% include "partials/policy_affected_principals.html" %}
 
-        {% include "partials/policy_tester.html" %}
+        <!--
+          One tester. The card that used to sit here could say "a User with
+          role operator" but never "on this credential"; the page could say
+          "on this credential" but never "a User". They merged into the page,
+          and this is the way in, prefilled with the policy being read
+          (uat/artifacts/reviews/DESIGN-REVIEW.md §1.11).
+        -->
+        <p x-show="policy && !loading" class="policy-tester-link">
+            <a :href="'/security/tester?policy=' + policy.id">Test this policy &rarr;</a>
+            <span class="text-sm opacity-muted">See what the saved policies decide for a real principal and resource.</span>
+        </p>
     </div>
 
-    {% include "partials/delete_modal.html" %}
+    <!--
+      Not the shared delete modal: "Are you sure? This cannot be undone" was
+      exactly the copy that let an admin remove the whole authorization model
+      (UI review B1). Deleting a policy takes what it permits away from every
+      principal at once, so the dialog names that instead.
+    -->
+    <div x-show="deleteModal" x-cloak x-transition.opacity.duration.150ms
+         class="modal-overlay"
+         @click.self="deleteModal = false"
+         @keydown.escape.window="deleteModal && (deleteModal = false)"
+         role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
+        <div class="modal-card">
+            <h3 id="delete-modal-title">Delete <span x-text="deleteTargetName"></span>?</h3>
+            <p class="policy-delete-consequence">
+                Whatever <strong x-text="deleteTargetName"></strong> permits stops being permitted the moment it is deleted —
+                for every operator, viewer and workspace it applies to. Deleted policies are not recoverable from the console.
+            </p>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" @click="deleteModal = false">Cancel</button>
+                <button type="button" class="btn btn-danger" @click="confirmDelete()">Delete policy</button>
+            </div>
+        </div>
+    </div>
+
+    <!--
+      Disabling a policy takes it out of the evaluated set at once, so the
+      confirmation names the consequence instead of asking "are you sure?".
+      The dialog moved here with the button it belongs to.
+    -->
+    <div x-show="toggleModal" x-cloak x-transition.opacity.duration.150ms
+         class="modal-overlay"
+         @click.self="toggleModal = false"
+         @keydown.escape.window="toggleModal && (toggleModal = false)"
+         role="dialog" aria-modal="true" aria-labelledby="policy-toggle-title">
+        <div class="modal-card">
+            <h3 id="policy-toggle-title" x-text="(policy && policy.enabled ? 'Disable ' : 'Enable ') + (policy ? policy.name : '')"></h3>
+            <p x-show="policy && policy.enabled" class="policy-toggle-consequence">
+                Disabling <strong x-text="policy ? policy.name : ''"></strong> takes it out of the evaluated policy set immediately.
+                Whatever it permits — for operators, viewers and workspaces — stops being permitted.
+            </p>
+            <p x-show="policy && !policy.enabled">
+                Enabling <strong x-text="policy ? policy.name : ''"></strong> puts it into the evaluated policy set immediately.
+            </p>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" @click="toggleModal = false">Cancel</button>
+                <button type="button" class="btn btn-primary" @click="confirmToggle()" :disabled="toggling"
+                        x-text="policy && policy.enabled ? 'Disable policy' : 'Enable policy'"></button>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -240,6 +362,36 @@
 .cedar-str { color: #fbbf24; }
 .cedar-comment { color: #6b7280; font-style: italic; }
 .cedar-op { color: #f472b6; }
+
+/* Last-enabled / built-in markers and the Cedar validator's messages. */
+.policy-last-enabled-pill { margin-left: 8px; cursor: help; vertical-align: middle; }
+.policy-delete-btn[disabled] { cursor: not-allowed; }
+.policy-lockout-hint {
+    margin-top: 6px;
+    font-size: 0.8rem;
+    line-height: 1.45;
+    color: var(--danger);
+}
+.policy-delete-consequence { color: var(--danger); font-size: 0.85rem; line-height: 1.5; }
+.cedar-error-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid var(--danger);
+    border-radius: 8px;
+    background: var(--danger-bg);
+}
+.cedar-error-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+.cedar-error-message { font-family: var(--font-mono, monospace); }
+.cedar-error-where { opacity: 0.7; }
 </style>
 <script>
 function policyDetailPage() {
@@ -259,19 +411,16 @@ function policyDetailPage() {
         schemaActions: [],
         deleteModal: false,
         deleteTargetName: '',
+        /* How many policies the engine would load right now, for the
+           last-enabled guard. -1 until the list has been read. */
+        enabledCount: -1,
+        /* The validator's own messages for the Cedar text being saved. */
+        cedarErrors: [],
         affectedPrincipals: { loading: false, loaded: false, list: [] },
-        tester: {
-            principalType: 'Workspace',
-            principalId: '',
-            action: 'access',
-            resourceType: 'Credential',
-            tags: '',
-            role: '',
-            enabled: true,
-            testing: false,
-            result: null,
-            diagnostics: [],
-        },
+        /* Disabling a policy takes it out of the evaluated set at once, so it
+           is confirmed with the consequence, not "are you sure?". */
+        toggleModal: false,
+        toggling: false,
 
         async init() {
             var id = '{{ policy_id }}';
@@ -280,7 +429,7 @@ function policyDetailPage() {
                     this.parsedStatements = this.parseStatementsWithCedar(p.cedar_policy);
                 }
             });
-            await Promise.all([this.loadPolicy(id), this.loadSchema()]);
+            await Promise.all([this.loadPolicy(id), this.loadSchema(), this.loadEnabledCount()]);
             // Scroll to statement if URL has fragment
             this.$nextTick(() => {
                 var hash = window.location.hash;
@@ -297,7 +446,7 @@ function policyDetailPage() {
 
         async loadPolicy(id) {
             try {
-                var resp = await fetch('/api/v1/policies/' + id);
+                var resp = await AC.fetch('/api/v1/policies/' + id);
                 if (resp.ok) {
                     var data = await resp.json();
                     this.policy = data.data || data;
@@ -310,9 +459,58 @@ function policyDetailPage() {
             this.loading = false;
         },
 
+        /*
+         * The last-enabled guard is a property of the whole policy set, not of
+         * this row, so the detail page reads the list too. A read that fails
+         * leaves enabledCount at -1, which disables nothing: the API still
+         * refuses with 409 and the toast carries the reason.
+         */
+        async loadEnabledCount() {
+            try {
+                var resp = await AC.fetch('/api/v1/policies');
+                if (!resp.ok) return;
+                var data = await resp.json();
+                var rows = data.data || [];
+                // Generated grant/deny rows are excluded, as the API excludes
+                // them: each permits one workspace one action, never a person
+                // a page.
+                this.enabledCount = rows.filter(function(p) {
+                    var name = p.name || '';
+                    return !!p.enabled && !name.startsWith('grant:') && !name.startsWith('deny:');
+                }).length;
+            } catch(e) { /* non-critical */ }
+        },
+
+        /* True when this policy is the only authored one the engine would load. */
+        get isLastEnabled() {
+            var name = (this.policy && this.policy.name) || '';
+            if (name.startsWith('grant:') || name.startsWith('deny:')) return false;
+            return !!(this.policy && this.policy.enabled) && this.enabledCount === 1;
+        },
+
+        /* The seeded policy: editable and disablable, never deletable. */
+        get isBuiltInDefault() {
+            return !!(this.policy && this.policy.name === 'default');
+        },
+
+        get lockoutReason() {
+            return 'This is the last enabled policy. With none enabled every operator, viewer and ' +
+                   'workspace is refused and only the root user can still sign in. Enable another policy first.';
+        },
+
+        /* Empty when Delete is allowed; otherwise why the API would refuse. */
+        get deleteRefusal() {
+            if (this.isBuiltInDefault) {
+                return "'default' is the built-in default policy and cannot be deleted. " +
+                       'Edit it, or disable it once another policy is enabled.';
+            }
+            if (this.isLastEnabled) return this.lockoutReason;
+            return '';
+        },
+
         async loadSchema() {
             try {
-                var resp = await fetch('/api/v1/policies/schema/reference');
+                var resp = await AC.fetch('/api/v1/policies/schema/reference');
                 if (resp.ok) {
                     var data = await resp.json();
                     this.schemaActions = (data.data && data.data.actions) || data.actions || [];
@@ -358,10 +556,11 @@ function policyDetailPage() {
             this.editing = true;
         },
 
-        cancelEdit() { this.editing = false; },
+        cancelEdit() { this.editing = false; this.cedarErrors = []; },
 
         async saveEdit() {
             this.editSubmitting = true;
+            this.cedarErrors = [];
             if (!this.rawMode) {
                 this.editForm.cedar_policy = this.statementsToCedar();
             }
@@ -372,7 +571,7 @@ function policyDetailPage() {
                 enabled: this.editForm.enabled
             };
             try {
-                var resp = await fetch('/api/v1/policies/' + this.policy.id, {
+                var resp = await AC.fetch('/api/v1/policies/' + this.policy.id, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                     body: JSON.stringify(body)
@@ -381,13 +580,16 @@ function policyDetailPage() {
                     var data = await resp.json();
                     this.policy = data.data || data;
                     this.editing = false;
-                    window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Policy saved', type: 'success' } }));
+                    showToast('Policy saved', 'success');
                 } else {
-                    var err = await resp.json();
-                    window.dispatchEvent(new CustomEvent('toast', { detail: { message: err.error?.message || 'Failed to save policy', type: 'error' } }));
+                    var err = await resp.json().catch(function() { return {}; });
+                    // Cedar validation detail, when the API sent any, is
+                    // rendered under the editor rather than lost in a toast.
+                    this.cedarErrors = (err.error && err.error.details && err.error.details.errors) || [];
+                    showToast(err.error?.message || 'Failed to save policy', 'error');
                 }
             } catch(e) {
-                window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Network error', type: 'error' } }));
+                showToast('Network error', 'error');
             }
             this.editSubmitting = false;
         },
@@ -462,62 +664,75 @@ function policyDetailPage() {
             this.editStatements = [...this.editStatements];
         },
 
+        askToggle() {
+            if (this.isLastEnabled) {
+                showToast(this.lockoutReason, 'error');
+                return;
+            }
+            this.toggleModal = true;
+        },
+
+        async confirmToggle() {
+            if (this.toggling) return;
+            this.toggling = true;
+            var next = !this.policy.enabled;
+            try {
+                var resp = await AC.fetch('/api/v1/policies/' + this.policy.id, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ enabled: next }),
+                });
+                if (resp.ok) {
+                    this.policy.enabled = next;
+                    this.editForm.enabled = next;
+                    await this.loadEnabledCount();
+                    showToast('Policy ' + (next ? 'enabled' : 'disabled'), 'success');
+                } else {
+                    // A 409 here is the lockout refusal and carries the reason;
+                    // AC.reportError quotes the server's own sentence.
+                    await AC.reportError(resp, 'Failed to update policy');
+                }
+            } catch(e) { showToast('Failed to update policy', 'error'); }
+            this.toggling = false;
+            this.toggleModal = false;
+        },
+
+        async copyId() {
+            if (!this.policy) return;
+            try {
+                await navigator.clipboard.writeText(this.policy.id);
+                showToast('Policy ID copied', 'success');
+            } catch(e) { showToast('Could not copy the policy ID', 'error'); }
+        },
+
         openDelete() {
+            // Belt and braces: the button is disabled, but a stale
+            // enabledCount must not open a dialog the API will refuse.
+            if (this.deleteRefusal) {
+                showToast(this.deleteRefusal, 'error');
+                return;
+            }
             this.deleteTargetName = this.policy.name;
             this.deleteModal = true;
         },
 
         async confirmDelete() {
             try {
-                var resp = await fetch('/api/v1/policies/' + this.policy.id, {
+                var resp = await AC.fetch('/api/v1/policies/' + this.policy.id, {
                     method: 'DELETE',
                     headers: { 'X-CSRF-Token': getCsrfToken() }
                 });
                 if (resp.ok) {
                     window.location.href = '/security';
                 } else {
-                    window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Failed to delete policy', type: 'error' } }));
+                    // A 409 here is the lockout or built-in refusal and says
+                    // why; AC.reportError quotes the server's own sentence.
+                    await AC.reportError(resp, 'Failed to delete policy');
                 }
             } catch(e) {
-                window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Network error', type: 'error' } }));
+                showToast('Network error', 'error');
             }
             this.deleteModal = false;
-        },
-
-        async testPolicy() {
-            this.tester.testing = true;
-            this.tester.result = null;
-            this.tester.diagnostics = [];
-            try {
-                var resp = await fetch('/api/v1/policies/test', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
-                    body: JSON.stringify({
-                        principal: {
-                            type: this.tester.principalType,
-                            id: this.tester.principalId || 'test',
-                            attributes: Object.assign(
-                                { enabled: this.tester.enabled },
-                                this.tester.tags.trim() ? { tags: this.tester.tags.split(',').map(function(t) { return t.trim(); }).filter(Boolean) } : {},
-                                this.tester.principalType === 'User' && this.tester.role ? { role: this.tester.role } : {}
-                            )
-                        },
-                        action: this.tester.action,
-                        resource: { type: this.tester.resourceType, attributes: {} },
-                    }),
-                });
-                if (resp.ok) {
-                    var json = await resp.json();
-                    this.tester.result = json.data.decision;
-                    this.tester.diagnostics = json.data.diagnostic_details || json.data.diagnostics || [];
-                } else {
-                    var err = await resp.json();
-                    window.dispatchEvent(new CustomEvent('toast', { detail: { message: err.error?.message || 'Test failed', type: 'error' } }));
-                }
-            } catch(e) {
-                window.dispatchEvent(new CustomEvent('toast', { detail: { message: 'Network error', type: 'error' } }));
-            }
-            this.tester.testing = false;
         },
 
         async loadAffectedPrincipals() {
@@ -525,14 +740,14 @@ function policyDetailPage() {
             var policyName = this.policy.name;
             var policyId = this.policy.id;
             try {
-                var resp = await fetch('/api/v1/credentials');
+                var resp = await AC.fetch('/api/v1/credentials');
                 if (!resp.ok) { this.affectedPrincipals.loading = false; this.affectedPrincipals.loaded = true; return; }
                 var credsData = await resp.json();
                 var creds = credsData.data || credsData || [];
                 if (creds.length === 0) { this.affectedPrincipals.loading = false; this.affectedPrincipals.loaded = true; return; }
                 var affectedMap = {};
                 for (var ci = 0; ci < creds.length; ci++) {
-                    var rsopResp = await fetch('/api/v1/policies/rsop', {
+                    var rsopResp = await AC.fetch('/api/v1/policies/rsop', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
                         body: JSON.stringify({ resource_type: 'Credential', resource_id: creds[ci].id })
@@ -588,6 +803,7 @@ function policyDetailPage() {
                 'view_audit': 'View audit log',
                 'rotate_key': 'Rotate API key',
                 'manage_oidc_providers': 'Manage OIDC providers',
+                'manage_oauth_provider_clients': 'Manage OAuth provider clients',
                 'manage_vaults': 'Manage vaults',
                 'rotate_encryption_key': 'Rotate encryption key',
                 'manage_mcp_servers': 'Manage MCP servers',
@@ -696,59 +912,6 @@ function policyDetailPage() {
                     resourceLabel: 'Any resource',
                     conditionLabel: '',
                     rawCedar: text,
-                });
-            }
-            return statements;
-        },
-
-        parseReadableStatements(text) {
-            if (!text) return [];
-            var self = this;
-            var statements = [];
-            var re = /(?:\/\/[^\n]*\n\s*)*((?:permit|forbid)\s*\([\s\S]*?;)/g;
-            var match;
-            while ((match = re.exec(text)) !== null) {
-                var code = match[1].trim();
-                var effect = code.startsWith('forbid') ? 'forbid' : 'permit';
-                var principalMatch = code.match(/principal\s+is\s+AgentCordon::(\w+)/);
-                var actionMatch = code.match(/action\s*==\s*AgentCordon::Action::"([^"]+)"/);
-                var actionsMatch = code.match(/action\s+in\s*\[([\s\S]*?)\]/);
-                var resourceMatch = code.match(/resource\s+is\s+AgentCordon::(\w+)/);
-                var conditionMatch = code.match(/when\s*\{([\s\S]*?)\}\s*;/);
-
-                var principalType = principalMatch ? principalMatch[1] : '';
-                var actionName = actionMatch ? actionMatch[1] : '';
-                var resourceType = resourceMatch ? resourceMatch[1] : '';
-                var condition = conditionMatch ? conditionMatch[1].trim() : '';
-
-                var actionLabel = 'Any action';
-                if (actionName) {
-                    actionLabel = self.readableActionLabel(actionName);
-                } else if (actionsMatch) {
-                    var acts = actionsMatch[1].match(/"([^"]+)"/g);
-                    if (acts) {
-                        actionLabel = acts.map(function(a) {
-                            return self.readableActionLabel(a.replace(/"/g, ''));
-                        }).join(', ');
-                    }
-                }
-
-                statements.push({
-                    effect: effect,
-                    principalLabel: self.readablePrincipalLabel(principalType),
-                    actionLabel: actionLabel,
-                    resourceLabel: self.readableResourceLabel(resourceType),
-                    conditionLabel: self.readableConditionLabel(condition),
-                });
-            }
-            if (statements.length === 0 && text.trim().length > 0) {
-                var eff = text.includes('forbid') ? 'forbid' : 'permit';
-                statements.push({
-                    effect: eff,
-                    principalLabel: 'Anyone (any principal)',
-                    actionLabel: 'Any action',
-                    resourceLabel: 'Any resource',
-                    conditionLabel: '',
                 });
             }
             return statements;

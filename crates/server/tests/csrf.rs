@@ -20,7 +20,6 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use agent_cordon_core::auth::jwt::JwtIssuer;
 use agent_cordon_core::crypto::aes_gcm::AesGcmEncryptor;
 use agent_cordon_core::crypto::password::hash_password;
 use agent_cordon_core::domain::user::{User, UserId, UserRole};
@@ -42,14 +41,9 @@ const TEST_PASSWORD: &str = "strong-password-123!";
 // Test helpers
 // ---------------------------------------------------------------------------
 
-async fn setup_test_app() -> (
-    Router,
-    Arc<dyn Store + Send + Sync>,
-    Arc<AesGcmEncryptor>,
-    Arc<JwtIssuer>,
-) {
+async fn setup_test_app() -> (Router, Arc<dyn Store + Send + Sync>, Arc<AesGcmEncryptor>) {
     let ctx = TestAppBuilder::new().build().await;
-    (ctx.app, ctx.store, ctx.encryptor, ctx.jwt_issuer)
+    (ctx.app, ctx.store, ctx.encryptor)
 }
 
 async fn create_user_in_db(
@@ -84,7 +78,6 @@ async fn create_agent_in_db(
     let agent = Agent {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,
@@ -193,7 +186,7 @@ async fn send_request(
 
 #[tokio::test]
 async fn test_login_sets_csrf_cookie() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _user = create_user_in_db(&*store, "alice", TEST_PASSWORD, UserRole::Admin).await;
 
     let (status, body, headers) = send_request(
@@ -263,7 +256,7 @@ async fn test_login_sets_csrf_cookie() {
 
 #[tokio::test]
 async fn test_logout_clears_csrf_cookie() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _user = create_user_in_db(&*store, "alice", TEST_PASSWORD, UserRole::Admin).await;
 
     let (session_cookie, csrf_token) = login_user(&app, "alice", TEST_PASSWORD).await;
@@ -304,7 +297,7 @@ async fn test_logout_clears_csrf_cookie() {
 
 #[tokio::test]
 async fn test_post_with_valid_csrf_token_succeeds() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let (session_cookie, csrf_token) = login_user(&app, "admin", TEST_PASSWORD).await;
 
@@ -338,7 +331,7 @@ async fn test_post_with_valid_csrf_token_succeeds() {
 
 #[tokio::test]
 async fn test_post_without_csrf_token_returns_403() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let (session_cookie, csrf_token) = login_user(&app, "admin", TEST_PASSWORD).await;
 
@@ -374,7 +367,7 @@ async fn test_post_without_csrf_token_returns_403() {
 
 #[tokio::test]
 async fn test_post_with_wrong_csrf_token_returns_403() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let (session_cookie, csrf_token) = login_user(&app, "admin", TEST_PASSWORD).await;
 
@@ -410,7 +403,7 @@ async fn test_post_with_wrong_csrf_token_returns_403() {
 
 #[tokio::test]
 async fn test_post_with_csrf_header_but_no_csrf_cookie_returns_403() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let (session_cookie, csrf_token) = login_user(&app, "admin", TEST_PASSWORD).await;
 
@@ -444,7 +437,7 @@ async fn test_post_with_csrf_header_but_no_csrf_cookie_returns_403() {
 
 #[tokio::test]
 async fn test_get_request_works_without_csrf_token() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let (session_cookie, _csrf_token) = login_user(&app, "admin", TEST_PASSWORD).await;
 
@@ -512,7 +505,7 @@ async fn test_bearer_auth_works_without_csrf_token() {
 
 #[tokio::test]
 async fn test_login_endpoint_exempt_from_csrf() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _user = create_user_in_db(&*store, "alice", TEST_PASSWORD, UserRole::Admin).await;
 
     // POST to login without any CSRF token — should succeed
@@ -541,7 +534,7 @@ async fn test_login_endpoint_exempt_from_csrf() {
 
 #[tokio::test]
 async fn test_put_without_csrf_returns_403() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let other = create_user_in_db(&*store, "other", TEST_PASSWORD, UserRole::Viewer).await;
     let (session_cookie, csrf_token) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -571,7 +564,7 @@ async fn test_put_without_csrf_returns_403() {
 
 #[tokio::test]
 async fn test_delete_without_csrf_returns_403() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let other = create_user_in_db(&*store, "other", TEST_PASSWORD, UserRole::Viewer).await;
     let (session_cookie, csrf_token) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -601,7 +594,7 @@ async fn test_delete_without_csrf_returns_403() {
 
 #[tokio::test]
 async fn test_put_with_valid_csrf_succeeds() {
-    let (app, store, _enc, _jwt) = setup_test_app().await;
+    let (app, store, _enc) = setup_test_app().await;
     let _admin = create_user_in_db(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let other = create_user_in_db(&*store, "other", TEST_PASSWORD, UserRole::Viewer).await;
     let (session_cookie, csrf_token) = login_user(&app, "admin", TEST_PASSWORD).await;
@@ -634,7 +627,7 @@ async fn test_put_with_valid_csrf_succeeds() {
 
 #[tokio::test]
 async fn test_unauthenticated_post_not_blocked_by_csrf() {
-    let (app, _store, _enc, _jwt) = setup_test_app().await;
+    let (app, _store, _enc) = setup_test_app().await;
 
     // POST to login with wrong credentials — should get 401, not 403
     // (CSRF middleware should let it through since no session cookie)

@@ -5,3 +5,9 @@ target/
 *.db-wal
 .git/
 docker-compose.dev.yml
+# Not part of the image; keeps the build context small.
+uat/
+.claude/
+.scratch/
+.agents/
+tests/

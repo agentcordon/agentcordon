@@ -1,0 +1,10 @@
+# Blocking inside an async runtime pins a worker thread and, under load,
+# stalls every other request on it. The server and broker are async end to
+# end. `Runtime::block_on` is not listed because `#[tokio::main]` and
+# `#[tokio::test]` expand to it; the ways to block from inside a task are.
+disallowed-methods = [
+    { path = "tokio::runtime::Handle::block_on", reason = "do not block an async worker; make the call site async" },
+    { path = "tokio::task::block_in_place", reason = "do not block an async worker; make the call site async" },
+    { path = "futures::executor::block_on", reason = "do not block an async worker; make the call site async" },
+    { path = "std::thread::scope", reason = "audit and side effects go through async store calls, not scoped OS threads" },
+]

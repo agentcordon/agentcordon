@@ -36,6 +36,7 @@ async fn seed_oauth_client(
         client_secret_hash: None,
         workspace_name: workspace.name.clone(),
         public_key_hash: pk_hash,
+        workspace_id: Some(workspace.id.clone()),
         redirect_uris: vec!["http://localhost:9999/callback".to_string()],
         allowed_scopes: vec![
             OAuthScope::CredentialsDiscover,
@@ -286,6 +287,7 @@ async fn delete_consent_revokes_access_and_refresh_tokens() {
 
     let granter_rt = OAuthRefreshToken {
         token_hash: format!("hash-rt-{}", granter.id.0),
+        family_id: format!("hash-rt-{}", granter.id.0),
         client_id: client_id.clone(),
         user_id: granter.id.clone(),
         scopes: vec![OAuthScope::McpInvoke],
@@ -526,7 +528,7 @@ async fn workspace_detail_page_renders_consents_tab() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri(format!("/workspaces/{}/detail-partial", workspace.id.0))
+                .uri(format!("/workspaces/{}", workspace.id.0))
                 .header(header::COOKIE, &full_cookie)
                 .body(Body::empty())
                 .unwrap(),
@@ -544,10 +546,16 @@ async fn workspace_detail_page_renders_consents_tab() {
     )
     .unwrap();
 
+    // The Consents tab merged into the workspace's Access tab, which answers
+    // one question — what can this workspace reach (uat/artifacts/reviews/DESIGN-REVIEW.md §1.8).
     assert!(
-        body.contains(">Consents</button>"),
-        "expected a Consents tab button in detail.html, body length {}",
+        body.contains(">Access</button>"),
+        "expected an Access tab button in detail.html, body length {}",
         body.len()
+    );
+    assert!(
+        body.contains("Consent grants"),
+        "expected the consent-grants section inside the Access tab",
     );
     assert!(
         body.contains("loadConsents()"),

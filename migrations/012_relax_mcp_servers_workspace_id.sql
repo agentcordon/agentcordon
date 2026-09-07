@@ -1,4 +1,12 @@
+-- migration-mode: foreign_keys_off
 -- Relax `mcp_servers.workspace_id` from NOT NULL to nullable.
+--
+-- The first line above tells the migration runner to disable foreign-key
+-- enforcement for this migration and run it as one checked transaction.
+-- Without it, `DROP TABLE mcp_servers` below cascades into
+-- `mcp_server_workspaces` (ON DELETE CASCADE, foreign_keys=ON on every
+-- connection) and deletes every workspace binding. Installs that ran the
+-- unmarked version of this migration are repaired by 013.
 --
 -- Issue #37: the `mcp_server_workspaces` junction table is now the single
 -- source of truth for workspace↔MCP routing (added by migration 010).

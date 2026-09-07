@@ -1,40 +1,177 @@
-/// Minimum credential value length to scan for.
-///
-/// Values shorter than this are skipped to avoid false positives
-/// (e.g., a 2-character credential value would match far too many substrings).
+//! Redaction of injected secrets from upstream responses.
+//!
+//! An upstream that echoes its request (debug endpoints, error pages, some
+//! proxies) would otherwise hand the injected credential straight back to
+//! the caller, defeating the point of brokering it. The scanner knows every
+//! value the broker injected and replaces each occurrence in the response,
+//! including the base64 and percent-encoded forms an echo commonly takes.
+
+use std::borrow::Cow;
+
+use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+use base64::Engine;
+
+/// What a matched secret is replaced with.
+pub const REDACTED: &str = "[REDACTED]";
+
+/// Needles shorter than this are not searched for: a very short value would
+/// match ordinary response text far too often.
 const MIN_SCAN_LENGTH: usize = 4;
 
-/// Scan a response body for leaked credential values.
+/// The set of strings that would betray an injected value.
 ///
-/// Each entry in `credentials` is a `(name, value)` pair. The function checks
-/// whether any credential value appears as a substring in `response_body`.
-///
-/// Returns `Some(credential_name)` for the first leaked credential found, or
-/// `None` if the response is clean.
-///
-/// **Security invariant:** This function never logs, stores, or returns the
-/// credential value itself -- only the name.
-///
-/// Values shorter than `MIN_SCAN_LENGTH` (4 characters) are skipped to
-/// avoid false positives.
-pub fn scan_for_leaked_credentials(
-    response_body: &str,
-    credentials: &[(String, String)],
-) -> Option<String> {
-    if response_body.is_empty() {
-        return None;
+/// **Security invariant:** the scanner never logs or returns a needle; a
+/// caller learns only whether something was redacted.
+#[derive(Debug, Clone)]
+pub struct LeakScanner {
+    needles: Vec<String>,
+}
+
+impl LeakScanner {
+    /// Build a scanner for these injected values. Every value is searched
+    /// for raw and in its standard base64, URL-safe base64, and
+    /// percent-encoded forms.
+    pub fn new<I, S>(values: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut needles: Vec<String> = values
+            .into_iter()
+            .flat_map(|v| encoded_forms(v.as_ref()))
+            .filter(|n| n.len() >= MIN_SCAN_LENGTH)
+            .collect();
+        // Longest first, so a whole header value such as `Bearer <token>` is
+        // replaced in one piece instead of the bare token being carved out
+        // of it, and a padded base64 form wins over its unpadded prefix.
+        needles.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        needles.dedup();
+        Self { needles }
     }
 
-    for (name, value) in credentials {
-        if value.len() < MIN_SCAN_LENGTH {
-            continue;
+    /// Replace every occurrence of every needle. Borrowed when the text was
+    /// clean, owned when something was redacted.
+    pub fn redact<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        let mut out = Cow::Borrowed(text);
+        for needle in &self.needles {
+            if out.contains(needle.as_str()) {
+                out = Cow::Owned(out.replace(needle.as_str(), REDACTED));
+            }
         }
-        if response_body.contains(value.as_str()) {
-            return Some(name.clone());
+        out
+    }
+}
+
+/// Header names an injection computes whose value is **not** secret.
+///
+/// A SigV4 signer emits `host`, `x-amz-date` and, for the S3 family,
+/// `x-amz-content-sha256` alongside the signature. All three are derived
+/// from the request the caller already made — its URL, its clock, its body —
+/// so blanking them protects nothing, and blanking the timestamp actively
+/// misleads: the same date appears inside `credential_scope` in the
+/// `Authorization` value, so a user debugging a signature saw one copy
+/// redacted and one copy intact and concluded the clock was wrong.
+///
+/// Anything not named here is treated as secret, so a transform that invents
+/// a header still fails safe.
+const PUBLIC_INJECTED_HEADERS: [&str; 3] = ["host", "x-amz-date", "x-amz-content-sha256"];
+
+/// Field names inside a structured credential value that are secret on their
+/// own. An AWS credential is a JSON object, and an upstream error page that
+/// quotes just the `secret_access_key` would otherwise slip past a scanner
+/// that only knows the whole object.
+const SECRET_CREDENTIAL_FIELDS: [&str; 10] = [
+    "secret_access_key",
+    "session_token",
+    "aws_session_token",
+    "client_secret",
+    "password",
+    "token",
+    "access_token",
+    "refresh_token",
+    "api_key",
+    "secret",
+];
+
+/// True when this header's injected value carries no secret material.
+fn is_public_injected_header(name: &str) -> bool {
+    PUBLIC_INJECTED_HEADERS
+        .iter()
+        .any(|public| name.eq_ignore_ascii_case(public))
+}
+
+/// The needle set for one credential injection: the credential value, the
+/// secret fields inside it when it is a JSON object, every header value the
+/// transform produced that is not publicly derived (`PUBLIC_INJECTED_HEADERS`),
+/// and every query-parameter value it produced (a query parameter only ever
+/// carries the key itself).
+///
+/// This is the one place that decides what counts as secret, so the proxy
+/// route and the MCP route cannot drift apart.
+pub fn injected_needles<'a>(
+    credential_value: &str,
+    headers: impl IntoIterator<Item = (&'a str, &'a str)>,
+    query_values: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut needles = vec![credential_value.to_string()];
+    needles.extend(secret_fields(credential_value));
+    for (name, value) in headers {
+        if !is_public_injected_header(name) {
+            needles.push(value.to_string());
         }
     }
+    needles.extend(query_values.into_iter().map(str::to_string));
+    needles
+}
 
-    None
+/// The secret-named string fields of a credential value that is a JSON
+/// object. A value that is not such an object contributes nothing.
+fn secret_fields(credential_value: &str) -> Vec<String> {
+    let Ok(serde_json::Value::Object(fields)) =
+        serde_json::from_str::<serde_json::Value>(credential_value)
+    else {
+        return Vec::new();
+    };
+    fields
+        .into_iter()
+        .filter(|(name, _)| {
+            SECRET_CREDENTIAL_FIELDS
+                .iter()
+                .any(|secret| name.eq_ignore_ascii_case(secret))
+        })
+        .filter_map(|(_, value)| match value {
+            serde_json::Value::String(s) => Some(s),
+            _ => None,
+        })
+        .collect()
+}
+
+fn encoded_forms(value: &str) -> Vec<String> {
+    let bytes = value.as_bytes();
+    vec![
+        value.to_string(),
+        STANDARD.encode(bytes),
+        STANDARD_NO_PAD.encode(bytes),
+        URL_SAFE.encode(bytes),
+        URL_SAFE_NO_PAD.encode(bytes),
+        percent_encode(value),
+    ]
+}
+
+/// RFC 3986 percent-encoding of everything but the unreserved set, with
+/// uppercase hex, which is what `urlencoding`, browsers, and most HTTP
+/// clients produce.
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -42,118 +179,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clean_response_returns_none() {
-        let creds = vec![("github-pat".to_string(), "ghp_abc123def456".to_string())];
-        let body = r#"{"status": "ok", "data": "hello world"}"#;
-        assert!(scan_for_leaked_credentials(body, &creds).is_none());
+    fn clean_text_is_borrowed() {
+        let scanner = LeakScanner::new(["ghp_abc123def456"]);
+        let out = scanner.redact(r#"{"status": "ok"}"#);
+        assert!(matches!(out, Cow::Borrowed(_)));
     }
 
     #[test]
-    fn leaked_credential_returns_name() {
-        let creds = vec![("github-pat".to_string(), "ghp_abc123def456".to_string())];
-        let body = r#"{"token": "ghp_abc123def456", "ok": true}"#;
+    fn raw_and_encoded_forms_are_redacted() {
+        let scanner = LeakScanner::new(["Bearer tok/en+1"]);
+        let text = format!(
+            "raw={} std={} url={} pct={}",
+            "Bearer tok/en+1",
+            STANDARD.encode("Bearer tok/en+1"),
+            URL_SAFE_NO_PAD.encode("Bearer tok/en+1"),
+            "Bearer%20tok%2Fen%2B1",
+        );
         assert_eq!(
-            scan_for_leaked_credentials(body, &creds),
-            Some("github-pat".to_string())
+            scanner.redact(&text),
+            "raw=[REDACTED] std=[REDACTED] url=[REDACTED] pct=[REDACTED]"
         );
     }
 
     #[test]
-    fn checks_all_credentials() {
-        let creds = vec![
-            ("safe-one".to_string(), "safe_value_xxxx".to_string()),
-            ("leaked-one".to_string(), "leaked_value_yyyy".to_string()),
-        ];
-        let body = "the response contains leaked_value_yyyy somewhere";
+    fn longer_needle_wins_over_its_substring() {
+        let scanner = LeakScanner::new(["Bearer secret-token", "secret-token"]);
         assert_eq!(
-            scan_for_leaked_credentials(body, &creds),
-            Some("leaked-one".to_string())
+            scanner.redact("auth: Bearer secret-token; again: secret-token"),
+            "auth: [REDACTED]; again: [REDACTED]"
         );
     }
 
     #[test]
-    fn short_values_are_skipped() {
-        // A 3-character value should not trigger a match (MIN_SCAN_LENGTH = 4).
-        let creds = vec![("tiny-cred".to_string(), "abc".to_string())];
-        let body = "abc is everywhere abc abc";
-        assert!(scan_for_leaked_credentials(body, &creds).is_none());
-    }
-
-    #[test]
-    fn four_char_value_is_scanned() {
-        let creds = vec![("short-cred".to_string(), "abcd".to_string())];
-        let body = "found abcd in response";
-        assert_eq!(
-            scan_for_leaked_credentials(body, &creds),
-            Some("short-cred".to_string())
+    fn signing_headers_the_caller_already_knows_are_not_needles() {
+        let needles = injected_needles(
+            "opaque-credential-value",
+            [
+                ("Authorization", "AWS4-HMAC-SHA256 Signature=deadbeefcafe"),
+                ("host", "api.example.com"),
+                ("x-amz-date", "20260906T101112Z"),
+                ("x-amz-content-sha256", "e3b0c44298fc1c149afbf4c8996fb924"),
+            ],
+            [],
         );
+        assert!(needles.contains(&"AWS4-HMAC-SHA256 Signature=deadbeefcafe".to_string()));
+        assert!(!needles.iter().any(|n| n == "api.example.com"));
+        assert!(!needles.iter().any(|n| n == "20260906T101112Z"));
+        assert!(!needles
+            .iter()
+            .any(|n| n == "e3b0c44298fc1c149afbf4c8996fb924"));
     }
 
     #[test]
-    fn empty_response_body_returns_none() {
-        let creds = vec![("cred".to_string(), "secret_value".to_string())];
-        assert!(scan_for_leaked_credentials("", &creds).is_none());
+    fn secret_fields_inside_a_json_credential_are_needles_on_their_own() {
+        let credential = r#"{"access_key_id":"AKIAEXAMPLE","secret_access_key":"wJalrXUtnFEMI","region":"us-east-1"}"#;
+        let scanner = LeakScanner::new(injected_needles(credential, [], []));
+        let out = scanner.redact("no signer for key wJalrXUtnFEMI in us-east-1");
+        assert_eq!(out, "no signer for key [REDACTED] in us-east-1");
     }
 
     #[test]
-    fn empty_credentials_list_returns_none() {
-        let body = "any body content here";
-        assert!(scan_for_leaked_credentials(body, &[]).is_none());
-    }
-
-    #[test]
-    fn partial_match_does_not_trigger() {
-        // "ghp_abc" is a prefix of the credential value but not the full value.
-        let creds = vec![("github-pat".to_string(), "ghp_abc123def456".to_string())];
-        let body = "partial: ghp_abc";
-        assert!(scan_for_leaked_credentials(body, &creds).is_none());
-    }
-
-    #[test]
-    fn multiple_credentials_first_leaked_is_returned() {
-        let creds = vec![
-            ("cred-a".to_string(), "value_aaaa".to_string()),
-            ("cred-b".to_string(), "value_bbbb".to_string()),
-        ];
-        // Both values appear, but the first one found is returned.
-        let body = "has value_aaaa and value_bbbb";
-        assert_eq!(
-            scan_for_leaked_credentials(body, &creds),
-            Some("cred-a".to_string())
+    fn a_session_token_header_is_still_a_needle() {
+        let needles = injected_needles(
+            "{}",
+            [("x-amz-security-token", "FwoGZXIvYXdzEExampleToken")],
+            [],
         );
+        assert!(needles.contains(&"FwoGZXIvYXdzEExampleToken".to_string()));
     }
 
     #[test]
-    fn credential_value_as_substring_is_detected() {
-        let creds = vec![("api-key".to_string(), "sk_live_12345".to_string())];
-        let body = "prefix_sk_live_12345_suffix";
+    fn short_values_are_not_searched_for() {
+        let scanner = LeakScanner::new(["abc"]);
         assert_eq!(
-            scan_for_leaked_credentials(body, &creds),
-            Some("api-key".to_string())
-        );
-    }
-
-    #[test]
-    fn values_that_are_substrings_of_each_other() {
-        // "abcdef" contains "abcd" as a substring. Both should be checked independently.
-        let creds = vec![
-            ("short".to_string(), "abcd".to_string()),
-            ("long".to_string(), "abcdef".to_string()),
-        ];
-
-        // Body contains only the short value.
-        let body = "found abcd here";
-        assert_eq!(
-            scan_for_leaked_credentials(body, &creds),
-            Some("short".to_string())
-        );
-
-        // Body contains the long value (which also contains the short one).
-        let body2 = "found abcdef here";
-        // Short matches first since it's checked first.
-        assert_eq!(
-            scan_for_leaked_credentials(body2, &creds),
-            Some("short".to_string())
+            scanner.redact("abc is everywhere abc"),
+            "abc is everywhere abc"
         );
     }
 }

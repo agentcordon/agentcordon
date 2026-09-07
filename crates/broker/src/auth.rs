@@ -1,16 +1,30 @@
-//! Ed25519 request signature verification for CLI-to-broker authentication.
+//! Ed25519 request signature verification for CLI-to-broker authentication,
+//! nonce replay refusal, and the optional shared secret for non-loopback
+//! deployments.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
 
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+
+use agentcordon_identity::{canonicalise_path_and_query, VerifyError, MAX_CLOCK_SKEW_SECS};
 
 use crate::state::SharedState;
 
+/// Header carrying the shared secret when the broker is started with
+/// `--shared-secret`.
+pub const SHARED_SECRET_HEADER: &str = "X-AgentCordon-Broker-Secret";
+
 /// Error type for authentication failures.
-#[derive(Debug, thiserror::Error)]
+///
+/// Coarser than [`VerifyError`]: the middleware answers every failure with
+/// the same 401, and callers only distinguish "bad key", "bad signature",
+/// and "bad clock".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AuthError {
     #[error("invalid public key")]
     InvalidPublicKey,
@@ -18,95 +32,163 @@ pub enum AuthError {
     InvalidSignature,
     #[error("timestamp out of range")]
     TimestampOutOfRange,
+    #[error("nonce missing, malformed, or already used")]
+    InvalidNonce,
 }
 
-/// Maximum clock skew tolerance in seconds.
-const MAX_CLOCK_SKEW: i64 = 30;
-
-/// Canonicalise a request path-and-query for inclusion in the signed payload.
-///
-/// Byte-identical copy of the helper in `crates/cli/src/signing.rs` — see
-/// that file for the rationale (no shared workspace crate; two copies are
-/// the explicit design choice).
-///
-/// - Strip a single trailing `/` from `path` unless `path == "/"`.
-/// - If `query` is `Some(non-empty)`, append `"?"` + the query verbatim
-///   (percent-encoding untouched, parameters NOT re-sorted).
-/// - If `query` is `None` or `Some("")`, append nothing.
-fn canonicalise_path_and_query(path: &str, query: Option<&str>) -> String {
-    let trimmed: &str = if path.len() > 1 && path.ends_with('/') {
-        &path[..path.len() - 1]
-    } else {
-        path
-    };
-    match query {
-        Some(q) if !q.is_empty() => format!("{trimmed}?{q}"),
-        _ => trimmed.to_string(),
+impl From<VerifyError> for AuthError {
+    fn from(e: VerifyError) -> Self {
+        match e {
+            VerifyError::InvalidPublicKey => AuthError::InvalidPublicKey,
+            VerifyError::InvalidSignature | VerifyError::SignatureMismatch => {
+                AuthError::InvalidSignature
+            }
+            VerifyError::TimestampOutOfRange => AuthError::TimestampOutOfRange,
+            VerifyError::InvalidNonce => AuthError::InvalidNonce,
+        }
     }
 }
 
-/// Verify an Ed25519 signature over the request payload.
+/// Verify an Ed25519 signature over the request payload against the
+/// broker's clock. The payload, canonical path, and skew window are the
+/// identity crate's; `path` must already be canonical. Replay of the nonce
+/// is checked separately by [`NonceCache`].
 pub fn verify_workspace_signature(
     public_key_hex: &str,
     timestamp_str: &str,
+    nonce: &str,
     signature_hex: &str,
     method: &str,
     path: &str,
     body: &[u8],
 ) -> Result<(), AuthError> {
-    // Parse public key
-    let pk_bytes = hex::decode(public_key_hex).map_err(|_| AuthError::InvalidPublicKey)?;
-    let pk_array: [u8; 32] = pk_bytes
-        .try_into()
-        .map_err(|_| AuthError::InvalidPublicKey)?;
-    let verifying_key =
-        VerifyingKey::from_bytes(&pk_array).map_err(|_| AuthError::InvalidPublicKey)?;
-
-    // Check timestamp
-    let timestamp: i64 = timestamp_str
-        .parse()
-        .map_err(|_| AuthError::TimestampOutOfRange)?;
-    let now = chrono::Utc::now().timestamp();
-    if (now - timestamp).abs() > MAX_CLOCK_SKEW {
-        return Err(AuthError::TimestampOutOfRange);
-    }
-
-    // Parse signature
-    let sig_bytes = hex::decode(signature_hex).map_err(|_| AuthError::InvalidSignature)?;
-    let sig_array: [u8; 64] = sig_bytes
-        .try_into()
-        .map_err(|_| AuthError::InvalidSignature)?;
-    let signature = Signature::from_bytes(&sig_array);
-
-    // Construct signed payload: METHOD \n PATH \n TIMESTAMP \n BODY
-    let mut payload = Vec::new();
-    payload.extend_from_slice(method.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(path.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(timestamp_str.as_bytes());
-    payload.push(b'\n');
-    payload.extend_from_slice(body);
-
-    verifying_key
-        .verify(&payload, &signature)
-        .map_err(|_| AuthError::InvalidSignature)?;
-
-    Ok(())
+    agentcordon_identity::verify_request(
+        public_key_hex,
+        timestamp_str,
+        nonce,
+        signature_hex,
+        method,
+        path,
+        body,
+        chrono::Utc::now().timestamp(),
+    )
+    .map_err(AuthError::from)
 }
 
 /// Compute SHA-256 hex hash of a public key hex string (hashes the raw bytes).
 pub fn pk_hash(public_key_hex: &str) -> Result<String, AuthError> {
-    let pk_bytes = hex::decode(public_key_hex).map_err(|_| AuthError::InvalidPublicKey)?;
-    let hash = Sha256::digest(&pk_bytes);
-    Ok(hex::encode(hash))
+    agentcordon_identity::pk_hash_from_hex(public_key_hex).map_err(AuthError::from)
 }
+
+// ---------------------------------------------------------------------------
+// Nonce seen-set
+// ---------------------------------------------------------------------------
+
+/// How long an accepted `(key, nonce)` pair is remembered. A signed
+/// timestamp is accepted for `MAX_CLOCK_SKEW_SECS` either side of the
+/// broker's clock, so a nonce first seen at `t` can only be re-presented
+/// with a still-valid signature until `t + 2 * MAX_CLOCK_SKEW_SECS`.
+pub const NONCE_TTL_SECS: i64 = MAX_CLOCK_SKEW_SECS * 2;
+
+/// Upper bound on remembered nonces. At the TTL this is over a thousand
+/// requests per second sustained; beyond it the oldest entries are
+/// evicted, which shrinks the replay window rather than refusing service.
+pub const NONCE_CAPACITY: usize = 100_000;
+
+/// Bounded set of `(pk_hash, nonce)` pairs accepted within the skew window.
+///
+/// One instance per broker, on [`crate::state::BrokerState`]. Entries
+/// expire after [`NONCE_TTL_SECS`]; when the set reaches its capacity the
+/// oldest entry is evicted first. The clock is a parameter so the window
+/// is testable.
+pub struct NonceCache {
+    capacity: usize,
+    inner: Mutex<NonceInner>,
+}
+
+#[derive(Default)]
+struct NonceInner {
+    /// `(pk_hash, nonce)` -> expiry, Unix seconds.
+    seen: HashMap<(String, String), i64>,
+    /// Insertion order; the TTL is constant, so the front is the oldest
+    /// and the earliest to expire.
+    order: VecDeque<(String, String)>,
+}
+
+impl Default for NonceCache {
+    fn default() -> Self {
+        Self::with_capacity(NONCE_CAPACITY)
+    }
+}
+
+impl NonceCache {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            inner: Mutex::new(NonceInner::default()),
+        }
+    }
+
+    /// Record `(pk_hash, nonce)` as seen at `now` (Unix seconds).
+    ///
+    /// Returns `true` when the pair was not already present within its
+    /// TTL — the request is fresh — and `false` for a replay. Expired
+    /// entries are dropped on the way in.
+    pub fn check_and_insert(&self, pk_hash: &str, nonce: &str, now: i64) -> bool {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+
+        while let Some(front) = inner.order.front() {
+            let expired = inner.seen.get(front).is_none_or(|expiry| *expiry <= now);
+            if !expired {
+                break;
+            }
+            let key = inner.order.pop_front().expect("front exists");
+            inner.seen.remove(&key);
+        }
+
+        let key = (pk_hash.to_string(), nonce.to_string());
+        if inner.seen.contains_key(&key) {
+            return false;
+        }
+
+        while inner.seen.len() >= self.capacity {
+            match inner.order.pop_front() {
+                Some(oldest) => {
+                    inner.seen.remove(&oldest);
+                }
+                None => break,
+            }
+        }
+
+        inner.seen.insert(key.clone(), now + NONCE_TTL_SECS);
+        inner.order.push_back(key);
+        true
+    }
+
+    /// Number of remembered pairs (for tests).
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .seen
+            .len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Middleware
+// ---------------------------------------------------------------------------
 
 /// Axum middleware that verifies Ed25519 signatures on incoming requests.
 ///
-/// Extracts `X-AC-PublicKey`, `X-AC-Timestamp`, `X-AC-Signature` headers,
-/// verifies the signature, and checks that the workspace is registered.
-/// On success, injects the `pk_hash` into request extensions.
+/// Extracts `X-AC-PublicKey`, `X-AC-Timestamp`, `X-AC-Nonce`,
+/// `X-AC-Signature`, verifies the signature, checks that the workspace is
+/// registered, and refuses a nonce this key has already used within the
+/// window. On success, injects the `pk_hash` into request extensions.
 pub async fn auth_middleware(
     State(state): State<SharedState>,
     request: Request,
@@ -119,6 +201,10 @@ pub async fn auth_middleware(
         None => return auth_error_response(),
     };
     let timestamp = match headers.get("X-AC-Timestamp").and_then(|v| v.to_str().ok()) {
+        Some(v) => v.to_string(),
+        None => return auth_error_response(),
+    };
+    let nonce = match headers.get("X-AC-Nonce").and_then(|v| v.to_str().ok()) {
         Some(v) => v.to_string(),
         None => return auth_error_response(),
     };
@@ -141,6 +227,7 @@ pub async fn auth_middleware(
     if verify_workspace_signature(
         &public_key,
         &timestamp,
+        &nonce,
         &signature,
         &method,
         &path,
@@ -177,6 +264,15 @@ pub async fn auth_middleware(
         }
     }
 
+    // Replay check last, so only a verified, registered key consumes an
+    // entry in the seen-set.
+    if !state
+        .nonces
+        .check_and_insert(&hash, &nonce, chrono::Utc::now().timestamp())
+    {
+        return auth_error_response();
+    }
+
     // Rebuild request with buffered body and inject pk_hash
     let mut request = Request::from_parts(parts, axum::body::Body::from(body_bytes));
     request
@@ -184,6 +280,33 @@ pub async fn auth_middleware(
         .insert(AuthenticatedWorkspace { pk_hash: hash });
 
     next.run(request).await
+}
+
+/// Axum middleware that requires [`SHARED_SECRET_HEADER`] to equal the
+/// configured `--shared-secret`. A no-op when no secret is configured.
+/// Runs before signature verification on signed routes and on
+/// `/register`; `/health` is exempt so discovery still works.
+pub async fn shared_secret_middleware(
+    State(state): State<SharedState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(expected) = state.config.shared_secret.as_deref() {
+        let presented = request
+            .headers()
+            .get(SHARED_SECRET_HEADER)
+            .map(|v| v.as_bytes())
+            .unwrap_or_default();
+        if !shared_secret_matches(expected.as_bytes(), presented) {
+            return shared_secret_response();
+        }
+    }
+    next.run(request).await
+}
+
+/// Constant-time comparison of the presented secret with the expected one.
+pub fn shared_secret_matches(expected: &[u8], presented: &[u8]) -> bool {
+    expected.len() == presented.len() && bool::from(expected.ct_eq(presented))
 }
 
 /// Authenticated workspace identity extracted from verified request.
@@ -200,6 +323,22 @@ fn auth_error_response() -> Response {
             "error": {
                 "code": "unauthorized",
                 "message": "Signature verification failed"
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn shared_secret_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(serde_json::json!({
+            "error": {
+                "code": "unauthorized",
+                "message": format!(
+                    "Broker shared secret missing or incorrect. Set AGTCRDN_BROKER_SHARED_SECRET \
+                     to the value the broker was started with (sent as {SHARED_SECRET_HEADER})"
+                )
             }
         })),
     )

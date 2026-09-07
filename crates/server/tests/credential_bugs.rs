@@ -55,7 +55,8 @@ async fn store_test_credential(
     let now = chrono::Utc::now();
     let cred_id = CredentialId(Uuid::new_v4());
     let (encrypted, nonce) = state
-        .encryptor
+        .crypto
+        .key_ring
         .encrypt(b"test-secret-value", cred_id.0.to_string().as_bytes())
         .expect("encrypt");
     let cred = StoredCredential {
@@ -74,7 +75,8 @@ async fn store_test_credential(
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -96,11 +98,13 @@ async fn store_test_credential(
 }
 
 // ===========================================================================
-// Tests: B-006 — Duplicate credential names are allowed (names are labels)
+// Tests: B-006 — Credential names are labels, unique within one owner
 // ===========================================================================
 
+/// Names are not the key — the UUID is — but they are how the CLI addresses a
+/// credential, so one owner may not hold two of the same name (UI review M1).
 #[tokio::test]
-async fn test_duplicate_credential_name_allowed() {
+async fn test_duplicate_credential_name_refused_for_one_owner() {
     let (app, store, _state) = setup_test_app().await;
     let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let (cookie, csrf) = login_combined(&app, "admin", TEST_PASSWORD).await;
@@ -139,8 +143,8 @@ async fn test_duplicate_credential_name_allowed() {
     .await;
     assert_eq!(
         status,
-        StatusCode::OK,
-        "duplicate name should succeed — names are labels, UUID is the key: {}",
+        StatusCode::CONFLICT,
+        "one owner may not hold two credentials of the same name: {}",
         body
     );
 }
@@ -254,7 +258,7 @@ async fn test_update_credential_fields() {
 }
 
 #[tokio::test]
-async fn test_update_credential_name_uniqueness_check() {
+async fn test_rename_onto_an_existing_name_of_the_same_owner_is_refused() {
     let (app, store, _state) = setup_test_app().await;
     let _admin = create_test_user(&*store, "admin", TEST_PASSWORD, UserRole::Admin).await;
     let (cookie, csrf) = login_combined(&app, "admin", TEST_PASSWORD).await;
@@ -293,7 +297,7 @@ async fn test_update_credential_name_uniqueness_check() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Rename cred-one to cred-two — names are not unique, this should succeed
+    // Rename cred-one onto cred-two: both are this owner's, so it collides.
     let update_uri = format!("/api/v1/credentials/{}", cred1_id);
     let (status, body) = send_json(
         &app,
@@ -309,8 +313,8 @@ async fn test_update_credential_name_uniqueness_check() {
     .await;
     assert_eq!(
         status,
-        StatusCode::OK,
-        "rename to existing name should succeed — names are labels: {}",
+        StatusCode::CONFLICT,
+        "rename onto this owner's existing name must be refused: {}",
         body
     );
 }

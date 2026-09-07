@@ -19,14 +19,6 @@ use list::list_credentials;
 use manage::{delete_credential, get_credential, get_credential_by_name, update_credential};
 use vend::{reveal_credential, vend_credential, vend_credential_to_device};
 
-/// Known credential types. Unknown types are rejected at creation time.
-pub(crate) const KNOWN_CREDENTIAL_TYPES: &[&str] = &[
-    "generic",
-    "aws",
-    "oauth2_client_credentials",
-    "oauth2_user_authorization",
-];
-
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/credentials", post(store_credential).get(list_credentials))
@@ -49,18 +41,6 @@ pub fn routes() -> Router<AppState> {
             post(vend_credential_to_device),
         )
         .route("/credentials/agent-store", post(agent_store_credential))
-}
-
-/// Helper: get the actor identity strings for history tracking.
-pub(crate) fn actor_identity_strings(
-    actor: &crate::extractors::AuthenticatedActor,
-) -> (Option<String>, Option<String>) {
-    match actor {
-        crate::extractors::AuthenticatedActor::User(user) => (Some(user.id.0.to_string()), None),
-        crate::extractors::AuthenticatedActor::Workspace { workspace, .. } => {
-            (None, Some(workspace.id.0.to_string()))
-        }
-    }
 }
 
 /// Enrich a list of credential summaries with `owner_username`, resolved from

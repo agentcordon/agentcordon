@@ -2,16 +2,19 @@
 name = "agentcordon-cli"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Not on crates.io: the release artifacts are the tagged binaries and the
+# container image, not a registry upload.
+publish = false
 
 [[bin]]
 name = "agentcordon"
 path = "src/main.rs"
 
 [dependencies]
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-sha2 = "0.10"
+agentcordon-identity = { path = "../identity" }
 hex = "0.4"
-rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,6 +27,7 @@ dirs = "5"
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -35,3 +39,9 @@ windows = { version = "0.58", features = [
 
 [dev-dependencies]
 tempfile = "3"
+
+[package.metadata.release]
+# The CHANGELOG is the workspace's, not this crate's. cargo-release runs
+# pre-release-replacements once per released package, so only
+# agent-cordon-server rewrites it (see release.toml).
+pre-release-replacements = []

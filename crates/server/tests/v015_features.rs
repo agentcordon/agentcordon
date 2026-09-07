@@ -86,8 +86,11 @@ async fn create_agent_in_db(
     let agent = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: name.to_string(),
-        enabled,
-        status: WorkspaceStatus::Active,
+        status: if enabled {
+            WorkspaceStatus::Active
+        } else {
+            WorkspaceStatus::Disabled
+        },
         pk_hash: None,
         encryption_public_key: None,
         tags: tags.into_iter().map(String::from).collect(),
@@ -111,7 +114,8 @@ async fn store_test_credential(
     let now = chrono::Utc::now();
     let cred_id = CredentialId(Uuid::new_v4());
     let (encrypted, nonce) = state
-        .encryptor
+        .crypto
+        .key_ring
         .encrypt(secret_value, cred_id.0.to_string().as_bytes())
         .expect("encrypt");
     let cred = StoredCredential {
@@ -130,7 +134,8 @@ async fn store_test_credential(
         expires_at: None,
         transform_script: None,
         transform_name: None,
-        vault: "default".to_string(),
+        vault_id: agent_cordon_core::domain::vault::DEFAULT_VAULT_ID.to_string(),
+        vault_name: "default".to_string(),
         credential_type: "generic".to_string(),
         tags: vec![],
         description: None,
@@ -932,8 +937,7 @@ async fn disabled_forbid_disabled_admin_agent_denied_by_cedar() {
     let disabled_admin_agent = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: "disabled-admin-agent".to_string(),
-        enabled: false,
-        status: WorkspaceStatus::Active,
+        status: WorkspaceStatus::Disabled,
         pk_hash: None,
         encryption_public_key: None,
         tags: vec!["admin".to_string()],
@@ -1018,7 +1022,6 @@ async fn disabled_forbid_non_admin_agent_denied_manage_policies() {
     let non_admin_agent = Workspace {
         id: WorkspaceId(Uuid::new_v4()),
         name: "non-admin-agent".to_string(),
-        enabled: true,
         status: WorkspaceStatus::Active,
         pk_hash: None,
         encryption_public_key: None,

@@ -1,0 +1,22 @@
+{
+  "key": "_blank_api_key_header",
+  "name": "Custom (API Key, custom header)",
+  "service": "",
+  "credential_type": "api_key_header",
+  "auth_type": "api_key",
+  "header": "X-API-Key",
+  "allowed_url_pattern": "",
+  "fields": [
+    {
+      "key": "secret_value",
+      "label": "Secret value",
+      "placeholder": "API key or token",
+      "help": "Injected as the value of the header named above.",
+      "required": true,
+      "secret": true
+    }
+  ],
+  "description": "Default fields for an API-key credential injected under a custom header.",
+  "tags": [],
+  "sort_order": 9999
+}

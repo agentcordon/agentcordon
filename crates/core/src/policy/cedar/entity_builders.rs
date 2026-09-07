@@ -40,7 +40,7 @@ impl CedarPolicyEngine {
             ),
             (
                 "enabled".to_string(),
-                RestrictedExpression::new_bool(workspace.enabled),
+                RestrictedExpression::new_bool(workspace.is_active()),
             ),
             ("tags".to_string(), tags_set),
         ]);
@@ -290,7 +290,7 @@ impl CedarPolicyEngine {
                     ),
                     (
                         "enabled".to_string(),
-                        RestrictedExpression::new_bool(workspace.enabled),
+                        RestrictedExpression::new_bool(workspace.is_active()),
                     ),
                 ]);
 

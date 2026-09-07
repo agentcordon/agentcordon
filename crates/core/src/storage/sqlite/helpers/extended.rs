@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::domain::audit::AuditEvent;
@@ -12,6 +11,7 @@ use crate::domain::workspace::{Workspace, WorkspaceId, WorkspaceStatus};
 use crate::error::StoreError;
 
 use super::{deserialize_decision, deserialize_event_type};
+use crate::domain::time::parse_timestamp;
 
 pub(crate) fn row_to_audit_event(row: &rusqlite::Row<'_>) -> Result<AuditEvent, rusqlite::Error> {
     let id_str: String = row.get(0)?;
@@ -32,11 +32,9 @@ pub(crate) fn row_to_audit_event(row: &rusqlite::Row<'_>) -> Result<AuditEvent, 
     let id = Uuid::parse_str(&id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     })?;
-    let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let timestamp = parse_timestamp(&timestamp_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     let event_type = deserialize_event_type(&event_type_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
     })?;
@@ -78,7 +76,8 @@ pub(crate) fn row_to_audit_event(row: &rusqlite::Row<'_>) -> Result<AuditEvent, 
 pub(crate) fn row_to_workspace(row: &rusqlite::Row<'_>) -> Result<Workspace, rusqlite::Error> {
     let id_str: String = row.get(0)?;
     let name: String = row.get(1)?;
-    let enabled: bool = row.get(2)?;
+    // Column 2 (`enabled`) is written in step with the status for older
+    // readers and no longer read: `status` is the lifecycle.
     let status_str: String = row.get(3)?;
     let pk_hash: Option<String> = row.get(4)?;
     let encryption_public_key: Option<String> = row.get(5)?;
@@ -119,21 +118,16 @@ pub(crate) fn row_to_workspace(row: &rusqlite::Row<'_>) -> Result<Workspace, rus
         .map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
         })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(13, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let updated_at = parse_timestamp(&updated_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(13, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     Ok(Workspace {
         id: WorkspaceId(id),
         name,
-        enabled,
         status,
         pk_hash,
         encryption_public_key,
@@ -193,16 +187,12 @@ pub(crate) fn row_to_mcp_server(row: &rusqlite::Row<'_>) -> Result<McpServer, ru
         None => None,
     };
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let updated_at = parse_timestamp(&updated_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     let created_by_ws = created_by
         .map(|s| {
@@ -284,16 +274,12 @@ pub(crate) fn row_to_oidc_provider(
         serde_json::from_str(&role_mapping_json).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
         })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(11, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(11, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let updated_at = parse_timestamp(&updated_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     Ok(OidcProvider {
         id: OidcProviderId(id),
@@ -337,16 +323,12 @@ pub(crate) fn row_to_oidc_provider_summary(
         serde_json::from_str(&role_mapping_json).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
         })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let updated_at = parse_timestamp(&updated_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     Ok(OidcProviderSummary {
         id: OidcProviderId(id),
@@ -376,16 +358,12 @@ pub(crate) fn row_to_oidc_auth_state(
     let provider_id = Uuid::parse_str(&provider_id_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
     })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let expires_at = DateTime::parse_from_rfc3339(&expires_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+    let created_at = parse_timestamp(&created_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let expires_at = parse_timestamp(&expires_at_str).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     Ok(OidcAuthState {
         state,
@@ -400,43 +378,4 @@ pub(crate) fn row_to_oidc_auth_state(
 /// Map a `StoreError` into a `tokio_rusqlite::Error` for use inside `conn.call()` closures.
 pub(crate) fn store_err_to_tokio(e: StoreError) -> tokio_rusqlite::Error {
     tokio_rusqlite::Error::Other(Box::new(e))
-}
-
-pub(crate) fn row_to_workspace_registration(
-    row: &rusqlite::Row<'_>,
-) -> Result<crate::domain::workspace::WorkspaceRegistration, rusqlite::Error> {
-    use crate::domain::workspace::WorkspaceRegistration;
-
-    let pk_hash: String = row.get(0)?;
-    let code_challenge: String = row.get(1)?;
-    let code_hash: String = row.get(2)?;
-    let approval_code: Option<String> = row.get(3)?;
-    let expires_at_str: String = row.get(4)?;
-    let attempts: i32 = row.get(5)?;
-    let max_attempts: i32 = row.get(6)?;
-    let created_at_str: String = row.get(7)?;
-    let approved_by: Option<String> = row.get(8)?;
-
-    let expires_at = DateTime::parse_from_rfc3339(&expires_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-
-    Ok(WorkspaceRegistration {
-        pk_hash,
-        code_challenge,
-        code_hash,
-        approval_code,
-        expires_at,
-        attempts: attempts as u8,
-        max_attempts: max_attempts as u8,
-        approved_by,
-        created_at,
-    })
 }
