@@ -152,3 +152,63 @@ async fn create_without_a_pattern_sends_none_and_reports_none() {
         "the agent is told it is unrestricted: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// GET /credentials — the projection an agent chooses from
+// ---------------------------------------------------------------------------
+
+/// `agentcordon credentials` is how an agent decides which credential to use,
+/// and the skill tells it to match the target URL and then prefer least
+/// privilege. It could do neither: `allowed_url_pattern` was in this
+/// projection but the CLI never printed it
+/// (uat/artifacts/reviews/ONBOARDING-empirical.md F5).
+///
+/// `description` is deliberately *not* here. It is operator-facing prose and
+/// `wire_contract::credential_listing_projects_the_servers_summary` withholds
+/// it alongside `transform_script`, `metadata`, `owner_username` and `tags`;
+/// widening that contract is its own decision, not a side effect of adding a
+/// column.
+#[tokio::test]
+async fn the_credential_listing_carries_the_url_fence() {
+    let ws = TestWorkspace::generate();
+    let broker = TestBroker::builder()
+        .with_registered(&ws, &["credentials:discover"])
+        .build()
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/credentials"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{
+                "id": "0f9e1b3a-1111-4222-8333-444455556666",
+                "name": "internal-api-token",
+                "service": "internal",
+                "credential_type": "generic",
+                "scopes": ["repo:read"],
+                "allowed_url_pattern": "https://api.internal.example/*",
+                "description": "operator-facing note the agent must not see",
+                "expires_at": null,
+                "expired": false,
+                "vault_id": "default",
+                "vault_name": "default",
+                "tags": [],
+                "metadata": {},
+                "created_at": "2026-01-01T00:00:00Z",
+            }]
+        })))
+        .mount(&broker.server)
+        .await;
+
+    let (status, body) = broker.send(ws.signed("GET", "/credentials", "")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let entry = &body["data"][0];
+    assert_eq!(
+        entry["allowed_url_pattern"], "https://api.internal.example/*",
+        "the URL fence is what an agent matches its target against: {body}"
+    );
+    assert!(
+        entry.get("description").is_none(),
+        "description stays operator-facing: {body}"
+    );
+}

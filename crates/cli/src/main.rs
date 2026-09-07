@@ -93,6 +93,10 @@ enum Command {
     Credentials {
         #[command(subcommand)]
         action: Option<CredentialsAction>,
+
+        /// Emit the listing as JSON instead of a table, for filtering.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Proxy an HTTP request through the broker with credential injection
@@ -232,8 +236,8 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             name,
         } => commands::register::run(scopes, force, server_url, name).await,
         Command::Status => commands::status::run().await,
-        Command::Credentials { action } => match action {
-            None => commands::credentials::run().await,
+        Command::Credentials { action, json } => match action {
+            None => commands::credentials::run(json).await,
             Some(CredentialsAction::Create {
                 name,
                 service,
