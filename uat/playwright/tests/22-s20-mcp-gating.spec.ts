@@ -3,7 +3,7 @@ import { UAT } from './helpers/env';
 import { cli, cliIn, waitFor } from './helpers/docker';
 import { apiFromPage, expectOk, login, shot } from './helpers/ui';
 import { readDoc } from './helpers/docs';
-import { need, recordFinding, writeState } from './helpers/state';
+import { need, writeState } from './helpers/state';
 import {
   callTool,
   listTools,
@@ -39,13 +39,18 @@ const WS2 = UAT.workspace2Dir;
 /** The tag the documented policy generator is pointed at. */
 const S20_TAG = 'uat-s20';
 
-/** The ACTION REFERENCE block at the head of the shipped default policy. */
+/**
+ * The ACTION REFERENCE block at the head of the shipped default policy — the
+ * block itself, so an action that merely appears in a policy statement below
+ * does not count as documented.
+ */
 function actionReference(): string {
   const text = fs.readFileSync(
     path.resolve(__dirname, '..', '..', '..', 'policies', 'default.cedar'),
     'utf8',
   );
-  return text.slice(text.indexOf('ACTION REFERENCE'));
+  const block = text.slice(text.indexOf('ACTION REFERENCE'));
+  return block.slice(0, block.indexOf('\n// ===='));
 }
 
 /** The MCP server's Access tab, loaded. */
@@ -656,13 +661,6 @@ test.describe('S20 MCP tool gating', () => {
   test('the two prose action references name every action the schema defines [G-S20-4]', async ({
     page,
   }) => {
-    // KNOWN OPEN DEFECT — G-S20-4. `policies/default.cedar`'s ACTION REFERENCE
-    // and docs/authorization-and-cedar-policy.md § Actions are the two lists an
-    // operator writes a policy from, and neither is generated from the schema.
-    // Both currently omit `manage_consents`. Fix either list and this flips to
-    // an unexpected pass; fix both and it goes green.
-    test.fail();
-
     await login(page);
     const served = await apiFromPage(page, 'GET', '/api/v1/policies/schema');
     expect(served.status, JSON.stringify(served.body)).toBe(200);
@@ -675,18 +673,10 @@ test.describe('S20 MCP tool gating', () => {
     const missingFromDoc = schemaActions.filter((a) => !authzDoc.includes(`\`${a}\``));
     const missingFromCedar = schemaActions.filter((a) => !reference.includes(a));
 
-    recordFinding({
-      scenario: 'S20',
-      title: 'The two action references do not list every action the Cedar schema defines',
-      doc: 'docs/authorization-and-cedar-policy.md § "Actions"; policies/default.cedar "ACTION REFERENCE"',
-      detail:
-        `The served schema defines ${schemaActions.length} actions. ` +
-        `Missing from docs/authorization-and-cedar-policy.md § Actions: ${JSON.stringify(missingFromDoc)}. ` +
-        `Missing from policies/default.cedar's ACTION REFERENCE: ${JSON.stringify(missingFromCedar)}. ` +
-        'Both are the list an operator writes a policy from, so an action nobody documents is one nobody ' +
-        'uses and nobody reviews.',
-    });
-
+    // Both are the list an operator writes a policy from, so an action nobody
+    // documents is one nobody uses and nobody reviews. A server test
+    // (`crates/server/tests/s20_mcp_gating.rs`) holds the same line at build
+    // time so a new schema action cannot land undocumented.
     expect(
       { doc: missingFromDoc, cedar: missingFromCedar },
       'every schema action is named in both references',

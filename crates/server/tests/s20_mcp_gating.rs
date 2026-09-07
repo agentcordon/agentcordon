@@ -1026,3 +1026,85 @@ async fn rediscovery_still_widens_a_server_that_was_never_narrowed() {
         "an unnarrowed server takes everything discovery found"
     );
 }
+
+// ===========================================================================
+// G-S20-4 — the two prose action references name every schema action
+// ===========================================================================
+
+fn repo_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+/// Every action the Cedar schema defines, sorted.
+fn schema_actions() -> Vec<String> {
+    let text = std::fs::read_to_string(repo_root().join("policies/schema.cedarschema.json"))
+        .expect("read the Cedar schema");
+    let schema: serde_json::Value = serde_json::from_str(&text).expect("schema is JSON");
+    let namespace = schema
+        .get("AgentCordon")
+        .expect("the AgentCordon namespace");
+    let mut actions: Vec<String> = namespace["actions"]
+        .as_object()
+        .expect("actions is an object")
+        .keys()
+        .cloned()
+        .collect();
+    actions.sort();
+    actions
+}
+
+/// The `ACTION REFERENCE:` comment block at the head of the shipped default
+/// policy — the block itself, not the whole file, so an action that happens to
+/// appear in a policy statement below does not count as documented.
+fn action_reference_block() -> String {
+    let text = std::fs::read_to_string(repo_root().join("policies/default.cedar"))
+        .expect("read default.cedar");
+    let start = text.find("ACTION REFERENCE").expect("an ACTION REFERENCE block");
+    let rest = &text[start..];
+    let end = rest
+        .find("\n// ====")
+        .expect("the block is closed by a rule");
+    rest[..end].to_string()
+}
+
+/// `policies/default.cedar`'s ACTION REFERENCE and
+/// `docs/authorization-and-cedar-policy.md` § Actions are the two lists an
+/// operator writes a policy from, and neither is generated from the schema.
+/// Both omitted `manage_consents` (uat S20, G-S20-4). This test is the thing
+/// that stops them drifting again: a new action in the schema fails it until
+/// both references name it.
+#[test]
+fn both_prose_action_references_name_every_action_the_schema_defines() {
+    let actions = schema_actions();
+    assert!(
+        actions.len() > 10,
+        "sanity: the schema defines a real action set, got {actions:?}"
+    );
+
+    let doc = std::fs::read_to_string(repo_root().join("docs/authorization-and-cedar-policy.md"))
+        .expect("read the authorization doc");
+    let reference = action_reference_block();
+
+    let missing_from_doc: Vec<&String> = actions
+        .iter()
+        .filter(|a| !doc.contains(&format!("`{a}`")))
+        .collect();
+    let missing_from_cedar: Vec<&String> = actions
+        .iter()
+        .filter(|a| !reference.contains(a.as_str()))
+        .collect();
+
+    assert!(
+        missing_from_doc.is_empty(),
+        "docs/authorization-and-cedar-policy.md § Actions must name every action the Cedar \
+         schema defines — an action nobody documents is one nobody uses and nobody reviews. \
+         Missing: {missing_from_doc:?}"
+    );
+    assert!(
+        missing_from_cedar.is_empty(),
+        "policies/default.cedar's ACTION REFERENCE must name every action the Cedar schema \
+         defines. Missing: {missing_from_cedar:?}"
+    );
+}

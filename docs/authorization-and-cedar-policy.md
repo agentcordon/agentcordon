@@ -65,6 +65,7 @@ AgentCordon::PolicyResource::"policies"
 | **Policy** | `manage_policies` |
 | **User** | `manage_users` |
 | **Workspace** | `manage_workspaces`, `view_audit`, `rotate_key`, `manage_mcp_servers`, `manage_tags`, `manage_oidc_providers`, `manage_oauth_provider_clients`, `manage_vaults`, `rotate_encryption_key` |
+| **Consent** | `manage_consents` |
 | **Registration** | `register_workspace` |
 
 ---
@@ -95,6 +96,7 @@ evaluate(principal, action, resource, context) -> PolicyDecision
 | `mcp_tool_call` | `tool_name`, `credential_name`, `justification`, `timestamp` |
 | `mcp_list_tools` | `timestamp` |
 | `manage_tags` | `tag_value`, `timestamp` |
+| `manage_consents` | `consent_user_id`, `timestamp` |
 | Others | `timestamp` |
 
 ### Root Bypass
