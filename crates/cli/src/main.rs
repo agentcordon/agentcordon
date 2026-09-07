@@ -16,6 +16,7 @@
 // AgentCordon Thin CLI — lightweight workspace agent
 // Manages Ed25519 keypairs, signs requests to broker, never touches credentials
 
+mod agents;
 mod broker;
 mod broker_autostart;
 mod commands;
@@ -35,18 +36,26 @@ use crate::error::CliError;
     about = "AgentCordon workspace CLI — identity, credentials, and MCP through the broker",
     version
 )]
-struct Cli {
+pub(crate) struct Cli {
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Generate Ed25519 keypair and prepare workspace
+    /// Generate the Ed25519 keypair and install the AgentCordon skill
     Init {
-        /// Target agent: claude-code (default), codex, openclaw, or all
-        #[arg(long, default_value = "claude-code")]
-        agent: String,
+        /// Agent runtime to install the skill for. Repeatable. Also accepts
+        /// `auto` (every runtime detected in this workspace or your home
+        /// directory — the default), `all`, and `none` (the portable skill
+        /// only). With no `--agent`, `init` reuses the choice remembered in
+        /// `.agentcordon/agents.toml`, or asks when it is on a terminal.
+        #[arg(long = "agent", num_args = 1)]
+        agents: Vec<String>,
+
+        /// Ignore the remembered choice and pick the runtimes again.
+        #[arg(long)]
+        reconfigure: bool,
     },
 
     /// Register this workspace with the broker
@@ -190,7 +199,13 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Command::Init { agent } => commands::init::run(&agent),
+        Command::Init {
+            ref agents,
+            reconfigure,
+        } => commands::init::run(commands::init::InitArgs {
+            agents: agents.clone(),
+            reconfigure,
+        }),
         _ => {
             // All other commands are async
             let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");

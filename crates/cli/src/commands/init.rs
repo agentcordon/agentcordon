@@ -1,334 +1,163 @@
+//! `agentcordon init` — generate the workspace key and install the AgentCordon
+//! skill for the agent runtimes this workspace is used with.
+//!
+//! What `init` writes changed in v0.4.1. It used to write a ~5.5 KB prose
+//! block into `AGENTS.md`, a `CLAUDE.md` importing it, and two stub files
+//! (`.codex/instructions.md`, `.openclaw/instructions.md`) that no runtime has
+//! ever read. It now writes one Agent Skill, into the skill directory each
+//! selected runtime documents. The reasoning is ADR-0013; the evidence is
+//! `uat/artifacts/reviews/ONBOARDING-landscape.md` (which runtime reads what)
+//! and `ONBOARDING-empirical.md` (that the instructions are what makes an
+//! agent use the broker at all).
+
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use agentcordon_identity::{pk_hash_of, KeyFileError};
 
+use crate::agents::install::Action;
+use crate::agents::{self, install, select, DetectEnv};
 use crate::error::CliError;
 use crate::signing::workspace_dir;
 
-/// Generate Ed25519 keypair and prepare workspace for registration.
-pub fn run(agent: &str) -> Result<(), CliError> {
-    // Validate agent flag
-    let valid_agents = ["claude-code", "codex", "openclaw", "all"];
-    if !valid_agents.contains(&agent) {
-        return Err(CliError::general(format!(
-            "unknown agent '{}'. Valid options: {}",
-            agent,
-            valid_agents.join(", ")
-        )));
-    }
+/// The parsed `agentcordon init` command line.
+#[derive(Debug, Default, Clone)]
+pub struct InitArgs {
+    /// `--agent`, repeatable. Empty means "decide": the remembered choice, the
+    /// picker, or `auto`, in that order.
+    pub agents: Vec<String>,
+    /// Ignore the remembered choice and pick again.
+    pub reconfigure: bool,
+}
 
-    let dir = workspace_dir();
+/// The workspace root — the directory `init` writes into.
+fn workspace_root() -> PathBuf {
+    PathBuf::from(std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string()))
+}
 
-    // Idempotent: if key already exists, just print identity
-    if agentcordon_identity::workspace_key_exists(&dir) {
-        let pub_hex = agentcordon_identity::read_public_key_hex(&dir)
+/// Generate the Ed25519 keypair and install the skill.
+pub fn run(args: InitArgs) -> Result<(), CliError> {
+    let key_dir = workspace_dir();
+    let root = workspace_root();
+
+    if agentcordon_identity::workspace_key_exists(&key_dir) {
+        let pub_hex = agentcordon_identity::read_public_key_hex(&key_dir)
             .map_err(|e| CliError::general(e.to_string()))?;
         let pub_bytes = hex::decode(&pub_hex)
             .map_err(|e| CliError::general(format!("invalid public key format: {e}")))?;
-        let hash = pk_hash_of(&pub_bytes);
-        println!("Workspace identity: sha256:{hash}");
+        println!("Workspace identity: sha256:{}", pk_hash_of(&pub_bytes));
         println!("(keypair already exists)");
-
-        // Still generate agent-specific files even if key exists
-        generate_for_agent(agent, &hash)?;
-        return Ok(());
+    } else {
+        let key = agentcordon_identity::create_workspace_key(&key_dir).map_err(|e| match e {
+            KeyFileError::AlreadyExists { .. } => {
+                CliError::general(format!("{e} — re-run `agentcordon init`"))
+            }
+            other => CliError::general(other.to_string()),
+        })?;
+        println!("Workspace identity: sha256:{}", key.pk_hash());
+        add_to_gitignore(&root)?;
     }
 
-    // Create .agentcordon/ (mode 0700) and write the keypair (0600 / 0644)
-    // atomically; the identity crate owns the format and the policy.
-    let key = agentcordon_identity::create_workspace_key(&dir).map_err(|e| match e {
-        KeyFileError::AlreadyExists { .. } => {
-            CliError::general(format!("{e} — re-run `agentcordon init`"))
-        }
-        other => CliError::general(other.to_string()),
-    })?;
+    let selection = resolve(&args, &root)?;
+    for notice in &selection.notices {
+        println!("{notice}");
+    }
 
-    let hash = key.pk_hash();
-    println!("Workspace identity: sha256:{hash}");
-
-    // Add .agentcordon/ to .gitignore
-    add_to_gitignore()?;
-
-    // Generate agent-specific instruction files
-    generate_for_agent(agent, &hash)?;
+    let written = install::install(&root, &selection.runtimes)?;
+    select::save(&root, &selection.runtimes)?;
+    report(&selection, &written);
 
     Ok(())
 }
 
-/// Generate instruction files for the specified agent (or all agents).
-fn generate_for_agent(agent: &str, pk_hash: &str) -> Result<(), CliError> {
-    // Always generate AGENTS.md (shared across all agents)
-    generate_agents_md(pk_hash)?;
-
-    match agent {
-        "claude-code" => generate_claude_md()?,
-        "codex" => generate_codex_config()?,
-        "openclaw" => generate_openclaw_config()?,
-        "all" => {
-            generate_claude_md()?;
-            generate_codex_config()?;
-            generate_openclaw_config()?;
-        }
-        _ => unreachable!(),
-    }
-
-    Ok(())
-}
-
-/// Generate or update AGENTS.md with AgentCordon usage instructions.
+/// Which runtimes to install for.
 ///
-/// This is the cross-agent instruction file (AGENTS.md open standard).
-/// Claude Code imports it via `@AGENTS.md`, Codex and OpenClaw load it natively.
-fn generate_agents_md(pk_hash: &str) -> Result<(), CliError> {
-    let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
-    let agents_md_path = Path::new(&base).join("AGENTS.md");
+/// The order matters more than any single rule in it: an explicit `--agent`
+/// always wins, a remembered choice makes a rerun quiet, and the picker only
+/// appears when a human is there to answer it. That last clause is why the UAT
+/// harness and every script that runs `init` in a pipe keep working.
+fn resolve(args: &InitArgs, root: &Path) -> Result<select::Selection, CliError> {
+    let env = DetectEnv::current(root);
 
-    let section = format!(
-        "\n\
-         <!-- BEGIN AGENTCORDON -->\n\
-         ## AgentCordon\n\
-         \n\
-         This workspace uses AgentCordon for credential management. API credentials are \
-         brokered through AgentCordon — never use raw secrets directly.\n\
-         \n\
-         AC_IDENTITY: sha256:{pk_hash}\n\
-         \n\
-         ### Workflow\n\
-         \n\
-         1. Run `agentcordon credentials` to list available credentials\n\
-         2. Pick the credential that matches the service you need — if multiple match, \
-         prefer the one with least privilege\n\
-         3. Use `agentcordon proxy <credential-name> <METHOD> <url>` to make the call\n\
-         \n\
-         **Important**: Always discover credentials first. Never guess credential names — \
-         they are assigned by the admin and vary per workspace.\n\
-         \n\
-         ### Commands\n\
-         \n\
-         - `agentcordon credentials` — list credentials available to this workspace\n\
-         - `agentcordon proxy <credential-name> <METHOD> <url>` — authenticated API call\n\
-         - `agentcordon proxy <credential-name> POST <url> --body '{{...}}'` — POST with JSON body\n\
-         - `agentcordon mcp-servers` — list MCP servers this workspace may use\n\
-         - `agentcordon mcp-tools` — list every tool, with its description\n\
-         - `agentcordon mcp-tools --schema --server <server> --tool <tool>` — the tool's \
-         exact argument names and types\n\
-         - `agentcordon mcp-call <server> <tool> [--arg key=value]` — call an MCP tool\n\
-         - `agentcordon mcp-call <server> <tool> --args-json '{{...}}'` — call with nested \
-         or array arguments\n\
-         - `agentcordon status` — check connection and identity\n\
-         - `agentcordon help` — full command reference\n\
-         \n\
-         When you need to call an external API, use `agentcordon proxy` instead of direct \
-         HTTP with raw tokens. Every access is policy-checked and audit-logged.\n\
-         \n\
-         ### Using MCP servers\n\
-         \n\
-         1. Run `agentcordon mcp-servers` to see which servers this workspace may use. \
-         Several may be listed; they are not interchangeable.\n\
-         2. Run `agentcordon mcp-tools` to see every tool and what it does.\n\
-         3. **Choose the server, then the tool, by these rules, in order:**\n\
-         \n\
-         - **Match the service the task is about.** Pick the server that fronts the system \
-         the task names (the issue tracker for an issue, the deployment platform for a \
-         deploy). The server's name and its tools' descriptions are the signal; the \
-         `DESCRIPTION` column of `mcp-servers` is often empty and proves nothing.\n\
-         - **Prefer the server whose authenticated identity fits the question.** Several \
-         servers may expose an identically named tool while speaking to different accounts \
-         or tenants. Pick the one authenticated as the identity the answer should be about.\n\
-         - **Never pick an unauthenticated server for a question about identity, \
-         permissions, or private data.** A server the admin configured with no auth cannot \
-         answer \"who am I\" or \"what may I access\" — it will return a plausible-looking \
-         null or anonymous result. Least privilege applies to *credentials*, not to \
-         choosing an MCP server: do not fall back to a no-auth server because it looks \
-         safer.\n\
-         - If two servers still fit, say which you picked and why rather than guessing \
-         silently.\n\
-         \n\
-         4. **Before calling a tool, run \
-         `agentcordon mcp-tools --schema --server <server> --tool <tool>`** to read its \
-         `input_schema`. Never guess argument names. Use `--arg key=value` for flat \
-         arguments and `--args-json` for nested objects or arrays.\n\
-         \n\
-         MCP tools are reached through the AgentCordon broker, not through a native \
-         `.mcp.json` entry — there is no `.mcp.json` for these servers and you should not \
-         create one.\n\
-         \n\
-         ### Environment\n\
-         \n\
-         **You do not need to configure the broker.** `agentcordon-broker` binds a port the \
-         OS picks and writes the URL to `~/.agentcordon/broker.port`; the CLI reads that \
-         file and connects. There is no default broker port to assume.\n\
-         \n\
-         | Variable | Default | Description |\n\
-         |----------|---------|-------------|\n\
-         | `AGTCRDN_BROKER_URL` | *(unset — discovered from `~/.agentcordon/broker.port`)* | \
-         **Override only.** Set it solely when the broker is somewhere the port file cannot \
-         name it, such as another host or container. Must be plain `http://` to a loopback \
-         host or any `https://` URL. |\n\
-         \n\
-         Do not export `AGTCRDN_BROKER_URL` speculatively: a wrong value overrides working \
-         discovery and breaks every command. If `agentcordon status` cannot reach the \
-         broker, start one (`agentcordon-broker --server-url <server>`) rather than \
-         guessing a URL.\n\
-         \n\
-         **Local development**: to proxy to a `localhost` URL the broker must have been \
-         started with `AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker --server-url \
-         <server>`. The broker reads it once, at startup (`crates/broker/src/config.rs`); \
-         the CLI never looks at it, so prefixing a `proxy` call with it does nothing.\n\
-         <!-- END AGENTCORDON -->\n"
+    if !args.agents.is_empty() {
+        return select::from_flags(&args.agents, &env);
+    }
+    if !args.reconfigure {
+        if let Some(saved) = select::load(root) {
+            return Ok(saved);
+        }
+    }
+    if select::interactive() {
+        return select::prompt(&agents::detect(&env));
+    }
+    Ok(select::auto(&env))
+}
+
+/// The closing summary: every file, what happened to it, and which of the
+/// selected runtimes reads it.
+fn report(selection: &select::Selection, written: &[install::Installed]) {
+    println!();
+    println!("AgentCordon skill:");
+    for file in written {
+        match &file.action {
+            Action::Skipped { reason, snippet } => {
+                println!("  skipped   {}", file.path);
+                println!("            {reason}");
+                println!("            add by hand under `read:`:");
+                println!("              {snippet}");
+            }
+            other => {
+                let verb = match other {
+                    Action::Created => "created",
+                    Action::Updated => "updated",
+                    _ => "unchanged",
+                };
+                let serves = if file.serves.is_empty() {
+                    "portable copy — read by any runtime that follows the Agent Skills standard"
+                        .to_string()
+                } else {
+                    format!("read by {}", file.serves.join(", "))
+                };
+                println!("  {verb:<9} {}", file.path);
+                println!("            {serves}");
+            }
+        }
+    }
+
+    println!();
+    if selection.runtimes.is_empty() {
+        println!("No runtimes selected — only the portable skill was installed.");
+    } else {
+        println!(
+            "Runtimes: {}",
+            selection
+                .runtimes
+                .iter()
+                .map(|r| r.display)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for runtime in &selection.runtimes {
+            if let Some(note) = runtime.note {
+                println!("  {}: {note}", runtime.display);
+            }
+        }
+    }
+    let how = match selection.source {
+        select::Source::Flags => "from --agent",
+        select::Source::Saved => "remembered from a previous run",
+        select::Source::Picker => "you picked them",
+        select::Source::Auto => "detected in this workspace and your home directory",
+    };
+    println!(
+        "({how}; saved to {} — rerun `agentcordon init --reconfigure` to choose again.)",
+        select::SAVED_PATH
     );
-
-    write_marked_block(
-        &agents_md_path,
-        "AGENTS.md",
-        &section,
-        "# Agent Instructions\n",
-    )
-}
-
-/// Generate CLAUDE.md as a thin wrapper that imports AGENTS.md.
-///
-/// The identity is *not* repeated here. It used to be, and `CLAUDE.md` was
-/// then skipped on every rerun (its content mentioned "AgentCordon"), so after
-/// a key regeneration `AGENTS.md` and `CLAUDE.md` named different identities
-/// and the agent read both (uat/artifacts/reviews/UI-REVIEW-static.md G1).
-fn generate_claude_md() -> Result<(), CliError> {
-    let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
-    let claude_md_path = Path::new(&base).join("CLAUDE.md");
-
-    let section = "\n\
-                   <!-- BEGIN AGENTCORDON -->\n\
-                   ## AgentCordon\n\
-                   \n\
-                   @AGENTS.md\n\
-                   <!-- END AGENTCORDON -->\n";
-
-    write_marked_block(
-        &claude_md_path,
-        "CLAUDE.md",
-        section,
-        "# Claude Code Instructions\n",
-    )
-}
-
-/// Generate Codex-specific config referencing AGENTS.md.
-fn generate_codex_config() -> Result<(), CliError> {
-    let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
-    let codex_dir = Path::new(&base).join(".codex");
-    fs::create_dir_all(&codex_dir)
-        .map_err(|e| CliError::general(format!("failed to create .codex/: {e}")))?;
-
-    write_marked_block(
-        &codex_dir.join("instructions.md"),
-        ".codex/instructions.md",
-        &agent_stub_block(),
-        "# Codex Instructions\n\
-         \n\
-         AGENTS.md is the primary instruction file and is loaded automatically by Codex.\n",
-    )
-}
-
-/// Generate OpenClaw-specific config referencing AGENTS.md.
-fn generate_openclaw_config() -> Result<(), CliError> {
-    let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
-    let openclaw_dir = Path::new(&base).join(".openclaw");
-    fs::create_dir_all(&openclaw_dir)
-        .map_err(|e| CliError::general(format!("failed to create .openclaw/: {e}")))?;
-
-    write_marked_block(
-        &openclaw_dir.join("instructions.md"),
-        ".openclaw/instructions.md",
-        &agent_stub_block(),
-        "# OpenClaw Instructions\n\
-         \n\
-         AGENTS.md is the primary instruction file and is loaded automatically by OpenClaw.\n",
-    )
-}
-
-/// The block both agent stubs carry: two commands and a pointer at the one
-/// file that holds the rest.
-///
-/// It used to name `.agents/skills/` as a "native discovery path" and promise
-/// skill hot-reload. `init` writes no skill, so both sentences pointed at a
-/// directory that does not exist (uat/artifacts/reviews/UI-REVIEW-static.md G4).
-fn agent_stub_block() -> String {
-    "\n\
-     <!-- BEGIN AGENTCORDON -->\n\
-     ## AgentCordon Notes\n\
-     \n\
-     - Use `agentcordon credentials` to discover available credentials\n\
-     - Use `agentcordon proxy <credential> <METHOD> <url>` for authenticated API calls\n\
-     - AGENTS.md carries the workspace identity, the full command list and the rules for \
-     choosing an MCP server\n\
-     <!-- END AGENTCORDON -->\n"
-        .to_string()
-}
-
-const BLOCK_BEGIN: &str = "<!-- BEGIN AGENTCORDON -->";
-const BLOCK_END: &str = "<!-- END AGENTCORDON -->";
-
-/// Write `section` into `path` as the file's one delimited AgentCordon block.
-///
-/// Every file `init` touches is edited the same way: the block between
-/// `<!-- BEGIN AGENTCORDON -->` and `<!-- END AGENTCORDON -->` is replaced in
-/// place, anything else the user wrote is left alone, and a file without the
-/// markers gets the block appended.
-///
-/// The markers are the whole point. `CLAUDE.md`, `.codex/instructions.md` and
-/// `.openclaw/instructions.md` used to be skipped whenever their text merely
-/// contained the word "AgentCordon", so a project whose instructions said "we
-/// do not use AgentCordon here" never got the import, and one that did get it
-/// never got an update (uat/artifacts/reviews/UI-REVIEW-static.md G5).
-///
-/// `section` carries its own leading newline and both markers; `preamble` is
-/// the title written above it when the file does not exist yet.
-fn write_marked_block(
-    path: &Path,
-    label: &str,
-    section: &str,
-    preamble: &str,
-) -> Result<(), CliError> {
-    if !path.exists() {
-        fs::write(path, format!("{preamble}{section}"))
-            .map_err(|e| CliError::general(format!("failed to write {label}: {e}")))?;
-        println!("Created {label} with AgentCordon instructions");
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(path)
-        .map_err(|e| CliError::general(format!("failed to read {label}: {e}")))?;
-
-    if let (Some(start), Some(end)) = (content.find(BLOCK_BEGIN), content.find(BLOCK_END)) {
-        let end = end + BLOCK_END.len();
-        // Swallow the block's trailing newline so a rerun does not grow the file.
-        let end = if content[end..].starts_with('\n') {
-            end + 1
-        } else {
-            end
-        };
-        let mut updated = String::with_capacity(content.len() + section.len());
-        updated.push_str(&content[..start]);
-        updated.push_str(section.trim_start_matches('\n'));
-        updated.push_str(&content[end..]);
-        fs::write(path, updated)
-            .map_err(|e| CliError::general(format!("failed to write {label}: {e}")))?;
-        println!("Updated {label} with AgentCordon instructions");
-        return Ok(());
-    }
-
-    let separator = if content.ends_with('\n') { "" } else { "\n" };
-    fs::write(path, format!("{content}{separator}{section}"))
-        .map_err(|e| CliError::general(format!("failed to update {label}: {e}")))?;
-    println!("Appended AgentCordon instructions to {label}");
-    Ok(())
 }
 
 /// Add `.agentcordon/` to `.gitignore` if not already present.
-fn add_to_gitignore() -> Result<(), CliError> {
-    let base = std::env::var("AGTCRDN_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_string());
-    let gitignore_path = Path::new(&base).join(".gitignore");
-
+fn add_to_gitignore(root: &Path) -> Result<(), CliError> {
+    let gitignore_path = root.join(".gitignore");
     let entry = ".agentcordon/";
 
     if gitignore_path.exists() {
@@ -337,7 +166,6 @@ fn add_to_gitignore() -> Result<(), CliError> {
         if content.lines().any(|line| line.trim() == entry) {
             return Ok(());
         }
-        // Append with newline separation
         let separator = if content.ends_with('\n') { "" } else { "\n" };
         fs::write(&gitignore_path, format!("{content}{separator}{entry}\n"))
             .map_err(|e| CliError::general(format!("failed to update .gitignore: {e}")))?;
@@ -352,6 +180,8 @@ fn add_to_gitignore() -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::{Marker, Runtime, RUNTIMES, SKILL_MD};
+    use std::collections::BTreeSet;
     use tempfile::TempDir;
 
     /// Set the workspace dir env var for the duration of the test. Tests that
@@ -381,19 +211,509 @@ mod tests {
         }
     }
 
-    /// `agentcordon mcp-serve` does not exist; an `.mcp.json` entry pointing
-    /// at it made every Claude Code session fail to start an MCP server.
-    /// `init` leaves `.mcp.json` to the user.
+    fn init(agents: &[&str]) -> InitArgs {
+        InitArgs {
+            agents: agents.iter().map(|s| s.to_string()).collect(),
+            reconfigure: false,
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // The skill is the integration
+    // -----------------------------------------------------------------
+
+    /// The one file every runtime is meant to find.
+    #[test]
+    fn init_writes_the_portable_skill() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run(init(&["claude-code"])).unwrap();
+
+        let skill = dir.path().join(".agents/skills/agentcordon/SKILL.md");
+        assert!(skill.exists(), "init must write the portable Agent Skill");
+        let body = fs::read_to_string(&skill).unwrap();
+        assert!(body.starts_with("---\nname: agentcordon\n"));
+    }
+
+    /// Claude Code discovers `.claude/skills/<name>/SKILL.md` with no
+    /// `CLAUDE.md` and no `AGENTS.md` present — proved by a headless trial
+    /// against Claude Code 2.1.263, recorded in ADR-0013 — so `init` writes
+    /// the skill and no always-on prose block.
+    #[test]
+    fn selecting_claude_code_writes_a_skill_and_no_markdown_pointer() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run(init(&["claude-code"])).unwrap();
+
+        assert!(dir
+            .path()
+            .join(".claude/skills/agentcordon/SKILL.md")
+            .exists());
+        assert!(
+            !dir.path().join("CLAUDE.md").exists(),
+            "a runtime with skill discovery gets no CLAUDE.md"
+        );
+        assert!(
+            !dir.path().join("AGENTS.md").exists(),
+            "a runtime with skill discovery gets no AGENTS.md"
+        );
+    }
+
+    /// `init` used to write `AGENTS.md`, `CLAUDE.md`, `.codex/instructions.md`
+    /// and `.openclaw/instructions.md`. Two of those four were read by
+    /// nothing; the other two put ~5.5 KB in every session of every runtime.
+    #[test]
+    fn init_writes_no_always_on_instruction_file_for_any_runtime() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run(init(&["all"])).unwrap();
+
+        for dead in [
+            "AGENTS.md",
+            "CLAUDE.md",
+            "GEMINI.md",
+            ".codex/instructions.md",
+            ".openclaw/instructions.md",
+            ".github/copilot-instructions.md",
+            ".goosehints",
+            ".cursor/rules/agentcordon.mdc",
+        ] {
+            assert!(
+                !dir.path().join(dead).exists(),
+                "{dead}: the skill is the integration; no always-on prose file is written"
+            );
+        }
+    }
+
+    /// Every runtime in the registry must end up with a skill it can actually
+    /// discover — either the portable one or its own copy.
+    #[test]
+    fn every_runtime_gets_a_skill_it_reads() {
+        for runtime in RUNTIMES {
+            let dir = TempDir::new().unwrap();
+            let _g = EnvGuard::new(dir.path());
+
+            run(init(&[runtime.id])).unwrap();
+
+            let portable = dir.path().join(".agents/skills/agentcordon/SKILL.md");
+            assert!(portable.exists(), "{}: portable skill", runtime.id);
+
+            // `reads` is what the summary promises the runtime will load, so
+            // it has to name a file that is on disk.
+            let promised = runtime
+                .reads
+                .split_whitespace()
+                .next()
+                .expect("reads names a path");
+            assert!(
+                dir.path().join(promised).exists(),
+                "{}: promises to be read from {promised}, which init did not write",
+                runtime.id
+            );
+        }
+    }
+
+    /// Claude Code and Cline both read `.claude/skills`; selecting both must
+    /// write one file, not two conflicting ones.
+    #[test]
+    fn runtimes_sharing_a_skill_root_share_one_file() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run(init(&["claude-code", "cline"])).unwrap();
+
+        let body =
+            fs::read_to_string(dir.path().join(".claude/skills/agentcordon/SKILL.md")).unwrap();
+        assert_eq!(body, SKILL_MD);
+    }
+
+    /// Rerunning must be a no-op, including after the user has re-selected.
+    #[test]
+    fn installing_twice_changes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run(init(&["all"])).unwrap();
+        let before = tree(dir.path());
+        run(init(&["all"])).unwrap();
+        run(InitArgs::default()).unwrap();
+        assert_eq!(before, tree(dir.path()), "init is idempotent");
+    }
+
+    /// A skill file the user (or an older `init`) left behind is brought up to
+    /// date: `init` owns the whole file.
+    #[test]
+    fn a_stale_skill_file_is_rewritten() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+        let path = dir.path().join(".agents/skills/agentcordon/SKILL.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "---\nname: agentcordon\n---\n\nold\n").unwrap();
+
+        run(init(&["none"])).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), SKILL_MD);
+    }
+
+    // -----------------------------------------------------------------
+    // Aider — the one runtime with no skill discovery
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn aider_gets_a_read_entry_pointing_at_the_portable_skill() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run(init(&["aider"])).unwrap();
+
+        let conf = fs::read_to_string(dir.path().join(".aider.conf.yml")).unwrap();
+        assert!(conf.contains("read:"));
+        assert!(conf.contains(".agents/skills/agentcordon/SKILL.md"));
+        assert!(dir
+            .path()
+            .join(".agents/skills/agentcordon/SKILL.md")
+            .exists());
+    }
+
+    #[test]
+    fn an_existing_aider_conf_keeps_its_own_keys() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+        fs::write(
+            dir.path().join(".aider.conf.yml"),
+            "model: gpt-4o\n# a comment we must not eat\nauto-commits: false\n",
+        )
+        .unwrap();
+
+        run(init(&["aider"])).unwrap();
+        run(init(&["aider"])).unwrap();
+
+        let conf = fs::read_to_string(dir.path().join(".aider.conf.yml")).unwrap();
+        assert!(conf.contains("model: gpt-4o"));
+        assert!(conf.contains("# a comment we must not eat"));
+        assert_eq!(conf.matches("# BEGIN AGENTCORDON").count(), 1);
+        assert_eq!(conf.matches("read:").count(), 1);
+    }
+
+    /// A YAML mapping may carry only one `read:` key, so a config that already
+    /// has one is left byte-identical and the line is printed instead.
+    #[test]
+    fn an_aider_conf_that_already_reads_something_is_left_alone() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+        let original = "read:\n  - CONVENTIONS.md\n";
+        fs::write(dir.path().join(".aider.conf.yml"), original).unwrap();
+
+        run(init(&["aider"])).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".aider.conf.yml")).unwrap(),
+            original
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Selection
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn unknown_agent_is_rejected_and_the_error_lists_the_valid_ones() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        let err = run(init(&["emacs"])).unwrap_err();
+        assert!(err.message.contains("unknown agent 'emacs'"));
+        assert!(err.message.contains("claude-code"));
+        assert!(err.message.contains("auto"));
+    }
+
+    /// The two names the old `--agent` accepted still parse, so a script or a
+    /// docs page that predates this change does not break.
+    #[test]
+    fn the_old_agent_names_still_work() {
+        for legacy in ["codex", "openclaw"] {
+            let dir = TempDir::new().unwrap();
+            let _g = EnvGuard::new(dir.path());
+            run(init(&[legacy])).unwrap();
+            assert!(dir
+                .path()
+                .join(".agents/skills/agentcordon/SKILL.md")
+                .exists());
+            assert!(
+                !dir.path().join(".openclaw").exists(),
+                "{legacy}: nothing reads .openclaw/ in a project"
+            );
+            assert!(
+                !dir.path().join(".codex/instructions.md").exists(),
+                "{legacy}: Codex reads AGENTS.md and .agents/skills, never .codex/instructions.md"
+            );
+        }
+    }
+
+    /// The choice is remembered, so a rerun is non-interactive by default.
+    #[test]
+    fn the_choice_is_remembered_and_reused() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run(init(&["kiro"])).unwrap();
+        assert!(dir.path().join(".agentcordon/agents.toml").exists());
+
+        // No flags: the remembered choice is used, so Kiro's copy is refreshed
+        // and no other runtime's appears.
+        fs::remove_dir_all(dir.path().join(".kiro")).unwrap();
+        run(InitArgs::default()).unwrap();
+        assert!(dir
+            .path()
+            .join(".kiro/skills/agentcordon/SKILL.md")
+            .exists());
+        assert!(!dir.path().join(".claude/skills").exists());
+    }
+
+    /// A corrupt or future `agents.toml` must not make `init` fail; it reads
+    /// as "nothing remembered".
+    #[test]
+    fn a_broken_agents_toml_is_ignored() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+        fs::create_dir_all(dir.path().join(".agentcordon")).unwrap();
+        fs::write(dir.path().join(".agentcordon/agents.toml"), "not = [toml").unwrap();
+
+        run(InitArgs::default()).unwrap();
+
+        assert!(dir
+            .path()
+            .join(".agents/skills/agentcordon/SKILL.md")
+            .exists());
+    }
+
+    #[test]
+    fn reconfigure_ignores_the_remembered_choice() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run(init(&["kiro"])).unwrap();
+        // Not a TTY under `cargo test`, so `--reconfigure` falls through to
+        // detection rather than prompting. Kiro is not detectable from what
+        // `init` wrote, so it drops out.
+        run(InitArgs {
+            agents: Vec::new(),
+            reconfigure: true,
+        })
+        .unwrap();
+
+        let saved = fs::read_to_string(dir.path().join(".agentcordon/agents.toml")).unwrap();
+        assert!(
+            !saved.contains("kiro"),
+            "--reconfigure replaces the remembered choice, it does not add to it"
+        );
+    }
+
+    /// A runtime that detects on a file `init` wrote can never be deselected:
+    /// `--reconfigure` and `--agent auto` would find it again every time, and
+    /// keep refreshing a skill the user asked to be rid of.
+    #[test]
+    fn detection_ignores_everything_init_writes() {
+        let dir = TempDir::new().unwrap();
+        let _g = EnvGuard::new(dir.path());
+
+        run(init(&["all"])).unwrap();
+
+        let env = DetectEnv {
+            workspace: dir.path().to_path_buf(),
+            home: None,
+            path_dirs: Vec::new(),
+        };
+        let found: Vec<&str> = agents::detect(&env).iter().map(|r| r.id).collect();
+        assert!(
+            found.is_empty(),
+            "init's own output must not look like a runtime: {found:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // The registry itself
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn every_runtime_id_is_unique_and_flag_shaped() {
+        let mut seen = BTreeSet::new();
+        for r in RUNTIMES {
+            assert!(seen.insert(r.id), "duplicate runtime id {}", r.id);
+            assert!(
+                r.id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "{}: an --agent value is lowercase and hyphenated",
+                r.id
+            );
+            assert!(!r.markers.is_empty(), "{}: needs a detection marker", r.id);
+        }
+        for (alias, _, _) in agents::COMPAT_ALIASES {
+            assert!(
+                agents::find(alias).is_none(),
+                "{alias} is both an alias and a runtime"
+            );
+        }
+    }
+
+    /// Detection is stubbed: a fake `$HOME` and a fake `PATH`, so the test
+    /// says nothing about the machine it runs on.
+    #[test]
+    fn detection_sees_home_project_and_path_markers() {
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let bin = TempDir::new().unwrap();
+
+        fs::create_dir_all(home.path().join(".kiro")).unwrap();
+        fs::create_dir_all(project.path().join(".junie")).unwrap();
+        fs::write(bin.path().join("aider"), "#!/bin/sh\n").unwrap();
+
+        let env = DetectEnv {
+            workspace: project.path().to_path_buf(),
+            home: Some(home.path().to_path_buf()),
+            path_dirs: vec![bin.path().to_path_buf()],
+        };
+        let found: BTreeSet<&str> = agents::detect(&env).iter().map(|r| r.id).collect();
+
+        assert_eq!(
+            found,
+            ["aider", "junie", "kiro"]
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn detection_finds_nothing_in_an_empty_world() {
+        let project = TempDir::new().unwrap();
+        let env = DetectEnv {
+            workspace: project.path().to_path_buf(),
+            home: None,
+            path_dirs: Vec::new(),
+        };
+        assert!(agents::detect(&env).is_empty());
+    }
+
+    /// `all` and `none` are the picker's two shortcuts and `--agent`'s two
+    /// keywords; they have to mean the same thing on both.
+    #[test]
+    fn picker_shortcuts_match_the_flag_keywords() {
+        let all: Vec<&str> = select::from_indices(&[0]).iter().map(|r| r.id).collect();
+        assert_eq!(all.len(), RUNTIMES.len());
+        assert!(select::from_indices(&[1]).is_empty());
+        // "None" wins over "All" — the safer reading of a contradiction.
+        assert!(select::from_indices(&[0, 1]).is_empty());
+
+        let picked: Vec<&str> = select::from_indices(&[2]).iter().map(|r| r.id).collect();
+        assert_eq!(picked, vec![RUNTIMES[0].id]);
+    }
+
+    #[test]
+    fn the_picker_lists_every_runtime_and_marks_the_detected_ones() {
+        let detected: Vec<&'static Runtime> = vec![agents::find("kiro").unwrap()];
+        let items = select::items(&detected);
+
+        assert_eq!(items.len(), RUNTIMES.len() + 2);
+        assert!(items[0].contains("All runtimes"));
+        assert!(items[1].contains("portable skill"));
+        assert_eq!(items.iter().filter(|i| i.contains("(detected)")).count(), 1);
+        assert!(items.iter().any(|i| i == "Kiro  (detected)"));
+    }
+
+    // -----------------------------------------------------------------
+    // The skill's content
+    // -----------------------------------------------------------------
+
+    /// The skill is the only thing an agent reads, so every command it could
+    /// need has to be in it. Derived from clap so a new subcommand fails here
+    /// rather than being silently undocumented.
+    #[test]
+    fn the_skill_names_every_cli_subcommand() {
+        use clap::CommandFactory;
+
+        for sub in crate::Cli::command().get_subcommands() {
+            let name = sub.get_name();
+            if name == "help" {
+                continue;
+            }
+            assert!(
+                SKILL_MD.contains(&format!("agentcordon {name}")),
+                "SKILL.md never mentions `agentcordon {name}`"
+            );
+        }
+    }
+
+    /// Agent Skills frontmatter: `name` must equal the directory name, and
+    /// `description` is what a runtime loads at startup to decide whether to
+    /// open the body, capped at 1024 characters by the spec.
+    /// <https://agentskills.io/specification>
+    #[test]
+    fn the_skill_frontmatter_matches_the_agent_skills_spec() {
+        let mut lines = SKILL_MD.lines();
+        assert_eq!(lines.next(), Some("---"));
+        assert_eq!(lines.next(), Some("name: agentcordon"));
+
+        let description = SKILL_MD
+            .lines()
+            .find(|l| l.starts_with("description: "))
+            .expect("frontmatter carries a description");
+        assert!(
+            description.len() - "description: ".len() <= 1024,
+            "description is capped at 1024 characters by the spec"
+        );
+        assert!(
+            SKILL_MD.lines().count() <= 500,
+            "the spec caps a skill body at 500 lines"
+        );
+    }
+
+    /// The identity is derived from the key and changes when the key does.
+    /// Baking it into a file that `init` overwrites in place is how two files
+    /// came to name two different workspaces
+    /// (uat/artifacts/reviews/UI-REVIEW-static.md G1); the skill tells the
+    /// agent to ask the CLI instead.
+    #[test]
+    fn the_skill_does_not_bake_in_the_identity() {
+        assert!(!SKILL_MD.contains("AC_IDENTITY"));
+        assert!(!SKILL_MD.contains("sha256:"));
+        assert!(SKILL_MD.contains("agentcordon status"));
+    }
+
+    /// The one rule, and the two things the empirical trials showed an agent
+    /// gets wrong without being told.
+    #[test]
+    fn the_skill_carries_the_rules_that_earned_their_place() {
+        for required in [
+            "Never use a raw",
+            "ALLOWED URL",
+            "least privileged",
+            "Never guess a credential name",
+            "Never pick an unauthenticated server",
+            "url_pattern_denied",
+            "AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker",
+            "broker.port",
+        ] {
+            assert!(SKILL_MD.contains(required), "SKILL.md must say: {required}");
+        }
+        assert!(
+            !SKILL_MD.contains("AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon proxy"),
+            "the CLI never reads the flag; prefixing a proxy call with it does nothing"
+        );
+    }
+
     #[test]
     fn init_does_not_create_mcp_json() {
         let dir = TempDir::new().unwrap();
         let _g = EnvGuard::new(dir.path());
 
-        run("claude-code").unwrap();
+        run(init(&["all"])).unwrap();
 
         assert!(
             !dir.path().join(".mcp.json").exists(),
-            "init must not create .mcp.json"
+            "there is no `agentcordon mcp-serve`; an .mcp.json entry would point at nothing"
         );
     }
 
@@ -404,286 +724,62 @@ mod tests {
         let original = r#"{"mcpServers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"],"env":{"FOO":"bar"}}}}"#;
         fs::write(dir.path().join(".mcp.json"), original).unwrap();
 
-        run("claude-code").unwrap();
-        // Second run takes the "keypair already exists" path.
-        run("claude-code").unwrap();
+        run(init(&["all"])).unwrap();
+        run(init(&["all"])).unwrap();
 
         let after = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
-        assert_eq!(
-            after, original,
-            ".mcp.json must be byte-identical after init"
-        );
+        assert_eq!(after, original);
     }
 
-    /// `init` writes a key the CLI's own loader accepts, prints the
-    /// identity the key derives, and a second run reports the same
-    /// identity without touching the key. Atomic creation and modes are
-    /// covered by the identity crate's key-file tests.
+    /// `init` writes a key the CLI's own loader accepts, and a second run
+    /// reports the same identity without touching the key.
     #[test]
     fn init_creates_loadable_key_and_is_idempotent() {
         let dir = TempDir::new().unwrap();
         let _g = EnvGuard::new(dir.path());
 
-        run("claude-code").unwrap();
-        let key_dir = dir.path().join(".agentcordon");
+        run(init(&["claude-code"])).unwrap();
         let first = crate::signing::load_keypair().unwrap();
-        assert!(agentcordon_identity::workspace_key_exists(&key_dir));
-        // The identity is written once, into AGENTS.md; CLAUDE.md imports it.
-        let agents_md = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
-        assert!(
-            agents_md.contains(&format!("AC_IDENTITY: {}", first.identity())),
-            "AGENTS.md must carry the key's identity"
-        );
-        let claude_md = fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
-        assert!(
-            claude_md.contains("@AGENTS.md"),
-            "CLAUDE.md must import AGENTS.md rather than repeat it"
-        );
+        assert!(agentcordon_identity::workspace_key_exists(
+            &dir.path().join(".agentcordon")
+        ));
 
-        run("claude-code").unwrap();
+        run(init(&["claude-code"])).unwrap();
         let second = crate::signing::load_keypair().unwrap();
         assert_eq!(second.seed_hex(), first.seed_hex());
+
+        let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(gitignore.matches(".agentcordon/").count(), 1);
     }
 
-    /// `AGENTS.md` is the only documentation an agent working in this
-    /// workspace ever sees, so what it says about the broker and about
-    /// picking an MCP server is load-bearing.
-    ///
-    /// It used to give `AGTCRDN_BROKER_URL` a default of
-    /// `http://localhost:3141`. The broker's default port is `0` — it
-    /// auto-selects and writes the URL to `~/.agentcordon/broker.port` — so an
-    /// agent that believed the table and exported the variable broke its own
-    /// connection. It also offered no rule for choosing between several MCP
-    /// servers, and its only selection advice ("prefer least privilege")
-    /// pointed at the unauthenticated one, which cannot answer a question
-    /// about identity.
+    /// Marker types are exercised by the detection test above; this pins that
+    /// the registry actually uses all three, so none rots unused.
     #[test]
-    fn agents_md_describes_broker_discovery_and_mcp_selection() {
-        let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
-
-        run("claude-code").unwrap();
-        let agents_md = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
-
-        // No invented broker default anywhere in the file.
-        assert!(
-            !agents_md.contains("3141"),
-            "AGENTS.md must not name a default broker port; the broker auto-selects one"
-        );
-        assert!(
-            agents_md.contains("broker.port"),
-            "AGENTS.md must say the broker is discovered through the port file"
-        );
-        assert!(
-            agents_md.contains("Override only"),
-            "AGTCRDN_BROKER_URL must be presented as an override, not a default"
-        );
-
-        // A rule for choosing among MCP servers.
-        assert!(
-            agents_md.contains("Match the service the task is about"),
-            "AGENTS.md must tell the agent to match the task's service"
-        );
-        assert!(
-            agents_md.contains("authenticated identity fits the question"),
-            "AGENTS.md must prefer the server whose auth identity fits the question"
-        );
-        assert!(
-            agents_md.contains("Never pick an unauthenticated server"),
-            "AGENTS.md must forbid an unauthenticated server for identity questions"
-        );
-
-        // Learn a tool's arguments instead of guessing them.
-        assert!(
-            agents_md.contains("agentcordon mcp-tools --schema"),
-            "AGENTS.md must point at `mcp-tools --schema` for a tool's arguments"
-        );
-        assert!(
-            agents_md.contains("Never guess argument names"),
-            "AGENTS.md must tell the agent not to guess argument names"
-        );
+    fn the_registry_uses_every_marker_kind() {
+        let all: Vec<&Marker> = RUNTIMES.iter().flat_map(|r| r.markers.iter()).collect();
+        assert!(all.iter().any(|m| matches!(m, Marker::Binary(_))));
+        assert!(all.iter().any(|m| matches!(m, Marker::Home(_))));
+        assert!(all.iter().any(|m| matches!(m, Marker::Project(_))));
     }
 
-    /// The AgentCordon block is delimited and replaced in place, so a rerun
-    /// after the template changes must not leave two copies or clobber the
-    /// user's own content.
-    #[test]
-    fn agents_md_section_is_replaced_not_duplicated() {
-        let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
-
-        fs::write(
-            dir.path().join("AGENTS.md"),
-            "# My Instructions\n\nKeep this line.\n",
-        )
-        .unwrap();
-
-        run("claude-code").unwrap();
-        run("claude-code").unwrap();
-
-        let agents_md = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
-        assert_eq!(
-            agents_md.matches("<!-- BEGIN AGENTCORDON -->").count(),
-            1,
-            "the AgentCordon section must appear exactly once"
-        );
-        assert!(
-            agents_md.contains("Keep this line."),
-            "the user's own content must survive"
-        );
-    }
-
-    /// The identity belongs in exactly one generated file.
-    ///
-    /// `AGENTS.md`'s block is delimited and replaced on every run; `CLAUDE.md`
-    /// carried a second copy and was skipped whenever it merely mentioned
-    /// "AgentCordon", so after a key regeneration the two files named
-    /// different identities and the agent read both
-    /// (uat/artifacts/reviews/UI-REVIEW-static.md G1).
-    #[test]
-    fn only_agents_md_carries_the_identity() {
-        let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
-
-        run("all").unwrap();
-
-        let agents_md = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
-        assert!(
-            agents_md.contains("AC_IDENTITY: sha256:"),
-            "AGENTS.md is where the identity lives"
-        );
-
-        for other in [
-            "CLAUDE.md",
-            ".codex/instructions.md",
-            ".openclaw/instructions.md",
-        ] {
-            let content = fs::read_to_string(dir.path().join(other)).unwrap();
-            assert!(
-                !content.contains("AC_IDENTITY"),
-                "{other} must not carry a second copy of the identity — it goes stale when \
-                 the key is regenerated"
-            );
+    /// Every path in the tree, for the idempotence assertion.
+    fn tree(root: &Path) -> BTreeSet<(String, String)> {
+        let mut out = BTreeSet::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    let rel = path.strip_prefix(root).unwrap().display().to_string();
+                    out.insert((rel, fs::read_to_string(&path).unwrap_or_default()));
+                }
+            }
         }
-    }
-
-    /// Every file `init` writes into carries the same BEGIN/END markers, so a
-    /// rerun replaces its own block in place. Detection by substring left a
-    /// project whose `CLAUDE.md` said "we don't use AgentCordon here"
-    /// untouched forever (uat/artifacts/reviews/UI-REVIEW-static.md G5).
-    #[test]
-    fn every_generated_file_is_delimited_by_markers_and_replaced_in_place() {
-        let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
-
-        // A pre-existing file that merely mentions AgentCordon still gets the
-        // block appended, because the markers are what `init` looks for.
-        fs::write(
-            dir.path().join("CLAUDE.md"),
-            "# House rules\n\nWe do not use AgentCordon for anything else.\n",
-        )
-        .unwrap();
-
-        run("all").unwrap();
-        run("all").unwrap();
-
-        for generated in [
-            "AGENTS.md",
-            "CLAUDE.md",
-            ".codex/instructions.md",
-            ".openclaw/instructions.md",
-        ] {
-            let content = fs::read_to_string(dir.path().join(generated)).unwrap();
-            assert_eq!(
-                content.matches("<!-- BEGIN AGENTCORDON -->").count(),
-                1,
-                "{generated}: exactly one delimited AgentCordon block"
-            );
-            assert_eq!(
-                content.matches("<!-- END AGENTCORDON -->").count(),
-                1,
-                "{generated}: the block is closed exactly once"
-            );
-        }
-
-        let claude_md = fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
-        assert!(
-            claude_md.contains("We do not use AgentCordon for anything else."),
-            "the user's own content survives"
-        );
-        assert!(
-            claude_md.contains("@AGENTS.md"),
-            "CLAUDE.md's block is the import of AGENTS.md and nothing else"
-        );
-    }
-
-    /// The Codex and OpenClaw stubs promised a skills directory `init` never
-    /// writes, and OpenClaw's promised hot-reload of skills that do not exist
-    /// (uat/artifacts/reviews/UI-REVIEW-static.md G4).
-    #[test]
-    fn the_agent_stubs_do_not_promise_a_skills_directory() {
-        let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
-
-        run("all").unwrap();
-
-        for stub in [".codex/instructions.md", ".openclaw/instructions.md"] {
-            let content = fs::read_to_string(dir.path().join(stub)).unwrap();
-            assert!(
-                !content.contains(".agents/skills/"),
-                "{stub}: init writes no skill, so the discovery path is a dangling promise"
-            );
-            assert!(
-                !content.contains("hot-reload"),
-                "{stub}: nothing to hot-reload"
-            );
-        }
-        assert!(
-            !dir.path().join(".agents/skills").exists(),
-            "init writes no skills directory"
-        );
-    }
-
-    /// One sentence about `AGTCRDN_PROXY_ALLOW_LOOPBACK`, in the one file that
-    /// explains the broker.
-    ///
-    /// `crates/broker/src/config.rs:31` reads it as a clap `env` argument, so
-    /// it is read once, when the broker process starts. Putting it in front of
-    /// an `agentcordon proxy` command — which this repository's own `CLAUDE.md`
-    /// told the reader to do — sets it on the CLI, which never looks at it,
-    /// and the proxy is refused anyway (uat/artifacts/reviews/UI-REVIEW-static.md G2).
-    #[test]
-    fn one_sentence_explains_the_loopback_flag() {
-        let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
-
-        run("all").unwrap();
-
-        let agents_md = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
-        assert_eq!(
-            agents_md.matches("AGTCRDN_PROXY_ALLOW_LOOPBACK").count(),
-            1,
-            "AGENTS.md explains the loopback flag exactly once"
-        );
-        assert!(
-            agents_md.contains("AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker"),
-            "the sentence shows the flag where it is read: in front of the broker, at start"
-        );
-        assert!(
-            !agents_md.contains("AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon proxy"),
-            "the CLI never reads the flag; prefixing a proxy call with it does nothing"
-        );
-
-        for other in [
-            "CLAUDE.md",
-            ".codex/instructions.md",
-            ".openclaw/instructions.md",
-        ] {
-            let content = fs::read_to_string(dir.path().join(other)).unwrap();
-            assert!(
-                !content.contains("AGTCRDN_PROXY_ALLOW_LOOPBACK"),
-                "{other} must not carry a second, divergent explanation of the flag"
-            );
-        }
+        out
     }
 }
