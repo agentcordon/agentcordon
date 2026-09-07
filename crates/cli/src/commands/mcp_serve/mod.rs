@@ -16,6 +16,8 @@
 mod protocol;
 mod tools;
 
+use std::time::Duration;
+
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
@@ -24,6 +26,12 @@ use crate::broker::BrokerClient;
 use crate::commands::{credentials, mcp, proxy, status};
 use crate::error::{CliError, ExitCode};
 use crate::signing;
+
+/// How often the tools of an `--expose`d server are re-read. A re-export
+/// tracks an upstream catalogue that changes when an admin changes it, so it
+/// is polled rather than pushed; the client is told only when the set it was
+/// last given actually changed.
+const EXPOSED_REFRESH: Duration = Duration::from_secs(30);
 
 /// What `agentcordon mcp-serve` was asked to publish.
 pub struct ServeArgs {
@@ -44,6 +52,11 @@ struct Server {
     /// kept for the session. `initialize` and a `tools/list` with no
     /// `--expose` never touch it.
     client: Option<BrokerClient>,
+    /// The re-exported tools as they were last read.
+    exposed: Vec<tools::Exposed>,
+    /// Whether the client has been given a tool list yet. Until it has,
+    /// there is no set for a refresh to have changed.
+    published: bool,
     out: tokio::io::Stdout,
 }
 
@@ -70,6 +83,8 @@ impl Server {
         Self {
             expose,
             client: None,
+            exposed: Vec::new(),
+            published: false,
             out: tokio::io::stdout(),
         }
     }
@@ -91,8 +106,21 @@ impl Server {
             // ends the read loop and the process.
         });
 
-        while let Some(line) = rx.recv().await {
-            self.handle_line(&line).await;
+        // The refresh only exists for `--expose`; without it nothing here
+        // ever reaches the broker on its own.
+        let watching = !self.expose.is_empty();
+        let mut refresh = tokio::time::interval(EXPOSED_REFRESH);
+        refresh.tick().await; // the first tick is immediate; skip it
+
+        loop {
+            tokio::select! {
+                line = rx.recv() => match line {
+                    Some(line) => self.handle_line(&line).await,
+                    // Stdin closed: the session is over.
+                    None => break,
+                },
+                _ = refresh.tick(), if watching => self.refresh_exposed().await,
+            }
         }
         Ok(())
     }
@@ -153,9 +181,71 @@ impl Server {
         })
     }
 
-    /// The tools this session publishes.
+    /// The tools this session publishes: the fixed six, and whatever the
+    /// `--expose`d servers currently offer.
     async fn tool_list(&mut self) -> Vec<Value> {
-        tools::fixed_tools()
+        self.refresh_exposed().await;
+        let mut list = tools::fixed_tools();
+        list.extend(self.exposed.iter().map(tools::Exposed::to_tool));
+        self.published = true;
+        list
+    }
+
+    /// Re-read the `--expose`d servers' tools.
+    ///
+    /// A set that differs from the one the client was last given sends
+    /// `notifications/tools/list_changed`, which is what
+    /// `capabilities.tools.listChanged` promised at `initialize`. A broker
+    /// that cannot be reached leaves the last known set standing and says so
+    /// on stderr: the six fixed tools are what the session is for, and
+    /// dropping the re-export because one refresh failed would be a worse
+    /// answer than a slightly stale one.
+    async fn refresh_exposed(&mut self) {
+        if self.expose.is_empty() {
+            return;
+        }
+        let listed = match self.exposed_tools_now().await {
+            Ok(listed) => listed,
+            Err(e) => {
+                tracing::warn!(error = %e.message, "could not refresh the exposed tools");
+                return;
+            }
+        };
+        if listed == self.exposed {
+            return;
+        }
+        let announce = self.published;
+        self.exposed = listed;
+        if announce {
+            self.write(&protocol::notification("notifications/tools/list_changed"))
+                .await;
+        }
+    }
+
+    /// The current re-export set, read from the broker's tool catalogue.
+    async fn exposed_tools_now(&mut self) -> Result<Vec<tools::Exposed>, CliError> {
+        let expose = self.expose.clone();
+        let client = self.broker().await?;
+        let catalogue = mcp::fetch_tools(client).await?;
+        let entries = catalogue
+            .iter()
+            .filter_map(|entry| {
+                let server = entry.get("server")?.as_str()?.to_string();
+                if !expose.contains(&server) {
+                    return None;
+                }
+                Some((
+                    server,
+                    entry.get("tool")?.as_str()?.to_string(),
+                    entry
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    entry.get("input_schema").cloned().filter(|s| !s.is_null()),
+                ))
+            })
+            .collect();
+        Ok(tools::name_exposed(entries))
     }
 
     async fn call_tool(&mut self, params: &Value) -> Result<Value, (i64, String)> {
@@ -208,9 +298,24 @@ impl Server {
                 let arguments = object_arg(args, "arguments")?.unwrap_or_else(|| json!({}));
                 self.mcp_call(&server, &tool, arguments).await
             }
-            other => Err(ToolFailure::Protocol(format!(
-                "Unknown tool: {other}. Call tools/list for what this server publishes."
-            ))),
+            // A re-exported tool, if `--expose` published one under this
+            // name. The set is re-read first when the name is unfamiliar, so
+            // a tool an admin added mid-session is callable without waiting
+            // for the next refresh.
+            other => {
+                if self.exposed.iter().all(|e| e.name != other) {
+                    self.refresh_exposed().await;
+                }
+                match self.exposed.iter().find(|e| e.name == other) {
+                    Some(exposed) => {
+                        let (server, tool) = (exposed.server.clone(), exposed.tool.clone());
+                        self.mcp_call(&server, &tool, args.clone()).await
+                    }
+                    None => Err(ToolFailure::Protocol(format!(
+                        "Unknown tool: {other}. Call tools/list for what this server publishes."
+                    ))),
+                }
+            }
         }
     }
 
@@ -371,7 +476,10 @@ fn object_arg(args: &Value, key: &str) -> Result<Option<Value>, ToolFailure> {
 }
 
 /// An optional object of string values — the shape `headers` declares.
-fn string_map(args: &Value, key: &str) -> Result<std::collections::HashMap<String, String>, ToolFailure> {
+fn string_map(
+    args: &Value,
+    key: &str,
+) -> Result<std::collections::HashMap<String, String>, ToolFailure> {
     let Some(object) = object_arg(args, key)? else {
         return Ok(std::collections::HashMap::new());
     };

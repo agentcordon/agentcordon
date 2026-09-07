@@ -37,9 +37,14 @@ struct Recorded {
 impl Recorded {
     /// The four headers `agentcordon-identity` signs a broker request with.
     fn is_signed(&self) -> bool {
-        ["x-ac-publickey", "x-ac-timestamp", "x-ac-nonce", "x-ac-signature"]
-            .iter()
-            .all(|h| self.headers.contains_key(*h))
+        [
+            "x-ac-publickey",
+            "x-ac-timestamp",
+            "x-ac-nonce",
+            "x-ac-signature",
+        ]
+        .iter()
+        .all(|h| self.headers.contains_key(*h))
     }
 }
 
@@ -297,8 +302,9 @@ impl Serve {
             0,
             "a message must not contain an embedded newline: {line:?}"
         );
-        serde_json::from_str(line.trim_end())
-            .unwrap_or_else(|e| panic!("stdout carried something that is not JSON-RPC: {line:?} ({e})"))
+        serde_json::from_str(line.trim_end()).unwrap_or_else(|e| {
+            panic!("stdout carried something that is not JSON-RPC: {line:?} ({e})")
+        })
     }
 
     /// Send a request and read until its response arrives, keeping anything
@@ -430,7 +436,12 @@ fn initialize_answers_with_the_broker_down() {
             .expect("key");
         key.identity()
     };
-    let name = dir.path().file_name().unwrap().to_string_lossy().to_string();
+    let name = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     assert!(
         instructions.contains(&identity),
         "the instructions name the workspace identity: {instructions}"
@@ -666,7 +677,10 @@ fn credentials_returns_the_five_field_projection() {
         ]
     );
     assert_eq!(entries[0]["name"], "github");
-    assert_eq!(entries[0]["allowed_url_pattern"], "https://api.github.com/*");
+    assert_eq!(
+        entries[0]["allowed_url_pattern"],
+        "https://api.github.com/*"
+    );
     assert_eq!(
         entries[1]["allowed_url_pattern"],
         Value::Null,
@@ -955,10 +969,461 @@ fn proxy_without_a_url_is_a_protocol_error() {
     );
     assert_eq!(message["error"]["code"], -32602);
     assert!(
-        message["error"]["message"].as_str().unwrap().contains("url"),
+        message["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("url"),
         "{}",
         message["error"]
     );
 
     assert!(serve.shutdown().success());
+}
+
+// ---------------------------------------------------------------------------
+// Slice 4 — the brokered MCP surface
+// ---------------------------------------------------------------------------
+
+/// One tool as the broker's `/mcp/list-tools` lists it.
+fn upstream_tool(server: &str, tool: &str) -> Value {
+    json!({
+        "server": server,
+        "tool": tool,
+        "description": format!("{tool} on {server}"),
+        "input_schema": {
+            "type": "object",
+            "properties": {"repo": {"type": "string"}},
+            "required": ["repo"],
+        },
+    })
+}
+
+/// The catalogue an agent picks a server from, as the broker listed it.
+#[test]
+fn mcp_servers_returns_the_brokers_listing() {
+    let broker = StubBroker::start();
+    broker.set(|a| {
+        a.servers = json!({"data": [
+            {"name": "github", "description": "GitHub", "tools": ["create_issue"],
+             "transport": "http", "url": "https://mcp.example/github"},
+        ]});
+    });
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &[]);
+    serve.initialize();
+
+    let result = serve.call_tool(2, "agentcordon_mcp_servers", json!({}));
+    assert_eq!(result["isError"], json!(false));
+    let listed: Value = serde_json::from_str(&Serve::text_of(&result)).expect("JSON list");
+    assert_eq!(listed[0]["name"], "github");
+    assert_eq!(listed[0]["tools"], json!(["create_issue"]));
+
+    let asked = broker.requests_to("/mcp/list-servers");
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].is_signed());
+
+    assert!(serve.shutdown().success());
+}
+
+/// One server's tools, with the upstream schema under the name MCP gives it,
+/// so a model can read the argument names instead of guessing them.
+#[test]
+fn mcp_tools_returns_one_servers_tools_with_their_schemas() {
+    let broker = StubBroker::start();
+    broker.set(|a| {
+        a.tools = json!({"data": [
+            upstream_tool("github", "create_issue"),
+            upstream_tool("slack", "send_message"),
+        ]});
+    });
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &[]);
+    serve.initialize();
+
+    let result = serve.call_tool(2, "agentcordon_mcp_tools", json!({"server": "github"}));
+    assert_eq!(result["isError"], json!(false));
+    let listed: Value = serde_json::from_str(&Serve::text_of(&result)).expect("JSON list");
+    let tools = listed.as_array().expect("an array");
+    assert_eq!(
+        tools.len(),
+        1,
+        "only the server that was asked for: {listed}"
+    );
+    assert_eq!(tools[0]["name"], "create_issue");
+    assert_eq!(tools[0]["description"], "create_issue on github");
+    assert_eq!(tools[0]["inputSchema"]["required"], json!(["repo"]));
+
+    assert!(serve.shutdown().success());
+}
+
+/// A misspelled server name is the common case for an empty answer, so it is
+/// told rather than shown an empty list.
+#[test]
+fn mcp_tools_for_a_server_with_nothing_says_so() {
+    let broker = StubBroker::start();
+    broker.set(|a| a.tools = json!({"data": [upstream_tool("github", "create_issue")]}));
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &[]);
+    serve.initialize();
+
+    let result = serve.call_tool(2, "agentcordon_mcp_tools", json!({"server": "guthub"}));
+    assert_eq!(result["isError"], json!(true));
+    let text = Serve::text_of(&result);
+    assert!(text.contains("guthub"), "{text}");
+    assert!(text.contains("agentcordon_mcp_servers"), "{text}");
+
+    assert!(serve.shutdown().success());
+}
+
+/// The upstream tool's own result, unchanged, plus the correlation id that
+/// ties it to the policy decision in the server's audit log.
+#[test]
+fn mcp_call_returns_the_upstream_result_with_its_correlation_id() {
+    let broker = StubBroker::start();
+    broker.set(|a| {
+        a.call = json!({"data": {
+            "content": [
+                {"type": "text", "text": "Issue #42 created"},
+                {"type": "resource_link", "uri": "https://example.test/42"},
+            ],
+            "isError": false,
+            "correlation_id": "corr-abc",
+        }});
+    });
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &[]);
+    serve.initialize();
+
+    let result = serve.call_tool(
+        2,
+        "agentcordon_mcp_call",
+        json!({"server": "github", "tool": "create_issue", "arguments": {"repo": "a/b"}}),
+    );
+
+    assert_eq!(
+        result["content"],
+        json!([
+            {"type": "text", "text": "Issue #42 created"},
+            {"type": "resource_link", "uri": "https://example.test/42"},
+        ]),
+        "every block comes back as the upstream sent it"
+    );
+    assert_eq!(result["isError"], json!(false));
+    assert_eq!(result["_meta"]["correlation_id"], "corr-abc");
+
+    let called = broker.requests_to("/mcp/call");
+    assert_eq!(called.len(), 1);
+    assert!(called[0].is_signed());
+    let sent: Value = serde_json::from_str(&called[0].body).expect("json body");
+    assert_eq!(sent["server"], "github");
+    assert_eq!(sent["tool"], "create_issue");
+    assert_eq!(sent["arguments"], json!({"repo": "a/b"}));
+
+    assert!(serve.shutdown().success());
+}
+
+/// A tool that answered with `isError` is reported as one: the call reached
+/// the upstream and the upstream refused.
+#[test]
+fn mcp_call_passes_an_upstream_tool_error_through() {
+    let broker = StubBroker::start();
+    broker.set(|a| {
+        a.call = json!({"data": {
+            "content": [{"type": "text", "text": "repo not found"}],
+            "isError": true,
+            "correlation_id": "corr-err",
+        }});
+    });
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &[]);
+    serve.initialize();
+
+    let result = serve.call_tool(
+        2,
+        "agentcordon_mcp_call",
+        json!({"server": "github", "tool": "create_issue"}),
+    );
+    assert_eq!(result["isError"], json!(true));
+    assert_eq!(Serve::text_of(&result), "repo not found");
+    assert_eq!(result["_meta"]["correlation_id"], "corr-err");
+
+    assert!(serve.shutdown().success());
+}
+
+/// `arguments` is optional; a tool that takes none is called with none.
+#[test]
+fn mcp_call_without_arguments_sends_an_empty_object() {
+    let broker = StubBroker::start();
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &[]);
+    serve.initialize();
+
+    serve.call_tool(
+        2,
+        "agentcordon_mcp_call",
+        json!({"server": "echo", "tool": "ping"}),
+    );
+    let sent: Value =
+        serde_json::from_str(&broker.requests_to("/mcp/call")[0].body).expect("json body");
+    assert_eq!(sent["arguments"], json!({}));
+
+    assert!(serve.shutdown().success());
+}
+
+// ---------------------------------------------------------------------------
+// Slice 5 — --expose
+// ---------------------------------------------------------------------------
+
+fn list_changed(serve: &Serve) -> usize {
+    serve
+        .notifications()
+        .iter()
+        .filter(|n| n["method"] == "notifications/tools/list_changed")
+        .count()
+}
+
+/// Without `--expose`, a workspace with twenty brokered tools costs the same
+/// six tools of context as one with none.
+#[test]
+fn without_expose_a_broker_full_of_tools_is_still_six_tools() {
+    let broker = StubBroker::start();
+    broker.set(|a| {
+        a.tools = json!({"data": [
+            upstream_tool("github", "create_issue"),
+            upstream_tool("github", "list_repos"),
+        ]});
+    });
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &[]);
+    serve.initialize();
+
+    let list = serve.ok(2, "tools/list", json!({}));
+    assert_eq!(tool_names(&list), FIXED_TOOLS);
+    assert!(
+        broker.requests_to("/mcp/list-tools").is_empty(),
+        "and it does not even ask"
+    );
+
+    assert!(serve.shutdown().success());
+}
+
+/// `--expose <server>` re-exports that server's tools as typed tools, with
+/// the upstream schema verbatim — and only that server's.
+#[test]
+fn expose_publishes_one_tool_per_upstream_tool_of_that_server() {
+    let broker = StubBroker::start();
+    broker.set(|a| {
+        a.tools = json!({"data": [
+            upstream_tool("github", "create_issue"),
+            upstream_tool("slack", "send_message"),
+        ]});
+    });
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &["--expose", "github"]);
+    serve.initialize();
+
+    let list = serve.ok(2, "tools/list", json!({}));
+    let names = tool_names(&list);
+    assert_eq!(
+        names.len(),
+        FIXED_TOOLS.len() + 1,
+        "the six, and github's one tool: {names:?}"
+    );
+    assert!(
+        names.contains(&"github__create_issue".to_string()),
+        "{names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n.starts_with("slack__")),
+        "a server that was not exposed is not published: {names:?}"
+    );
+
+    let exported = list["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "github__create_issue")
+        .expect("the exported tool");
+    assert_eq!(exported["description"], "[github] create_issue on github");
+    assert_eq!(
+        exported["inputSchema"],
+        json!({
+            "type": "object",
+            "properties": {"repo": {"type": "string"}},
+            "required": ["repo"],
+        }),
+        "the upstream schema, verbatim"
+    );
+
+    assert!(serve.shutdown().success());
+}
+
+/// Calling a re-exported tool is the same brokered call as
+/// `agentcordon_mcp_call`, with the server and tool it was named for.
+#[test]
+fn calling_an_exposed_tool_names_its_server_and_tool() {
+    let broker = StubBroker::start();
+    broker.set(|a| a.tools = json!({"data": [upstream_tool("github", "create_issue")]}));
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &["--expose", "github"]);
+    serve.initialize();
+    serve.ok(2, "tools/list", json!({}));
+
+    let result = serve.call_tool(3, "github__create_issue", json!({"repo": "a/b"}));
+    assert_eq!(result["isError"], json!(false));
+    assert_eq!(result["_meta"]["correlation_id"], "corr-1");
+
+    let called = broker.requests_to("/mcp/call");
+    assert_eq!(called.len(), 1);
+    let sent: Value = serde_json::from_str(&called[0].body).expect("json body");
+    assert_eq!(sent["server"], "github");
+    assert_eq!(sent["tool"], "create_issue");
+    assert_eq!(sent["arguments"], json!({"repo": "a/b"}));
+
+    assert!(serve.shutdown().success());
+}
+
+/// A tool that appears upstream after the session started is published, and
+/// the client is told the list changed — which is what `listChanged: true`
+/// promised at `initialize`.
+#[test]
+fn the_client_is_told_when_an_exposed_servers_tools_change() {
+    let broker = StubBroker::start();
+    broker.set(|a| a.tools = json!({"data": [upstream_tool("github", "create_issue")]}));
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &["--expose", "github"]);
+    serve.initialize();
+
+    let first = serve.ok(2, "tools/list", json!({}));
+    assert_eq!(tool_names(&first).len(), FIXED_TOOLS.len() + 1);
+    assert_eq!(
+        list_changed(&serve),
+        0,
+        "nothing has changed yet: the first list is the first list"
+    );
+
+    broker.set(|a| {
+        a.tools = json!({"data": [
+            upstream_tool("github", "create_issue"),
+            upstream_tool("github", "list_repos"),
+        ]});
+    });
+
+    let second = serve.ok(3, "tools/list", json!({}));
+    assert_eq!(tool_names(&second).len(), FIXED_TOOLS.len() + 2);
+    assert_eq!(
+        list_changed(&serve),
+        1,
+        "exactly one notification for one change"
+    );
+
+    assert!(serve.shutdown().success());
+}
+
+/// A broker that cannot be reached costs the exposed tools, not the session:
+/// the six fixed tools are still published and still callable.
+#[test]
+fn expose_with_the_broker_down_still_publishes_the_six() {
+    let dir = workspace();
+    let mut serve = Serve::start(&dead_broker_url(), &dir, &["--expose", "github"]);
+    serve.initialize();
+
+    let list = serve.ok(2, "tools/list", json!({}));
+    assert_eq!(tool_names(&list), FIXED_TOOLS);
+
+    assert!(serve.shutdown().success());
+}
+
+// ---------------------------------------------------------------------------
+// Slice 6 — the broker the session starts for itself
+// ---------------------------------------------------------------------------
+
+/// With a server URL configured and no broker running, the first tool call
+/// starts one, exactly as `init` and `register` do. What is observable from
+/// outside is that it *tried*: with no `agentcordon-broker` on PATH the
+/// failure names the start, not the absence.
+#[test]
+fn the_first_tool_call_starts_a_broker_when_a_server_is_configured() {
+    let dir = workspace();
+    let empty_path = tempfile::tempdir().expect("tempdir");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentcordon"));
+    cmd.arg("mcp-serve")
+        .env("AGTCRDN_BROKER_URL", dead_broker_url())
+        .env("AGTCRDN_WORKSPACE_DIR", dir.path())
+        .env("HOME", dir.path())
+        .env("AGTCRDN_SERVER_URL", "http://cordon.example.test:3140")
+        .env("PATH", empty_path.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    let mut child = cmd.spawn().expect("spawn");
+    let mut serve = Serve {
+        stdin: Some(child.stdin.take().expect("stdin")),
+        out: BufReader::new(child.stdout.take().expect("stdout")),
+        child,
+        seen: Vec::new(),
+    };
+    serve.initialize();
+
+    let result = serve.call_tool(2, "agentcordon_status", json!({}));
+    assert_eq!(result["isError"], json!(true));
+    let text = Serve::text_of(&result);
+    assert!(
+        text.contains("failed to start broker"),
+        "the autostart was attempted: {text}"
+    );
+
+    assert!(serve.shutdown().success());
+}
+
+/// Nothing on stdout but JSON-RPC, even while the broker autostart is
+/// reporting progress: stdout is the channel, stderr is the log.
+#[test]
+fn progress_and_errors_never_reach_stdout() {
+    let dir = workspace();
+    let empty_path = tempfile::tempdir().expect("tempdir");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agentcordon"));
+    cmd.arg("mcp-serve")
+        .env("AGTCRDN_BROKER_URL", dead_broker_url())
+        .env("AGTCRDN_WORKSPACE_DIR", dir.path())
+        .env("HOME", dir.path())
+        .env("AGTCRDN_SERVER_URL", "http://cordon.example.test:3140")
+        .env("PATH", empty_path.path())
+        .env("AGTCRDN_LOG_LEVEL", "debug")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().expect("spawn");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+
+    for line in [
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+               "params": {"name": "agentcordon_status", "arguments": {}}}),
+    ] {
+        writeln!(stdin, "{line}").expect("write");
+    }
+    drop(stdin);
+
+    let mut written = String::new();
+    BufReader::new(stdout)
+        .read_to_string(&mut written)
+        .expect("read stdout");
+    assert!(child.wait().expect("wait").success());
+
+    let messages: Vec<&str> = written.lines().collect();
+    assert_eq!(
+        messages.len(),
+        2,
+        "one reply each, and nothing else: {written}"
+    );
+    for message in messages {
+        let parsed: Value = serde_json::from_str(message)
+            .unwrap_or_else(|e| panic!("stdout carried non-JSON-RPC: {message:?} ({e})"));
+        assert_eq!(parsed["jsonrpc"], "2.0");
+    }
 }

@@ -173,7 +173,9 @@ impl Exposed {
 /// derived from its own `server/tool` — not its position in the list — so the
 /// name a tool gets is the same on every refresh, whatever order the broker
 /// listed them in.
-pub(crate) fn name_exposed(entries: Vec<(String, String, Option<String>, Option<Value>)>) -> Vec<Exposed> {
+pub(crate) fn name_exposed(
+    entries: Vec<(String, String, Option<String>, Option<Value>)>,
+) -> Vec<Exposed> {
     let bases: Vec<String> = entries
         .iter()
         .map(|(server, tool, _, _)| base_name(server, tool))
@@ -205,7 +207,10 @@ pub(crate) fn name_exposed(entries: Vec<(String, String, Option<String>, Option<
 }
 
 fn base_name(server: &str, tool: &str) -> String {
-    truncate(&format!("{}__{}", sanitise(server), sanitise(tool)), MAX_NAME)
+    truncate(
+        &format!("{}__{}", sanitise(server), sanitise(tool)),
+        MAX_NAME,
+    )
 }
 
 /// Lowercase, with everything outside `[a-z0-9_]` replaced by `_` — replaced
@@ -248,7 +253,8 @@ mod tests {
 
     #[test]
     fn the_fixed_surface_is_six_tools() {
-        let names: Vec<&str> = fixed_tools()
+        let published = fixed_tools();
+        let names: Vec<&str> = published
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
@@ -286,10 +292,7 @@ mod tests {
     /// one tool: a client keys its permissions by name.
     #[test]
     fn colliding_names_are_disambiguated() {
-        let named = name_exposed(vec![
-            entry("gh", "search-code"),
-            entry("gh", "search.code"),
-        ]);
+        let named = name_exposed(vec![entry("gh", "search-code"), entry("gh", "search.code")]);
         assert_ne!(named[0].name, named[1].name);
         assert!(named[0].name.starts_with("gh__search_code_"), "{named:?}");
         assert!(named.iter().all(|e| e.name.len() <= MAX_NAME));

@@ -64,10 +64,15 @@ pub(crate) fn decode(line: &str) -> Result<Incoming, Option<Value>> {
         }
     };
 
+    // A response to a request this server never made. It is not ours to
+    // answer: this server sends notifications, never requests, so replying
+    // would put an unpaired message on the channel.
+    if value.get("result").is_some() || value.get("error").is_some() {
+        return Err(None);
+    }
+
     let id = value.get("id").cloned().filter(|v| !v.is_null());
     let Some(method) = value.get("method").and_then(Value::as_str) else {
-        // A response, or something that is neither: a server that answered
-        // it would be inventing a request the client never made.
         return match id {
             Some(id) => Err(Some(error(
                 id,
@@ -183,6 +188,21 @@ mod tests {
     #[test]
     fn a_response_from_the_client_is_ignored() {
         assert_eq!(decode(r#"{"jsonrpc":"2.0","id":9,"result":{}}"#), Err(None));
+        assert_eq!(
+            decode(r#"{"jsonrpc":"2.0","id":9,"error":{"code":-1,"message":"x"}}"#),
+            Err(None)
+        );
+    }
+
+    /// Something with an id that is neither a request nor a response gets
+    /// the JSON-RPC answer for exactly that.
+    #[test]
+    fn an_identified_message_with_no_method_is_an_invalid_request() {
+        let Err(Some(response)) = decode(r#"{"jsonrpc":"2.0","id":9,"parms":{}}"#) else {
+            panic!("expected an error response");
+        };
+        assert_eq!(response["error"]["code"], INVALID_REQUEST);
+        assert_eq!(response["id"], json!(9));
     }
 
     #[test]
