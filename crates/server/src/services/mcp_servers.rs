@@ -1242,7 +1242,7 @@ pub fn is_narrowed(server: &McpServer) -> bool {
 /// anything that is not one.
 ///
 /// `tag` and `tool` have been through
-/// [`is_safe_identifier`], which admits no `:`, so the name parses back.
+/// `is_safe_identifier`, which admits no `:`, so the name parses back.
 pub fn generated_grant_name(server_id: &str, tag: &str, tool: &str) -> String {
     format!("grant:mcp:{server_id}:tag:{tag}:mcp_tool_call:{tool}")
 }
