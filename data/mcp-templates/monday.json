@@ -1,0 +1,19 @@
+{
+  "key": "monday",
+  "name": "monday.com",
+  "description": "Boards, items, updates, and workspace queries via monday.com's hosted MCP server.",
+  "upstream_url": "https://mcp.monday.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.monday.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "monday",
+    "tasks",
+    "oauth"
+  ],
+  "icon": "monday",
+  "sort_order": 215
+}

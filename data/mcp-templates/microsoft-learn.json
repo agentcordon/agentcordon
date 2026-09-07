@@ -1,0 +1,16 @@
+{
+  "key": "microsoft-learn",
+  "name": "Microsoft Learn",
+  "description": "Search Microsoft and Azure documentation and code samples. No account needed.",
+  "upstream_url": "https://learn.microsoft.com/api/mcp",
+  "transport": "http",
+  "auth_method": "none",
+  "category": "developer-tools",
+  "tags": [
+    "microsoft",
+    "azure",
+    "docs"
+  ],
+  "icon": "microsoft",
+  "sort_order": 425
+}

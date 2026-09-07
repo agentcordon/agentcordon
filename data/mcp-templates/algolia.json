@@ -1,0 +1,19 @@
+{
+  "key": "algolia",
+  "name": "Algolia",
+  "description": "Indices, search configuration, and analytics via Algolia's hosted MCP server.",
+  "upstream_url": "https://mcp.algolia.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.algolia.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "algolia",
+    "search",
+    "oauth"
+  ],
+  "icon": "algolia",
+  "sort_order": 410
+}

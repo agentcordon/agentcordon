@@ -1,0 +1,19 @@
+{
+  "key": "todoist",
+  "name": "Todoist",
+  "description": "Tasks, projects, sections, labels, and comments via Todoist's hosted MCP server.",
+  "upstream_url": "https://ai.todoist.net/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://ai.todoist.net",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "todoist",
+    "tasks",
+    "oauth"
+  ],
+  "icon": "todoist",
+  "sort_order": 470
+}

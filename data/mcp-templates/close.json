@@ -1,0 +1,19 @@
+{
+  "key": "close",
+  "name": "Close",
+  "description": "Leads, opportunities, and sales activity via Close's hosted MCP server.",
+  "upstream_url": "https://mcp.close.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.close.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "close",
+    "crm",
+    "oauth"
+  ],
+  "icon": "close",
+  "sort_order": 255
+}

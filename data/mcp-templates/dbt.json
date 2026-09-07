@@ -1,0 +1,19 @@
+{
+  "key": "dbt",
+  "name": "dbt Cloud",
+  "description": "Models, metrics, lineage, and metadata queries via dbt Cloud's hosted MCP server.",
+  "upstream_url": "https://cloud.getdbt.com/api/ai/v1/mcp/",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "dbt",
+    "data",
+    "analytics",
+    "oauth"
+  ],
+  "icon": "dbt",
+  "sort_order": 395
+}

@@ -1,0 +1,19 @@
+{
+  "key": "planetscale",
+  "name": "PlanetScale",
+  "description": "Organisations, databases, branches, schema, and Insights via PlanetScale's hosted MCP server.",
+  "upstream_url": "https://mcp.pscale.dev/mcp/planetscale",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "planetscale",
+    "database",
+    "mysql",
+    "oauth"
+  ],
+  "icon": "planetscale",
+  "sort_order": 390
+}

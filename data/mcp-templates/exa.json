@@ -1,0 +1,17 @@
+{
+  "key": "exa",
+  "name": "Exa",
+  "description": "Neural web search and page fetching for research, keyed per workspace.",
+  "upstream_url": "https://mcp.exa.ai/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "api_key_query": "exaApiKey",
+  "category": "research",
+  "tags": [
+    "exa",
+    "search",
+    "web"
+  ],
+  "icon": "exa",
+  "sort_order": 290
+}

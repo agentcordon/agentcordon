@@ -1,0 +1,19 @@
+{
+  "key": "helpscout",
+  "name": "Help Scout",
+  "description": "Read-only conversations, customers, inboxes, and reports via Help Scout's hosted MCP server.",
+  "upstream_url": "https://mcp.helpscout.net/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.helpscout.net",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "helpscout",
+    "support",
+    "oauth"
+  ],
+  "icon": "helpscout",
+  "sort_order": 505
+}

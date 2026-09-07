@@ -1,0 +1,19 @@
+{
+  "key": "postman",
+  "name": "Postman",
+  "description": "Workspaces, collections, environments, and request runs via Postman's hosted MCP server.",
+  "upstream_url": "https://mcp.postman.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.postman.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "postman",
+    "api",
+    "oauth"
+  ],
+  "icon": "postman",
+  "sort_order": 365
+}

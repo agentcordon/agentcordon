@@ -1,0 +1,19 @@
+{
+  "key": "gitlab",
+  "name": "GitLab",
+  "description": "Projects, issues, merge requests, and pipelines via GitLab's built-in MCP server.",
+  "upstream_url": "https://gitlab.com/api/v4/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://gitlab.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "mcp",
+  "category": "developer-tools",
+  "tags": [
+    "gitlab",
+    "scm",
+    "oauth"
+  ],
+  "icon": "gitlab",
+  "sort_order": 130
+}

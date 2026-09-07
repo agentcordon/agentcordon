@@ -1,0 +1,19 @@
+{
+  "key": "circleci",
+  "name": "CircleCI",
+  "description": "Pipelines, workflows, and build failures via CircleCI's hosted MCP server.",
+  "upstream_url": "https://mcp.circleci.com/v1/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.circleci.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "circleci",
+    "ci",
+    "oauth"
+  ],
+  "icon": "circleci",
+  "sort_order": 355
+}

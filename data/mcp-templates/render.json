@@ -1,0 +1,19 @@
+{
+  "key": "render",
+  "name": "Render",
+  "description": "Services, deploys, logs, and Postgres instances via Render's hosted MCP server.",
+  "upstream_url": "https://mcp.render.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.render.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "render",
+    "deploy",
+    "oauth"
+  ],
+  "icon": "render",
+  "sort_order": 155
+}

@@ -1,0 +1,20 @@
+{
+  "key": "replicate",
+  "name": "Replicate",
+  "description": "Models, predictions, and deployments via Replicate's hosted MCP server.",
+  "upstream_url": "https://mcp.replicate.com/sse",
+  "transport": "sse",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.replicate.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "replicate",
+    "models",
+    "ml",
+    "oauth"
+  ],
+  "icon": "replicate",
+  "sort_order": 415
+}

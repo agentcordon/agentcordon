@@ -1,0 +1,19 @@
+{
+  "key": "tavily",
+  "name": "Tavily",
+  "description": "Web search, extraction, and crawling built for agents, via Tavily's hosted MCP server.",
+  "upstream_url": "https://mcp.tavily.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "research",
+  "tags": [
+    "tavily",
+    "search",
+    "web",
+    "oauth"
+  ],
+  "icon": "tavily",
+  "sort_order": 300
+}

@@ -1,0 +1,19 @@
+{
+  "key": "hubspot",
+  "name": "HubSpot",
+  "description": "Contacts, companies, deals, and CRM records via HubSpot's hosted MCP server.",
+  "upstream_url": "https://mcp.hubspot.com/",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.hubspot.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "hubspot",
+    "crm",
+    "oauth"
+  ],
+  "icon": "hubspot",
+  "sort_order": 205
+}

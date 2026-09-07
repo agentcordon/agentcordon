@@ -1,0 +1,15 @@
+{
+  "key": "zapier",
+  "name": "Zapier",
+  "description": "Search and run actions across Zapier's app catalog with a connection token.",
+  "upstream_url": "https://mcp.zapier.com/api/v1/connect",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "productivity",
+  "tags": [
+    "zapier",
+    "automation"
+  ],
+  "icon": "zapier",
+  "sort_order": 435
+}

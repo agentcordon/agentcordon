@@ -1,0 +1,19 @@
+{
+  "key": "prisma",
+  "name": "Prisma",
+  "description": "Prisma Postgres databases, Console resources, and migrations via Prisma's hosted MCP server.",
+  "upstream_url": "https://mcp.prisma.io/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "prisma",
+    "database",
+    "orm",
+    "oauth"
+  ],
+  "icon": "prisma",
+  "sort_order": 385
+}

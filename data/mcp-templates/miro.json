@@ -1,0 +1,19 @@
+{
+  "key": "miro",
+  "name": "Miro",
+  "description": "Boards, diagrams, and comments via Miro's hosted MCP server.",
+  "upstream_url": "https://mcp.miro.com/",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.miro.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "miro",
+    "whiteboard",
+    "oauth"
+  ],
+  "icon": "miro",
+  "sort_order": 450
+}

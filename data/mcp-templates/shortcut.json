@@ -1,0 +1,19 @@
+{
+  "key": "shortcut",
+  "name": "Shortcut",
+  "description": "Stories, epics, and iterations via Shortcut's hosted MCP server.",
+  "upstream_url": "https://mcp.shortcut.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.shortcut.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "shortcut",
+    "issues",
+    "oauth"
+  ],
+  "icon": "shortcut",
+  "sort_order": 460
+}

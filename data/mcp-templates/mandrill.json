@@ -1,0 +1,16 @@
+{
+  "key": "mandrill",
+  "name": "Mailchimp Transactional",
+  "description": "Transactional email sending and diagnostics through the Mandrill API.",
+  "upstream_url": "https://mandrillapp.com/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "productivity",
+  "tags": [
+    "mailchimp",
+    "mandrill",
+    "email"
+  ],
+  "icon": "mandrill",
+  "sort_order": 510
+}

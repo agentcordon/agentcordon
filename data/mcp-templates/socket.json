@@ -1,0 +1,20 @@
+{
+  "key": "socket",
+  "name": "Socket",
+  "description": "Dependency and supply-chain risk analysis via Socket's hosted MCP server.",
+  "upstream_url": "https://mcp.socket.dev/",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.socket.dev",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "socket",
+    "security",
+    "supply-chain",
+    "oauth"
+  ],
+  "icon": "socket",
+  "sort_order": 370
+}

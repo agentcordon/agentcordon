@@ -1,0 +1,19 @@
+{
+  "key": "honeycomb",
+  "name": "Honeycomb",
+  "description": "Events, traces, SLOs, and triggers via Honeycomb's hosted MCP server.",
+  "upstream_url": "https://mcp.honeycomb.io/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.honeycomb.io",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "honeycomb",
+    "observability",
+    "oauth"
+  ],
+  "icon": "honeycomb",
+  "sort_order": 340
+}

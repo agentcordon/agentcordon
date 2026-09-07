@@ -1,0 +1,18 @@
+{
+  "key": "zoom",
+  "name": "Zoom",
+  "description": "Schedule meetings, search recordings, and read AI summaries via Zoom's hosted MCP server.",
+  "upstream_url": "https://zoom.us/mcp/meeting/streamable",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "zoom",
+    "meetings",
+    "oauth"
+  ],
+  "icon": "zoom",
+  "sort_order": 495
+}

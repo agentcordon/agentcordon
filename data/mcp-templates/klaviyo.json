@@ -1,0 +1,20 @@
+{
+  "key": "klaviyo",
+  "name": "Klaviyo",
+  "description": "Campaigns, flows, profiles, segments, and metrics via Klaviyo's hosted MCP server.",
+  "upstream_url": "https://mcp.klaviyo.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.klaviyo.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "klaviyo",
+    "marketing",
+    "email",
+    "oauth"
+  ],
+  "icon": "klaviyo",
+  "sort_order": 455
+}

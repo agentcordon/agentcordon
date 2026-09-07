@@ -1,0 +1,15 @@
+{
+  "key": "smartsheet",
+  "name": "Smartsheet",
+  "description": "Sheets, rows, workspaces, and dashboards, as the token's own account.",
+  "upstream_url": "https://mcp.smartsheet.com",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "productivity",
+  "tags": [
+    "smartsheet",
+    "sheets"
+  ],
+  "icon": "smartsheet",
+  "sort_order": 485
+}

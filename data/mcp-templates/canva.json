@@ -1,0 +1,19 @@
+{
+  "key": "canva",
+  "name": "Canva",
+  "description": "Designs, folders, brand templates, and assets via Canva's hosted MCP server.",
+  "upstream_url": "https://mcp.canva.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.canva.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "canva",
+    "design",
+    "oauth"
+  ],
+  "icon": "canva",
+  "sort_order": 225
+}

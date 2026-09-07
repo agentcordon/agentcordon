@@ -1,0 +1,16 @@
+{
+  "key": "deepwiki",
+  "name": "DeepWiki",
+  "description": "Ask questions about any public GitHub repository's generated wiki. No account needed.",
+  "upstream_url": "https://mcp.deepwiki.com/mcp",
+  "transport": "http",
+  "auth_method": "none",
+  "category": "developer-tools",
+  "tags": [
+    "deepwiki",
+    "docs",
+    "github"
+  ],
+  "icon": "deepwiki",
+  "sort_order": 185
+}

@@ -1,0 +1,19 @@
+{
+  "key": "pipedrive",
+  "name": "Pipedrive",
+  "description": "Deals, contacts, activities, and pipelines via Pipedrive's hosted MCP server.",
+  "upstream_url": "https://mcp.pipedrive.ai/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.pipedrive.ai",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "pipedrive",
+    "crm",
+    "oauth"
+  ],
+  "icon": "pipedrive",
+  "sort_order": 480
+}

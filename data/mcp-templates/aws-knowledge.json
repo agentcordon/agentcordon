@@ -1,0 +1,16 @@
+{
+  "key": "aws-knowledge",
+  "name": "AWS Knowledge",
+  "description": "Search and read AWS documentation, regional availability, and service guides. No account needed.",
+  "upstream_url": "https://knowledge-mcp.global.api.aws",
+  "transport": "http",
+  "auth_method": "none",
+  "category": "developer-tools",
+  "tags": [
+    "aws",
+    "docs",
+    "cloud"
+  ],
+  "icon": "aws",
+  "sort_order": 320
+}

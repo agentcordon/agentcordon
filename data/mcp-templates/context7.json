@@ -1,0 +1,16 @@
+{
+  "key": "context7",
+  "name": "Context7",
+  "description": "Up-to-date API documentation and code examples for thousands of libraries.",
+  "upstream_url": "https://mcp.context7.com/mcp",
+  "transport": "http",
+  "auth_method": "none",
+  "category": "developer-tools",
+  "tags": [
+    "context7",
+    "docs",
+    "libraries"
+  ],
+  "icon": "context7",
+  "sort_order": 190
+}

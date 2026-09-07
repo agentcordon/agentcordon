@@ -1,0 +1,20 @@
+{
+  "key": "apify",
+  "name": "Apify",
+  "description": "Run Apify Actors for scraping and data extraction via Apify's hosted MCP server.",
+  "upstream_url": "https://mcp.apify.com",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.apify.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "research",
+  "tags": [
+    "apify",
+    "scraping",
+    "actors",
+    "oauth"
+  ],
+  "icon": "apify",
+  "sort_order": 305
+}

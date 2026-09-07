@@ -1,0 +1,19 @@
+{
+  "key": "box",
+  "name": "Box",
+  "description": "Files, folders, metadata, and content search via Box's hosted MCP server.",
+  "upstream_url": "https://mcp.box.com",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.box.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "box",
+    "storage",
+    "oauth"
+  ],
+  "icon": "box",
+  "sort_order": 240
+}

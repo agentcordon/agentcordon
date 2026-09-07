@@ -5,7 +5,7 @@
   "upstream_url": "https://mcp.granola.ai/mcp",
   "transport": "http",
   "auth_method": "oauth2",
-  "oauth2_resource_url": "https://mcp.granola.ai/mcp",
+  "oauth2_resource_url": "https://mcp.granola.ai",
   "oauth2_prefer_dcr": true,
   "oauth2_scopes": "openid profile email offline_access",
   "category": "productivity",

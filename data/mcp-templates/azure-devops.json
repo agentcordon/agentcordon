@@ -1,0 +1,20 @@
+{
+  "key": "azure-devops",
+  "name": "Azure DevOps",
+  "description": "Repos, pull requests, work items, pipelines, and test plans via Azure DevOps' hosted MCP server.",
+  "upstream_url": "https://mcp.dev.azure.com/",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.dev.azure.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "azure",
+    "devops",
+    "scm",
+    "oauth"
+  ],
+  "icon": "microsoft",
+  "sort_order": 325
+}

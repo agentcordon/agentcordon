@@ -1,0 +1,19 @@
+{
+  "key": "datadog",
+  "name": "Datadog",
+  "description": "Metrics, logs, traces, monitors, and incidents via Datadog's hosted MCP server.",
+  "upstream_url": "https://mcp.datadoghq.com/v1/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.datadoghq.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "datadog",
+    "monitoring",
+    "oauth"
+  ],
+  "icon": "datadog",
+  "sort_order": 330
+}

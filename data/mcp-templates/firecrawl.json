@@ -1,0 +1,16 @@
+{
+  "key": "firecrawl",
+  "name": "Firecrawl",
+  "description": "Scrape, search, and parse web pages into clean markdown. Keyless sessions are rate limited.",
+  "upstream_url": "https://mcp.firecrawl.dev/mcp",
+  "transport": "http",
+  "auth_method": "none",
+  "category": "research",
+  "tags": [
+    "firecrawl",
+    "scraping",
+    "web"
+  ],
+  "icon": "firecrawl",
+  "sort_order": 295
+}

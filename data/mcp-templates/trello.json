@@ -1,0 +1,18 @@
+{
+  "key": "trello",
+  "name": "Trello",
+  "description": "Boards, cards, and organisations via Trello's hosted MCP server.",
+  "upstream_url": "https://mcp.trello.com/v1",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "trello",
+    "boards",
+    "oauth"
+  ],
+  "icon": "trello",
+  "sort_order": 475
+}

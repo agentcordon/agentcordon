@@ -1,0 +1,19 @@
+{
+  "key": "gong",
+  "name": "Gong",
+  "description": "Read-only account, deal, and call-brief questions via Gong's hosted MCP server.",
+  "upstream_url": "https://mcp.gong.io/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "gong",
+    "sales",
+    "calls",
+    "oauth"
+  ],
+  "icon": "gong",
+  "sort_order": 500
+}

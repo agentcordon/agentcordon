@@ -1,0 +1,18 @@
+{
+  "key": "dropbox",
+  "name": "Dropbox",
+  "description": "Files, folders, sharing, and content search via Dropbox's hosted MCP server.",
+  "upstream_url": "https://mcp.dropbox.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "dropbox",
+    "storage",
+    "oauth"
+  ],
+  "icon": "dropbox",
+  "sort_order": 245
+}

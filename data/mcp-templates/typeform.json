@@ -1,0 +1,19 @@
+{
+  "key": "typeform",
+  "name": "Typeform",
+  "description": "Forms, responses, contacts, and insights via Typeform's hosted MCP server.",
+  "upstream_url": "https://api.typeform.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://api.typeform.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "typeform",
+    "forms",
+    "oauth"
+  ],
+  "icon": "typeform",
+  "sort_order": 440
+}

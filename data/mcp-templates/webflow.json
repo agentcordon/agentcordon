@@ -1,0 +1,19 @@
+{
+  "key": "webflow",
+  "name": "Webflow",
+  "description": "Sites, collections, CMS items, and publishing via Webflow's hosted MCP server.",
+  "upstream_url": "https://mcp.webflow.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.webflow.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "webflow",
+    "cms",
+    "oauth"
+  ],
+  "icon": "webflow",
+  "sort_order": 235
+}

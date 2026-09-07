@@ -1,0 +1,16 @@
+{
+  "key": "fireflies",
+  "name": "Fireflies.ai",
+  "description": "Meeting transcripts and summaries, as the token's own account.",
+  "upstream_url": "https://api.fireflies.ai/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "productivity",
+  "tags": [
+    "fireflies",
+    "meetings",
+    "transcripts"
+  ],
+  "icon": "fireflies",
+  "sort_order": 490
+}

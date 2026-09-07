@@ -1,0 +1,19 @@
+{
+  "key": "calendly",
+  "name": "Calendly",
+  "description": "Event types, availability, and scheduled events via Calendly's hosted MCP server.",
+  "upstream_url": "https://mcp.calendly.com",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.calendly.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "calendly",
+    "scheduling",
+    "oauth"
+  ],
+  "icon": "calendly",
+  "sort_order": 445
+}

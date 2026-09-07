@@ -1,0 +1,19 @@
+{
+  "key": "mixpanel",
+  "name": "Mixpanel",
+  "description": "Funnels, retention, segmentation, and event queries via Mixpanel's hosted MCP server.",
+  "upstream_url": "https://mcp.mixpanel.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.mixpanel.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "analytics",
+  "tags": [
+    "mixpanel",
+    "product-analytics",
+    "oauth"
+  ],
+  "icon": "mixpanel",
+  "sort_order": 280
+}

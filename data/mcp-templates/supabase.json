@@ -1,0 +1,18 @@
+{
+  "key": "supabase",
+  "name": "Supabase",
+  "description": "Projects, Postgres schema, migrations, and edge functions via Supabase's hosted MCP server.",
+  "upstream_url": "https://mcp.supabase.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "supabase",
+    "database",
+    "oauth"
+  ],
+  "icon": "supabase",
+  "sort_order": 145
+}

@@ -1,0 +1,20 @@
+{
+  "key": "neon",
+  "name": "Neon",
+  "description": "Serverless Postgres projects, branches, and SQL via Neon's hosted MCP server.",
+  "upstream_url": "https://mcp.neon.tech/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.neon.tech",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "neon",
+    "database",
+    "postgres",
+    "oauth"
+  ],
+  "icon": "neon",
+  "sort_order": 150
+}

@@ -1,0 +1,19 @@
+{
+  "key": "buildkite",
+  "name": "Buildkite",
+  "description": "Pipelines, builds, jobs, and artifacts via Buildkite's hosted MCP server.",
+  "upstream_url": "https://mcp.buildkite.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.buildkite.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "buildkite",
+    "ci",
+    "oauth"
+  ],
+  "icon": "buildkite",
+  "sort_order": 360
+}

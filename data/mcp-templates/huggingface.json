@@ -1,0 +1,17 @@
+{
+  "key": "huggingface",
+  "name": "Hugging Face",
+  "description": "Models, datasets, and Spaces on the Hugging Face Hub, as the token's own account.",
+  "upstream_url": "https://huggingface.co/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "credential_template_key": "huggingface",
+  "category": "developer-tools",
+  "tags": [
+    "huggingface",
+    "models",
+    "datasets"
+  ],
+  "icon": "huggingface",
+  "sort_order": 195
+}

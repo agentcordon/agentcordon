@@ -1,0 +1,19 @@
+{
+  "key": "vercel",
+  "name": "Vercel",
+  "description": "Projects, deployments, logs, and domains via Vercel's hosted MCP server.",
+  "upstream_url": "https://mcp.vercel.com",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.vercel.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "vercel",
+    "deploy",
+    "oauth"
+  ],
+  "icon": "vercel",
+  "sort_order": 135
+}

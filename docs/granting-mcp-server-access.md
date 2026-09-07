@@ -143,6 +143,11 @@ volumes:
   out are refused.
 - **The directory is read once, at startup.** Restart the server after adding or editing a
   template; nothing rescans it. This is why the loader reports every problem together.
+- **Check a template against the server it names** with
+  `python3 scripts/check-mcp-templates.py [key ...]`. It POSTs an MCP `initialize` to every
+  `upstream_url` and checks that any `oauth2_resource_url` really serves an RFC 9728
+  document, which is how a vendor's moved endpoint is found before a user's Connect button
+  does. It talks to the public internet, so it is not part of CI.
 - **Check the mount worked in the log, not the grid.** On the success path the server log
   records one INFO line naming the directory it read and the templates it loaded from it.
   No such line means the variable or the mount is wrong and nothing was overlaid -- the
@@ -164,10 +169,10 @@ a handful of lines.
 | `auth_method` | **yes** | string | `none`, `api_key`, or `oauth2`. Nothing else loads. Drives the card's auth badge (**No Auth** / **API Key** / **OAuth**) and what the install modal asks for. |
 | `description` | no | string | Card body text. Defaults to empty; write one. |
 | `transport` | no | string | `http` (default) or `sse`. There is no STDIO transport. |
-| `category` | no | string | Free text; it becomes a filter chip. The built-ins use `productivity`, `developer-tools`, and `payments`. Defaults to `custom`. |
+| `category` | no | string | Free text; it becomes a filter chip. The built-ins use `developer-tools`, `productivity`, `payments`, `analytics`, and `research`. Defaults to `custom`. |
 | `tags` | no | array of strings | Search keywords, and the tags the provisioned MCP record carries. Defaults to `[]`. |
 | `icon` | no | string | Logo key for the card. Defaults to the template's `key`; a key with no bundled logo draws the name's first letter, so leaving it out is fine. |
-| `sort_order` | no | integer >= 0 | Position in the grid, ascending, ties broken by name. The built-ins run 10--120; defaults to `1000`, after all of them. |
+| `sort_order` | no | integer >= 0 | Position in the grid, ascending, ties broken by name. The built-ins run 10--510; defaults to `1000`, after all of them. |
 | `credential_template_key` | no | string | Credential template to base the auto-created credential on. Defaults to `key`. |
 | `api_key_header` | no | string | `auth_method: "api_key"` only -- see below. |
 | `api_key_query` | no | string | `auth_method: "api_key"` only -- see below. |
@@ -240,6 +245,23 @@ No client id or secret goes in the template. AgentCordon registers itself with t
 provider (RFC 7591 Dynamic Client Registration) when the authorization server supports it,
 and otherwise you configure the client once under **Settings -> OAuth Provider Clients** -- see
 [OAuth provider clients](#oauth-provider-clients).
+
+> **Leave `oauth2_resource_url` out unless the origin serves the metadata.** The field is
+> turned into a metadata URL by appending `/.well-known/oauth-protected-resource`, and it
+> is *authoritative*: naming it skips the `401` probe entirely, so a wrong value fails the
+> connect instead of falling back. RFC 9728 also allows the path-insertion form, where a
+> resource `https://mcp.acme.example/mcp` publishes at
+> `https://mcp.acme.example/.well-known/oauth-protected-resource/mcp` -- a URL this field
+> cannot express. Check before you set it:
+>
+> ```bash
+> curl -s -o /dev/null -w '%{http_code}\n' https://mcp.acme.example/.well-known/oauth-protected-resource
+> ```
+>
+> A `200` means name the origin. Anything else means omit the field and let the endpoint's
+> own `401` hint point at its metadata, which is why bundled templates such as `dropbox`,
+> `pagerduty`, `supabase`, `sentry`, `tavily`, `prisma`, `trello` and `zoom` carry no
+> `oauth2_resource_url`.
 
 #### OAuth2 servers
 

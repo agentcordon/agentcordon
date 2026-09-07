@@ -1,0 +1,19 @@
+{
+  "key": "grafana",
+  "name": "Grafana",
+  "description": "Dashboards, datasources, and PromQL or LogQL queries via Grafana's hosted MCP server.",
+  "upstream_url": "https://mcp.grafana.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.grafana.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "grafana",
+    "monitoring",
+    "oauth"
+  ],
+  "icon": "grafana",
+  "sort_order": 165
+}

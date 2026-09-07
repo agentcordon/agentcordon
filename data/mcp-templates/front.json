@@ -1,0 +1,20 @@
+{
+  "key": "front",
+  "name": "Front",
+  "description": "Conversations, drafts, inboxes, and teammates via Front's hosted MCP server.",
+  "upstream_url": "https://mcp.frontapp.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.frontapp.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "front",
+    "support",
+    "inbox",
+    "oauth"
+  ],
+  "icon": "front",
+  "sort_order": 430
+}

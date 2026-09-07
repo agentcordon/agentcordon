@@ -1,0 +1,19 @@
+{
+  "key": "stripe",
+  "name": "Stripe",
+  "description": "Customers, payments, subscriptions, and invoices via Stripe's hosted MCP server.",
+  "upstream_url": "https://mcp.stripe.com",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.stripe.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "payments",
+  "tags": [
+    "stripe",
+    "payments",
+    "oauth"
+  ],
+  "icon": "stripe",
+  "sort_order": 260
+}

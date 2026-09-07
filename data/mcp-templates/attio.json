@@ -1,0 +1,19 @@
+{
+  "key": "attio",
+  "name": "Attio",
+  "description": "Records, lists, notes, and CRM objects via Attio's hosted MCP server.",
+  "upstream_url": "https://mcp.attio.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.attio.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "productivity",
+  "tags": [
+    "attio",
+    "crm",
+    "oauth"
+  ],
+  "icon": "attio",
+  "sort_order": 250
+}

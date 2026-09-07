@@ -1,0 +1,20 @@
+{
+  "key": "clickhouse",
+  "name": "ClickHouse Cloud",
+  "description": "Read-only SQL, service management, and cost queries via ClickHouse Cloud's hosted MCP server.",
+  "upstream_url": "https://mcp.clickhouse.cloud/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.clickhouse.cloud",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "developer-tools",
+  "tags": [
+    "clickhouse",
+    "database",
+    "olap",
+    "oauth"
+  ],
+  "icon": "clickhouse",
+  "sort_order": 375
+}

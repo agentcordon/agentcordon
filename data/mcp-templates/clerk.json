@@ -1,0 +1,16 @@
+{
+  "key": "clerk",
+  "name": "Clerk",
+  "description": "Look up Clerk SDK usage and code snippets. Public docs server, no account access.",
+  "upstream_url": "https://mcp.clerk.com/mcp",
+  "transport": "http",
+  "auth_method": "none",
+  "category": "developer-tools",
+  "tags": [
+    "clerk",
+    "identity",
+    "docs"
+  ],
+  "icon": "clerk",
+  "sort_order": 405
+}
