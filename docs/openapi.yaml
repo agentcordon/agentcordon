@@ -2295,6 +2295,10 @@ paths:
     put:
       tags: [MCP]
       summary: Update MCP server
+      description: |
+        Every field is optional and an absent one is left alone; an unknown
+        field is rejected outright. Requires `manage_mcp_servers` on this
+        server.
       security:
         - SessionCookie: []
       parameters:
@@ -2310,26 +2314,38 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name:
                   type: string
-                upstream_url:
-                  type: string
-                transport:
-                  type: string
-                tags:
-                  type: array
-                  items:
-                    type: string
-                allowed_tools:
-                  type: array
-                  items:
-                    type: string
+                  description: >-
+                    New server name. Must not be empty and must not contain a
+                    dot, which would break the scope format.
                 enabled:
                   type: boolean
+                  description: >-
+                    `false` is the immediate-revocation path: the server drops
+                    out of broker sync and the default policy forbids every
+                    `mcp_tool_call` and `mcp_list_tools` on it.
+                allowed_tools:
+                  type: array
+                  description: >-
+                    The tools this server exposes, as an allow-list. Every name
+                    must be one the server publishes (`tools` on the detail
+                    response); an unknown name is a 400 naming it and nothing
+                    is changed. `[]` means no tools at all. A tool outside the
+                    list is not listed to any agent and its calls are refused
+                    before policy is consulted, which is what a per-tool Cedar
+                    deny cannot do.
+                  items:
+                    type: string
       responses:
         '200':
           description: MCP server updated
+        '400':
+          description: >-
+            An empty or dotted name, or an `allowed_tools` entry the server
+            does not have. The message names the offending values.
         '404':
           description: Not found
 

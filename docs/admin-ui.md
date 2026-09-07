@@ -222,9 +222,13 @@ policy.
 
 | Tab | What is on it |
 |-----|---------------|
-| **Tools** (default) | The discovered tools, with **Rediscover tools** at the top-right -- the retry for an install whose discovery failed |
-| **Access** | *Workspaces with access* (**Share with workspace**, and an unshare per row) and *Permission grants* (Effective Access, an *Available Cedar Actions* disclosure, the grants table, and the **Grant Access** form with its Grant/Deny segmented control). One tab, because bindings and grants are the same question |
+| **Tools** (default) | The discovered tools, each with an **Allowed** tick, and **Save allowed tools** below -- the tick is the allow-list, and an unticked tool is not listed to an agent and cannot be called whatever a policy says. Untick every tool to expose none. **Rediscover tools** is at the top-right -- the retry for an install whose discovery failed; it keeps a narrowing and brings new tools in unticked |
+| **Access** | *Workspaces with access* (**Share with workspace**, and an unshare per row), *Permission grants* (Effective Access, an *Available Cedar Actions* disclosure, the grants table, and the **Grant Access** form with its Grant/Deny segmented control), and **Generate policies** -- one grant per tool for every tag the bound workspaces carry, safe to run again. One tab, because bindings and grants are the same question |
 | **History** | The server's audit events |
+
+A per-tool **Deny** stops the call and leaves the tool in the listing; the Tools tab's tick
+is how you take a tool out of the listing. See
+`docs/granting-mcp-server-access.md` § *Narrowing the tools a server exposes*.
 
 ---
 
