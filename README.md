@@ -16,6 +16,13 @@ call, and hands back the response with any leaked secret scrubbed out. The agent
 holds the key. It is for teams running agents against real APIs who want one place to grant,
 revoke and audit that access.
 
+> **Status: pre-1.0, under active development.** A minor version may change the wire
+> formats between CLI, broker and server — 0.4.0 changed both — so upgrade the three in
+> lockstep; [Upgrading](docs/upgrading.md) says what moved and what persists. The storage
+> format has forward-only migrations that run at startup, so a database moves up and never
+> back. Releases are tag-driven rather than scheduled: one `cargo release` command, and
+> everything else happens because of the tag ([Releasing](docs/releasing.md)).
+
 ## The problem
 
 Agents need API keys, so the keys end up in prompts, environment variables and MCP config
@@ -188,6 +195,32 @@ command and flag.
   with a correlation id, exportable as CSV, syslog or JSONL.
 - **Self-hosted.** One binary, one SQLite file, a multi-arch container image, no external
   services.
+
+## Why not …
+
+- **Environment variables or a `.env` file.** The agent holds the secret, so anything it
+  reads, logs or pastes can leak it, and there is no per-call decision and no record.
+- **A secrets manager — Vault, Infisical.** It stores, scopes and rotates the secret well,
+  then hands it to the agent, which is where the problem starts; the audit row is the
+  fetch, not the API call.
+- **Per-vendor scoped API keys.** Real scoping, but it is one vendor's scope per key, with
+  no policy per request, no single trail across vendors, and revocation means rotating the
+  key everywhere it was pasted.
+- **1Password-style service accounts.** Good provisioning and a real audit of *retrieval* —
+  and after retrieval the agent has the secret and the trail stops.
+
+AgentCordon instead makes the call itself: the credential is injected in the broker, one
+Cedar decision per request, and the audit row is the API call rather than the fetch. It is
+not a general secrets manager, not a network proxy, and not a hosted service today.
+
+## Supported platforms
+
+| | |
+|---|---|
+| Server | Container image for `linux/amd64` and `linux/arm64`, or the native binary for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (built against glibc 2.35) |
+| CLI and broker | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc` |
+| Admin UI | Tested in Chromium and Firefox |
+| Storage | SQLite only ([ADR 0001](docs/adr/0001-sqlite-is-the-only-storage-backend.md)) |
 
 ## Security
 

@@ -20,11 +20,11 @@
 
 ## Checklist
 
-- [ ] I have read and signed the [CLA](../CLA.md), and this contribution is
-      offered under [AGPL-3.0-only](../LICENSE).
+- [ ] I have read and signed the [CLA](https://github.com/agentcordon/agentcordon/blob/main/CLA.md), and this contribution is
+      offered under [AGPL-3.0-only](https://github.com/agentcordon/agentcordon/blob/main/LICENSE).
 - [ ] Docs and `CHANGELOG.md` are updated, or this change needs neither: the
-      page under [`docs/`](../docs/index.md) that my change makes wrong, an entry
+      page under [`docs/`](https://github.com/agentcordon/agentcordon/blob/main/docs/index.md) that my change makes wrong, an entry
       under `## [Unreleased]` for anything a user would notice, and an
-      [ADR](../docs/adr/README.md) if this decision constrains future work.
+      [ADR](https://github.com/agentcordon/agentcordon/blob/main/docs/adr/README.md) if this decision constrains future work.
 
 <!-- Do not report a vulnerability here. See SECURITY.md. -->
