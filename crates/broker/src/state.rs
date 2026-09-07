@@ -139,6 +139,30 @@ impl std::fmt::Debug for CachedCredential {
     }
 }
 
+/// How long the broker serves a workspace's credential listing without
+/// asking the server again.
+///
+/// `agentcordon proxy --auto` fetches the listing before every call it
+/// makes, so without this the fast path would double the broker→server
+/// traffic of every proxied request. Thirty seconds is short enough that a
+/// credential created in the console shows up in the next command a person
+/// types, and long enough that a burst of agent calls costs one round trip.
+/// A **vend** is not cached and never will be: that round trip is the audit
+/// record (ADR-0007).
+pub const CREDENTIAL_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A workspace's credential listing, as last fetched.
+pub struct CachedCredentialList {
+    pub fetched_at: Instant,
+    pub entries: Vec<agent_cordon_core::domain::credential::CredentialSummary>,
+}
+
+impl CachedCredentialList {
+    pub fn is_fresh(&self, now: Instant) -> bool {
+        now.duration_since(self.fetched_at) < CREDENTIAL_LIST_TTL
+    }
+}
+
 /// Shared broker state accessible from all route handlers.
 pub struct BrokerState {
     /// Workspace states keyed by SHA-256 hex hash of Ed25519 public key.
@@ -152,6 +176,11 @@ pub struct BrokerState {
     pub registration_errors: RwLock<HashMap<String, String>>,
     /// Cached MCP server configs per workspace (keyed by pk_hash).
     pub mcp_configs: RwLock<HashMap<String, Vec<CachedMcpServer>>>,
+    /// Cached credential listings per workspace (keyed by pk_hash), held
+    /// for [`CREDENTIAL_LIST_TTL`] and dropped whenever the workspace is
+    /// synced or deregistered. Metadata only — no secret material; the
+    /// listing is the same projection an agent may already read.
+    pub credential_lists: RwLock<HashMap<String, CachedCredentialList>>,
     /// AgentCordon server URL.
     pub server_url: String,
     /// HTTP client for the AgentCordon server.

@@ -89,6 +89,7 @@ pub async fn run(config: BrokerConfig) -> Result<(), String> {
         pending: RwLock::new(HashMap::new()),
         registration_errors: RwLock::new(HashMap::new()),
         mcp_configs: RwLock::new(HashMap::new()),
+        credential_lists: RwLock::new(HashMap::new()),
         server_url: config.server_url.clone(),
         http_client,
         upstream_client,

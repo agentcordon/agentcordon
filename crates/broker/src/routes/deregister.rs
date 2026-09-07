@@ -48,6 +48,9 @@ pub async fn post_deregister(
         let mut errs = state.registration_errors.write().await;
         errs.remove(&auth.pk_hash);
     }
+    // The catalogue this workspace was allowed to see goes with the
+    // registration that entitled it.
+    super::credentials::invalidate_listing(&state, &auth.pk_hash).await;
 
     tracing::info!(pk_hash = %auth.pk_hash, "workspace deregistered via --force");
 

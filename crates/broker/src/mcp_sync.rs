@@ -43,7 +43,12 @@ fn broker_public_key_b64(encryption_key: &p256::SecretKey) -> String {
 }
 
 /// On-demand sync for a single workspace (called on cache miss in call_tool).
+///
+/// A sync is the broker re-reading the server's view of this workspace, so
+/// the cached credential listing goes with it: whatever changed on the
+/// server that made a sync necessary may have changed the catalogue too.
 pub async fn sync_workspace_now(state: &SharedState, pk_hash: &str) {
+    crate::routes::credentials::invalidate_listing(state, pk_hash).await;
     let pub_key_b64 = broker_public_key_b64(&state.encryption_key);
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
 
