@@ -201,8 +201,10 @@ provider client secrets and refresh tokens — never leave the server.
 
 [Authorization & Cedar Policy](docs/authorization-and-cedar-policy.md),
 [Credential Encryption](docs/credential-encryption.md) and [Master Key](docs/master-key.md)
-go through each of these. To report a vulnerability,
-[open a security issue](https://github.com/agentcordon/agentcordon/issues/new?template=security_report.yml).
+go through each of these. To report a vulnerability, open a private
+[security advisory](https://github.com/agentcordon/agentcordon/security/advisories/new)
+rather than a public issue; [`SECURITY.md`](SECURITY.md) has the supported versions, the
+response times and what is in scope.
 
 ## Documentation
 
@@ -235,6 +237,12 @@ cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt --all
 ```
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the rest: where tests are allowed to live, the
+conventional-commit convention, the UAT harness, and where a design decision goes.
+Contributions are accepted under the [Contributor Licence Agreement](CLA.md) — one comment
+on your first pull request, and [`CLA.md`](CLA.md) explains why an AGPL project asks. The
+[Code of Conduct](CODE_OF_CONDUCT.md) is Contributor Covenant 2.1.
 
 ## Licence
 

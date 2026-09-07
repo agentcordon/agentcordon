@@ -1,13 +1,17 @@
 name: Security Concern
-description: Report a security concern that is NOT a critical vulnerability (for critical vulns, email security contact directly)
+description: Report a security concern that is NOT a vulnerability. Vulnerabilities go to a private security advisory, never here.
 labels: ["security", "triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        **For critical vulnerabilities** (credential exposure, auth bypass, policy circumvention): please report privately rather than opening a public issue.
+        > **Do not report a vulnerability here.** Anything exploitable — credential exposure, authorization or policy bypass, key or crypto weakness, SSRF past the guard, a leak the scanner misses — goes to a **private security advisory**:
+        >
+        > **[Report a vulnerability](https://github.com/agentcordon/agentcordon/security/advisories/new)** (or **Security → Advisories → Report a vulnerability**)
+        >
+        > That draft is visible only to you and the maintainer. This form is public the moment you submit it. [`SECURITY.md`](https://github.com/agentcordon/agentcordon/blob/main/SECURITY.md) has the scope and the response times.
 
-        This template is for security-adjacent concerns: hardening suggestions, defense-in-depth improvements, or low-severity issues that are safe to discuss publicly.
+        This template is for security-adjacent concerns that are safe to discuss in the open: hardening suggestions, defence-in-depth improvements, or low-severity issues with no exploit path. If you are unsure which yours is, use the private advisory — it can always be moved here.
 
   - type: dropdown
     id: category
