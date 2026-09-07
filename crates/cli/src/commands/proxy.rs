@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::broker::BrokerClient;
+use crate::commands::credentials;
 use crate::error::{self, CliError};
 
 #[derive(Serialize)]
@@ -30,17 +31,85 @@ struct ProxyData {
     body: serde_json::Value,
 }
 
-/// Proxy an HTTP request through the broker with credential injection.
-pub async fn run(
-    credential: String,
+/// What `agentcordon proxy` was asked to do.
+pub struct ProxyArgs {
+    /// `[CREDENTIAL, METHOD, URL]`, or `[METHOD, URL]` when `auto` is set.
+    pub args: Vec<String>,
+    pub auto: bool,
+    pub headers: Vec<String>,
+    pub body: Option<String>,
+    pub json: bool,
+    pub raw: bool,
+}
+
+/// The three things a proxied call needs, however they were spelled.
+struct Target {
+    credential: Option<String>,
     method: String,
     url: String,
-    extra_headers: Vec<String>,
-    body: Option<String>,
-    json_output: bool,
-    raw_output: bool,
-) -> Result<(), CliError> {
+}
+
+/// Split the positional arguments according to `--auto`.
+///
+/// Clap cannot express "three positionals, unless this flag, then two", so
+/// the arity is checked here — and reported as the command the caller
+/// should have typed rather than as a clap usage string.
+fn parse_target(args: &[String], auto: bool) -> Result<Target, CliError> {
+    match (auto, args) {
+        (true, [method, url]) => Ok(Target {
+            credential: None,
+            method: method.clone(),
+            url: url.clone(),
+        }),
+        (false, [credential, method, url]) => Ok(Target {
+            credential: Some(credential.clone()),
+            method: method.clone(),
+            url: url.clone(),
+        }),
+        (true, _) => Err(CliError::general(
+            "usage: agentcordon proxy --auto <METHOD> <URL>",
+        )),
+        (false, _) => Err(CliError::general(
+            "usage: agentcordon proxy <CREDENTIAL> <METHOD> <URL> \
+             (or: agentcordon proxy --auto <METHOD> <URL>)",
+        )),
+    }
+}
+
+/// Proxy an HTTP request through the broker with credential injection.
+pub async fn run(args: ProxyArgs) -> Result<(), CliError> {
+    let ProxyArgs {
+        args: positional,
+        auto,
+        headers: extra_headers,
+        body,
+        json: json_output,
+        raw: raw_output,
+    } = args;
+    let target = parse_target(&positional, auto)?;
+    let (method, url) = (target.method, target.url);
+
     let client = BrokerClient::connect().await?;
+
+    // With `--auto` the credential is chosen from the listing the broker
+    // already holds, structurally, before anything is vended. One extra
+    // request, no extra round trip to the server (the broker caches it).
+    let credential = match target.credential {
+        Some(name) => name,
+        None => {
+            let creds = credentials::fetch(&client).await?;
+            let chosen = credentials::select_for_target(&creds, &url)
+                .map_err(|e| CliError::no_credential_match(e.message(&url)))?;
+            if chosen.fence().is_none() {
+                eprintln!(
+                    "Note: '{}' is not fenced ({}); no fenced credential covers {url}.",
+                    chosen.name,
+                    credentials::UNRESTRICTED
+                );
+            }
+            chosen.name.clone()
+        }
+    };
 
     // Parse extra headers
     let mut headers = HashMap::new();

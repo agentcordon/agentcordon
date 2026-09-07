@@ -101,14 +101,15 @@ enum Command {
 
     /// Proxy an HTTP request through the broker with credential injection
     Proxy {
-        /// Credential name to use
-        credential: String,
+        /// `<CREDENTIAL> <METHOD> <URL>`, or `<METHOD> <URL>` with `--auto`.
+        #[arg(value_names = ["CREDENTIAL", "METHOD", "URL"], num_args = 2..=3)]
+        args: Vec<String>,
 
-        /// HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)
-        method: String,
-
-        /// Target URL
-        url: String,
+        /// Pick the credential whose URL fence covers the target, instead of
+        /// naming one. Refuses rather than guessing when no fence covers the
+        /// URL, or when more than one does.
+        #[arg(long)]
+        auto: bool,
 
         /// Additional headers (KEY:VALUE, repeatable)
         #[arg(long = "header", num_args = 1)]
@@ -246,14 +247,23 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             }) => commands::credentials::create(name, service, value, allowed_url_pattern).await,
         },
         Command::Proxy {
-            credential,
-            method,
-            url,
+            args,
+            auto,
             headers,
             body,
             json,
             raw,
-        } => commands::proxy::run(credential, method, url, headers, body, json, raw).await,
+        } => {
+            commands::proxy::run(commands::proxy::ProxyArgs {
+                args,
+                auto,
+                headers,
+                body,
+                json,
+                raw,
+            })
+            .await
+        }
         Command::McpServers => commands::mcp::list_servers().await,
         Command::McpTools {
             schema,

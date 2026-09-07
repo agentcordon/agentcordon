@@ -12,6 +12,11 @@ pub enum ExitCode {
     AuthFailed = 4,
     AuthorizationDenied = 5,
     UpstreamError = 6,
+    /// `proxy --auto` found no credential fenced for the target, or more
+    /// than one. Its own code because it is neither "not registered" (3)
+    /// nor a refusal by the broker: nothing was asked of the broker beyond
+    /// the listing, and the fix is to name a credential or create one.
+    NoCredentialMatch = 7,
 }
 
 impl From<ExitCode> for process::ExitCode {
@@ -63,6 +68,14 @@ impl CliError {
     pub fn authorization_denied(msg: impl Into<String>) -> Self {
         Self {
             code: ExitCode::AuthorizationDenied,
+            message: msg.into(),
+        }
+    }
+
+    /// `proxy --auto` could not settle on exactly one credential.
+    pub fn no_credential_match(msg: impl Into<String>) -> Self {
+        Self {
+            code: ExitCode::NoCredentialMatch,
             message: msg.into(),
         }
     }
