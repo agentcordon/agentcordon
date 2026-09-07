@@ -212,7 +212,8 @@ shell command the model has to remember. The trade-off is a real one and it is w
 flag: the skill costs nothing until a task triggers it, while the MCP tools cost about 800
 tokens of schemas in every session — a fixed number, whether the workspace has one brokered
 server or twenty. `--no-mcp` takes the skill and skips the schemas, and the picker asks once so
-the answer is yours either way. See
+the answer is yours either way. [System Architecture](system-architecture.md#a-native-tool-call-through-mcp-serve)
+has a flowchart of which surface an agent ends up on and what each costs. See
 [ADR-0014](adr/0014-mcp-server-surface-is-the-cli-over-stdio.md).
 
 ### From GitHub Releases

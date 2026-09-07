@@ -71,7 +71,11 @@ you need to *see* the catalogue -- not something to run before every call.
 
 If your runtime has the AgentCordon MCP server configured, the native
 equivalent of every command above is a tool: `agentcordon_proxy` is
-`proxy --auto`, and it takes `{method, url}` with no shell round trip. See
+`proxy --auto`, and it takes `{method, url}` with no shell round trip. Prefer
+the tools when they are there; the commands above are the path for a runtime
+that has no MCP client, and
+[System Architecture](system-architecture.md#a-native-tool-call-through-mcp-serve)
+has a flowchart of which surface you end up on and what each costs. See
 [`agentcordon mcp-serve`](#agentcordon-mcp-serve).
 
 ---

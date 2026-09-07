@@ -343,6 +343,45 @@ field in the body, and the CLI exits non-zero when it is 400 or above.
 
 ### A native tool call through `mcp-serve`
 
+Which surface an agent uses is decided by its runtime, not by the task.
+
+```mermaid
+flowchart TD
+    S["Agent session starts"]
+    Q{"Does the runtime list<br/>agentcordon_* tools?"}
+    T["Model calls agentcordon_proxy<br/>or agentcordon_mcp_call"]
+    SERVE["agentcordon mcp-serve<br/>(stdio, in the CLI)"]
+    K["Task triggers the skill; model runs<br/>agentcordon proxy --auto in a shell"]
+    SIG["Signed request to the broker"]
+    B["Broker: fence check,<br/>injection, leak scan"]
+    SRV["Server: Cedar decision,<br/>audit row"]
+    U["Upstream API or MCP server"]
+
+    S --> Q
+    Q -->|"yes: ~800 tokens<br/>of schemas per session,<br/>no shell turn"| T
+    Q -->|"no: nothing until<br/>triggered, one shell<br/>turn per call"| K
+    T --> SERVE
+    SERVE --> SIG
+    K --> SIG
+    SIG --> B
+    B --> SRV
+    SRV --> U
+```
+
+The two branches meet at the signed broker request, so everything below that line — the fence
+check, the injection, the leak scan, the Cedar decision and the audit row — is identical. What
+differs is only what the session pays for. `init` installs **both** by default, because the
+answer to the question at the top is the runtime's and not the user's: a runtime with an MCP
+client takes the left branch and one without takes the right, and a workspace set up for a team
+does not know which its members use. The skill's own fast path says to prefer the tools when
+the runtime has them, so a runtime that has both does not pay for a shell turn it does not need.
+
+`--no-mcp` at `init` time takes the right branch only — the skill costs nothing until a task
+triggers it, which is the argument for it on a machine where context is tight. `mcp-serve
+--expose <server>` goes the other way, adding one typed tool per upstream tool for a server the
+agent calls constantly; it is opt-in per server precisely because the left branch's cost is
+paid in every session whether the session uses it or not.
+
 The same vend, reached without a shell. The runtime spawns the CLI once per session and
 speaks newline-delimited JSON-RPC 2.0 over its stdin and stdout; every tool call becomes the
 signed broker request the shell path would have made.
