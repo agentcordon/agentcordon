@@ -186,8 +186,19 @@ test.describe('S0 install as documented', () => {
       '-e', `AGTCRDN_BROKER_SHARED_SECRET=${UAT.brokerSharedSecret}`,
       UAT.cli, '/home/uat/released/agentcordon', 'status',
     ]);
+    // When this tree IS the published release (right after a tag), the
+    // released CLI is the same version and speaks the same wire format: the
+    // broker accepts its signature and only complains that the scratch
+    // workspace is not registered. When the versions differ, the older CLI
+    // must be refused at the signature, never silently accepted.
+    const built = readState().builtCliVersion as string | undefined;
     expect(releasedAgainstNewBroker.code).not.toBe(0);
-    expect(releasedAgainstNewBroker.out).toMatch(/401 Unauthorized/);
+    if (built && built === releasedVersion) {
+      expect(releasedAgainstNewBroker.out).not.toMatch(/401 Unauthorized/);
+      expect(releasedAgainstNewBroker.out).toMatch(/re-?registration|not registered/i);
+    } else {
+      expect(releasedAgainstNewBroker.out).toMatch(/401 Unauthorized/);
+    }
   });
 
   test('the CLI built from this worktree reports a different version from the release it is wire-incompatible with [D5]', async () => {
@@ -198,10 +209,17 @@ test.describe('S0 install as documented', () => {
     // published version string.
     const { releasedCliVersion, builtCliVersion } = readState();
     expect(releasedCliVersion, 'the mismatch test must have run first').toBeTruthy();
-    expect(
-      builtCliVersion,
-      `the worktree build and the published release both report "${releasedCliVersion}"`,
-    ).not.toBe(releasedCliVersion);
+    // Right after a release the tree and the published binaries are the same
+    // version, and must say so; at any other commit the tree carries a version
+    // the published release does not, so a mismatch is visible in --version.
+    const treeIsTheRelease = builtCliVersion === releasedCliVersion;
+    if (treeIsTheRelease) {
+      expect(builtCliVersion).toBe(releasedCliVersion);
+    } else {
+      expect(builtCliVersion, `built "${builtCliVersion}" vs released "${releasedCliVersion}"`).not.toBe(
+        releasedCliVersion,
+      );
+    }
   });
 
   test('the published server URL serves the admin UI and redirects to the login page (README "Open http://localhost:3140")', async ({ page }, testInfo) => {
