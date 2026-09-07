@@ -779,6 +779,47 @@ mod tests {
         );
     }
 
+    /// An agent pays for this file in tokens on every task that touches a
+    /// credential, and it has to be able to act on it without reading to the
+    /// end. The first section is the fast path: the exact command for an API
+    /// call, the exact command for an MCP tool, and "look things up only when
+    /// something errors". Everything else is reference below it.
+    #[test]
+    fn the_skill_opens_with_a_fast_path_that_can_be_acted_on() {
+        let body = SKILL_MD;
+        let first_section = body
+            .split("\n## ")
+            .nth(1)
+            .expect("the skill has at least one section");
+
+        for expected in [
+            "agentcordon proxy",
+            "agentcordon mcp-call",
+            "agentcordon mcp-tools --schema",
+            "agentcordon credentials --json",
+        ] {
+            assert!(
+                first_section.contains(expected),
+                "the first section must carry `{expected}`: {first_section}"
+            );
+        }
+        assert!(
+            first_section.to_lowercase().contains("only if")
+                || first_section.to_lowercase().contains("only when"),
+            "the first section must say discovery is for after an error: {first_section}"
+        );
+    }
+
+    /// The Agent Skills spec caps a body at 500 lines. That is not the
+    /// constraint that matters here: an agent reads this on every credential
+    /// task, so the budget is a screen. The reference sections earn their
+    /// place by being commands, not prose.
+    #[test]
+    fn the_skill_fits_on_a_screen() {
+        let lines = SKILL_MD.lines().count();
+        assert!(lines <= 60, "SKILL.md is {lines} lines; the budget is 60");
+    }
+
     /// The identity is derived from the key and changes when the key does.
     /// Baking it into a file that `init` overwrites in place is how two files
     /// came to name two different workspaces
