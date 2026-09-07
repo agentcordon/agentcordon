@@ -289,6 +289,19 @@ and `/users/new` redirects to it.
   Approving lands on `/activate/success`; the other outcomes are
   `/activate/denied` and `/activate/expired`.
 
+`init` sets a workspace up for **both** ways an agent reaches AgentCordon. It installs the
+Agent Skill in each selected runtime's skill directory, and it registers the CLI as an MCP
+server in each runtime's own config -- `.mcp.json` for Claude Code, `.codex/config.toml` for
+Codex, `opencode.json`, `.cursor/mcp.json`, `.vscode/mcp.json` and the rest, all spawning
+`agentcordon mcp-serve`; for the runtimes that only take a user-level registration it prints
+the command to run. A runtime with an MCP client then shows the operations as native tools
+named `agentcordon_status`, `agentcordon_credentials`, `agentcordon_proxy`,
+`agentcordon_mcp_servers`, `agentcordon_mcp_tools` and `agentcordon_mcp_call`, and a person
+watching the audit log sees exactly the rows the shell path writes. The trade-off, if you are
+choosing: the skill costs nothing until an agent triggers it and then one shell turn per call,
+while the MCP registration costs a fixed set of tool schemas in every session and then a
+native call with no shell round trip. `--no-mcp` installs the skill only.
+
 See [Workspace Enrollment](workspace-enrollment.md) for the flow behind them.
 
 ---

@@ -2,7 +2,7 @@
 
 # System Architecture
 
-AgentCordon is a **5-crate Rust workspace** that separates concerns into **core** (shared library), **server** (control plane), **broker** (per-user credential daemon), **cli** (thin workspace agent), and **identity** (the signing and key-file code the CLI and the broker must agree on byte for byte). The server stores credentials and enforces Cedar policy; the broker manages OAuth tokens and proxies credential-injected API calls; the CLI signs requests to the broker and never touches credentials directly.
+AgentCordon is a **5-crate Rust workspace** that separates concerns into **core** (shared library), **server** (control plane), **broker** (per-user credential daemon), **cli** (thin workspace agent), and **identity** (the signing and key-file code the CLI and the broker must agree on byte for byte). The server stores credentials and enforces Cedar policy; the broker manages OAuth tokens and proxies credential-injected API calls; the CLI signs requests to the broker and never touches credentials directly, and serves those same operations to an agent runtime as MCP tools over stdio.
 
 ---
 
@@ -23,7 +23,8 @@ crates/
   broker/       Per-user daemon: OAuth token store, credential vending,
                 upstream HTTP proxy, MCP sync and tool calls
   cli/          Thin CLI (`agentcordon`): workspace identity, signed requests
-                to the broker
+                to the broker, and a stdio MCP server (`mcp-serve`) that offers
+                the same operations as native tools
   identity/     Ed25519 key file, `sha256:` identity, request and register
                 signing — shared by the CLI and the broker, with frozen test
                 vectors
@@ -155,6 +156,12 @@ The per-user persistent daemon. Binds `127.0.0.1` on an auto-selected port by de
 
 The thin CLI binary that agents use. It manages Ed25519 keypairs, signs requests to the broker, and never touches credentials directly.
 
+It has two faces onto the same operations. A **shell** face, the subcommands below, which the
+installed Agent Skill tells an agent to run; and an **MCP** face, `mcp-serve`, which serves
+those operations to an agent runtime as native tools over stdio. Both go through the same
+`BrokerClient`, sign with the same workspace key, and are subject to the same policy: the MCP
+surface adds a transport, not a privilege.
+
 | Command | Description |
 |---------|-------------|
 | `init` | Generate the Ed25519 keypair, write `.agentcordon/`, and install the AgentCordon skill for the selected agent runtimes (`--agent`, `--reconfigure`) |
@@ -166,6 +173,7 @@ The thin CLI binary that agents use. It manages Ed25519 keypairs, signs requests
 | `mcp-servers` | List available MCP servers |
 | `mcp-tools` | List available MCP tools |
 | `mcp-call` | Call an MCP tool |
+| `mcp-serve` | Serve the commands above to an agent runtime as MCP tools, over stdio (`--expose <server>` also re-exports one MCP server's own tools) |
 
 > See the [CLI Reference](cli-reference.md) for complete command documentation.
 
@@ -333,6 +341,51 @@ raw, base64, URL-safe base64 and percent-encoded alike.
 The broker answers the CLI with `200` whatever the upstream said; the upstream status is a
 field in the body, and the CLI exits non-zero when it is 400 or above.
 
+### A native tool call through `mcp-serve`
+
+The same vend, reached without a shell. The runtime spawns the CLI once per session and
+speaks newline-delimited JSON-RPC 2.0 over its stdin and stdout; every tool call becomes the
+signed broker request the shell path would have made.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant R as Agent runtime<br/>(MCP client)
+    participant CLI as agentcordon mcp-serve
+    participant B as Broker
+    participant S as Server
+    participant U as Upstream
+
+    R->>CLI: spawn (stdio), initialize
+    CLI-->>R: serverInfo, tools.listChanged,<br/>instructions naming the workspace
+    R->>CLI: tools/list
+    CLI-->>R: six agentcordon_* tools<br/>(plus <server>__<tool> per --expose)
+    R->>CLI: tools/call agentcordon_proxy<br/>{credential?, method, url}
+    Note over CLI: sign with the workspace key in .agentcordon/
+    CLI->>B: POST /proxy (X-AC-Signature, Ed25519)
+    B->>S: vend (policy, allowed_url_pattern, audit)
+    S-->>B: ECIES envelope
+    B->>U: request with the credential injected
+    U-->>B: response
+    Note over B: leak-scan body and headers
+    B-->>CLI: status, headers, body
+    CLI-->>R: content: JSON {status, headers, body}<br/>_meta.correlation_id
+```
+
+Nothing about the trust boundary moves. The workspace key stays in `.agentcordon/` and is
+read by the CLI process, not by the runtime; the credential is still opened on the server
+and injected in the broker; the same Cedar decision and the same `credential_vended` /
+`mcp_tool_called` audit rows are written, with the correlation id handed back to the model
+in `_meta` so a person can find the row. `mcp-serve` exposes no write operation —
+`credentials create`, `register`, `deregister` and `init` are deliberately absent — so the
+worst a compromised runtime can do through it is what a shell running the CLI could already
+do.
+
+The tool surface is fixed at six by default, because an MCP client loads every tool's schema
+into the model's context at session start: a workspace with twenty MCP servers costs the same
+as one with one. `--expose <server>` opts one server into typed re-export
+(`<server>__<tool>`, its `inputSchema` verbatim) for the upstreams an agent calls constantly.
+
 ### An OAuth2 MCP install, and the delegated refresh behind every tool call
 
 ```mermaid
@@ -401,11 +454,13 @@ reasons, so a workspace cannot enumerate the policy graph — and the reasons ar
 
 The broker syncs MCP server configurations from the server and caches them with pre-vended credentials. The CLI's `mcp-call` command routes MCP tool calls through the broker, which resolves credentials and proxies to upstream MCP servers.
 
-`agentcordon init` does **not** write `.mcp.json`. There is no `agentcordon mcp-serve`
-subcommand for such an entry to point at; agents reach MCP through `agentcordon
-mcp-servers` / `mcp-tools` / `mcp-call`, which is what the installed Agent Skill
-(`.agents/skills/agentcordon/SKILL.md`) tells them. Adding the stdio surface is the
-deferred third tier of [ADR-0013](adr/0013-init-installs-the-agentcordon-skill-per-runtime.md).
+An agent reaches all of this two ways. It runs `agentcordon mcp-servers` / `mcp-tools` /
+`mcp-call` from a shell, which is what the installed Agent Skill
+(`.agents/skills/agentcordon/SKILL.md`) tells it to do; or its runtime spawns `agentcordon
+mcp-serve` and it calls the same operations as native tools. `agentcordon init` registers
+that command with each selected runtime — `.mcp.json` for Claude Code, and the equivalent
+file for the others — so a runtime with an MCP client needs no prose to find AgentCordon.
+See [ADR-0014](adr/0014-mcp-server-surface-is-the-cli-over-stdio.md).
 
 ### Transport Types
 

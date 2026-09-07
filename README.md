@@ -138,7 +138,9 @@ agentcordon init
 
 `init` asks which coding agents you use — Claude Code, Codex, Cursor, Kiro and eleven more —
 pre-checking the ones it can see, and writes the AgentCordon skill where each of them looks
-for it. Then it enrolls this workspace: it starts the broker if none is running and prints a
+for it. It also registers the CLI as an MCP server with the runtimes that read one, so the
+same operations arrive as native `agentcordon_*` tools; `--no-mcp` installs the skill alone.
+Then it enrolls this workspace: it starts the broker if none is running and prints a
 four-word code and an activation URL. Open it in any browser, on any machine, sign in, and
 click **Approve**. This is the
 [RFC 8628 device authorization grant](https://datatracker.ietf.org/doc/html/rfc8628), the
@@ -170,6 +172,9 @@ command and flag.
 
 - **Credential proxy.** Agents call APIs by credential name. The credential is injected in
   the broker and never reaches the agent.
+- **Native agent tools.** `agentcordon mcp-serve` serves the CLI's own operations to any
+  MCP-capable runtime over stdio, so an agent calls the proxy as a tool rather than a shell
+  command. `init` registers it; the audit trail is the same either way.
 - **Cedar policy engine.** Deny by default. Grants are per workspace, per credential, per
   action, with a tester page that shows which rules decided.
 - **Encrypted vault.** AES-256-GCM at rest under a versioned master key, with a re-seal
