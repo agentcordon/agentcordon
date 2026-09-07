@@ -44,7 +44,10 @@ jobs:
       actions: write
     steps:
       - name: Check or record the CLA signature
-        uses: contributor-assistant/github-action@v2
+        # Pinned to a full release tag: the action publishes only `vX.Y.Z`
+        # tags and no floating `v2`, so `@v2` failed to resolve at setup and
+        # the check went red on every pull request before any CLA logic ran.
+        uses: contributor-assistant/github-action@v2.6.1
         env:
           # GITHUB_TOKEN is enough because the signature file lives in this
           # repository. A PERSONAL_ACCESS_TOKEN would only be needed to store
@@ -66,5 +69,7 @@ jobs:
             comment on this pull request. You only ever have to do this once.
           custom-allsigned-prcomment: All contributors have signed the CLA.
           lock-pullrequest-aftermerge: false
-          # Dependabot and the maintainer's own automation do not sign.
-          allowlist: dependabot[bot],github-actions[bot]
+          # The maintainer, Dependabot and the repository's own automation do
+          # not sign: the maintainer owns the terms, and the bots author no
+          # copyrightable contribution.
+          allowlist: hotnops,dependabot[bot],github-actions[bot]
