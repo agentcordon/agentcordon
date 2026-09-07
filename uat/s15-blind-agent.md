@@ -262,22 +262,46 @@ against the product.
 
 ```bash
 cd uat/agent-workspace-mcp
-PATH="$(cd ../.. && pwd)/uat/bin:$PATH" \
+PATH="$(cd .. && pwd)/bin:$PATH" \
 claude -p "<the task>" \
   --output-format json \
-  --allowedTools "mcp__agentcordon__*" \
+  --model sonnet \
+  --strict-mcp-config --mcp-config .mcp.json \
+  --allowedTools "mcp__agentcordon" \
   --disallowedTools "Bash" \
   > ../artifacts/s19-transcript-normal-1.json
 ```
 
+Two flags need explaining, because both are harness accommodations rather than
+things a user would type:
+
+* **`--strict-mcp-config --mcp-config .mcp.json`.** Claude Code will not load a
+  project-scoped `.mcp.json` that has not been approved interactively — `claude
+  mcp list` shows the entry as *"Pending approval (run `claude` to approve)"*,
+  and a headless `-p` run simply has no such tools. Passing the same file
+  explicitly is the scripted equivalent of that one approval click. `--strict-`
+  additionally drops the operator's own ambient connectors, so the only MCP
+  server in the session is the one under test. **Finding to carry into the
+  report:** an `init`-written `.mcp.json` costs one interactive approval before
+  any headless or CI run can use it, and nothing in the docs says so.
+* **`--disallowedTools "Bash"`** is the point of the scenario, not a
+  convenience: the claim being tested is that the MCP surface carries the task
+  **without** a shell turn. If the agent needs one, the run should fail rather
+  than quietly succeed through the skill path's mechanism. `uat/bin`'s refusing
+  decoys stay on the PATH as a second fence, and anything the agent tries is
+  recorded.
+
+**What "native tools" means in this runtime.** Claude Code 2.1.263 defers MCP
+tool schemas behind its own `ToolSearch`: the tools are present and callable,
+but their names and schemas are not all loaded into context at session start.
+That is exactly the behaviour issue #54's amendment anticipated ("runtimes that
+defer MCP schema loading (Claude Code already does) make the opt-in cheaper
+over time"), and it means the measured per-session cost here is a floor, not
+the ~800 tokens a non-deferring client would pay.
+
 Three runs per task, so "it used the tools" is a rate and not an anecdote.
 Number the transcripts `-1`, `-2`, `-3`; `uat/verify-s19.sh` reads every
 `s19-transcript-<variant>-*.json` it finds.
-
-`--disallowedTools "Bash"` is the point of the scenario, not a convenience: the
-claim being tested is that the MCP surface carries the task **without** a shell
-turn. If the agent needs one, the run should fail rather than quietly succeed
-through the skill path's mechanism.
 
 ## 3. The tasks
 
