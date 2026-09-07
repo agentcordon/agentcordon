@@ -1,0 +1,16 @@
+{
+  "key": "linkup",
+  "name": "Linkup",
+  "description": "Web search, research, and page fetching, as the key's own account.",
+  "upstream_url": "https://mcp.linkup.so/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "research",
+  "tags": [
+    "linkup",
+    "search",
+    "web"
+  ],
+  "icon": "linkup",
+  "sort_order": 625
+}

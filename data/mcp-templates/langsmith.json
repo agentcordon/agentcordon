@@ -1,0 +1,17 @@
+{
+  "key": "langsmith",
+  "name": "LangSmith",
+  "description": "Traces, prompts, datasets, and experiment runs from LangSmith.",
+  "upstream_url": "https://api.smith.langchain.com/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "api_key_header": "X-Api-Key",
+  "category": "ai",
+  "tags": [
+    "langsmith",
+    "tracing",
+    "evals"
+  ],
+  "icon": "langsmith",
+  "sort_order": 705
+}

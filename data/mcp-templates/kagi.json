@@ -1,0 +1,16 @@
+{
+  "key": "kagi",
+  "name": "Kagi",
+  "description": "Kagi web search and page extraction, as the key's own account.",
+  "upstream_url": "https://mcp.kagi.com/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "research",
+  "tags": [
+    "kagi",
+    "search",
+    "web"
+  ],
+  "icon": "kagi",
+  "sort_order": 640
+}

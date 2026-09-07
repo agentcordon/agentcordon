@@ -8,7 +8,7 @@
   "oauth2_resource_url": "https://mcp.replicate.com",
   "oauth2_prefer_dcr": true,
   "oauth2_scopes": "",
-  "category": "developer-tools",
+  "category": "ai",
   "tags": [
     "replicate",
     "models",

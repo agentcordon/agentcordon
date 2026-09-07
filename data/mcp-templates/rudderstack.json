@@ -1,0 +1,20 @@
+{
+  "key": "rudderstack",
+  "name": "RudderStack",
+  "description": "Sources, destinations, live events, and delivery errors via RudderStack's hosted MCP server.",
+  "upstream_url": "https://mcp.rudderstack.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.rudderstack.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "analytics",
+  "tags": [
+    "rudderstack",
+    "cdp",
+    "pipelines",
+    "oauth"
+  ],
+  "icon": "rudderstack",
+  "sort_order": 690
+}

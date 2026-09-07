@@ -1,0 +1,20 @@
+{
+  "key": "drata",
+  "name": "Drata",
+  "description": "Controls, policies, risks, evidence, and frameworks via Drata's hosted MCP server.",
+  "upstream_url": "https://mcp.drata.com/mcp/",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.drata.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "security",
+  "tags": [
+    "drata",
+    "compliance",
+    "grc",
+    "oauth"
+  ],
+  "icon": "drata",
+  "sort_order": 590
+}

@@ -1,10 +1,10 @@
 {
   "key": "firecrawl",
   "name": "Firecrawl",
-  "description": "Scrape, search, and parse web pages into clean markdown. Keyless sessions are rate limited.",
-  "upstream_url": "https://mcp.firecrawl.dev/mcp",
+  "description": "Scrape, search, crawl, and parse web pages into clean markdown, as the key's own account.",
+  "upstream_url": "https://mcp.firecrawl.dev/v2/mcp",
   "transport": "http",
-  "auth_method": "none",
+  "auth_method": "api_key",
   "category": "research",
   "tags": [
     "firecrawl",

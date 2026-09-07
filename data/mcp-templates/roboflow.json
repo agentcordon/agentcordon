@@ -1,0 +1,20 @@
+{
+  "key": "roboflow",
+  "name": "Roboflow",
+  "description": "Datasets, annotation, workflows, and inference via Roboflow's hosted MCP server.",
+  "upstream_url": "https://mcp.roboflow.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.roboflow.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "ai",
+  "tags": [
+    "roboflow",
+    "vision",
+    "datasets",
+    "oauth"
+  ],
+  "icon": "roboflow",
+  "sort_order": 730
+}

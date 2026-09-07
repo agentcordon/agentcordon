@@ -1,0 +1,16 @@
+{
+  "key": "you-com",
+  "name": "You.com",
+  "description": "Web search, page contents, research, and answers, as the key's own account.",
+  "upstream_url": "https://api.you.com/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "research",
+  "tags": [
+    "you",
+    "search",
+    "web"
+  ],
+  "icon": "you-com",
+  "sort_order": 630
+}

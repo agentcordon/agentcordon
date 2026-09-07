@@ -1,0 +1,16 @@
+{
+  "key": "motherduck",
+  "name": "MotherDuck",
+  "description": "Query DuckDB databases and search MotherDuck documentation, as the token's own account.",
+  "upstream_url": "https://api.motherduck.com/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "analytics",
+  "tags": [
+    "motherduck",
+    "duckdb",
+    "sql"
+  ],
+  "icon": "motherduck",
+  "sort_order": 675
+}

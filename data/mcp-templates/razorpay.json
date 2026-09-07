@@ -1,0 +1,19 @@
+{
+  "key": "razorpay",
+  "name": "Razorpay",
+  "description": "Payments, orders, links, refunds, and payouts via Razorpay's hosted MCP server.",
+  "upstream_url": "https://mcp.razorpay.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.razorpay.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "payments",
+  "tags": [
+    "razorpay",
+    "payments",
+    "oauth"
+  ],
+  "icon": "razorpay",
+  "sort_order": 520
+}

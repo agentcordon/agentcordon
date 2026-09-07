@@ -1,0 +1,19 @@
+{
+  "key": "cube",
+  "name": "Cube Cloud",
+  "description": "Semantic-model search and governed queries via Cube Cloud's hosted MCP server.",
+  "upstream_url": "https://cubecloud.dev/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://cubecloud.dev",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "analytics",
+  "tags": [
+    "cube",
+    "semantic-layer",
+    "oauth"
+  ],
+  "icon": "cube",
+  "sort_order": 670
+}

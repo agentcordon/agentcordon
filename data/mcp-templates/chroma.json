@@ -1,0 +1,17 @@
+{
+  "key": "chroma",
+  "name": "Chroma Package Search",
+  "description": "Grep, hybrid search, and read files across indexed open-source packages.",
+  "upstream_url": "https://mcp.trychroma.com/package-search/v1",
+  "transport": "http",
+  "auth_method": "api_key",
+  "api_key_header": "x-chroma-token",
+  "category": "ai",
+  "tags": [
+    "chroma",
+    "code-search",
+    "packages"
+  ],
+  "icon": "chroma",
+  "sort_order": 735
+}

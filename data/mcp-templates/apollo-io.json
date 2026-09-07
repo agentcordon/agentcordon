@@ -1,0 +1,20 @@
+{
+  "key": "apollo-io",
+  "name": "Apollo.io",
+  "description": "People and company search and enrichment via Apollo.io's hosted MCP server.",
+  "upstream_url": "https://mcp.apollo.io/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.apollo.io",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "research",
+  "tags": [
+    "apollo",
+    "prospecting",
+    "enrichment",
+    "oauth"
+  ],
+  "icon": "apollo-io",
+  "sort_order": 650
+}

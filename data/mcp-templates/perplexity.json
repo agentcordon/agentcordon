@@ -1,0 +1,16 @@
+{
+  "key": "perplexity",
+  "name": "Perplexity",
+  "description": "Web search, answers, and deep research, as the key's own account.",
+  "upstream_url": "https://api.perplexity.ai/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "research",
+  "tags": [
+    "perplexity",
+    "search",
+    "research"
+  ],
+  "icon": "perplexity",
+  "sort_order": 620
+}

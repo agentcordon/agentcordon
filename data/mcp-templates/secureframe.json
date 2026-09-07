@@ -1,0 +1,20 @@
+{
+  "key": "secureframe",
+  "name": "Secureframe",
+  "description": "Controls, tests, vendors, devices, and risks via Secureframe's hosted MCP server.",
+  "upstream_url": "https://mcp.secureframe.com/",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.secureframe.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "security",
+  "tags": [
+    "secureframe",
+    "compliance",
+    "grc",
+    "oauth"
+  ],
+  "icon": "secureframe",
+  "sort_order": 595
+}

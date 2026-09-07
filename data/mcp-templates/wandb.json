@@ -1,0 +1,16 @@
+{
+  "key": "wandb",
+  "name": "Weights & Biases",
+  "description": "Runs, experiments, and Weave traces, as the key's own account.",
+  "upstream_url": "https://mcp.withwandb.com/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "ai",
+  "tags": [
+    "wandb",
+    "experiments",
+    "ml"
+  ],
+  "icon": "wandb",
+  "sort_order": 700
+}

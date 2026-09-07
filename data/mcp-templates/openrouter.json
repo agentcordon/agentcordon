@@ -1,0 +1,20 @@
+{
+  "key": "openrouter",
+  "name": "OpenRouter",
+  "description": "Model catalog and account access via OpenRouter's hosted MCP server.",
+  "upstream_url": "https://mcp.openrouter.ai/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.openrouter.ai",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "ai",
+  "tags": [
+    "openrouter",
+    "models",
+    "llm",
+    "oauth"
+  ],
+  "icon": "openrouter",
+  "sort_order": 720
+}

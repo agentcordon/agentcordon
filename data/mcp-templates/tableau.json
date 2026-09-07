@@ -1,0 +1,20 @@
+{
+  "key": "tableau",
+  "name": "Tableau",
+  "description": "Content, authoring, Pulse metrics, and admin insights via Tableau Cloud's hosted MCP server.",
+  "upstream_url": "https://mcp.tableau.com",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.tableau.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "analytics",
+  "tags": [
+    "tableau",
+    "bi",
+    "dashboards",
+    "oauth"
+  ],
+  "icon": "tableau",
+  "sort_order": 660
+}

@@ -1,0 +1,19 @@
+{
+  "key": "braintrust",
+  "name": "Braintrust",
+  "description": "Evaluations, projects, and logs via Braintrust's hosted MCP server.",
+  "upstream_url": "https://api.braintrust.dev/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://api.braintrust.dev",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "ai",
+  "tags": [
+    "braintrust",
+    "evals",
+    "oauth"
+  ],
+  "icon": "braintrust",
+  "sort_order": 710
+}

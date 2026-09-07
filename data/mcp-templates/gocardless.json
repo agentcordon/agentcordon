@@ -1,0 +1,20 @@
+{
+  "key": "gocardless",
+  "name": "GoCardless",
+  "description": "Read-only payments, customers, and payouts via GoCardless's hosted MCP server.",
+  "upstream_url": "https://mcp.gocardless.com",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.gocardless.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "payments",
+  "tags": [
+    "gocardless",
+    "payments",
+    "direct-debit",
+    "oauth"
+  ],
+  "icon": "gocardless",
+  "sort_order": 535
+}

@@ -1,0 +1,20 @@
+{
+  "key": "ramp",
+  "name": "Ramp",
+  "description": "Transactions, reimbursements, bills, cards, and vendors via Ramp's hosted MCP server.",
+  "upstream_url": "https://mcp.ramp.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.ramp.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "finance",
+  "tags": [
+    "ramp",
+    "spend",
+    "cards",
+    "oauth"
+  ],
+  "icon": "ramp",
+  "sort_order": 550
+}

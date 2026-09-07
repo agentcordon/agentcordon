@@ -1,0 +1,16 @@
+{
+  "key": "jina",
+  "name": "Jina AI",
+  "description": "Read, search, and embed web pages through Jina's reader and search APIs.",
+  "upstream_url": "https://mcp.jina.ai/v1",
+  "transport": "http",
+  "auth_method": "api_key",
+  "category": "research",
+  "tags": [
+    "jina",
+    "reader",
+    "embeddings"
+  ],
+  "icon": "jina",
+  "sort_order": 635
+}

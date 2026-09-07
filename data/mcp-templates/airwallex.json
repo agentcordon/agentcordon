@@ -1,0 +1,19 @@
+{
+  "key": "airwallex",
+  "name": "Airwallex",
+  "description": "Balances, transfers, conversions, and issuing via Airwallex's hosted MCP server.",
+  "upstream_url": "https://mcp.airwallex.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "finance",
+  "tags": [
+    "airwallex",
+    "banking",
+    "fx",
+    "oauth"
+  ],
+  "icon": "airwallex",
+  "sort_order": 565
+}

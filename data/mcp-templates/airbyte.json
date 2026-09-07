@@ -1,0 +1,19 @@
+{
+  "key": "airbyte",
+  "name": "Airbyte",
+  "description": "Query and act on connected sources through Airbyte's hosted MCP server.",
+  "upstream_url": "https://mcp.airbyte.ai/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "analytics",
+  "tags": [
+    "airbyte",
+    "elt",
+    "pipelines",
+    "oauth"
+  ],
+  "icon": "airbyte",
+  "sort_order": 695
+}

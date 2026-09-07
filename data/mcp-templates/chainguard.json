@@ -1,0 +1,16 @@
+{
+  "key": "chainguard",
+  "name": "Chainguard",
+  "description": "Search Chainguard image, package, and hardening documentation. No account needed.",
+  "upstream_url": "https://mcp.edu.chainguard.dev/mcp",
+  "transport": "http",
+  "auth_method": "none",
+  "category": "security",
+  "tags": [
+    "chainguard",
+    "containers",
+    "docs"
+  ],
+  "icon": "chainguard",
+  "sort_order": 610
+}

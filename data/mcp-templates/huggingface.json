@@ -6,7 +6,7 @@
   "transport": "http",
   "auth_method": "api_key",
   "credential_template_key": "huggingface",
-  "category": "developer-tools",
+  "category": "ai",
   "tags": [
     "huggingface",
     "models",

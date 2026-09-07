@@ -1,0 +1,20 @@
+{
+  "key": "hex",
+  "name": "Hex",
+  "description": "Projects, threads, and notebook analysis via Hex's hosted MCP server.",
+  "upstream_url": "https://app.hex.tech/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://app.hex.tech",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "analytics",
+  "tags": [
+    "hex",
+    "notebooks",
+    "bi",
+    "oauth"
+  ],
+  "icon": "hex",
+  "sort_order": 665
+}

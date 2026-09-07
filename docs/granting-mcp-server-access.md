@@ -169,10 +169,10 @@ a handful of lines.
 | `auth_method` | **yes** | string | `none`, `api_key`, or `oauth2`. Nothing else loads. Drives the card's auth badge (**No Auth** / **API Key** / **OAuth**) and what the install modal asks for. |
 | `description` | no | string | Card body text. Defaults to empty; write one. |
 | `transport` | no | string | `http` (default) or `sse`. There is no STDIO transport. |
-| `category` | no | string | Free text; it becomes a filter chip. The built-ins use `developer-tools`, `productivity`, `payments`, `analytics`, and `research`. Defaults to `custom`. |
+| `category` | no | string | Free text; it becomes a filter chip. The built-ins use `developer-tools`, `productivity`, `analytics`, `research`, `ai`, `security`, `payments`, and `finance`. Defaults to `custom`. |
 | `tags` | no | array of strings | Search keywords, and the tags the provisioned MCP record carries. Defaults to `[]`. |
 | `icon` | no | string | Logo key for the card. Defaults to the template's `key`; a key with no bundled logo draws the name's first letter, so leaving it out is fine. |
-| `sort_order` | no | integer >= 0 | Position in the grid, ascending, ties broken by name. The built-ins run 10--510; defaults to `1000`, after all of them. |
+| `sort_order` | no | integer >= 0 | Position in the grid, ascending, ties broken by name. The built-ins run 10--735; defaults to `1000`, after all of them. |
 | `credential_template_key` | no | string | Credential template to base the auto-created credential on. Defaults to `key`. |
 | `api_key_header` | no | string | `auth_method: "api_key"` only -- see below. |
 | `api_key_query` | no | string | `auth_method: "api_key"` only -- see below. |
@@ -260,7 +260,7 @@ and otherwise you configure the client once under **Settings -> OAuth Provider C
 >
 > A `200` means name the origin. Anything else means omit the field and let the endpoint's
 > own `401` hint point at its metadata, which is why bundled templates such as `dropbox`,
-> `pagerduty`, `supabase`, `sentry`, `tavily`, `prisma`, `trello` and `zoom` carry no
+> `pagerduty`, `supabase`, `sentry`, `brex`, `gitguardian` and `launchdarkly` carry no
 > `oauth2_resource_url`.
 
 #### OAuth2 servers

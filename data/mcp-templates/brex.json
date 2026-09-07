@@ -1,0 +1,19 @@
+{
+  "key": "brex",
+  "name": "Brex",
+  "description": "Expenses, cards, banking transactions, and bills via Brex's hosted MCP server.",
+  "upstream_url": "https://api.brex.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "finance",
+  "tags": [
+    "brex",
+    "spend",
+    "cards",
+    "oauth"
+  ],
+  "icon": "brex",
+  "sort_order": 555
+}

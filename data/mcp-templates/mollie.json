@@ -1,0 +1,19 @@
+{
+  "key": "mollie",
+  "name": "Mollie",
+  "description": "Payments, balances, subscriptions, and settlements via Mollie's hosted MCP server.",
+  "upstream_url": "https://mcp.mollie.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.mollie.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "payments",
+  "tags": [
+    "mollie",
+    "payments",
+    "oauth"
+  ],
+  "icon": "mollie",
+  "sort_order": 525
+}

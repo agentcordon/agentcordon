@@ -1,0 +1,19 @@
+{
+  "key": "launchdarkly",
+  "name": "LaunchDarkly",
+  "description": "Feature flags, targeting, metrics, and observability via LaunchDarkly's hosted MCP server.",
+  "upstream_url": "https://mcp.launchdarkly.com/mcp/launchdarkly",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "analytics",
+  "tags": [
+    "launchdarkly",
+    "flags",
+    "experiments",
+    "oauth"
+  ],
+  "icon": "launchdarkly",
+  "sort_order": 685
+}

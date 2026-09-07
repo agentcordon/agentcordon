@@ -1,0 +1,20 @@
+{
+  "key": "runpod",
+  "name": "RunPod",
+  "description": "Pods, endpoints, and GPU infrastructure via RunPod's hosted MCP server.",
+  "upstream_url": "https://mcp.getrunpod.io/",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.getrunpod.io",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "ai",
+  "tags": [
+    "runpod",
+    "gpu",
+    "infra",
+    "oauth"
+  ],
+  "icon": "runpod",
+  "sort_order": 725
+}

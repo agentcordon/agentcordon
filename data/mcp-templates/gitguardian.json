@@ -1,0 +1,19 @@
+{
+  "key": "gitguardian",
+  "name": "GitGuardian",
+  "description": "Secret scanning, incidents, honeytokens, and remediation via GitGuardian's hosted MCP server.",
+  "upstream_url": "https://mcp.gitguardian.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "security",
+  "tags": [
+    "gitguardian",
+    "secrets",
+    "scanning",
+    "oauth"
+  ],
+  "icon": "gitguardian",
+  "sort_order": 600
+}

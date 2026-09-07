@@ -1,0 +1,19 @@
+{
+  "key": "mercury",
+  "name": "Mercury",
+  "description": "Read-only accounts, transactions, cards, and statements via Mercury's hosted MCP server.",
+  "upstream_url": "https://mcp.mercury.com/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.mercury.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "finance",
+  "tags": [
+    "mercury",
+    "banking",
+    "oauth"
+  ],
+  "icon": "mercury",
+  "sort_order": 560
+}

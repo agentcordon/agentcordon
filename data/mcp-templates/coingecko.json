@@ -1,0 +1,16 @@
+{
+  "key": "coingecko",
+  "name": "CoinGecko",
+  "description": "Crypto prices, markets, and on-chain data. Works without a key at public rate limits.",
+  "upstream_url": "https://mcp.api.coingecko.com/mcp",
+  "transport": "http",
+  "auth_method": "none",
+  "category": "finance",
+  "tags": [
+    "coingecko",
+    "crypto",
+    "markets"
+  ],
+  "icon": "coingecko",
+  "sort_order": 570
+}

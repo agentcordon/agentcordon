@@ -1,0 +1,19 @@
+{
+  "key": "checkout",
+  "name": "Checkout.com",
+  "description": "Payment status, refunds, voids, and payment links via Checkout.com's hosted MCP server.",
+  "upstream_url": "https://mcp.checkout.com",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.checkout.com",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "payments",
+  "tags": [
+    "checkout",
+    "payments",
+    "oauth"
+  ],
+  "icon": "checkout",
+  "sort_order": 530
+}

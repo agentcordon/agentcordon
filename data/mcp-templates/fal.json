@@ -1,0 +1,20 @@
+{
+  "key": "fal",
+  "name": "fal.ai",
+  "description": "Run generative image, video, and audio models via fal.ai's hosted MCP server.",
+  "upstream_url": "https://mcp.fal.ai/mcp",
+  "transport": "http",
+  "auth_method": "oauth2",
+  "oauth2_resource_url": "https://mcp.fal.ai",
+  "oauth2_prefer_dcr": true,
+  "oauth2_scopes": "",
+  "category": "ai",
+  "tags": [
+    "fal",
+    "generative",
+    "models",
+    "oauth"
+  ],
+  "icon": "fal",
+  "sort_order": 715
+}

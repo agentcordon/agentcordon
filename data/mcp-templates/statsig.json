@@ -1,0 +1,17 @@
+{
+  "key": "statsig",
+  "name": "Statsig",
+  "description": "Gates, experiments, dynamic configs, metrics, and audit logs.",
+  "upstream_url": "https://api.statsig.com/v1/mcp",
+  "transport": "http",
+  "auth_method": "api_key",
+  "api_key_header": "statsig-api-key",
+  "category": "analytics",
+  "tags": [
+    "statsig",
+    "experiments",
+    "flags"
+  ],
+  "icon": "statsig",
+  "sort_order": 680
+}
