@@ -163,9 +163,11 @@ A user-defined bridge network `agentcordon-uat-net` with:
 | Container | Image | Role |
 |-----------|-------|------|
 | `agentcordon-uat-server` | repo `Dockerfile` | Control plane, alias `server`, published on `127.0.0.1:13140` |
-| `agentcordon-uat-upstream` | `python:3-slim` | Mock upstream (`uat/mock_upstream.py`), alias `upstream`, port 8080 (`UAT_UPSTREAM_PORT` / `UAT_BIND` override it; `run.sh` sets neither, so the harness gets `0.0.0.0:8080`) |
+| `agentcordon-uat-upstream` | `python:3-slim` | Mock upstream (`uat/mock_upstream.py`), aliases `upstream` and `ssm.us-east-1.amazonaws.com` (the second so S14's regional-endpoint fence check resolves inside the harness), port 8080 (`UAT_UPSTREAM_PORT` / `UAT_BIND` override it; `run.sh` sets neither, so the harness gets `0.0.0.0:8080`) |
 | `agentcordon-uat-broker` | `uat/Dockerfile.tools` | `agentcordon-broker`, alias `broker`, port 9876 |
 | `agentcordon-uat-cli` | `uat/Dockerfile.tools` | `--network container:agentcordon-uat-broker`, so the broker is loopback for it |
+| `agentcordon-uat-broker-guarded` | `uat/Dockerfile.tools` | A second `agentcordon-broker` started **without** `--proxy-allow-loopback`, alias `broker-guarded`, port 9876 (S18) |
+| `agentcordon-uat-cli-guarded` | `uat/Dockerfile.tools` | `--network container:agentcordon-uat-broker-guarded`; S18 enrolls it as the third workspace |
 | `agentcordon-uat-server2` | repo `Dockerfile` | Started only by S8, expected to exit non-zero |
 | `agentcordon-uat-idp` | `python:3-slim` | Mock OAuth 2.0 authorization server (`uat/mock_oauth_provider.py`), two listeners on 9000/9001 (`UAT_IDP_PORT` / `UAT_IDP_NODCR_PORT` / `UAT_BIND` override them; `oauth-topology.sh` sets no bind, so both get `0.0.0.0`) |
 | `agentcordon-uat-mcp` | `python:3-slim` | Mock Streamable-HTTP MCP server (`uat/mock_mcp.py`), port 9100 (`UAT_MCP_PORT` / `UAT_BIND` override it; `oauth-topology.sh` sets no bind, so it gets `0.0.0.0`) |
@@ -266,6 +268,7 @@ working credential, so S5 runs last.
 | `14-s14-aws.spec.ts` | S14 AWS SigV4 |
 | `15-s16-enforcement.spec.ts` | S16 enforcement across types, second workspace |
 | `16-s17-vaults.spec.ts` | S17 vaults end to end (create, place, rename, share read-only, revoke, refuse a non-empty delete, move, delete), and the provider-client controls an operator is and is not offered |
+| `21-s18-guarded-broker.spec.ts` | S18 the SSRF guard as shipped: a third workspace enrolled through the guarded broker, a credential pinned to one host forwarded to its private address, an unfenced one refused with the fence to write (ADR-0014) |
 | `80-s9-restart.spec.ts` | S9 restart persistence (was `08-`) |
 | `90-s5-lifecycle.spec.ts` | S5 lifecycle (destructive, last; was `09-`) |
 
@@ -301,12 +304,16 @@ Both now press a button:
 1. **`docker compose` was not exercised.** No compose plugin on this host. The
    server is started with the same image, volume, port and documented env vars
    the compose file uses.
-2. **The broker runs with `--proxy-allow-loopback`.** The mock upstream is on a
-   private Docker bridge address, which the SSRF guard refuses by design. The
-   flag is documented (`README.md` § Configuration, `docs/cli-reference.md`
-   § Environment Variables) as the way to reach loopback/private targets. A
-   production deployment proxying to public APIs does not need it. Note that
-   the flag disables the whole SSRF check, not only the loopback part.
+2. **The main broker runs with `--proxy-allow-loopback`.** The mock upstream
+   and the mock MCP server are on private Docker bridge addresses, and the
+   broker's MCP path refuses those unconditionally. The flag is documented
+   (`README.md` § Configuration, `docs/cli-reference.md` § Environment
+   Variables) and disables the whole SSRF check, not only the loopback part.
+   **This concession is what let the pinned-host defect reach 0.4.0:** with
+   the guard off in every scenario, nothing could show that a credential
+   fenced to one private host was refused. S18 now runs against a second
+   broker started without the flag, so the guard is exercised on every run:
+   a pinned credential goes through, an unfenced one does not (ADR-0014).
 3. **The broker binds `0.0.0.0` with `--shared-secret`.** Required because the
    broker and the CLI are separate containers; documented in
    `docs/cli-reference.md` § "Broker flags for a non-loopback bind".

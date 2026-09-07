@@ -5,7 +5,7 @@
   "credential_type": "aws",
   "auth_type": "aws_sigv4",
   "header": "Authorization: AWS4-HMAC-SHA256",
-  "allowed_url_pattern": "https://*.amazonaws.com/*",
+  "allowed_url_pattern": "https://**.amazonaws.com/*",
   "fields": [
     {
       "key": "aws_access_key_id",

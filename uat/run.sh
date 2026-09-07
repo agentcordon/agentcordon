@@ -94,7 +94,7 @@ log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
 teardown() {
   log "Tearing down"
-  for c in "$UAT_CLI" "$UAT_BROKER" "$UAT_SERVER2" "$UAT_MCP" "$UAT_IDP" "$UAT_SERVER" "$UAT_UPSTREAM"; do
+  for c in "$UAT_CLI" "$UAT_BROKER" "$UAT_CLI_GUARDED" "$UAT_BROKER_GUARDED" "$UAT_SERVER2" "$UAT_MCP" "$UAT_IDP" "$UAT_SERVER" "$UAT_UPSTREAM"; do
     docker rm -f "$c" >/dev/null 2>&1 || true
   done
   docker network rm "$UAT_NETWORK" >/dev/null 2>&1 || true
@@ -115,7 +115,7 @@ trap on_interrupt INT TERM
 collect_logs() {
   log "Collecting container logs into $ARTIFACTS"
   mkdir -p "$ARTIFACTS"
-  for c in "$UAT_SERVER" "$UAT_SERVER2" "$UAT_UPSTREAM" "$UAT_BROKER" "$UAT_CLI" "$UAT_IDP" "$UAT_MCP"; do
+  for c in "$UAT_SERVER" "$UAT_SERVER2" "$UAT_UPSTREAM" "$UAT_BROKER" "$UAT_CLI" "$UAT_BROKER_GUARDED" "$UAT_CLI_GUARDED" "$UAT_IDP" "$UAT_MCP"; do
     if docker inspect "$c" >/dev/null 2>&1; then
       docker logs "$c" > "$ARTIFACTS/$c.log" 2>&1 || true
     fi
@@ -257,9 +257,15 @@ fi
 log "Creating network $UAT_NETWORK"
 docker network create "$UAT_NETWORK" >/dev/null
 
+# The second alias makes a regional-looking AWS hostname resolve to the mock
+# inside the harness. S14 uses it to prove the auto-default AWS fence covers a
+# regional endpoint without any call leaving the Docker network: the fence
+# check is what is measured, the connection that follows is expected to fail
+# (the mock speaks plain HTTP on 8080, not TLS on 443).
 log "Starting mock upstream"
 docker run -d --name "$UAT_UPSTREAM" \
   --network "$UAT_NETWORK" --network-alias upstream \
+  --network-alias "$UAT_AWS_REGIONAL_HOST" \
   -v "$HERE/mock_upstream.py:/app/mock_upstream.py:ro" \
   -w /app "$UAT_PYTHON_IMAGE" python3 /app/mock_upstream.py >/dev/null
 
@@ -328,6 +334,41 @@ for i in $(seq 1 60); do
 done
 docker exec "$UAT_CLI" curl -fsS http://127.0.0.1:9876/health > "$ARTIFACTS/broker-health.json" 2>&1 || {
   echo "broker never came up" >&2; docker logs "$UAT_BROKER" | tail -40; exit 1; }
+
+# A second broker the way it ships: no --proxy-allow-loopback, so the SSRF
+# guard is on. S18 enrolls a workspace through it and proves that a credential
+# fenced to one literal host (http://upstream:8080/*) is forwarded to that
+# host's private address without the flag, and that an unfenced credential is
+# still refused (ADR-0014). The main broker keeps the flag because the MCP
+# path is still guarded unconditionally.
+log "Starting guarded broker (no --proxy-allow-loopback)"
+docker run -d --name "$UAT_BROKER_GUARDED" \
+  --network "$UAT_NETWORK" --network-alias broker-guarded \
+  "$UAT_TOOLS_IMAGE" \
+  agentcordon-broker \
+    --server-url http://server:3140 \
+    --bind 0.0.0.0 \
+    --port 9876 \
+    --shared-secret "$UAT_BROKER_SHARED_SECRET" >/dev/null
+
+log "Starting guarded CLI container (shares the guarded broker's network namespace)"
+docker run -d --name "$UAT_CLI_GUARDED" \
+  --network "container:$UAT_BROKER_GUARDED" \
+  -e HOME=/home/uat \
+  -e AGTCRDN_BROKER_URL=http://127.0.0.1:9876 \
+  -e AGTCRDN_BROKER_SHARED_SECRET="$UAT_BROKER_SHARED_SECRET" \
+  -w /home/uat/workspace \
+  "$UAT_TOOLS_IMAGE" sleep infinity >/dev/null
+
+log "Waiting for the guarded broker to answer /health"
+for i in $(seq 1 60); do
+  if docker exec "$UAT_CLI_GUARDED" curl -fsS -o /dev/null http://127.0.0.1:9876/health 2>/dev/null; then
+    break
+  fi
+  sleep 1
+done
+docker exec "$UAT_CLI_GUARDED" curl -fsS http://127.0.0.1:9876/health > "$ARTIFACTS/broker-guarded-health.json" 2>&1 || {
+  echo "guarded broker never came up" >&2; docker logs "$UAT_BROKER_GUARDED" | tail -40; exit 1; }
 
 log "Topology up"
 docker ps --filter "name=agentcordon-uat" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'

@@ -12,7 +12,11 @@ import { readDoc } from './helpers/docs';
  *   docs/credential-encryption.md § "Credential Types / AWS":
  *     "Fields: aws_access_key_id, aws_secret_access_key, optional aws_region,
  *      aws_service. Default transform: aws-sigv4. Auto-default
- *      allowed_url_pattern: https://*.amazonaws.com/*"
+ *      allowed_url_pattern: https://**.amazonaws.com/*" — `**` is one or more
+ *      DNS labels. The 0.4.0 default was `https://*.amazonaws.com/*`, and a
+ *      single `*` is exactly one label, so it covered `sts.amazonaws.com` and
+ *      not one regional endpoint (`ssm.us-east-1.amazonaws.com`). This suite
+ *      always filled the pattern in by hand, which is why nothing caught it.
  *   docs/cli-reference.md § "Credential Types and Transforms":
  *     `aws` -> "AWS SigV4 ... Authorization and x-amz-date headers".
  *   README.md § "Quick Start / 4. Use credentials" (`agentcordon proxy`).
@@ -74,8 +78,8 @@ test.describe('S14 AWS SigV4', () => {
     const credDoc = readDoc('docs/credential-encryption.md');
     expect(
       credDoc,
-      'docs/credential-encryption.md must say the AWS fields are only optional for *.amazonaws.com',
-    ).toContain('only optional for `*.amazonaws.com` targets');
+      'docs/credential-encryption.md must say the AWS fields are only optional for **.amazonaws.com',
+    ).toContain('only optional for `**.amazonaws.com` targets');
     const cliDoc = readDoc('docs/cli-reference.md');
     expect(cliDoc).toContain('`aws_region` and `aws_service` are optional *only* when');
   });
@@ -135,5 +139,77 @@ test.describe('S14 AWS SigV4', () => {
     expect(r.code, r.out).not.toBe(0);
     expect(r.out).toMatch(/url_pattern_denied|forbidden|403/i);
     expect(r.out).not.toContain(UAT.awsSecretAccessKey);
+  });
+
+  test('an AWS credential stored with the URL pattern left blank gets the documented default, and the AWS template offers the same (docs/credential-encryption.md § "AWS")', async ({
+    page,
+  }, testInfo) => {
+    await login(page);
+    await page.goto('/credentials/new');
+    await page.click('button.template-card:has-text("AWS")');
+    await expect(page.locator('#cred-field-aws_access_key_id')).toBeVisible();
+
+    // The template pre-fills the fence. It has to be the any-depth form: the
+    // one thing every AWS user does first is call a regional endpoint.
+    await expect(page.locator('#cred-url-pattern')).toHaveValue('https://**.amazonaws.com/*');
+
+    // Now clear it, so what is stored is the server's own auto-default and
+    // not the template's text.
+    await page.fill('#cred-url-pattern', '');
+    await page.fill('#cred-field-aws_access_key_id', UAT.awsAccessKeyId);
+    await page.fill('#cred-field-aws_secret_access_key', UAT.awsSecretAccessKey);
+    await page.fill('#cred-field-aws_region', UAT.awsRegion);
+    await page.fill('#cred-field-aws_service', UAT.awsService);
+    await page.fill('#cred-name', UAT.awsDefaultName);
+    await page.fill('#cred-service', 'aws');
+    await shot(page, testInfo, 's14-aws-default-fence-form');
+
+    const created = page.waitForResponse(
+      (r) => r.url().endsWith('/api/v1/credentials') && r.request().method() === 'POST',
+      { timeout: 30_000 },
+    );
+    await page.click('button[type="submit"]:has-text("Store Credential")');
+    await expectOk(page, await created, 'storing the credential');
+    await page.waitForURL(/\/credentials\/[0-9a-f-]{36}$/, { timeout: 30_000 });
+    const id = page.url().split('/').pop()!;
+    writeState({ awsDefaultCredentialId: id });
+
+    const detail = await apiFromPage(page, 'GET', `/api/v1/credentials/${id}`);
+    expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+    expect(detail.body.data.allowed_url_pattern).toBe('https://**.amazonaws.com/*');
+    await shot(page, testInfo, 's14-aws-default-fence-detail');
+
+    // The workspace sees the fence it will be matched against.
+    const list = cli(['credentials']);
+    expect(list.code, list.out).toBe(0);
+    expect(list.out).toContain(UAT.awsDefaultName);
+    expect(list.out).toContain('https://**.amazonaws.com/*');
+  });
+
+  test('the default fence covers a regional endpoint: --auto picks the credential for ssm.us-east-1 and nothing refuses it as out of pattern', async () => {
+    // `ssm.us-east-1.amazonaws.com` is a second alias of the mock upstream on
+    // the harness network, so this resolves inside Docker and the connection
+    // that follows fails (the mock is plain HTTP on 8080, not TLS on 443).
+    // That failure is the expected outcome; what is measured is everything
+    // before it: the fence admitted the target and the broker went to call
+    // it. Before this release the same command exited 7 ("no credential is
+    // fenced for ...") and a direct call exited 5 (`url_pattern_denied`).
+    const target = `https://${UAT.awsRegionalHost}/`;
+
+    const auto = cli(['proxy', '--auto', 'GET', target]);
+    expect(auto.code, auto.out).not.toBe(7);
+    expect(auto.out).not.toContain('no credential is fenced');
+    expect(auto.code, 'the fence admitted the target; the upstream did not answer').toBe(6);
+
+    const direct = cli(['proxy', UAT.awsDefaultName, 'GET', target]);
+    expect(direct.code, direct.out).not.toBe(5);
+    expect(direct.out).not.toContain('url_pattern_denied');
+    expect(direct.code, direct.out).toBe(6);
+    expect(direct.out).not.toContain(UAT.awsSecretAccessKey);
+
+    // And the apex is still outside: `**` is one or more labels, never none.
+    const apex = cli(['proxy', UAT.awsDefaultName, 'GET', 'https://amazonaws.com/']);
+    expect(apex.code, apex.out).toBe(5);
+    expect(apex.out).toContain('url_pattern_denied');
   });
 });

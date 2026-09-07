@@ -66,6 +66,8 @@ export const UAT = {
   awsRegion: raw.UAT_AWS_REGION,
   awsService: raw.UAT_AWS_SERVICE,
   awsPattern: raw.UAT_AWS_PATTERN,
+  awsDefaultName: raw.UAT_AWS_DEFAULT_NAME,
+  awsRegionalHost: raw.UAT_AWS_REGIONAL_HOST,
   workspace2Name: raw.UAT_WORKSPACE2_NAME,
   workspace2Dir: raw.UAT_WORKSPACE2_DIR,
 
@@ -79,6 +81,15 @@ export const UAT = {
   sharePassword: raw.UAT_SHARE_PASSWORD,
   operatorUsername: raw.UAT_OPERATOR_USERNAME,
   operatorPassword: raw.UAT_OPERATOR_PASSWORD,
+
+  // S18: the guarded broker (no --proxy-allow-loopback), its CLI container,
+  // the workspace enrolled through it, and an unfenced credential that the
+  // guard must still refuse.
+  brokerGuarded: raw.UAT_BROKER_GUARDED,
+  cliGuarded: raw.UAT_CLI_GUARDED,
+  workspace3Name: raw.UAT_WORKSPACE3_NAME,
+  unfencedCredentialName: raw.UAT_UNFENCED_CREDENTIAL_NAME,
+  unfencedCredentialSecret: raw.UAT_UNFENCED_CREDENTIAL_SECRET,
 };
 
 /** uat/artifacts — screenshots and any evidence files land here. */
