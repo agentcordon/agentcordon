@@ -117,7 +117,9 @@ test.describe('S0 install as documented', () => {
     expect(body, 'editing a dotfile must be declinable').toContain('AGENTCORDON_NO_MODIFY_PATH');
 
     // The closing message: what was installed, and one command.
-    expect(body).toContain('Next: cd into a project and run `agentcordon init`.');
+    // The shell source escapes the backticks; assert the sentence around them.
+    expect(body).toContain('Next: cd into a project and run');
+    expect(body).toContain('agentcordon init');
     expect(
       body,
       'the server is recorded, so nothing asks the reader for it again',
