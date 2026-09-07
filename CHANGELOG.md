@@ -4,6 +4,8 @@ All notable changes to AgentCordon are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-07
+
 ### Added
 
 - **Cutting a release is one command.** `release.toml` configures cargo-release: `cargo release <version> --execute` from a clean `main` bumps `[workspace.package] version` (which all five crates inherit and every binary prints), inserts a `## [<version>] - <date>` section under an untouched `[Unreleased]`, re-points the compare links, commits as `chore: release v<version>`, tags `v<version>` and pushes. Nothing is built or uploaded from a laptop, and no version string is typed twice. (`release.toml`, `docs/releasing.md`)
@@ -351,7 +353,8 @@ All notable changes to AgentCordon are documented in this file.
 - Full audit trail
 - Docker and Docker Compose deployment
 
-[Unreleased]: https://github.com/agentcordon/agentcordon/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/agentcordon/agentcordon/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/agentcordon/agentcordon/compare/v0.4.0...v0.4.0
 [0.3.3]: https://github.com/agentcordon/agentcordon/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/agentcordon/agentcordon/compare/v0.3.1...v0.3.2
 [0.3.0]: https://github.com/agentcordon/agentcordon/compare/v0.2.2...v0.3.0
