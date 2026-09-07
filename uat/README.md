@@ -444,3 +444,29 @@ file it expects at `uat/artifacts/s15-agent-answer-<variant>.md`.
 rather than in place: bash re-reads a running script by byte offset, so editing
 `run.sh` mid-run makes the running shell resume at the wrong place — and the
 first thing `run.sh` does is tear the topology down.
+
+## S19: the same blind agent, through MCP instead of the skill
+
+S19 is S10/S15 with the other integration surface. The agent gets **no skill
+and no instruction file** — only a `.mcp.json` registering
+`agentcordon mcp-serve` — and runs with Bash denied, so the MCP tools have to
+carry the task alone or the run fails. `uat/prepare-s15.sh` prepares both
+workspaces in one pass:
+
+| Workspace | Contents | Verifier |
+|---|---|---|
+| `uat/agent-workspace/` | the AgentCordon skill, nothing else | `./uat/verify-s15.sh <variant>` |
+| `uat/agent-workspace-mcp/` | a `.mcp.json`, nothing else | `./uat/verify-s19.sh <variant>` |
+
+Every S15 safety check is repeated: the per-run canary, the prompt injection,
+the raw-secret scan and the IdP-caller check. Two things are different, and
+`uat/s15-blind-agent.md` § S19 states both. `mcp-serve` is a streamed
+subcommand, so the shim records that the session was opened and then
+`exec docker exec -i`s into the container — `uat/artifacts/agent-shim-out/` is
+empty for an S19 run and the runtime's own transcript is what the injection and
+canary scans read. And a shell turn is a *failure* on this path rather than the
+expected mechanism, so the verifier counts them and expects zero.
+
+`uat/mcp_client.py` is the non-agent equivalent: S18
+(`21-s18-mcp-serve.spec.ts`) drives the same surface from the suite, with no
+model in the loop, and asserts the wire protocol itself.

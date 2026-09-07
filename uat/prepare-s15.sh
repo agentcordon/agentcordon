@@ -10,6 +10,12 @@
 #                                     second agent variant can be verified
 #                                     independently of the first
 #
+# It prepares BOTH blind-agent workspaces, because they are the same scenario
+# through the two integration surfaces:
+#
+#   uat/agent-workspace/      S15 — the AgentCordon skill and nothing else
+#   uat/agent-workspace-mcp/  S19 — a .mcp.json and nothing else
+#
 # It runs the whole suite except two scenarios, keeps the containers up, and
 # copies the workspace's installed AgentCordon skill into uat/agent-workspace/:
 #
@@ -79,9 +85,11 @@ if [ "$NEW_RUN_ONLY" = 0 ]; then
   # where no runtime is installed, so it writes only the portable copy. The
   # blind agent under test is Claude Code, which reads `.claude/skills`.
   # `--no-register`: this workspace is already enrolled and all that is wanted
-  # here is the skill file.
+  # here is the skill file. `--no-mcp`: S15 is the SKILL path, so the copied
+  # workspace must carry the skill and nothing else; S19 (below) is the MCP
+  # path and gets its own workspace with the opposite content.
   docker exec -w /home/uat/workspace "$UAT_CLI" \
-    agentcordon init --agent claude-code --no-register >/dev/null 2>&1 || true
+    agentcordon init --agent claude-code --no-register --no-mcp >/dev/null 2>&1 || true
 
   rm -rf "$HERE/agent-workspace/.claude" "$HERE/agent-workspace/.agents"
   mkdir -p "$HERE/agent-workspace/.claude/skills" "$HERE/agent-workspace/.agents/skills"
@@ -89,7 +97,34 @@ if [ "$NEW_RUN_ONLY" = 0 ]; then
     "$HERE/agent-workspace/.claude/skills/" 2>/dev/null || true
   docker cp "$UAT_CLI:/home/uat/workspace/.agents/skills/agentcordon" \
     "$HERE/agent-workspace/.agents/skills/" 2>/dev/null || true
-  rm -f "$HERE/agent-workspace/AGENTS.md" "$HERE/agent-workspace/CLAUDE.md"
+  rm -f "$HERE/agent-workspace/AGENTS.md" "$HERE/agent-workspace/CLAUDE.md" \
+        "$HERE/agent-workspace/.mcp.json"
+
+  echo
+  echo "==> Building the S19 workspace: a .mcp.json and nothing else"
+  # S19 is the same blind-agent scenario with the OTHER integration surface.
+  # The agent gets NO skill and NO instruction file — only an MCP server
+  # registration pointing at the logging shim, which execs into the enrolled
+  # container. Everything it learns about AgentCordon it learns from the
+  # `initialize` instructions and the tool schemas.
+  #
+  # The `command` is the absolute path to uat/bin/agentcordon because the
+  # runtime resolves it before the agent's PATH is consulted. That is a
+  # HARNESS detail: what `agentcordon init` writes is the bare name
+  # `agentcordon` (uat/playwright/tests/03-s3-enrollment.spec.ts asserts that),
+  # which resolves through PATH on a real machine.
+  rm -rf "$HERE/agent-workspace-mcp"
+  mkdir -p "$HERE/agent-workspace-mcp"
+  cat > "$HERE/agent-workspace-mcp/.mcp.json" <<MCPJSON
+{
+  "mcpServers": {
+    "agentcordon": {
+      "command": "$HERE/bin/agentcordon",
+      "args": ["mcp-serve"]
+    }
+  }
+}
+MCPJSON
 else
   STATUS=0
   echo "==> --new-run: leaving the topology alone, resetting only the per-run state"
@@ -157,6 +192,13 @@ except Exception:
   mv "$HERE/artifacts/agent-shim.log" "$HERE/artifacts/runs/$PREV/agent-shim.log"
   [ -d "$HERE/artifacts/agent-shim-out" ] && mv "$HERE/artifacts/agent-shim-out" "$HERE/artifacts/runs/$PREV/agent-shim-out"
   echo "    archived the previous run's shim evidence under artifacts/runs/$PREV/"
+  # S19's evidence is the runtime's own transcripts; archive them with the
+  # shim log they belong to, so a second variant cannot be verified against
+  # the first one's numbers.
+  for t in "$HERE/artifacts"/s19-transcript-*.json; do
+    [ -e "$t" ] || continue
+    mv "$t" "$HERE/artifacts/runs/$PREV/"
+  done
 fi
 rm -f "$HERE/artifacts/agent-shim.log"
 rm -rf "$HERE/artifacts/agent-shim-out"
@@ -170,15 +212,20 @@ curl -fsS "$UAT_MCP_URL/_uat/log" > "$HERE/artifacts/s15-mcp-before.json" 2>/dev
 curl -fsS "$UAT_IDP_URL/_uat/log" > "$HERE/artifacts/s15-idp-before.json" 2>/dev/null || echo '{"entries":[]}' > "$HERE/artifacts/s15-idp-before.json"
 
 echo
-echo "==> Ready for S15 (run $RUN_ID)."
-echo "    1. Read uat/s15-blind-agent.md and start an agent as it describes."
-echo "       Its PATH must start with $HERE/bin — that directory holds the"
-echo "       logging shim and refusing decoys for docker/curl/python3/..."
-echo "    2. When the agent has finished, save its final answer to"
-echo "       uat/artifacts/s15-agent-answer-<variant>.md and run"
-echo "       ./uat/verify-s15.sh <variant>"
-echo "    3. For the second variant: ./uat/prepare-s15.sh --new-run, then repeat."
-echo "    4. Tear down with ./uat/run.sh --down-only"
+echo "==> Ready for S15 (the skill path) and S19 (the MCP path), run $RUN_ID."
+echo "    S15: read uat/s15-blind-agent.md and start an agent as it describes,"
+echo "         in $HERE/agent-workspace (skill only), with its PATH starting"
+echo "         at $HERE/bin — that directory holds the logging shim and the"
+echo "         refusing decoys for docker/curl/python3/..."
+echo "         Save the answer to uat/artifacts/s15-agent-answer-<variant>.md,"
+echo "         then ./uat/verify-s15.sh <variant>"
+echo "    S19: uat/s15-blind-agent.md § \"S19\" — $HERE/agent-workspace-mcp"
+echo "         holds a .mcp.json and nothing else. Run the headless runtime as"
+echo "         that section describes, keep each transcript at"
+echo "         uat/artifacts/s19-transcript-<variant>-<n>.json, then"
+echo "         ./uat/verify-s19.sh <variant>"
+echo "    For a second variant: ./uat/prepare-s15.sh --new-run, then repeat."
+echo "    Tear down with ./uat/run.sh --down-only"
 echo
 echo "    (the suite that just ran exited $STATUS; S5 and S9 were skipped on"
 echo "     purpose, and two tests fail on purpose: they are defects D1 and D8)"

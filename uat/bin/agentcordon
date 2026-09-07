@@ -11,6 +11,12 @@ Two jobs:
    so an agent working from the host sees exactly what a user in that
    workspace sees.
 
+   `mcp-serve` is the one subcommand that is *streamed* rather than captured:
+   it is a long-lived stdio JSON-RPC session, so the shim records that the
+   session was opened and then `exec docker exec -i`s into the container,
+   giving the runtime's MCP client both pipes. Its entry carries
+   `"streamed": true` and no output digest; see stream_into_container().
+
 2. **Fence and record.** Every invocation is appended to
    `uat/artifacts/agent-shim.log` as one JSON object:
 
@@ -64,12 +70,18 @@ SUBCOMMANDS = {
     "mcp-servers",
     "mcp-tools",
     "mcp-call",
+    "mcp-serve",
     "help",
     "--help",
     "-h",
     "--version",
     "-V",
 }
+
+# `mcp-serve` is a long-lived stdio session, not a command with an output. It
+# is handled by exec-ing into `docker exec -i` so the runtime's MCP client owns
+# both pipes; see stream_into_container().
+STREAMING = {"mcp-serve"}
 
 
 def real_docker():
@@ -137,6 +149,44 @@ def refuse(invoked_as, argv, reason):
     return 126
 
 
+def stream_into_container(invoked_as, args):
+    """Hand the CLI's stdio session straight to the caller's pipes.
+
+    `mcp-serve` speaks newline-delimited JSON-RPC over stdin/stdout for as long
+    as the runtime keeps it open, so capturing its output would deadlock the
+    protocol. The shim records that the session was opened and then *execs*
+    into `docker exec -i`, which forwards stdin: from that moment the runtime's
+    MCP client and the CLI are talking directly.
+
+    Consequence, stated in uat/s15-blind-agent.md § S19: the bytes of an MCP
+    session are NOT in uat/artifacts/agent-shim-out/. The evidence for that
+    path is the runtime's own transcript, the mock MCP server's request log and
+    the server's audit rows.
+    """
+    now = time.time()
+    record(
+        {
+            "run_id": run_id(),
+            "at": round(now, 3),
+            "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "invoked_as": invoked_as,
+            "argv": args,
+            "allowed": True,
+            "streamed": True,
+            "refusal": None,
+            "exit_code": None,
+            "stdout_sha256": None,
+            "stdout_bytes": 0,
+            "stderr_sha256": None,
+            "stderr_bytes": 0,
+            "duration_ms": 0,
+        }
+    )
+    docker = real_docker()
+    argv = [docker, "exec", "-i", "-w", WORKDIR, CONTAINER, "agentcordon"] + args
+    os.execv(docker, argv)
+
+
 def main(argv):
     invoked_as = os.path.basename(argv[0])
     args = argv[1:]
@@ -147,6 +197,8 @@ def main(argv):
         return refuse(invoked_as, args, "no subcommand")
     if args[0] not in SUBCOMMANDS:
         return refuse(invoked_as, args, "not an agentcordon subcommand: %r" % args[0])
+    if args[0] in STREAMING:
+        return stream_into_container(invoked_as, args)
 
     started = time.time()
     proc = subprocess.run(
