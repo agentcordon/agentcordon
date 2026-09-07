@@ -333,6 +333,7 @@ impl TestBrokerBuilder {
             pending: RwLock::new(HashMap::new()),
             registration_errors: RwLock::new(HashMap::new()),
             mcp_configs: RwLock::new(HashMap::new()),
+            credential_lists: RwLock::new(HashMap::new()),
             server_url: server.uri(),
             http_client,
             upstream_client: agentcordon_broker::upstream::build_client().expect("upstream client"),

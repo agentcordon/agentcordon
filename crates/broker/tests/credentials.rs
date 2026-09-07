@@ -212,3 +212,151 @@ async fn the_credential_listing_carries_the_url_fence() {
         "description stays operator-facing: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The listing cache.
+//
+// `agentcordon proxy --auto` fetches the listing before every call it makes,
+// so the listing must not cost a server round trip every time. The vend does
+// — that is the audit record — but the catalogue an agent chooses from does
+// not change between two calls a second apart.
+// ---------------------------------------------------------------------------
+
+const LIST_PATH: &str = "/api/v1/credentials";
+
+/// The server's answer to `GET /api/v1/credentials`.
+fn server_listing(name: &str) -> serde_json::Value {
+    serde_json::json!({ "data": [ stored(name, Some("https://api.github.com/*"))["data"] ] })
+}
+
+async fn list(broker: &TestBroker, ws: &TestWorkspace) -> (StatusCode, serde_json::Value) {
+    broker.send(ws.signed("GET", "/credentials", "")).await
+}
+
+/// Two listings in a row cost one round trip to the server, not two.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repeated_listing_is_served_from_the_broker_cache() {
+    let (broker, ws) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(LIST_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(server_listing("github")))
+        .expect(1)
+        .mount(&broker.server)
+        .await;
+
+    let (first_status, first) = list(&broker, &ws).await;
+    let (second_status, second) = list(&broker, &ws).await;
+
+    assert_eq!(first_status, StatusCode::OK);
+    assert_eq!(second_status, StatusCode::OK);
+    assert_eq!(
+        first, second,
+        "the cached answer is the answer, not a stale shape"
+    );
+    assert_eq!(first["data"][0]["name"], "github");
+    assert_eq!(
+        first["data"][0]["allowed_url_pattern"], "https://api.github.com/*",
+        "`--auto` selects on this field, so the cache must carry it"
+    );
+}
+
+/// The cache is per workspace: one workspace's catalogue is never another's.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cache_is_keyed_by_workspace() {
+    let first_ws = TestWorkspace::generate();
+    let second_ws = TestWorkspace::generate();
+    let broker = TestBroker::builder()
+        .with_registered(&first_ws, &["credentials:vend"])
+        .with_registered(&second_ws, &["credentials:vend"])
+        .build()
+        .await;
+
+    // Each workspace's bearer token differs, so the fake server can answer
+    // them differently; what matters is that the second workspace's call is
+    // not served the first's cached body.
+    Mock::given(method("GET"))
+        .and(path(LIST_PATH))
+        .and(wiremock::matchers::header(
+            "authorization",
+            format!("Bearer access-{}", &first_ws.pk_hash()[..8]).as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(server_listing("first-only")))
+        .mount(&broker.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(LIST_PATH))
+        .and(wiremock::matchers::header(
+            "authorization",
+            format!("Bearer access-{}", &second_ws.pk_hash()[..8]).as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(server_listing("second-only")))
+        .mount(&broker.server)
+        .await;
+
+    let (_, first) = list(&broker, &first_ws).await;
+    let (_, second) = list(&broker, &second_ws).await;
+
+    assert_eq!(first["data"][0]["name"], "first-only");
+    assert_eq!(second["data"][0]["name"], "second-only");
+}
+
+/// A sync is the broker learning that the server's view of this workspace
+/// changed, so the cached catalogue does not survive one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sync_invalidates_the_cached_listing() {
+    let (broker, ws) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(LIST_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(server_listing("github")))
+        .expect(2)
+        .mount(&broker.server)
+        .await;
+    // `mcp/list-tools` syncs the workspace before it answers.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/workspaces/mcp-tools"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": [] })))
+        .mount(&broker.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/workspaces/mcp-servers"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": [] })))
+        .mount(&broker.server)
+        .await;
+
+    let _ = list(&broker, &ws).await;
+    let (sync_status, _) = broker
+        .send(ws.signed("POST", "/mcp/list-tools", "{}"))
+        .await;
+    assert_eq!(sync_status, StatusCode::OK);
+    let (status, again) = list(&broker, &ws).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["data"][0]["name"], "github");
+}
+
+/// An error is not cached: the next call asks again rather than repeating a
+/// failure for the whole TTL.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_listing_is_not_cached() {
+    let (broker, ws) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(LIST_PATH))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&broker.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(LIST_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(server_listing("github")))
+        .expect(1)
+        .mount(&broker.server)
+        .await;
+
+    let (first_status, _) = list(&broker, &ws).await;
+    assert_ne!(first_status, StatusCode::OK);
+
+    let (second_status, body) = list(&broker, &ws).await;
+    assert_eq!(second_status, StatusCode::OK);
+    assert_eq!(body["data"][0]["name"], "github");
+}

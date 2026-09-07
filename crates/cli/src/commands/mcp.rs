@@ -165,19 +165,60 @@ struct McpCallRequest {
 
 #[derive(Deserialize)]
 struct McpCallResponse {
-    data: McpCallResult,
+    /// The `tools/call` result, kept whole: `--json` hands it back
+    /// unchanged, and the default output is a projection of it. Reading it
+    /// as a typed struct would silently drop every block type the struct
+    /// does not name, which is how an embedded resource used to come back
+    /// as an empty answer.
+    data: serde_json::Value,
 }
 
-#[derive(Deserialize)]
-struct McpCallResult {
-    content: Vec<McpContent>,
-    #[serde(rename = "isError", default)]
-    is_error: bool,
+/// The tool's answer as text, and nothing else.
+///
+/// MCP content is a list of blocks. A `text` block is its text; an embedded
+/// resource is the text inside it; a block that carries no text at all
+/// (an image, a binary resource) is named rather than dropped, because a
+/// silently empty answer reads as a broken tool. Anything unrecognised is
+/// printed as itself.
+fn flatten_content(content: &[serde_json::Value]) -> String {
+    content
+        .iter()
+        .map(flatten_block)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-#[derive(Deserialize)]
-struct McpContent {
-    text: Option<String>,
+fn flatten_block(block: &serde_json::Value) -> String {
+    let str_at = |path: &[&str]| -> Option<&str> {
+        let mut cur = block;
+        for key in path {
+            cur = cur.get(key)?;
+        }
+        cur.as_str()
+    };
+    if let Some(text) = str_at(&["text"]).or_else(|| str_at(&["resource", "text"])) {
+        return text.to_string();
+    }
+    let kind = str_at(&["type"]);
+    match kind {
+        Some("image") | Some("audio") => format!(
+            "[{} {}]",
+            kind.unwrap_or("blob"),
+            str_at(&["mimeType"]).unwrap_or("?")
+        ),
+        Some("resource") | Some("resource_link") => format!(
+            "[resource {}]",
+            str_at(&["resource", "uri"])
+                .or_else(|| str_at(&["uri"]))
+                .unwrap_or("?")
+        ),
+        _ => serde_json::to_string(block).unwrap_or_default(),
+    }
+}
+
+/// The whole result, on one line, for `--json`.
+fn render_json(result: &serde_json::Value) -> String {
+    serde_json::to_string(result).unwrap_or_else(|_| "null".to_string())
 }
 
 /// Failure of an `mcp-call` invocation, separated so the caller can distinguish
@@ -204,9 +245,10 @@ pub async fn call(
     tool: String,
     args: Vec<String>,
     args_json: Option<String>,
+    json_output: bool,
 ) -> Result<(), CliError> {
     let tool_name = tool.clone();
-    match call_inner(server, tool, args, args_json).await {
+    match call_inner(server, tool, args, args_json, json_output).await {
         Ok(()) => Ok(()),
         Err(CallFailure::Pre(e)) => {
             emit_envelope(classify_cli_error(&e), &tool_name, &e.message);
@@ -229,6 +271,7 @@ async fn call_inner(
     tool: String,
     args: Vec<String>,
     args_json: Option<String>,
+    json_output: bool,
 ) -> Result<(), CallFailure> {
     let client = BrokerClient::connect().await?;
 
@@ -249,15 +292,19 @@ async fn call_inner(
         .await
         .map_err(CallFailure::Pre)?;
 
-    let body = resp
-        .data
-        .content
-        .iter()
-        .filter_map(|c| c.text.clone())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let result = resp.data;
+    let content = result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let body = flatten_content(&content);
+    let is_error = result
+        .get("isError")
+        .and_then(|e| e.as_bool())
+        .unwrap_or(false);
 
-    if resp.data.is_error {
+    if is_error {
         let detail = if body.is_empty() {
             "MCP tool returned an error result".to_string()
         } else {
@@ -266,8 +313,76 @@ async fn call_inner(
         return Err(CallFailure::Tool(detail));
     }
 
-    if !body.is_empty() {
+    if json_output {
+        println!("{}", render_json(&result));
+    } else if !body.is_empty() {
         println!("{body}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blocks(v: serde_json::Value) -> Vec<serde_json::Value> {
+        v.as_array().expect("array").clone()
+    }
+
+    /// The default output is the tool's text and nothing else — no envelope,
+    /// no block types, no quoting.
+    #[test]
+    fn text_blocks_are_flattened_to_their_text() {
+        let content = blocks(serde_json::json!([
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ]));
+        assert_eq!(flatten_content(&content), "first\nsecond");
+    }
+
+    /// An embedded resource carries its text in a nested object; an agent
+    /// that asked for the tool's answer should get the answer, not the
+    /// wrapper.
+    #[test]
+    fn an_embedded_text_resource_is_flattened_to_its_text() {
+        let content = blocks(serde_json::json!([
+            {"type": "resource", "resource": {"uri": "file:///a.txt", "text": "inside"}},
+        ]));
+        assert_eq!(flatten_content(&content), "inside");
+    }
+
+    /// A block with no text at all is named rather than dropped: a silent
+    /// empty answer reads as a broken tool.
+    #[test]
+    fn a_block_with_no_text_is_named_by_its_type_and_uri() {
+        let content = blocks(serde_json::json!([
+            {"type": "image", "mimeType": "image/png", "data": "iVBOR"},
+            {"type": "resource", "resource": {"uri": "file:///b.bin", "blob": "AAAA"}},
+        ]));
+        assert_eq!(
+            flatten_content(&content),
+            "[image image/png]\n[resource file:///b.bin]"
+        );
+    }
+
+    /// An unknown block type is still reported, as itself.
+    #[test]
+    fn an_unknown_block_falls_back_to_its_json() {
+        let content = blocks(serde_json::json!([{"type": "future", "shape": 1}]));
+        assert_eq!(flatten_content(&content), r#"{"type":"future","shape":1}"#);
+    }
+
+    /// `--json` is the whole result, unflattened, on one line.
+    #[test]
+    fn json_output_is_the_whole_result_compact() {
+        let result = serde_json::json!({
+            "content": [{"type": "text", "text": "hi"}],
+            "isError": false,
+        });
+        let rendered = render_json(&result);
+        assert_eq!(rendered.lines().count(), 1, "{rendered}");
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["content"][0]["text"], "hi");
+        assert_eq!(parsed["isError"], false);
+    }
 }

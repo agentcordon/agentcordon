@@ -15,16 +15,58 @@ agentcordon register     [--server-url URL] [--name NAME] [--scope SCOPE]... [--
 agentcordon status
 agentcordon credentials  [--json]
 agentcordon credentials  create --name NAME --service SVC --value VAL
-agentcordon proxy        CREDENTIAL METHOD URL [--header K:V]... [--body JSON] [--json] [--raw]
+agentcordon proxy        CREDENTIAL METHOD URL [--header K:V]... [--body JSON] [--json] [--raw] [--headers]
+agentcordon proxy --auto METHOD URL [--header K:V]... [--body JSON] [--json] [--raw] [--headers]
 agentcordon mcp-servers
 agentcordon mcp-tools    [--schema [--server NAME] [--tool NAME]]
-agentcordon mcp-call     SERVER TOOL [--arg K=V]... [--args-json SRC]
+agentcordon mcp-call     SERVER TOOL [--arg K=V]... [--args-json SRC] [--json]
 ```
 
 ---
 
 **On this page:**
-[Exit Codes](#exit-codes) -- [Environment Variables](#environment-variables) -- [The server URL](#the-server-url-and-where-it-comes-from) -- [Commands](#commands) -- [Files & Directories](#files-and-directories) -- [Credential Types](#credential-types-and-transforms) -- [Authentication](#authentication)
+[The fast path](#for-agents-the-fast-path) -- [Exit Codes](#exit-codes) -- [Environment Variables](#environment-variables) -- [The server URL](#the-server-url-and-where-it-comes-from) -- [Commands](#commands) -- [Files & Directories](#files-and-directories) -- [Credential Types](#credential-types-and-transforms) -- [Authentication](#authentication)
+
+---
+
+## For agents: the fast path
+
+One authenticated call is **one command**, and what comes back is the response
+body and one line saying what it was.
+
+```bash
+# An HTTP API. The credential is the one whose URL fence covers this target.
+agentcordon proxy --auto GET https://api.example.com/v1/things
+
+# With a body:
+agentcordon proxy --auto POST https://api.example.com/v1/things --body '{"name":"x"}'
+
+# Machine-readable: one compact {status, headers, body} object.
+agentcordon proxy --auto GET https://api.example.com/v1/things --json
+
+# An MCP tool. Prints the tool's text; --json for the whole result.
+agentcordon mcp-call <SERVER> <TOOL> --arg key=value
+```
+
+`proxy --auto` prints the **body** on stdout and one summary line on stderr:
+
+```
+HTTP 200 · 27 B · content-type: application/json · via example-api
+{"things":[]}
+```
+
+Only reach for the rest when `--auto` refuses:
+
+| It said | Do this |
+|---|---|
+| `no credential is fenced for <url>` (exit 7) | `agentcordon credentials` -- nothing covers that URL; the target may be wrong, or the credential may not exist yet. |
+| `several credentials are fenced for <url>` (exit 7) | Pick one from the list it printed: `agentcordon proxy <name> <METHOD> <url>`. |
+| `... (url_pattern_denied)` (exit 5) | The credential you named is fenced elsewhere. `--auto` would have avoided this. |
+| exit 2 | The broker is not running. |
+| exit 3 | `agentcordon register`. |
+
+`agentcordon credentials` and `agentcordon mcp-tools --schema` are for when
+you need to *see* the catalogue -- not something to run before every call.
 
 ---
 
@@ -39,6 +81,7 @@ agentcordon mcp-call     SERVER TOOL [--arg K=V]... [--args-json SRC]
 | `4` | Authentication failed -- the broker rejected the workspace signature | every command except `init` |
 | `5` | Authorization denied -- a policy, a scope, or a credential's `allowed_url_pattern` refused the request | every command except `init` |
 | `6` | Upstream error -- the service on the far side of the broker (a proxied API, an MCP server, or the AgentCordon server during registration) answered with an error or could not be reached | `proxy`, `mcp-tools`, `mcp-call`, `register` |
+| `7` | `proxy --auto` found no credential fenced for the target, or more than one. Nothing was proxied. Its own code because the fix is to name a credential (or create one), not to register or to change a policy | `proxy --auto` |
 
 `init` never talks to the broker or the network, so it only ever exits `0` or `1`.
 
@@ -510,19 +553,46 @@ Created credential 'slack-api' (service: slack, allowed URLs: UNRESTRICTED - thi
 
 ```
 agentcordon proxy <CREDENTIAL> <METHOD> <URL> [OPTIONS]
+agentcordon proxy --auto <METHOD> <URL> [OPTIONS]
 ```
 
 | Argument / Flag | Type | Required | Description |
 |-----------------|------|:--------:|-------------|
-| `<CREDENTIAL>` | string | Yes | Credential name |
+| `<CREDENTIAL>` | string | Unless `--auto` | Credential name |
 | `<METHOD>` | string | Yes | HTTP method (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) |
 | `<URL>` | string | Yes | Target URL |
+| `--auto` | bool | No | Choose the credential whose URL fence covers `<URL>`, instead of naming one. See [Choosing the credential with `--auto`](#choosing-the-credential-with---auto). |
 | `--header <KEY:VALUE>` | string | No | Additional headers (repeatable) |
 | `--body <STRING>` | string | No | Request body (string, or `@file` to read from file) |
-| `--json` | bool | No | Pretty-print response body as JSON |
-| `--raw` | bool | No | Print only response body (for piping, no status/headers) |
+| `--json` | bool | No | Emit one compact `{status, headers, body}` object |
+| `--raw` | bool | No | Print only the response body, with no summary line on stderr |
+| `--headers` | bool | No | Print the status line and every response header above the body, on stdout |
 
 Requires the broker to be running and the workspace to be registered. The broker resolves the credential, injects it into the request according to its type, and forwards the request to the target URL.
+
+#### Choosing the credential with `--auto`
+
+`--auto` fetches the listing the broker already holds (`agentcordon credentials`) and
+picks from it. The rule is fixed, so two runs choose the same credential:
+
+1. An **expired** credential is never a candidate.
+2. A **fenced** credential is a candidate when its `allowed_url_pattern` covers the
+   target. The comparison is structural, not textual: the scheme, host and port are
+   compared as values, a `*` in the host stands for exactly one DNS label, and a `*`
+   in the path or query matches any run of characters. `https://*.github.com/*` does
+   **not** cover `https://api.github.com.attacker.example/x`, nor
+   `https://api.github.com:8443/x`.
+3. **Exactly one** fenced candidate is used.
+4. With no fenced candidate, an **unfenced** credential (`* (any URL)`) is used, and
+   `proxy` says so on stderr. An unfenced credential is never preferred over one whose
+   fence covers the target.
+5. **Zero** candidates, or **more than one**, is a refusal with exit code `7`. `--auto`
+   never guesses.
+
+The listing costs one request to the broker, which serves it from a 30-second
+per-workspace cache -- so `--auto` adds no broker-to-server round trip. The **vend**
+is still one round trip per call: that is the audit record, and it is where the target
+is checked against the fence.
 
 > **SSRF Protection:** Private IPs, loopback, and link-local addresses are blocked by the
 > broker by default. For local development, start the **broker** with
@@ -547,7 +617,7 @@ agentcordon proxy slack-token POST https://slack.com/api/chat.postMessage \
 agentcordon proxy my-api POST https://api.example.com/data \
   --body @payload.json
 
-# With custom headers and JSON pretty-printing
+# With custom headers, as one JSON object
 agentcordon proxy my-api GET https://api.example.com/data \
   --header "Accept: application/json" \
   --header "X-Request-Id: abc123" \
@@ -555,15 +625,43 @@ agentcordon proxy my-api GET https://api.example.com/data \
 
 # Raw output for piping
 agentcordon proxy my-api GET https://api.example.com/data --raw | jq .
+
+# Without naming a credential: the one whose fence covers this URL
+agentcordon proxy --auto GET https://api.example.com/data
 ```
 
-**Default output:**
-```
-HTTP 200
-content-type: application/json
-x-request-id: abc123
+**Default output.** The **body**, and only the body, goes to stdout, byte for byte
+with nothing appended. Everything else is one line on stderr:
 
+```
+HTTP 200 · 26 B · content-type: application/json
 {"login":"octocat","id":1}
+```
+
+With `--auto`, the summary line names the credential that was chosen:
+
+```
+HTTP 200 · 26 B · content-type: application/json · via github-token
+{"login":"octocat","id":1}
+```
+
+`--raw` prints the same stdout with no summary line at all -- the form to pipe or
+hash. `--headers` puts the status line and every response header on stdout above the
+body, for a response whose headers are the point:
+
+```
+HTTP 302
+location: https://example.com/moved
+content-length: 0
+
+```
+
+`--json` is one compact object on one line. A header that arrived more than once
+(`Set-Cookie`, `Link`) is an array of its values; `body` is parsed JSON when the
+response's content type says JSON, and a string otherwise:
+
+```
+{"status":200,"headers":{"content-type":"application/json"},"body":{"login":"octocat","id":1}}
 ```
 
 **Error output.** Errors print as `Error: <message> (<code>)`. The code tells you which
@@ -586,6 +684,20 @@ Error: credential 'github-token' is fenced to the URL pattern https://api.github
 (`--allowed-url-pattern`) or in the admin UI on the credential's page under **Edit ->
 URL Restriction**. It is *not* a Cedar decision -- nothing under **Policies** (`/security`)
 will change it.
+
+No credential is fenced for the target (`--auto`, exit `7`):
+```
+Error: no credential is fenced for https://api.gitlab.com/user; run agentcordon credentials
+```
+
+More than one is (`--auto`, exit `7`):
+```
+Error: several credentials are fenced for https://api.github.com/repos/a/b; name one:
+  gh-read  https://api.github.com/*
+  gh-write  https://api.github.com/repos/*
+
+Run: agentcordon proxy gh-read <METHOD> https://api.github.com/repos/a/b
+```
 
 Refused by Cedar policy:
 ```
@@ -683,6 +795,7 @@ agentcordon mcp-call <SERVER> <TOOL> [OPTIONS]
 | `<TOOL>` | string | Yes | Tool name |
 | `--arg <KEY=VALUE>` | string | No | Tool arguments (repeatable) |
 | `--args-json <SRC>` | string | No | The full `tools/call.arguments` object as JSON. `SRC` may be inline JSON, `@<path>` to read a file, or `-` to read stdin. Individual `--arg` values override fields from it. |
+| `--json` | bool | No | Emit the whole `tools/call` result as one compact JSON object instead of just the tool's text |
 
 Requires the broker to be running and the workspace to be registered. The broker checks Cedar policy authorization before forwarding the call.
 
@@ -711,15 +824,33 @@ agentcordon mcp-call data-pipeline run_etl \
 agentcordon mcp-call data-pipeline run_etl --args-json @job.json --arg limit=10
 ```
 
-**Output (success):**
+**Output (success).** The tool's text, and nothing else. Structured content blocks
+are flattened in order: a `text` block is its text, an embedded resource is the text
+inside it, and a block that carries no text (an image, a binary resource) is named --
+`[image image/png]`, `[resource file:///b.bin]` -- rather than dropped.
+
 ```
 Issue #42 created: https://github.com/myorg/myrepo/issues/42
 ```
 
-**Output (error):**
+`--json` prints the whole result instead, on one line:
+
 ```
-MCP tool returned an error:
-tool not found: 'nonexistent_tool'
+{"content":[{"type":"text","text":"Issue #42 created: ..."}],"isError":false}
+```
+
+**Output (error).** A failed call writes the agent-facing error envelope to stdout and
+one `Error: ...` line to stderr, and exits non-zero. A tool that answered with
+`isError` exits `6`:
+
+```json
+{
+  "error": {
+    "kind": "tool_error",
+    "tool": "nonexistent_tool",
+    "message": "tool not found: 'nonexistent_tool'"
+  }
+}
 ```
 
 ---

@@ -126,14 +126,15 @@ enum Command {
 
     /// Proxy an HTTP request through the broker with credential injection
     Proxy {
-        /// Credential name to use
-        credential: String,
+        /// `<CREDENTIAL> <METHOD> <URL>`, or `<METHOD> <URL>` with `--auto`.
+        #[arg(value_names = ["CREDENTIAL", "METHOD", "URL"], num_args = 2..=3)]
+        args: Vec<String>,
 
-        /// HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)
-        method: String,
-
-        /// Target URL
-        url: String,
+        /// Pick the credential whose URL fence covers the target, instead of
+        /// naming one. Refuses rather than guessing when no fence covers the
+        /// URL, or when more than one does.
+        #[arg(long)]
+        auto: bool,
 
         /// Additional headers (KEY:VALUE, repeatable)
         #[arg(long = "header", num_args = 1)]
@@ -143,13 +144,17 @@ enum Command {
         #[arg(long)]
         body: Option<String>,
 
-        /// Pretty-print response body as JSON
+        /// Emit one compact JSON object: {status, headers, body}
         #[arg(long)]
         json: bool,
 
-        /// Print only response body (for piping)
+        /// Print only the response body, with no summary line on stderr
         #[arg(long)]
         raw: bool,
+
+        /// Print the status line and every response header above the body
+        #[arg(long = "headers")]
+        show_headers: bool,
     },
 
     /// List available MCP servers
@@ -189,6 +194,11 @@ enum Command {
         /// On conflict, individual --arg values override fields from this object.
         #[arg(long = "args-json", value_name = "SRC")]
         args_json: Option<String>,
+
+        /// Emit the whole tools/call result as one compact JSON object
+        /// instead of just the tool's text
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -277,14 +287,25 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             }) => commands::credentials::create(name, service, value, allowed_url_pattern).await,
         },
         Command::Proxy {
-            credential,
-            method,
-            url,
+            args,
+            auto,
             headers,
             body,
             json,
             raw,
-        } => commands::proxy::run(credential, method, url, headers, body, json, raw).await,
+            show_headers,
+        } => {
+            commands::proxy::run(commands::proxy::ProxyArgs {
+                args,
+                auto,
+                headers,
+                body,
+                json,
+                raw,
+                show_headers,
+            })
+            .await
+        }
         Command::McpServers => commands::mcp::list_servers().await,
         Command::McpTools {
             schema,
@@ -296,6 +317,7 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             tool,
             args,
             args_json,
-        } => commands::mcp::call(server, tool, args, args_json).await,
+            json,
+        } => commands::mcp::call(server, tool, args, args_json, json).await,
     }
 }

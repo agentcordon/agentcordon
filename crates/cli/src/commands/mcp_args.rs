@@ -125,9 +125,10 @@ pub fn classify_cli_error(err: &CliError) -> ErrorKind {
     match err.code {
         ExitCode::AuthFailed | ExitCode::AuthorizationDenied => ErrorKind::Unauthorized,
         ExitCode::BrokerNotRunning | ExitCode::UpstreamError => ErrorKind::TransportError,
-        ExitCode::NotRegistered | ExitCode::GeneralError | ExitCode::Success => {
-            ErrorKind::ValidationError
-        }
+        ExitCode::NotRegistered
+        | ExitCode::GeneralError
+        | ExitCode::NoCredentialMatch
+        | ExitCode::Success => ErrorKind::ValidationError,
     }
 }
 

@@ -8,7 +8,7 @@ use agent_cordon_core::domain::credential::{CredentialId, CredentialSummary};
 
 use crate::auth::AuthenticatedWorkspace;
 use crate::server_client::ServerClient;
-use crate::state::SharedState;
+use crate::state::{CachedCredentialList, SharedState};
 
 use super::helpers::{error_response, with_token_refresh};
 
@@ -50,6 +50,17 @@ impl From<CredentialSummary> for CredentialListEntry {
     }
 }
 
+/// The listing an agent chooses from, cached for
+/// [`crate::state::CREDENTIAL_LIST_TTL`].
+///
+/// `agentcordon proxy --auto` asks for this before every call it makes, so
+/// serving it from the server every time would put a second broker→server
+/// round trip on the fast path. The **vend** is deliberately not cached:
+/// that round trip is what writes the audit row and re-checks the target
+/// against the fence (ADR-0007). This is the catalogue, not the secret.
+///
+/// A failed fetch is not cached, so one bad answer does not stand for the
+/// whole TTL.
 pub async fn get_credentials(
     State(state): State<SharedState>,
     request: axum::extract::Request,
@@ -60,6 +71,10 @@ pub async fn get_credentials(
         .cloned()
         .unwrap();
 
+    if let Some(cached) = cached_listing(&state, &auth.pk_hash).await {
+        return (StatusCode::OK, axum::Json(listing_body(cached)));
+    }
+
     let server_client = ServerClient::new(state.http_client.clone(), state.server_url.clone());
 
     match with_token_refresh(&state, &auth.pk_hash, |token| {
@@ -69,15 +84,40 @@ pub async fn get_credentials(
     .await
     {
         Ok(creds) => {
-            let entries: Vec<CredentialListEntry> =
-                creds.into_iter().map(CredentialListEntry::from).collect();
-            (
-                StatusCode::OK,
-                axum::Json(serde_json::json!({ "data": entries })),
-            )
+            state.credential_lists.write().await.insert(
+                auth.pk_hash.clone(),
+                CachedCredentialList {
+                    fetched_at: std::time::Instant::now(),
+                    entries: creds.clone(),
+                },
+            );
+            (StatusCode::OK, axum::Json(listing_body(creds)))
         }
         Err(e) => e,
     }
+}
+
+/// This workspace's listing, if one was fetched inside the TTL.
+async fn cached_listing(state: &SharedState, pk_hash: &str) -> Option<Vec<CredentialSummary>> {
+    let now = std::time::Instant::now();
+    let cache = state.credential_lists.read().await;
+    let cached = cache.get(pk_hash)?;
+    cached.is_fresh(now).then(|| cached.entries.clone())
+}
+
+/// Drop this workspace's cached listing.
+///
+/// Called wherever the broker learns the server's view of the workspace has
+/// moved — a sync, a deregistration — so a stale catalogue never outlives
+/// the reason it was fetched.
+pub async fn invalidate_listing(state: &SharedState, pk_hash: &str) {
+    state.credential_lists.write().await.remove(pk_hash);
+}
+
+fn listing_body(creds: Vec<CredentialSummary>) -> serde_json::Value {
+    let entries: Vec<CredentialListEntry> =
+        creds.into_iter().map(CredentialListEntry::from).collect();
+    serde_json::json!({ "data": entries })
 }
 
 /// POST /credentials/create — workspace-initiated credential creation passthrough.
