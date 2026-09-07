@@ -117,7 +117,7 @@
                            :title="isGrant(policy) ? policy.name : null"
                            x-text="isGrant(policy) && policy.description ? policy.description : policy.name"></a>
                         <span x-show="policy.is_system" class="pill pill-scope pill-sm policy-type-badge">System</span>
-                        <span x-show="!policy.is_system && isGrant(policy)" class="pill pill-sm policy-type-badge policy-badge-grant">Grant</span>
+                        <span x-show="!policy.is_system && isGrant(policy)" class="pill pill-sm policy-type-badge policy-badge-grant" x-text="grantBadgeLabel(policy)"></span>
                         <span x-show="!policy.is_system && !isGrant(policy)" class="pill pill-type pill-sm policy-type-badge">Custom</span>
                         <span x-show="isLastEnabled(policy)" class="pill pill-warn pill-sm policy-type-badge policy-last-enabled-pill"
                               :title="lockoutReason(policy)">last enabled policy</span>
@@ -222,8 +222,16 @@ function policiesPage() {
             this.loading = false;
         },
 
+        /*
+         * A row the permissions UI or the MCP policy generator wrote, rather
+         * than one somebody authored. `isGrant` used to test the `grant:`
+         * prefix alone, so a per-tool Deny fell between the two predicates:
+         * excluded from the enabled count by `isGenerated`, but displayed in
+         * the authored list and badged "Custom" (uat S20). One predicate, both
+         * prefixes.
+         */
         isGrant(policy) {
-            return (policy.name || '').startsWith('grant:');
+            return this.isGenerated(policy);
         },
 
         /*
@@ -242,6 +250,11 @@ function policiesPage() {
         isGenerated(policy) {
             var name = policy.name || '';
             return name.startsWith('grant:') || name.startsWith('deny:');
+        },
+
+        /* A generated row's badge says which of the two it is. */
+        grantBadgeLabel(policy) {
+            return (policy.name || '').startsWith('deny:') ? 'Deny' : 'Grant';
         },
 
         /*

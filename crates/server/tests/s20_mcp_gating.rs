@@ -299,3 +299,246 @@ async fn an_unknown_server_still_says_unknown_server() {
         row.metadata
     );
 }
+
+// ===========================================================================
+// G-S20-2 — the rows generate-policies writes are generated, not authored
+// ===========================================================================
+
+/// `POST /api/v1/mcp-servers/{id}/generate-policies` with an empty body, the
+/// way the Access tab's button calls it.
+async fn generate_policies(
+    ctx: &TestContext,
+    cookie: &str,
+    csrf: &str,
+    id: &McpServerId,
+) -> (StatusCode, serde_json::Value) {
+    send_json(
+        &ctx.app,
+        Method::POST,
+        &format!("/api/v1/mcp-servers/{}/generate-policies", id.0),
+        None,
+        Some(cookie),
+        Some(csrf),
+        Some(json!({})),
+    )
+    .await
+}
+
+/// A context whose admin workspace carries a tag, so an empty generate body
+/// resolves to that tag and to the server's own tools.
+async fn tagged_generator_ctx(username: &str) -> (TestContext, String, String, McpServerId) {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let ws = ctx.admin_agent.as_ref().unwrap().id.clone();
+    let mut workspace = ctx
+        .store
+        .get_workspace(&ws)
+        .await
+        .expect("load workspace")
+        .expect("workspace exists");
+    workspace.tags = vec!["uat-s20".to_string()];
+    ctx.store
+        .update_workspace(&workspace)
+        .await
+        .expect("tag workspace");
+
+    let id = create_bound_mcp_server(&*ctx.store, &ws, "uat-none").await;
+    let (cookie, csrf) = admin_session(&ctx, username).await;
+    (ctx, cookie, csrf, id)
+}
+
+#[tokio::test]
+async fn generated_policies_are_named_with_the_grant_prefix_the_access_tab_uses() {
+    let (ctx, cookie, csrf, id) = tagged_generator_ctx("s20-gen-name").await;
+
+    let (status, body) = generate_policies(&ctx, &cookie, &csrf, &id).await;
+    assert_eq!(status, StatusCode::OK, "generate-policies: {}", body);
+    let created = body["data"]["policies_created"].as_array().unwrap();
+    assert!(!created.is_empty(), "policies were created: {}", body);
+
+    for policy in created {
+        let name = policy["name"].as_str().unwrap();
+        assert!(
+            agent_cordon_server::services::policies::is_generated_grant(name),
+            "a generated policy must be recognised as generated, not counted as authored: {name}"
+        );
+        assert!(
+            name.starts_with(&format!("grant:mcp:{}:", id.0)),
+            "a generated policy is named the way the Access tab names its rows: {name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn generating_policies_does_not_unprotect_the_last_enabled_policy() {
+    let (ctx, cookie, csrf, id) = tagged_generator_ctx("s20-gen-guard").await;
+
+    let (status, body) = generate_policies(&ctx, &cookie, &csrf, &id).await;
+    assert_eq!(status, StatusCode::OK, "generate-policies: {}", body);
+    assert!(
+        !body["data"]["policies_created"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "policies were created: {}",
+        body
+    );
+
+    let policies = ctx.store.list_policies().await.expect("list policies");
+    let default = policies
+        .iter()
+        .find(|p| p.name == "default")
+        .expect("the seeded default policy");
+
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::DELETE,
+        &format!("/api/v1/policies/{}", default.id.0),
+        None,
+        Some(&cookie),
+        Some(&csrf),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the seeded default is still the last authored policy after generating: {}",
+        body
+    );
+
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::PUT,
+        &format!("/api/v1/policies/{}", default.id.0),
+        None,
+        Some(&cookie),
+        Some(&csrf),
+        Some(json!({ "enabled": false })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "and it still refuses to be disabled: {}",
+        body
+    );
+}
+
+#[tokio::test]
+async fn a_generated_policy_still_permits_the_tagged_workspace_that_tool() {
+    let (ctx, cookie, csrf, id) = tagged_generator_ctx("s20-gen-effect").await;
+    let (status, body) = generate_policies(&ctx, &cookie, &csrf, &id).await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+
+    // The rename is a naming change only: the Cedar text still names the
+    // server, the tag and the tool.
+    let policies = ctx.store.list_policies().await.expect("list policies");
+    let generated = policies
+        .iter()
+        .find(|p| p.name.contains(":mcp_tool_call:echo"))
+        .unwrap_or_else(|| {
+            panic!(
+                "a generated row for echo; got {:?}",
+                policies.iter().map(|p| &p.name).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        generated
+            .cedar_policy
+            .contains("context.tool_name == \"echo\""),
+        "{}",
+        generated.cedar_policy
+    );
+    assert!(
+        generated
+            .cedar_policy
+            .contains("principal.tags.contains(\"uat-s20\")"),
+        "{}",
+        generated.cedar_policy
+    );
+    assert!(generated.enabled, "a generated grant is enabled");
+}
+
+#[tokio::test]
+async fn generating_twice_creates_nothing_the_second_time() {
+    let (ctx, cookie, csrf, id) = tagged_generator_ctx("s20-gen-twice").await;
+    let (status, body) = generate_policies(&ctx, &cookie, &csrf, &id).await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    let first = body["data"]["policies_created"].as_array().unwrap().len();
+    assert!(first > 0);
+
+    let (status, body) = generate_policies(&ctx, &cookie, &csrf, &id).await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    assert_eq!(
+        body["data"]["policies_created"].as_array().unwrap().len(),
+        0,
+        "the generator skips names that already exist: {}",
+        body
+    );
+}
+
+/// Installs that already ran `generate-policies` hold `mcp-<id>-<tool>-<tag>`
+/// rows, which no name predicate recognises. The startup data migration
+/// renames them onto the `grant:` convention so the guard and the Policies
+/// list see them the same way as freshly generated ones.
+#[tokio::test]
+async fn the_startup_migration_renames_legacy_generated_policy_rows() {
+    use agent_cordon_core::domain::policy::{PolicyId, StoredPolicy};
+
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let ws = ctx.admin_agent.as_ref().unwrap().id.clone();
+    let id = create_bound_mcp_server(&*ctx.store, &ws, "uat-none").await;
+
+    let now = chrono::Utc::now();
+    // A tool and a tag that both carry hyphens: the old name cannot be
+    // parsed back, so the migration reads the Cedar text instead.
+    let legacy_name = format!("mcp-{}-team-notice-uat-s20", id.0);
+    let legacy = StoredPolicy {
+        id: PolicyId(Uuid::new_v4()),
+        name: legacy_name.clone(),
+        description: Some("Auto-generated".to_string()),
+        cedar_policy: format!(
+            r#"permit(
+  principal is AgentCordon::Workspace,
+  action == AgentCordon::Action::"mcp_tool_call",
+  resource == AgentCordon::McpServer::"{}"
+) when {{
+  principal.tags.contains("uat-s20") &&
+  context.tool_name == "team-notice"
+}};"#,
+            id.0
+        ),
+        enabled: true,
+        is_system: false,
+        created_at: now,
+        updated_at: now,
+    };
+    ctx.store.store_policy(&legacy).await.expect("seed legacy");
+
+    agent_cordon_server::migrations::migrate_generated_mcp_policy_names(&*ctx.store).await;
+
+    let policies = ctx.store.list_policies().await.expect("list policies");
+    assert!(
+        !policies.iter().any(|p| p.name == legacy_name),
+        "the legacy name is gone: {:?}",
+        policies.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+    let renamed = policies
+        .iter()
+        .find(|p| agent_cordon_server::services::policies::is_generated_grant(&p.name))
+        .expect("a renamed generated grant");
+    assert_eq!(
+        renamed.name,
+        format!("grant:mcp:{}:tag:uat-s20:mcp_tool_call:team-notice", id.0),
+        "the rename recovers tool and tag from the Cedar text"
+    );
+    assert_eq!(
+        renamed.cedar_policy, legacy.cedar_policy,
+        "only the name changes"
+    );
+
+    // Idempotent: a second pass leaves the renamed row alone.
+    agent_cordon_server::migrations::migrate_generated_mcp_policy_names(&*ctx.store).await;
+    let after = ctx.store.list_policies().await.expect("list policies");
+    assert_eq!(after.len(), policies.len(), "a second pass changes nothing");
+}

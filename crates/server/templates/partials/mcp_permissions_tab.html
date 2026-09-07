@@ -140,6 +140,22 @@
         </div>
     </div>
 
+    <!-- Section 5: Generate policies — the tag-based generator.
+         It was documented as an operator step
+         (docs/granting-mcp-server-access.md) and reachable only with curl, so
+         an operator following docs/admin-ui.md never found it. Empty body:
+         every tool this server has, for every tag the workspaces bound to it
+         carry, which is what the endpoint defaults to. -->
+    <div class="mcp-perm-section">
+        <h3 class="mcp-section-header">Generate policies</h3>
+        <p class="text-sm opacity-muted mcp-section-desc">Write one grant per tool for every tag the workspaces bound to this server carry. Existing grants are left alone, so this is safe to run again. The rows appear under <em>Grants only</em> on the Policies page.</p>
+        <button class="btn btn-secondary btn-sm" @click="generatePolicies()"
+                :disabled="generatingPolicies" data-testid="generate-policies">
+            <span x-show="generatingPolicies" class="spinner" aria-hidden="true"></span>
+            <span x-text="generatingPolicies ? 'Generating...' : 'Generate policies'"></span>
+        </button>
+    </div>
+
     <!-- Effective Access Modal -->
     <div x-show="eaModal.open" x-cloak class="modal-overlay" @click.self="eaModal.open = false" @keydown.escape.window="eaModal.open && (eaModal.open = false)">
         <div class="modal mcp-ea-modal">

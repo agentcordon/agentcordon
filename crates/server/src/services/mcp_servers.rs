@@ -1146,6 +1146,27 @@ fn tool_names(tools: &[agent_cordon_core::domain::mcp::McpTool]) -> Vec<String> 
     tools.iter().map(|t| t.name.clone()).collect()
 }
 
+/// What one generated per-tool grant is called.
+///
+/// The generator used to name its rows `mcp-<server>-<tool>-<tag>`, which no
+/// name predicate recognised: the Policies list showed them as ordinary
+/// authored policies and the last-enabled-policy guard counted them, so a
+/// documented operator step quietly took the seeded `default` policy out of
+/// its own protection. They share the Access tab's `grant:` convention
+/// instead, which [`is_generated_grant`](crate::services::policies::is_generated_grant)
+/// and the Policies list both already know.
+///
+/// The `tag:` segment is what separates these from the Access tab's own
+/// `grant:mcp:{server}:{workspace_uuid}:…` rows: the permissions listing
+/// reads the segment after the server id as a workspace UUID and skips
+/// anything that is not one.
+///
+/// `tag` and `tool` have been through
+/// [`is_safe_identifier`], which admits no `:`, so the name parses back.
+pub fn generated_grant_name(server_id: &str, tag: &str, tool: &str) -> String {
+    format!("grant:mcp:{server_id}:tag:{tag}:mcp_tool_call:{tool}")
+}
+
 /// A policy `generate_policies` created.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GeneratedPolicy {
@@ -1250,7 +1271,7 @@ impl McpServerService {
         let mut created = Vec::new();
         for tool_name in tools {
             for tag in agent_tags {
-                let policy_name = format!("mcp-{}-{}-{}", server_id_str, tool_name, tag);
+                let policy_name = generated_grant_name(&server_id_str, tag, tool_name);
                 if existing_names.contains(&policy_name) {
                     tracing::info!(policy_name = %policy_name, "skipping duplicate policy");
                     continue;

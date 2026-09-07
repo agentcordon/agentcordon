@@ -423,67 +423,45 @@ test.describe('S20 MCP tool gating', () => {
     await page.fill('input.policy-search-input', grantRow.name);
     await expect(page.locator('tr.policy-row')).toHaveCount(0);
 
-    // The deny row is not: the list's `isGrant` test is the `grant:` prefix
-    // alone, while its `isGenerated` test — the one the enabled count uses —
-    // covers `deny:` too. So a per-tool Deny is excluded from the count and
-    // shown in the authored list, badged Custom.
+    // And so is the deny row: one predicate decides both the badge and the
+    // enabled count, so a per-tool Deny is neither counted as an authored
+    // policy nor listed as one.
     await page.fill('input.policy-search-input', denyRow.name);
-    const denyVisible = page.locator('tr.policy-row').first();
-    await expect(denyVisible).toBeVisible();
-    // The name cell carries one span per badge and shows one of them, so the
-    // badge is read from the visible one.
-    await expect(denyVisible.locator('.policy-type-badge:visible').first()).toHaveText('Custom');
-    recordFinding({
-      scenario: 'S20',
-      title: 'A per-tool Deny is listed as an authored "Custom" policy while a per-tool Grant is hidden',
-      doc: 'docs/admin-ui.md § Policies',
-      detail:
-        'crates/server/templates/pages/policies/list.html has two predicates: `isGrant` (the `grant:` prefix) ' +
-        'decides what the "All except grants" filter hides and what the Grant badge is drawn on, and ' +
-        '`isGenerated` (`grant:` or `deny:`) decides the enabled count. A `deny:` row therefore falls between ' +
-        'them: it does not count as an authored policy but is displayed as one, so the Policies list grows a ' +
-        '"Custom" row per per-tool Deny that nobody wrote and that cannot be meaningfully edited there.',
-    });
+    await expect(page.locator('tr.policy-row')).toHaveCount(0);
     await page.fill('input.policy-search-input', '');
 
-    // And present, badged Grant, under "Grants only".
+    // Both are present under "Grants only", each badged with what it is.
     await page.locator('select.policy-filter-select').selectOption('grants');
+    await page.fill('input.policy-search-input', grantRow.name);
     const row = page.locator('tr.policy-row.policy-row-grant').first();
     await expect(row).toBeVisible();
     await expect(row.locator('.policy-badge-grant')).toHaveText('Grant');
+    await page.fill('input.policy-search-input', denyRow.name);
+    const denyRowEl = page.locator('tr.policy-row.policy-row-grant').first();
+    await expect(denyRowEl).toBeVisible();
+    await expect(denyRowEl.locator('.policy-badge-grant')).toHaveText('Deny');
+    await page.fill('input.policy-search-input', '');
     await shot(page, testInfo, 's20-access-tab-rows-are-grants');
   });
 
-  test('generate-policies has no control in the admin UI, and its rows are not marked as generated [G-S20-2]', async ({
+  test('the Access tab generates per-tool policies, and its rows are marked generated [G-S20-2]', async ({
     page,
   }, testInfo) => {
     await login(page);
     const id = need('mcpNoneId');
 
-    // (a) The gap: the endpoint is documented as an operator step, and nothing
-    // on the page calls it.
+    // (a) The documented operator step has a control on the page it belongs
+    // to, and the docs still name the endpoint it calls.
     await page.goto(`/mcp-servers/${id}`);
-    const pageHtml = await page.content();
-    expect(
-      pageHtml.includes('generate-policies'),
-      'the MCP detail page never references the generate-policies endpoint',
-    ).toBe(false);
+    await page.locator('#mcp-tab-access').click();
+    const generate = page.locator('[data-testid="generate-policies"]');
+    await expect(generate).toBeVisible();
     expect(readDoc('docs/granting-mcp-server-access.md')).toContain('/generate-policies');
-    recordFinding({
-      scenario: 'S20',
-      title: 'POST /api/v1/mcp-servers/{id}/generate-policies has no control anywhere in the admin UI',
-      doc: 'docs/granting-mcp-server-access.md § "The same thing over the API" step 3, § "API Reference"',
-      detail:
-        'The tag-based per-tool policy generator is documented as an operator step and is reachable only with curl. ' +
-        'Nothing on /mcp-servers/{id} — Tools, Access or History — offers it, so an operator following ' +
-        'docs/admin-ui.md never finds it. Worse, what it writes is inconsistent with what the Access tab writes: ' +
-        'the Access tab names its rows `grant:`/`deny:`, which the Policies list treats as generated and excludes ' +
-        'from the enabled-policy count, while the generator names its rows `mcp-<server>-<tool>-<tag>`, which the ' +
-        'list shows as ordinary Custom policies and counts as authored ones.',
-      workaround: 'Issued from the signed-in page with fetch(), the way the UI would if it had a button.',
-    });
+    await shot(page, testInfo, 's20-generate-policies-control');
 
-    // (b) LABELLED WORKAROUND: the documented call, made from the signed-in page.
+    // (b) The documented call, so the assertions below cover the tools and the
+    // tag this scenario is about rather than whatever the button's defaults
+    // resolve to on this install.
     const generated = await apiFromPage(
       page,
       'POST',
@@ -495,7 +473,9 @@ test.describe('S20 MCP tool gating', () => {
     // already used. Either way the rows must be there afterwards.
     const all = (await apiFromPage(page, 'GET', '/api/v1/policies')).body.data;
     const created: any[] = all.filter((p: any) =>
-      new RegExp(`^mcp-.*-(${GRANTED_TOOL}|${DENIED_TOOL})-${S20_TAG}$`).test(p.name || ''),
+      new RegExp(`^grant:mcp:.*:tag:${S20_TAG}:mcp_tool_call:(${GRANTED_TOOL}|${DENIED_TOOL})$`).test(
+        p.name || '',
+      ),
     );
     expect(
       created.length,
@@ -504,44 +484,30 @@ test.describe('S20 MCP tool gating', () => {
     ).toBeGreaterThan(0);
     writeState({ s20GeneratedPolicyNames: created.map((p: any) => p.name) });
 
-    // (c) They land on the Policies list — as **Custom** policies, because the
-    // generator names them `mcp-<server>-<tool>-<tag>` while the Access tab's
-    // Grant/Deny control names its rows `grant:`/`deny:`. The list, the count
-    // and the "Grants only" filter all key off that prefix.
+    // (c) They carry the same `grant:` prefix the Access tab's control uses,
+    // which is what the list, the count and the "Grants only" filter key off.
     for (const p of created) {
-      expect(p.name, JSON.stringify(created)).toMatch(/^mcp-/);
-      expect(p.name.startsWith('grant:'), 'the generator does not use the grant: prefix').toBe(false);
+      expect(p.name, JSON.stringify(created)).toMatch(/^grant:mcp:/);
+      expect(p.name, 'the generator uses the grant: prefix').not.toMatch(/^mcp-/);
     }
     await page.goto('/security');
-    await page.locator('select.policy-filter-select').selectOption('grants');
-    const asGrant = page.locator('tr.policy-row', { hasText: created[0].name });
-    await expect(asGrant, 'a generated row does not appear under "Grants only"').toHaveCount(0);
-
     await page.locator('select.policy-filter-select').selectOption('custom');
     await page.fill('input.policy-search-input', created[0].name);
-    const asCustom = page.locator('tr.policy-row', { hasText: created[0].name }).first();
-    await expect(asCustom).toBeVisible();
-    // Badged **Custom**: indistinguishable, in the list an operator reads,
-    // from a policy a person wrote.
-    await expect(asCustom.locator('.policy-type-badge:visible').first()).toHaveText('Custom');
-    await shot(page, testInfo, 's20-generated-policies-are-custom');
+    await expect(
+      page.locator('tr.policy-row'),
+      'a generated row is not listed among the authored ones',
+    ).toHaveCount(0);
+
+    await page.locator('select.policy-filter-select').selectOption('grants');
+    const asGrant = page.locator('tr.policy-row', { hasText: created[0].name }).first();
+    await expect(asGrant).toBeVisible();
+    await expect(asGrant.locator('.policy-type-badge:visible').first()).toHaveText('Grant');
+    await shot(page, testInfo, 's20-generated-policies-are-grants');
   });
 
   test('a policy generate-policies wrote is excluded from the last-enabled-policy count [G-S20-2]', async ({
     page,
   }) => {
-    // KNOWN OPEN DEFECT — G-S20-2. `POST /generate-policies` names its rows
-    // `mcp-<server>-<tool>-<tag>`, while the Access tab's Grant/Deny control
-    // names its rows `grant:`/`deny:`. Only the second prefix is treated as
-    // generated, so a documented operator step silently converts the install
-    // from "one authored policy, protected" to "several policies, unprotected":
-    // the `default` policy loses its last-enabled badge and the API will let it
-    // be disabled, leaving an install whose only enabled policies each permit
-    // one workspace one tool — locked out for every operator, viewer and
-    // workspace, with only root still able to sign in. Give the generator the
-    // `grant:` prefix (or teach `isGenerated` about `mcp-`) and this goes green.
-    test.fail();
-
     await login(page);
     expect(need('s20GeneratedPolicyNames').length).toBeGreaterThan(0);
 

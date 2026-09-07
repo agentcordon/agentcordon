@@ -396,6 +396,7 @@ function mcpServerDetailPage() {
         shareSelection: {},
         shareError: '',
         rediscovering: false,
+        generatingPolicies: false,
         async init() {
             try {
                 const resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}');
@@ -619,6 +620,38 @@ function mcpServerDetailPage() {
                 this.server.tools.forEach(t => { this.grantTools[t.name] = false; });
             }
             this.grantSubmitting = false;
+        },
+
+        /*
+         * The documented tag-based generator, with the body the endpoint now
+         * defaults to: every tool this server has, every tag its bound
+         * workspaces carry. The count is the answer — "0 created" means the
+         * grants are already there, not that nothing happened.
+         */
+        async generatePolicies() {
+            if (this.generatingPolicies) return;
+            this.generatingPolicies = true;
+            try {
+                var resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}/generate-policies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({})
+                });
+                if (!resp.ok) {
+                    await AC.reportError(resp, 'Failed to generate policies');
+                } else {
+                    var json = await resp.json().catch(() => ({}));
+                    var created = ((json.data && json.data.policies_created) || []).length;
+                    showToast(created === 0
+                        ? 'No new policies — every grant already exists'
+                        : (created === 1 ? '1 policy created' : created + ' policies created'),
+                        created === 0 ? 'info' : 'success');
+                    await this.loadPermissions();
+                    this.rsop.matrix = [];
+                    await this.loadRsop();
+                }
+            } catch(e) { showToast('Failed to generate policies', 'error'); }
+            this.generatingPolicies = false;
         },
 
         async revokePermission(agentId, permission) {

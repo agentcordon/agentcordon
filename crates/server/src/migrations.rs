@@ -145,3 +145,91 @@ pub async fn migrate_mcp_policy_names_to_ids(store: &(dyn Store + Send + Sync)) 
         );
     }
 }
+
+/// The value of a `key == "value"` or `key("value")` fragment of Cedar text.
+fn quoted_after(cedar: &str, needle: &str) -> Option<String> {
+    let rest = &cedar[cedar.find(needle)? + needle.len()..];
+    let start = rest.find('"')? + 1;
+    let end = rest[start..].find('"')? + start;
+    Some(rest[start..end].to_string())
+}
+
+/// Rename the rows `POST /api/v1/mcp-servers/{id}/generate-policies` wrote
+/// before it adopted the `grant:` naming convention.
+///
+/// Old format: `mcp-{server_id}-{tool}-{tag}`
+/// New format: `grant:mcp:{server_id}:tag:{tag}:mcp_tool_call:{tool}`
+///
+/// The old name cannot be parsed back — a tool and a tag may both contain
+/// hyphens — so the tool and the tag are read out of the policy's own Cedar
+/// text, which the generator wrote and which names both exactly once. A row
+/// whose text does not yield them is left alone rather than renamed wrongly.
+///
+/// Until they are renamed these rows count as authored policies, so an
+/// install that ran the generator has a `default` policy the last-enabled
+/// guard no longer protects. Idempotent: nothing else starts `mcp-` followed
+/// by a UUID.
+pub async fn migrate_generated_mcp_policy_names(store: &(dyn Store + Send + Sync)) {
+    let policies = match store.list_policies().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list policies for generated-grant rename");
+            return;
+        }
+    };
+
+    let mut migrated = 0u32;
+    for policy in &policies {
+        let Some(rest) = policy.name.strip_prefix("mcp-") else {
+            continue;
+        };
+        // `mcp-` then a UUID: anything else is a name somebody chose.
+        if rest.len() < 37 || uuid::Uuid::parse_str(&rest[..36]).is_err() {
+            continue;
+        }
+        let server_id = &rest[..36];
+
+        let (Some(tool), Some(tag)) = (
+            quoted_after(&policy.cedar_policy, "context.tool_name =="),
+            quoted_after(&policy.cedar_policy, "principal.tags.contains("),
+        ) else {
+            tracing::warn!(
+                policy_name = %policy.name,
+                "cannot rename generated MCP policy — its Cedar text names no tool and tag"
+            );
+            continue;
+        };
+
+        let new_name = crate::services::mcp_servers::generated_grant_name(server_id, &tag, &tool);
+        if policies.iter().any(|p| p.name == new_name) {
+            tracing::warn!(
+                policy_name = %policy.name,
+                new_name = %new_name,
+                "a policy already carries the new generated-grant name — dropping the old row"
+            );
+            if let Err(e) = store.delete_policy_by_name(&policy.name).await {
+                tracing::error!(policy_name = %policy.name, error = %e, "failed to drop duplicate");
+            }
+            continue;
+        }
+
+        let mut updated = policy.clone();
+        updated.name = new_name.clone();
+        if let Err(e) = store.delete_policy_by_name(&policy.name).await {
+            tracing::error!(policy_name = %policy.name, error = %e, "failed to delete old generated policy");
+            continue;
+        }
+        if let Err(e) = store.store_policy(&updated).await {
+            tracing::error!(policy_name = %new_name, error = %e, "failed to store renamed generated policy");
+            continue;
+        }
+        migrated += 1;
+    }
+
+    if migrated > 0 {
+        tracing::info!(
+            migrated,
+            "renamed generated MCP grant policies onto the grant: convention"
+        );
+    }
+}

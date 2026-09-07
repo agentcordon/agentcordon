@@ -149,6 +149,7 @@ async fn main() {
     let crypto = init_crypto(&config);
     seed_default_policy(&*store).await;
     agent_cordon_server::migrations::migrate_mcp_policy_names_to_ids(&*store).await;
+    agent_cordon_server::migrations::migrate_generated_mcp_policy_names(&*store).await;
     let policy_engine = match policy_engine_from_store(&*store).await {
         Ok(engine) => engine,
         Err(e) => {

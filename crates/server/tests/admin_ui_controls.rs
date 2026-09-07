@@ -5427,3 +5427,81 @@ fn the_detail_tab_strip_is_as_wide_as_the_card_it_sits_in() {
         "vault.css must style the segmented control:\n{seg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// S20: the MCP gating controls an operator is documented to use
+// (uat/playwright/tests/22-s20-mcp-gating.spec.ts)
+// ---------------------------------------------------------------------------
+
+/// `POST /api/v1/mcp-servers/{id}/generate-policies` is a documented operator
+/// step in `docs/granting-mcp-server-access.md` and was reachable only with
+/// curl: nothing on `/mcp-servers/{id}` offered it, so an operator following
+/// `docs/admin-ui.md` never found it (uat S20, G-S20-2).
+#[tokio::test]
+async fn the_mcp_access_tab_offers_the_policy_generator() {
+    let (ctx, cookie) = admin_session().await;
+    let uri = "/mcp-servers/00000000-0000-0000-0000-0000000000ff";
+    let (status, body) = get_page(&ctx.app, uri, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_contains(
+        &body,
+        uri,
+        r#"data-testid="generate-policies""#,
+        "the Access tab carries a Generate policies control",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "generatePolicies()",
+        "and the control calls the generator",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "/generate-policies",
+        "which posts to the documented endpoint",
+    );
+    // The endpoint's defaults are the whole point of the button: an empty body
+    // means every tool this server has, for every tag its workspaces carry.
+    assert_contains(
+        &body,
+        uri,
+        "JSON.stringify({})",
+        "with the empty body the endpoint defaults from",
+    );
+    assert!(
+        body.contains("policies_created"),
+        "{uri}: the control reports how many policies were created"
+    );
+}
+
+/// The Policies list had two predicates where it needed one: `isGrant` tested
+/// the `grant:` prefix and decided the badge and the filter, while
+/// `isGenerated` tested `grant:` *or* `deny:` and decided the enabled count. A
+/// per-tool Deny fell between them and was listed as an authored "Custom"
+/// policy nobody wrote (uat S20).
+#[tokio::test]
+async fn a_generated_deny_row_is_badged_generated_like_a_generated_grant() {
+    let (ctx, cookie) = admin_session().await;
+    let (status, body) = get_page(&ctx.app, "/security", &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(
+        !body.contains("return (policy.name || '').startsWith('grant:');"),
+        "/security: `isGrant` must not test the `grant:` prefix alone — a `deny:` row is \
+         generated too, and testing only `grant:` is what listed it as an authored policy"
+    );
+    assert_contains(
+        &body,
+        "/security",
+        "isGrant(policy) {\n            return this.isGenerated(policy);",
+        "one predicate decides both the badge and the count",
+    );
+    assert_contains(
+        &body,
+        "/security",
+        r#"x-text="grantBadgeLabel(policy)""#,
+        "and the badge says which of the two the row is",
+    );
+}
