@@ -118,7 +118,7 @@ fn serve(stream: TcpStream, listing: serde_json::Value, log: Arc<Mutex<Log>>) {
             ("GET", "/health") => serde_json::json!({
                 "status": "ok",
                 // 64 hex characters: what the CLI pins.
-                "key_fingerprint": "a".repeat(64),
+                "key_fingerprint": STUB_FINGERPRINT,
                 "version": "0.0.0-test",
             }),
             ("GET", "/credentials") => listing.clone(),
@@ -165,11 +165,17 @@ fn listing(creds: Vec<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({ "data": creds })
 }
 
-/// A workspace directory with a key the CLI can sign with.
+/// The fingerprint the stub publishes on `/health`.
+const STUB_FINGERPRINT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+/// A workspace directory with a key the CLI can sign with, already pinned
+/// to the stub's key — a first-use pin writes a notice to stderr, and these
+/// tests are about what `proxy` itself writes there.
 fn workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    agentcordon_identity::create_workspace_key(&dir.path().join(".agentcordon"))
-        .expect("create key");
+    let ws = dir.path().join(".agentcordon");
+    agentcordon_identity::create_workspace_key(&ws).expect("create key");
+    std::fs::write(ws.join("broker.fingerprint"), STUB_FINGERPRINT).expect("pin");
     dir
 }
 
@@ -290,4 +296,99 @@ fn several_fences_for_the_target_name_the_candidates() {
     assert!(stderr.contains("gh-read"), "{stderr}");
     assert!(stderr.contains("gh-write"), "{stderr}");
     assert!(broker.requests_to("/proxy").is_empty());
+}
+
+/// Compact by default: stdout is the body and nothing else, and everything
+/// about the response that is not the body is one line on stderr.
+#[test]
+fn the_default_output_is_the_body_on_stdout_and_one_line_on_stderr() {
+    let broker = StubBroker::start(listing(vec![cred("only", Some("http://127.0.0.1:9/*"))]));
+    let dir = workspace();
+
+    let out = run_cli(
+        &broker,
+        &dir,
+        &["proxy", "--auto", "GET", "http://127.0.0.1:9/echo"],
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), r#"{"ok":true}"#);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let summary: Vec<&str> = stderr.lines().filter(|l| l.starts_with("HTTP ")).collect();
+    assert_eq!(
+        summary,
+        ["HTTP 200 \u{b7} 11 B \u{b7} content-type: application/json \u{b7} via only"],
+        "one line, and it names the credential --auto chose: {stderr}"
+    );
+}
+
+/// `--raw` is the byte-exact form: the body, and not even the summary.
+#[test]
+fn raw_prints_the_body_and_nothing_at_all_on_stderr() {
+    let broker = StubBroker::start(listing(vec![cred("only", Some("http://127.0.0.1:9/*"))]));
+    let dir = workspace();
+
+    let out = run_cli(
+        &broker,
+        &dir,
+        &["proxy", "--auto", "GET", "http://127.0.0.1:9/echo", "--raw"],
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), r#"{"ok":true}"#);
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+/// `--json` is one object on one line, so `proxy --json | jq` needs no
+/// stripping.
+#[test]
+fn json_output_is_a_single_compact_object() {
+    let broker = StubBroker::start(listing(vec![cred("only", Some("http://127.0.0.1:9/*"))]));
+    let dir = workspace();
+
+    let out = run_cli(
+        &broker,
+        &dir,
+        &[
+            "proxy",
+            "--auto",
+            "GET",
+            "http://127.0.0.1:9/echo",
+            "--json",
+        ],
+    );
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.lines().count(), 1, "one line: {stdout}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(parsed["status"], 200);
+    assert_eq!(parsed["headers"]["content-type"], "application/json");
+    assert_eq!(parsed["body"], serde_json::json!({"ok": true}));
+}
+
+/// `--headers` is the old shape, on stdout, for a human reading a response
+/// whose headers matter (a 3xx `Location`, a rate-limit budget).
+#[test]
+fn headers_puts_the_status_line_and_headers_above_the_body() {
+    let broker = StubBroker::start(listing(vec![cred("only", Some("http://127.0.0.1:9/*"))]));
+    let dir = workspace();
+
+    let out = run_cli(
+        &broker,
+        &dir,
+        &[
+            "proxy",
+            "--auto",
+            "GET",
+            "http://127.0.0.1:9/echo",
+            "--headers",
+        ],
+    );
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("HTTP 200\ncontent-type: application/json\n\n"),
+        "{stdout}"
+    );
+    assert!(stdout.ends_with(r#"{"ok":true}"#), "{stdout}");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
 }

@@ -119,13 +119,17 @@ enum Command {
         #[arg(long)]
         body: Option<String>,
 
-        /// Pretty-print response body as JSON
+        /// Emit one compact JSON object: {status, headers, body}
         #[arg(long)]
         json: bool,
 
-        /// Print only response body (for piping)
+        /// Print only the response body, with no summary line on stderr
         #[arg(long)]
         raw: bool,
+
+        /// Print the status line and every response header above the body
+        #[arg(long = "headers")]
+        show_headers: bool,
     },
 
     /// List available MCP servers
@@ -165,6 +169,11 @@ enum Command {
         /// On conflict, individual --arg values override fields from this object.
         #[arg(long = "args-json", value_name = "SRC")]
         args_json: Option<String>,
+
+        /// Emit the whole tools/call result as one compact JSON object
+        /// instead of just the tool's text
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -253,6 +262,7 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             body,
             json,
             raw,
+            show_headers,
         } => {
             commands::proxy::run(commands::proxy::ProxyArgs {
                 args,
@@ -261,6 +271,7 @@ async fn run_async(command: Command) -> Result<(), CliError> {
                 body,
                 json,
                 raw,
+                show_headers,
             })
             .await
         }
@@ -275,6 +286,7 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             tool,
             args,
             args_json,
-        } => commands::mcp::call(server, tool, args, args_json).await,
+            json,
+        } => commands::mcp::call(server, tool, args, args_json, json).await,
     }
 }

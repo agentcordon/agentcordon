@@ -36,10 +36,14 @@ pub struct ProxyArgs {
     /// `[CREDENTIAL, METHOD, URL]`, or `[METHOD, URL]` when `auto` is set.
     pub args: Vec<String>,
     pub auto: bool,
+    /// `--header K:V`, repeatable: extra request headers.
     pub headers: Vec<String>,
     pub body: Option<String>,
     pub json: bool,
     pub raw: bool,
+    /// `--headers`: print the status line and every response header on
+    /// stdout, above the body.
+    pub show_headers: bool,
 }
 
 /// The three things a proxied call needs, however they were spelled.
@@ -85,6 +89,7 @@ pub async fn run(args: ProxyArgs) -> Result<(), CliError> {
         body,
         json: json_output,
         raw: raw_output,
+        show_headers: headers_output,
     } = args;
     let target = parse_target(&positional, auto)?;
     let (method, url) = (target.method, target.url);
@@ -135,7 +140,7 @@ pub async fn run(args: ProxyArgs) -> Result<(), CliError> {
     let req = ProxyRequest {
         method: method.to_uppercase(),
         url,
-        credential,
+        credential: credential.clone(),
         headers,
         body,
     };
@@ -148,33 +153,38 @@ pub async fn run(args: ProxyArgs) -> Result<(), CliError> {
     let resp: ProxyResponse = serde_json::from_str(&body_text)
         .map_err(|e| CliError::general(format!("invalid proxy response: {e}")))?;
     let data = resp.data;
-    let body_str = match &data.body {
-        serde_json::Value::String(s) => s.clone(),
-        other => serde_json::to_string(other).unwrap_or_default(),
-    };
+    let body = body_bytes(&data);
 
-    if raw_output {
-        print!("{body_str}");
-        return Ok(());
-    }
-
+    // Exactly one of these writes to stdout, and each writes only what it
+    // promises: an agent that pipes `proxy` into a parser must not have to
+    // strip a status line, and one that reads the terminal must not have to
+    // scroll past headers it did not ask for.
     if json_output {
+        println!("{}", json_envelope(&data));
+    } else if headers_output {
         println!("HTTP {}", data.status_code);
         for (k, v) in &data.headers {
             println!("{k}: {v}");
         }
         println!();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&data.body).unwrap_or(body_str)
-        );
+        print!("{body}");
+        finish_body();
     } else {
-        println!("HTTP {}", data.status_code);
-        for (k, v) in &data.headers {
-            println!("{k}: {v}");
+        // The summary goes first and to stderr, so the body it describes is
+        // the last thing on the terminal and the only thing on stdout.
+        if !raw_output {
+            eprintln!(
+                "{}",
+                summary_line(
+                    data.status_code,
+                    body.len(),
+                    content_type_of(&data),
+                    auto.then_some(credential.as_str()),
+                )
+            );
         }
-        println!();
-        println!("{body_str}");
+        print!("{body}");
+        finish_body();
     }
 
     if data.status_code >= 400 {
@@ -185,6 +195,124 @@ pub async fn run(args: ProxyArgs) -> Result<(), CliError> {
     }
 
     Ok(())
+}
+
+/// The response body exactly as the upstream sent it.
+///
+/// The broker parses a JSON body into a `Value` on the way through, so a
+/// JSON body is re-rendered compactly here; anything else crossed as a
+/// string and is returned unchanged. Nothing is appended: `proxy` writes
+/// the body and only the body to stdout.
+fn body_bytes(data: &ProxyData) -> String {
+    match &data.body {
+        serde_json::Value::String(s) => s.clone(),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+/// Nothing is appended to the body — not even a newline the upstream did
+/// not send — so `proxy | sha256sum` and `proxy --raw | sha256sum` agree
+/// with the upstream. `print!` does not flush on its own, and the process
+/// exits through `ExitCode`, so the flush is explicit.
+fn finish_body() {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+}
+
+/// The response's content type, matched the way HTTP names are.
+fn content_type_of(data: &ProxyData) -> Option<&str> {
+    data.headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.as_str())
+}
+
+/// The one line `proxy` writes to stderr: everything about the response
+/// that is not the body.
+///
+/// One line because it is read by an agent that pays for every token, and
+/// on stderr because stdout belongs to the body. `via` names the credential
+/// when `--auto` chose it — the only place that choice is visible.
+fn summary_line(
+    status: u16,
+    body_len: usize,
+    content_type: Option<&str>,
+    via: Option<&str>,
+) -> String {
+    let mut parts = vec![format!("HTTP {status}"), human_size(body_len)];
+    if let Some(ct) = content_type {
+        parts.push(format!("content-type: {ct}"));
+    }
+    if let Some(name) = via {
+        parts.push(format!("via {name}"));
+    }
+    parts.join(" \u{b7} ")
+}
+
+/// A byte count at human scale, one decimal from a kilobyte up.
+fn human_size(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} B")
+    } else if b < MB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{:.1} MB", b / MB)
+    }
+}
+
+/// True for a content type whose body is JSON, so `--json` can nest it
+/// instead of quoting it.
+fn is_json_content_type(ct: &str) -> bool {
+    let essence = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    essence == "application/json" || essence.ends_with("+json")
+}
+
+/// The whole response as one compact object: `{status, headers, body}`.
+///
+/// `headers` maps a name to its value, or to the array of its values when
+/// the same name arrived more than once (`Set-Cookie`, `Link`) — a repeat
+/// must not silently disappear. `body` is the parsed JSON when the content
+/// type says JSON, and a string otherwise: the content type decides, not
+/// the shape, so a `text/plain` body that happens to look like JSON stays
+/// text.
+fn json_envelope(data: &ProxyData) -> serde_json::Value {
+    let mut headers = serde_json::Map::new();
+    for (name, value) in &data.headers {
+        let value = serde_json::Value::String(value.clone());
+        match headers.remove(name) {
+            None => {
+                headers.insert(name.clone(), value);
+            }
+            Some(serde_json::Value::Array(mut existing)) => {
+                existing.push(value);
+                headers.insert(name.clone(), serde_json::Value::Array(existing));
+            }
+            Some(first) => {
+                headers.insert(name.clone(), serde_json::Value::Array(vec![first, value]));
+            }
+        }
+    }
+
+    let json_body = content_type_of(data).is_some_and(is_json_content_type);
+    let body = if json_body {
+        data.body.clone()
+    } else {
+        serde_json::Value::String(body_bytes(data))
+    };
+
+    serde_json::json!({
+        "status": data.status_code,
+        "headers": serde_json::Value::Object(headers),
+        "body": body,
+    })
 }
 
 /// The error `main` prints for a broker refusal, as the one line
@@ -244,6 +372,144 @@ fn render_broker_error(status: u16, body_text: &str) -> CliError {
 mod tests {
     use super::*;
     use crate::error::ExitCode;
+
+    fn data(status: u16, headers: &[(&str, &str)], body: serde_json::Value) -> ProxyData {
+        ProxyData {
+            status_code: status,
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body,
+        }
+    }
+
+    // -- the one stderr line ----------------------------------------------
+
+    /// What an agent reads when it does not ask for more: status, size,
+    /// content type, on one line.
+    #[test]
+    fn the_summary_is_one_line_with_status_size_and_content_type() {
+        assert_eq!(
+            summary_line(200, 1229, Some("application/json"), None),
+            "HTTP 200 \u{b7} 1.2 KB \u{b7} content-type: application/json"
+        );
+    }
+
+    /// `--auto` chose the credential, so the line says which one — that is
+    /// the only place the choice is visible.
+    #[test]
+    fn an_auto_selected_credential_is_named_in_the_summary() {
+        assert_eq!(
+            summary_line(200, 27, Some("application/json"), Some("internal-api")),
+            "HTTP 200 \u{b7} 27 B \u{b7} content-type: application/json \u{b7} via internal-api"
+        );
+    }
+
+    /// A response with no content type says nothing about one rather than
+    /// inventing a segment.
+    #[test]
+    fn a_response_without_a_content_type_omits_that_segment() {
+        assert_eq!(summary_line(204, 0, None, None), "HTTP 204 \u{b7} 0 B");
+    }
+
+    #[test]
+    fn sizes_are_human_scale() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(999), "999 B");
+        assert_eq!(human_size(1024), "1.0 KB");
+        assert_eq!(human_size(1229), "1.2 KB");
+        assert_eq!(human_size(3_500_000), "3.3 MB");
+    }
+
+    /// The content type is read case-insensitively, the way HTTP names are.
+    #[test]
+    fn the_content_type_header_is_found_whatever_its_case() {
+        let d = data(
+            200,
+            &[("Content-Type", "text/plain")],
+            serde_json::json!("x"),
+        );
+        assert_eq!(content_type_of(&d), Some("text/plain"));
+    }
+
+    // -- --json -----------------------------------------------------------
+
+    /// One compact object, so an agent can pipe it straight into `jq`.
+    #[test]
+    fn json_output_is_one_object_of_status_headers_and_body() {
+        let d = data(
+            201,
+            &[("content-type", "application/json")],
+            serde_json::json!({"id": 7}),
+        );
+        let rendered = json_envelope(&d);
+        assert_eq!(rendered["status"], 201);
+        assert_eq!(rendered["headers"]["content-type"], "application/json");
+        assert_eq!(
+            rendered["body"],
+            serde_json::json!({"id": 7}),
+            "a JSON content type keeps the body parsed"
+        );
+    }
+
+    /// A non-JSON body is a string, not a guess at structure.
+    #[test]
+    fn a_non_json_body_is_a_string_in_json_output() {
+        let d = data(
+            200,
+            &[("content-type", "text/plain")],
+            serde_json::json!("hello"),
+        );
+        assert_eq!(json_envelope(&d)["body"], serde_json::json!("hello"));
+    }
+
+    /// A body that parses as JSON but arrived as `text/plain` is still a
+    /// string: the content type decides, not the shape.
+    #[test]
+    fn the_content_type_decides_whether_the_body_is_parsed() {
+        let d = data(
+            200,
+            &[("content-type", "text/plain")],
+            serde_json::json!({"looks": "json"}),
+        );
+        assert!(
+            json_envelope(&d)["body"].is_string(),
+            "text/plain is text, whatever it contains"
+        );
+    }
+
+    /// A header that arrives twice keeps both values instead of one
+    /// silently winning.
+    #[test]
+    fn a_repeated_header_becomes_an_array() {
+        let d = data(
+            200,
+            &[("set-cookie", "a=1"), ("set-cookie", "b=2")],
+            serde_json::json!("x"),
+        );
+        assert_eq!(
+            json_envelope(&d)["headers"]["set-cookie"],
+            serde_json::json!(["a=1", "b=2"])
+        );
+    }
+
+    // -- the body on stdout ----------------------------------------------
+
+    /// The default and `--raw` put the same bytes on stdout: the body, and
+    /// nothing else.
+    #[test]
+    fn the_body_bytes_are_what_the_upstream_sent() {
+        let d = data(
+            200,
+            &[("content-type", "application/json")],
+            serde_json::json!({"ok": true}),
+        );
+        assert_eq!(body_bytes(&d), r#"{"ok":true}"#);
+
+        let text = data(200, &[], serde_json::json!("plain text"));
+        assert_eq!(body_bytes(&text), "plain text");
+    }
 
     fn envelope(code: &str, message: &str) -> String {
         serde_json::json!({ "error": { "code": code, "message": message } }).to_string()
