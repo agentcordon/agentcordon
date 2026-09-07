@@ -535,9 +535,14 @@ These CLI commands route through the broker, which:
 4. Injects resolved credentials into the upstream HTTP request headers
 5. Forwards the JSON-RPC `tools/call` request to the upstream MCP server URL
 
-For AI agent integration, `agentcordon init` writes `AGENTS.md` (and `CLAUDE.md`) telling the
-agent to reach MCP through these three commands. It deliberately does **not** write a
-`.mcp.json` entry -- there is no `agentcordon mcp-serve` subcommand for one to point at.
+For AI agent integration, `agentcordon init` installs the AgentCordon
+[Agent Skill](https://agentskills.io/specification) — `.agents/skills/agentcordon/SKILL.md`,
+copied to `.claude/skills/` and `.kiro/skills/` for the runtimes that read those — and the
+skill tells the agent to reach MCP through these three commands, including the rules for
+choosing between several servers. It deliberately does **not** write a `.mcp.json` entry:
+there is no `agentcordon mcp-serve` subcommand for one to point at, and that surface is the
+deferred third tier of
+[ADR-0013](adr/0013-init-installs-the-agentcordon-skill-per-runtime.md).
 
 ---
 

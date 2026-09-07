@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { UAT } from './helpers/env';
-import { cli, cliDetached, readFileInContainer, waitFor } from './helpers/docker';
+import { cli, cliDetached, readFileInContainer, sh, waitFor } from './helpers/docker';
 import { login, shot } from './helpers/ui';
 import { readDoc } from './helpers/docs';
 import { need, readState, writeState } from './helpers/state';
@@ -23,12 +23,38 @@ import { need, readState, writeState } from './helpers/state';
  * running in another window while you go to the browser.
  */
 test.describe('S3 enrollment', () => {
-  test('agentcordon init generates the workspace identity (docs/cli-reference.md § "agentcordon init")', async () => {
+  test('agentcordon init generates the workspace identity and installs the AgentCordon skill (docs/cli-reference.md § "agentcordon init")', async () => {
     const init = cli(['init']);
     expect(init.code, init.out).toBe(0);
     expect(init.out).toMatch(/Workspace identity: sha256:[0-9a-f]{64}/);
     const pkHash = /sha256:([0-9a-f]{64})/.exec(init.out)![1];
     writeState({ pkHash });
+
+    // `init` is run through a pipe here, so it must never prompt: the picker
+    // appears only when stdin *and* stdout are a terminal, and every script
+    // and every step of this harness depends on that (ADR-0013).
+    expect(init.out).toContain('AgentCordon skill:');
+    expect(init.out).toContain('.agents/skills/agentcordon/SKILL.md');
+    expect(init.out).toContain('.agentcordon/agents.toml');
+
+    // The skill is the whole integration; `init` writes no always-on
+    // instruction file for any runtime.
+    const skill = readFileInContainer(
+      UAT.cli,
+      '/home/uat/workspace/.agents/skills/agentcordon/SKILL.md',
+    );
+    expect(skill).toContain('name: agentcordon');
+    expect(skill).toContain('agentcordon proxy');
+    // The identity is derived from the key, so no generated file carries a
+    // copy that could go stale.
+    expect(skill).not.toContain('sha256:');
+    expect(skill).toContain('agentcordon status');
+
+    const stray = sh(
+      UAT.cli,
+      'ls /home/uat/workspace/AGENTS.md /home/uat/workspace/CLAUDE.md 2>&1 || true',
+    );
+    expect(stray.out).toContain('No such file');
   });
 
   test('agentcordon register prints a one-time code and an activation URL, and the docs warn about the AGTCRDN_BASE_URL fallback (README § "Quick start / 1") [G1]', async () => {

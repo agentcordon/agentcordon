@@ -127,7 +127,41 @@ A checksum mismatch aborts the install and nothing is written.
 `AGENTCORDON_SKIP_CHECKSUM=1` opts out, and must be set deliberately.
 
 If no release exists yet for the server's version, the installer refuses and says so rather
-than installing a mismatched CLI.
+than installing a mismatched CLI. That message is reserved for an actual HTTP 404 — a proxy,
+a DNS failure or a rate-limit is reported as a network failure instead, because "build from
+source" is the wrong advice for a connection problem.
+
+### Persisting PATH
+
+The installer writes to `~/.local/bin`. If that directory is not already on your `PATH`, the
+installer says so and prints the line for **your** shell, read from `$SHELL` — because
+`export PATH=…` lasts only until you close the terminal, and it does not parse in nushell at
+all.
+
+| Shell | Add this | To |
+|---|---|---|
+| bash | `export PATH="$HOME/.local/bin:$PATH"` | `~/.bashrc` |
+| zsh | `export PATH="$HOME/.local/bin:$PATH"` | `~/.zshrc` |
+| fish | `fish_add_path ~/.local/bin` | run once; it persists |
+| nushell | `$env.PATH = ($env.PATH \| prepend "~/.local/bin")` | `config.nu` (`$nu.config-path`) |
+
+Open a new terminal, or source the file, before running `agentcordon`.
+
+### Choose your agents
+
+Installing the binaries does not set up a project. From the project directory your coding
+agent opens:
+
+```bash
+agentcordon init
+```
+
+`init` asks which agent runtimes you use, pre-checking the ones it can see, and writes the
+AgentCordon [Agent Skill](https://agentskills.io/specification) into the directory each of
+them reads — `.agents/skills/agentcordon/SKILL.md` for most, `.claude/skills/` for Claude
+Code and Cline, `.kiro/skills/` for Kiro. It remembers the choice, so a rerun is quiet;
+`--reconfigure` asks again and `--agent <id>` skips the question entirely. The full target
+table is in [the CLI reference](cli-reference.md#agentcordon-init).
 
 ### From GitHub Releases
 
@@ -186,6 +220,9 @@ agentcordon init
 agentcordon register --server-url https://agentcordon.example.com
 ```
 
+`install.ps1` verifies both binaries against the release's `SHA256SUMS` and **refuses** an
+asset with no entry, exactly as `install.sh` does.
+
 The device flow is identical on Windows: copy the four-word code into a browser and
 approve.
 
@@ -219,7 +256,8 @@ released for Linux, and a server on another platform is a source build.
 | `~/.local/bin/` | `install.sh` | `agentcordon`, `agentcordon-broker` |
 | `%LOCALAPPDATA%\AgentCordon\bin` | `install.ps1` | `agentcordon.exe`, `agentcordon-broker.exe` |
 | `~/.agentcordon/` | the broker | `broker.key`, `tokens.enc`, `workspaces.json`, `broker.port`, `broker.pid`, `broker.lock`. Moved by `--data-dir` / `AGTCRDN_DATA_DIR`, which the CLI does not read. |
-| `.agentcordon/` in a project | `agentcordon init`, then `register` | `workspace.key` (0600, in a 0700 directory) and `workspace.pub` from `init`; `broker.fingerprint` from `register`. Moved by `AGTCRDN_WORKSPACE_DIR`. |
+| `.agentcordon/` in a project | `agentcordon init`, then `register` | `workspace.key` (0600, in a 0700 directory), `workspace.pub` and `agents.toml` from `init`; `broker.fingerprint` from `register`. Moved by `AGTCRDN_WORKSPACE_DIR`. |
+| `.agents/skills/agentcordon/` in a project | `agentcordon init` | `SKILL.md` — the AgentCordon [Agent Skill](https://agentskills.io/specification). Copied to `.claude/skills/` and `.kiro/skills/` for the runtimes that read those instead. |
 | `/data/` in the container | the server | `agent-cordon.db`, `.secret`, `.master-salt`, `.root_password` |
 
 ---

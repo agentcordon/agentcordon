@@ -157,7 +157,7 @@ The thin CLI binary that agents use. It manages Ed25519 keypairs, signs requests
 
 | Command | Description |
 |---------|-------------|
-| `init` | Generate the Ed25519 keypair, write `.agentcordon/`, and write the agent instruction files (`--agent`) |
+| `init` | Generate the Ed25519 keypair, write `.agentcordon/`, and install the AgentCordon skill for the selected agent runtimes (`--agent`, `--reconfigure`) |
 | `register` | Start device authorization registration via the broker; auto-starts one with `--server-url` |
 | `status` | Check workspace and broker status |
 | `credentials` | List available credentials |
@@ -403,7 +403,9 @@ The broker syncs MCP server configurations from the server and caches them with 
 
 `agentcordon init` does **not** write `.mcp.json`. There is no `agentcordon mcp-serve`
 subcommand for such an entry to point at; agents reach MCP through `agentcordon
-mcp-servers` / `mcp-tools` / `mcp-call`, which is what the generated `AGENTS.md` tells them.
+mcp-servers` / `mcp-tools` / `mcp-call`, which is what the installed Agent Skill
+(`.agents/skills/agentcordon/SKILL.md`) tells them. Adding the stdio surface is the
+deferred third tier of [ADR-0013](adr/0013-init-installs-the-agentcordon-skill-per-runtime.md).
 
 ### Transport Types
 

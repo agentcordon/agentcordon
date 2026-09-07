@@ -11,7 +11,7 @@
 #                                     independently of the first
 #
 # It runs the whole suite except two scenarios, keeps the containers up, and
-# copies the workspace's generated agent instructions into uat/agent-workspace/:
+# copies the workspace's installed AgentCordon skill into uat/agent-workspace/:
 #
 #   * S5 lifecycle — revokes the workspace, leaving nothing for an agent to use;
 #   * S9 restart   — `docker restart`s the server container, which recreates the
@@ -71,9 +71,23 @@ if [ "$NEW_RUN_ONLY" = 0 ]; then
   rm -f "$RUNNER"
 
   echo
-  echo "==> Copying the workspace's generated agent instructions into uat/agent-workspace/"
-  docker cp "$UAT_CLI:/home/uat/workspace/CLAUDE.md" "$HERE/agent-workspace/" 2>/dev/null || true
-  docker cp "$UAT_CLI:/home/uat/workspace/AGENTS.md" "$HERE/agent-workspace/" 2>/dev/null || true
+  echo "==> Copying the workspace's installed AgentCordon skill into uat/agent-workspace/"
+  # `agentcordon init` installs one Agent Skill per runtime (ADR-0013) and no
+  # AGENTS.md or CLAUDE.md, so the blind agent's directory carries the skill in
+  # the two layouts a runtime looks in, and nothing else.
+  # The suite's own `agentcordon init` runs with no --agent in a container
+  # where no runtime is installed, so it writes only the portable copy. The
+  # blind agent under test is Claude Code, which reads `.claude/skills`.
+  docker exec -w /home/uat/workspace "$UAT_CLI" \
+    agentcordon init --agent claude-code >/dev/null 2>&1 || true
+
+  rm -rf "$HERE/agent-workspace/.claude" "$HERE/agent-workspace/.agents"
+  mkdir -p "$HERE/agent-workspace/.claude/skills" "$HERE/agent-workspace/.agents/skills"
+  docker cp "$UAT_CLI:/home/uat/workspace/.claude/skills/agentcordon" \
+    "$HERE/agent-workspace/.claude/skills/" 2>/dev/null || true
+  docker cp "$UAT_CLI:/home/uat/workspace/.agents/skills/agentcordon" \
+    "$HERE/agent-workspace/.agents/skills/" 2>/dev/null || true
+  rm -f "$HERE/agent-workspace/AGENTS.md" "$HERE/agent-workspace/CLAUDE.md"
 else
   STATUS=0
   echo "==> --new-run: leaving the topology alone, resetting only the per-run state"

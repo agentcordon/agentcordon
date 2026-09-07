@@ -2920,8 +2920,8 @@ async fn the_mcp_list_offers_a_viewer_no_install_control() {
 // ---------------------------------------------------------------------------
 
 /// `init.rs` has a test asserting `init` must *not* create `.mcp.json`, and
-/// the generated `AGENTS.md` tells the agent there is none and not to make
-/// one. The registration page told the operator the opposite twice.
+/// the installed skill tells the agent there is none and not to make one. The
+/// registration page told the operator the opposite twice.
 #[tokio::test]
 async fn the_registration_page_does_not_claim_init_writes_mcp_json() {
     let (ctx, cookie) = admin_session().await;
@@ -2938,6 +2938,37 @@ async fn the_registration_page_does_not_claim_init_writes_mcp_json() {
         !body.contains("MCP gateway config"),
         "/register: there is no MCP gateway config file for init to install"
     );
+}
+
+/// The page names the files `init` actually writes. It named `AGENTS.md` and
+/// `CLAUDE.md`, which `init` stopped writing in 0.4.1 (ADR-0013): an operator
+/// following the page would have looked for two files that were never created
+/// and missed the one that was.
+#[tokio::test]
+async fn the_registration_page_describes_the_skill_init_installs() {
+    let (ctx, cookie) = admin_session().await;
+
+    let (status, body) = get_page(&ctx.app, "/register", &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(
+        body.contains(".agents/skills/agentcordon/SKILL.md"),
+        "/register: name the skill `init` writes"
+    );
+    assert!(
+        body.contains(".claude/skills/") && body.contains(".kiro/skills/"),
+        "/register: name the two runtimes that read a different skill directory"
+    );
+    assert!(
+        body.contains("--agent"),
+        "/register: say how to skip the question in a script"
+    );
+    for gone in ["AGENTS.md", "CLAUDE.md"] {
+        assert!(
+            !body.contains(gone),
+            "/register: `init` does not write {gone} (ADR-0013)"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

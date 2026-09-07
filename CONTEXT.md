@@ -81,8 +81,25 @@ lowercase hex characters, prefixed `sha256:` when displayed. `crates/identity/sr
 *Names differ by surface:* the domain field and DB column are **`pk_hash`** (raw hex, no
 prefix); the OAuth wire field is **`public_key_hash`** (prefix accepted and stripped); the
 activation page labels it **"Device key:"**; `agentcordon init` and `status` print
-**`Workspace identity: sha256:…`**; the generated `AGENTS.md` carries it as **`AC_IDENTITY`**,
-and only that file does.
+**`Workspace identity: sha256:…`**. No generated file carries a copy: `AC_IDENTITY` in
+`AGENTS.md` was removed with the file itself, because a baked-in hash goes stale the moment
+the key is regenerated (ADR-0013).
+
+**Agent runtime** — a coding agent that opens the workspace directory: Claude Code, Codex,
+OpenCode, Cursor, Kiro, Aider and the rest. **Not a domain entity.** Nothing about a runtime is
+stored, registered or audited; the entity is the workspace, and attribution is by `pk_hash`
+whichever runtime typed the command. The word names a row in the registry
+`crates/cli/src/agents/mod.rs`, which records the runtime's id, how to notice it is installed,
+and which skill directory it reads. Do not say "agent" for this (see *Words we avoid*).
+
+**Agent Skill** — the file `agentcordon init` writes so a runtime knows how to use
+AgentCordon: `SKILL.md` in the [Agent Skills](https://agentskills.io/specification) format,
+frontmatter plus a body read only when the task needs it. `crates/cli/src/agents/SKILL.md` is
+the single source; `init` copies it verbatim into `.agents/skills/agentcordon/` always, and
+into `.claude/skills/` or `.kiro/skills/` for the three runtimes that do not read the portable
+path. It is the *whole* integration: `init` writes no `AGENTS.md` and no `CLAUDE.md`
+(ADR-0013). The skill deliberately does not carry the workspace identity — it tells the agent
+to run `agentcordon status`.
 
 **Workspace key file** — `.agentcordon/workspace.key`, the 32-byte Ed25519 seed in hex, mode
 0600 inside a 0700 directory, created with `O_EXCL`; `.agentcordon/workspace.pub` beside it.
@@ -500,6 +517,8 @@ MCP authorize response returns in place of policy reasons.
 | Don't say | Say | Why |
 |---|---|---|
 | agent, device (as an entity) | **workspace** | `Agent`/`Device` are back-compat aliases; the columns `agent_id`, `device_id` are dead. |
+| agent (as a product Claude Code, Cursor…) | **agent runtime** | A runtime is not an entity; `--agent` names one only as a CLI value. |
+| instruction file, `AGENTS.md` block | **Agent Skill**, `SKILL.md` | `init` stopped writing always-on instruction files in 0.4.1 (ADR-0013). |
 | gateway | **broker** | The crate was split into `broker` and `cli` in v0.3.0. |
 | JWT, signed permissions token | **access token** | Tokens are opaque; the ES256 issuer and JWKS were removed. |
 | vault (as a name string) | **vault id** | A vault is a row; the name is a display label (ADR-0002). |

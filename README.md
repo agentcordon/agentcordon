@@ -141,9 +141,14 @@ manager. It asks for nothing on first run; enrollment is the next step.
 From your agent's project directory:
 
 ```bash
-agentcordon init
+agentcordon init      # choose your agent runtimes; installs the AgentCordon skill
 agentcordon register --server-url https://agentcordon.example.com
 ```
+
+`init` asks which coding agents you use — Claude Code, Codex, Cursor, Kiro and eleven more —
+pre-checking the ones it can see, and writes the AgentCordon skill where each of them looks
+for it. Pass `--agent <id>` (repeatable) to skip the question in a script; see
+[the CLI reference](docs/cli-reference.md#agentcordon-init).
 
 `register` prints a four-word code and an activation URL. Open it in any browser, on any
 machine, sign in, and click **Approve**. This is the

@@ -106,8 +106,8 @@
         <h4 class="mb-2">2. Set up your workspace</h4>
         <p class="text-sm opacity-muted mb-2">
             <strong>Run this from your project directory</strong> — this is where the workspace key
-            (<code>.agentcordon/</code>) and the agent instruction files (<code>AGENTS.md</code>,
-            <code>CLAUDE.md</code>) are written.
+            (<code>.agentcordon/</code>) and the AgentCordon skill
+            (<code>.agents/skills/agentcordon/SKILL.md</code>) are written.
         </p>
         <div class="code-block">
             <code class="text-sm" id="cli-register-cmd"></code>
@@ -118,8 +118,14 @@
         </script>
 
         <p class="text-sm opacity-muted mt-2">
-            <code>agentcordon init</code> generates workspace keys and writes
-            the agent instruction files; <code>agentcordon register</code> starts
+            <code>agentcordon init</code> generates the workspace keys and asks which
+            coding agents you use, then installs the AgentCordon skill into the directory
+            each of them reads &mdash; <code>.agents/skills/</code> for most,
+            <code>.claude/skills/</code> for Claude Code and Cline,
+            <code>.kiro/skills/</code> for Kiro. On a terminal it shows a checklist with the
+            runtimes it detected already ticked; in a script, pass
+            <code>--agent &lt;id&gt;</code> (repeatable) or let it default to what it
+            detects. <code>agentcordon register</code> starts
             the broker (if needed), then prints a short human-readable activation
             code (e.g. <code>aide-avert-bovs-bonus</code>) and the URL to open.
             It does not open a browser for you &mdash; the broker often runs on

@@ -27,6 +27,7 @@ If your work contradicts an ADR, say so explicitly rather than silently overridi
 | [0010](0010-installer-pinned-to-server-version.md) | The installer is pinned to the server's version, and upgrades are lockstep | Accepted | 2026-09-05 |
 | [0011](0011-admin-ui-is-shells-over-the-admin-api.md) | The admin UI is shells over the admin API, with one primitives module and one placement grammar | Accepted | 2026-09-06 |
 | [0012](0012-authorization-model-rework-deferred.md) | The authorization-model rework is deferred to the next phase | Accepted | 2026-09-06 |
+| [0013](0013-init-installs-the-agentcordon-skill-per-runtime.md) | `agentcordon init` installs the AgentCordon skill per runtime; the MCP server surface is deferred | Accepted | 2026-09-06 |
 
 ## Reading order
 
@@ -35,3 +36,4 @@ If your work contradicts an ADR, say so explicitly rather than silently overridi
 - **The credential path, server to agent:** 0006, 0007, 0005.
 - **Trust boundaries and keys:** 0008, 0009.
 - **Shipping and operating:** 0010, 0011.
+- **How an agent runtime finds AgentCordon:** 0013.

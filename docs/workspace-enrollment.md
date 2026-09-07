@@ -42,7 +42,8 @@ The `pk_hash` is computed as `SHA-256(raw_32_byte_public_key)` and printed as `s
 
 The `init` command also:
 - Creates `.agentcordon/` with mode `0700` (Unix), adds it to `.gitignore`
-- Generates agent instruction files (`AGENTS.md`, `CLAUDE.md`, `.codex/instructions.md`, `.openclaw/instructions.md`, depending on `--agent`) carrying the workspace identity
+- Installs the AgentCordon [Agent Skill](https://agentskills.io/specification) into the skill directory each selected agent runtime reads: always `.agents/skills/agentcordon/SKILL.md`, plus `.claude/skills/` for Claude Code and Cline and `.kiro/skills/` for Kiro. Which runtimes is asked on a terminal, taken from `--agent`, or detected; the answer is remembered in `.agentcordon/agents.toml`. See [`agentcordon init`](cli-reference.md#agentcordon-init) and [ADR-0013](adr/0013-init-installs-the-agentcordon-skill-per-runtime.md).
+- **No instruction file carries the workspace identity.** It is derived from the key and would go stale on regeneration; the skill tells the agent to run `agentcordon status`.
 
 `init` does **not** touch `.mcp.json`. MCP servers are reached through the broker
 (`agentcordon mcp-servers`, `mcp-tools`, `mcp-call`), not through a native MCP entry.

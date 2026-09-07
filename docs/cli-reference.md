@@ -9,10 +9,10 @@ Complete reference for the `agentcordon` command-line tool -- the workspace agen
 ## Quick Reference
 
 ```
-agentcordon init         [--agent AGENT]
+agentcordon init         [--agent RUNTIME]... [--reconfigure]
 agentcordon register     [--server-url URL] [--name NAME] [--scope SCOPE]... [--force]
 agentcordon status
-agentcordon credentials
+agentcordon credentials  [--json]
 agentcordon credentials  create --name NAME --service SVC --value VAL
 agentcordon proxy        CREDENTIAL METHOD URL [--header K:V]... [--body JSON] [--json] [--raw]
 agentcordon mcp-servers
@@ -115,47 +115,114 @@ agentcordon status
 
 ### `agentcordon init`
 
-> Generate an Ed25519 keypair and prepare the workspace for registration.
+> Generate an Ed25519 keypair and install the AgentCordon skill for the agent runtimes you use.
 
 ```
-agentcordon init [OPTIONS]
+agentcordon init [--agent <RUNTIME>]... [--reconfigure]
 ```
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--agent <AGENT>` | string | `claude-code` | Target agent: `claude-code`, `codex`, `openclaw`, or `all` |
+| `--agent <RUNTIME>` | string, repeatable | see below | A runtime id from the table, or `auto`, `all`, `none` |
+| `--reconfigure` | bool | `false` | Ignore the remembered choice and pick again |
 
 **What it does:**
 
-1. Generates an Ed25519 keypair (`.agentcordon/workspace.key`, `.agentcordon/workspace.pub`)
-2. Sets directory permissions to `0700` and private key permissions to `0600` (Unix)
-3. Adds `.agentcordon/` to `.gitignore`
-4. Generates agent-specific instruction files:
-   - `claude-code`: updates `AGENTS.md` and `CLAUDE.md`
-   - `codex`: creates `.codex/instructions.md`
-   - `openclaw`: creates `.openclaw/instructions.md`
-   - `all`: generates all of the above
+1. Generates an Ed25519 keypair (`.agentcordon/workspace.key`, `.agentcordon/workspace.pub`), `0700` on the directory and `0600` on the private key (Unix).
+2. Adds `.agentcordon/` to `.gitignore`.
+3. Decides which runtimes to install for (below).
+4. Writes the **AgentCordon skill** into every skill directory those runtimes read.
+5. Remembers the choice in `.agentcordon/agents.toml` and prints a summary naming every file it wrote and which runtime reads it.
 
-`init` does not touch `.mcp.json`. MCP tools are reached through the broker (`agentcordon mcp-tools`, `agentcordon mcp-call`), not through a native MCP server entry.
+Idempotent: a rerun reports the same identity, leaves the keypair alone, and rewrites a skill file only if its content differs.
 
-Idempotent: if a keypair already exists, prints the identity and regenerates agent files without overwriting keys.
+#### The skill
+
+`init` writes one file, `SKILL.md`, in the [Agent Skills](https://agentskills.io/specification) format. It carries everything an agent needs: the command list, how to pick a credential by its URL fence, how to pick an MCP server, the loopback rule, the exit codes, and what to do when a call is refused.
+
+It is a skill rather than a block in `AGENTS.md` because a skill is loaded as ~100 tokens of metadata and its body is read only when the task is actually about credentials or MCP. An always-on prose block cost that context in every session of every runtime, ran into Windsurf's 12,000-character rule-file cap and Codex's 32 KiB instruction-chain cap, and was shadowed outright by Zed's first-match rule. See [ADR-0013](adr/0013-init-installs-the-agentcordon-skill-per-runtime.md).
+
+The skill does **not** carry the workspace identity. It is derived from the key and changes when the key does, so a file holding a copy goes stale; the skill tells the agent to run `agentcordon status` instead.
+
+`.agents/skills/agentcordon/SKILL.md` is always written. It is the open-standard path, thirteen of the fifteen runtimes below read it, and it is what Aider's `read:` entry points at.
+
+#### Targets
+
+| `--agent` | Runtime | Detected by | Extra file written |
+|---|---|---|---|
+| `claude-code` | Claude Code | `claude` on PATH, `~/.claude`, `CLAUDE.md`, `.claude/settings.json` | `.claude/skills/agentcordon/SKILL.md` |
+| `codex` | OpenAI Codex CLI | `codex` on PATH, `~/.codex`, `.codex/` | — |
+| `opencode` | OpenCode | `opencode` on PATH, `~/.config/opencode`, `opencode.json[c]`, `.opencode/` | — |
+| `gemini` | Gemini CLI | `gemini` on PATH, `~/.gemini`, `.gemini/`, `GEMINI.md` | — |
+| `copilot` | GitHub Copilot (VS Code and CLI) | `copilot` on PATH, `~/.copilot`, `.github/copilot-instructions.md`, `.vscode/` | — |
+| `cursor` | Cursor | `cursor` on PATH, `~/.cursor`, `.cursor/` | — |
+| `windsurf` | Windsurf | `windsurf` on PATH, `~/.codeium/windsurf`, `.windsurf/`, `.devin/` | — |
+| `cline` | Cline | `~/.cline`, `.clinerules`, `.cline/` | `.claude/skills/agentcordon/SKILL.md` |
+| `roo` | Roo Code | `~/.roo`, `.roo/`, `.roorules` | — |
+| `aider` | Aider | `aider` on PATH, `~/.aider.conf.yml`, `.aider.input.history` | `.aider.conf.yml` (`read:` entry) |
+| `amp` | Amp | `amp` on PATH, `~/.config/amp`, `.amp/` | — |
+| `goose` | Goose | `goose` on PATH, `~/.config/goose`, `.goosehints`, `.goose/` | — |
+| `zed` | Zed | `zed` on PATH, `~/.config/zed`, `.zed/` | — |
+| `junie` | JetBrains Junie | `~/.junie`, `.junie/` | — |
+| `kiro` | Kiro | `kiro` on PATH, `~/.kiro`, `.kiro/steering`, `.kiro/settings` | `.kiro/skills/agentcordon/SKILL.md` |
+
+An em dash in the last column means the portable `.agents/skills/` copy is the file that runtime reads; nothing further is needed.
+
+Aider is the only runtime with no skill discovery at all, so it is the only one that gets a pointer file: a `read:` key in `.aider.conf.yml`, marker-delimited. A config that already has a `read:` key is left byte-identical and the line is printed for you to merge, because a YAML mapping may carry only one.
+
+No detection marker is ever a path `init` writes. A runtime that detected on its own installed skill could never be deselected.
+
+Three keywords are not runtimes:
+
+| Value | Meaning |
+|---|---|
+| `auto` | Every runtime detected in this workspace or your home directory. The default. |
+| `all` | Every runtime in the table. |
+| `none` | Only the portable `.agents/skills/` copy. |
+
+`--agent` is repeatable and the values combine, so `--agent auto --agent kiro` is "what you found, plus Kiro". `openclaw` still parses, for compatibility: it installs the portable skill and prints a one-line notice. OpenClaw reads `<workspace>/.agents/skills`, not the project-local `.openclaw/instructions.md` older versions wrote.
+
+#### Choosing, and remembering the choice
+
+With no `--agent`, `init` decides in this order:
+
+1. The choice remembered in `.agentcordon/agents.toml`, unless `--reconfigure`.
+2. A multi-select picker, if **both** stdin and stdout are a terminal. Detected runtimes are pre-checked, and the list starts with "All runtimes" and "None — install only the portable skill".
+3. Otherwise `auto`.
+
+`init` never prompts off a terminal, which is what keeps scripts and the UAT harness working. `.agentcordon/agents.toml` is inside the gitignored `.agentcordon/` directory, so the choice is per-checkout.
+
+`init` does not touch `.mcp.json`. MCP tools are reached through the broker (`agentcordon mcp-tools`, `agentcordon mcp-call`), not through a native MCP server entry; there is no `agentcordon mcp-serve` for one to point at.
 
 **Examples:**
 
 ```bash
-# Generate keys for Claude Code (default)
+# Detect what you use and install for it (interactive when on a terminal)
 agentcordon init
 
-# Generate keys for all supported agents
-agentcordon init --agent all
+# Non-interactive, explicit
+agentcordon init --agent claude-code --agent codex
 
-# Generate keys for Codex
-agentcordon init --agent codex
+# Every runtime; or none but the portable skill
+agentcordon init --agent all
+agentcordon init --agent none
+
+# Change your mind
+agentcordon init --reconfigure
 ```
 
 **Output:**
 ```
 Workspace identity: sha256:a1b2c3d4...
+
+AgentCordon skill:
+  created   .agents/skills/agentcordon/SKILL.md
+            read by OpenAI Codex CLI
+  created   .claude/skills/agentcordon/SKILL.md
+            read by Claude Code
+
+Runtimes: Claude Code, OpenAI Codex CLI
+(from --agent; saved to .agentcordon/agents.toml — rerun `agentcordon init --reconfigure` to choose again.)
 ```
 
 ---
@@ -270,17 +337,35 @@ Token: valid (expires in 4m 07s)
 > List credentials available to this workspace.
 
 ```
-agentcordon credentials
+agentcordon credentials [--json]
 ```
 
-No flags. Requires the broker to be running and the workspace to be registered.
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool | `false` | Emit the broker's envelope as JSON instead of a table, for filtering |
+
+Requires the broker to be running and the workspace to be registered.
 
 **Output:**
 ```
-NAME            SERVICE  TYPE     VAULT        EXPIRES
-github-token    github   bearer   default      never
-aws-prod        aws      aws      production   2026-05-01T00:00:00Z
+NAME          SERVICE  TYPE     ALLOWED URL                VAULT       EXPIRES
+github-token  github   bearer   https://api.github.com/*   default     never
+aws-prod      aws      aws      * (any URL)                production  2026-05-01T00:00:00Z
+
+* (any URL) means the credential is not fenced and may be proxied anywhere. Prefer the narrowest fence that covers your target URL.
 ```
+
+`ALLOWED URL` is the credential's `allowed_url_pattern`: the glob a proxied URL must match,
+checked by the server on the vend and again by the broker before injection
+([ADR-0007](adr/0007-target-bound-vends.md)). It is the column to choose by — match your
+target against it, then take the narrowest fence that still covers the target. `* (any URL)`
+rather than `-` because an unfenced credential is the least safe one, not a missing value.
+
+An expired credential's `EXPIRES` cell is suffixed `(EXPIRED)`.
+
+There is no `DESCRIPTION` column. The broker's projection withholds `description` from an
+agent along with `transform_script`, `metadata`, `owner_username` and `tags`; it is
+operator-facing prose and stays on the control plane.
 
 `VAULT` is the vault's **display name**. It is unique among the vaults one user owns but
 free across owners, so two vaults reachable from here may both be called `production` if
