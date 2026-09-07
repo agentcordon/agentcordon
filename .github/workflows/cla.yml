@@ -1,0 +1,70 @@
+name: CLA
+
+# Every contribution is accepted under CLA.md. This workflow asks a first-time
+# contributor to sign it in a pull-request comment and records the signature.
+#
+# `pull_request_target` (not `pull_request`) is required: the action writes a
+# comment and a commit status back to the pull request, which a fork-triggered
+# `pull_request` run has no token to do. It runs the workflow file from the
+# base branch, not the fork's, and nothing here checks out or executes any code
+# from the pull request.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: cla-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  cla:
+    name: CLA signature
+    runs-on: ubuntu-latest
+    # Only two things need this job: the comment that signs the CLA, and a
+    # pull-request event. Every other issue comment in the repository is
+    # ignored.
+    if: >-
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')) ||
+      github.event_name == 'pull_request_target'
+    permissions:
+      # Signatures are stored in this repository, on the `cla-signatures`
+      # branch, so the action needs to commit to it.
+      contents: write
+      # The action comments on the pull request and, on merge, locks it.
+      pull-requests: write
+      # It reports the result as a commit status on the head SHA.
+      statuses: write
+      # It re-runs the failed CLA check once a signature lands.
+      actions: write
+    steps:
+      - name: Check or record the CLA signature
+        uses: contributor-assistant/github-action@v2
+        env:
+          # GITHUB_TOKEN is enough because the signature file lives in this
+          # repository. A PERSONAL_ACCESS_TOKEN would only be needed to store
+          # signatures in a separate repository.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Where signatures are recorded, and what is signed. The document
+          # is pinned to `main` so a pull request cannot alter the terms it is
+          # agreeing to.
+          branch: cla-signatures
+          path-to-signatures: signatures/version1/cla.json
+          path-to-document: https://github.com/agentcordon/agentcordon/blob/main/CLA.md
+          custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA
+          custom-notsigned-prcomment: >-
+            Thank you for the pull request. AgentCordon is
+            [AGPL-3.0-only](https://github.com/agentcordon/agentcordon/blob/main/LICENSE)
+            and contributions are accepted under a short individual Contributor
+            Licence Agreement. Please read it, then post the sentence below as a
+            comment on this pull request. You only ever have to do this once.
+          custom-allsigned-prcomment: All contributors have signed the CLA.
+          lock-pullrequest-aftermerge: false
+          # Dependabot and the maintainer's own automation do not sign.
+          allowlist: dependabot[bot],github-actions[bot]
