@@ -267,6 +267,7 @@ working credential, so S5 runs last.
 | `15-s16-enforcement.spec.ts` | S16 enforcement across types, second workspace |
 | `16-s17-vaults.spec.ts` | S17 vaults end to end (create, place, rename, share read-only, revoke, refuse a non-empty delete, move, delete), and the provider-client controls an operator is and is not offered |
 | `21-s18-mcp-serve.spec.ts` | S18 `agentcordon mcp-serve`: the CLI's stdio MCP surface, driven over pipes by `uat/mcp_client.py` |
+| `22-s20-mcp-gating.spec.ts` | S20 per-tool MCP gating: `allowed_tools`, the Access tab's Grant/Deny, the generated policies, the tester, and the same decisions through `mcp-serve` |
 | `80-s9-restart.spec.ts` | S9 restart persistence (was `08-`) |
 | `90-s5-lifecycle.spec.ts` | S5 lifecycle (destructive, last; was `09-`) |
 
@@ -278,7 +279,9 @@ mocks are joined to) and **before** the destructive S5. S17 additionally runs
 dependents once those scenarios have installed their OAuth2 MCP servers. S18
 runs after S13 for the same reason from the other end: it drives the CLI's
 stdio MCP surface against the `uat-none` server S13 installs, and against the
-S2 credential and the S3 enrolment.
+S2 credential and the S3 enrolment. S20 runs after both: it needs S13's server,
+S16's second workspace, and S18's surface, and it is the last scenario that
+changes policy before S9 and S5.
 
 Playwright runs with `workers: 1` and `fullyParallel: false`: the scenarios are
 one ordered story over shared server state. Ids pass between spec files through
