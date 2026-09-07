@@ -203,6 +203,18 @@ again, `--agent <id>` skips the question, and `--no-register` skips the enrollme
 target table is in [the CLI reference](cli-reference.md#agentcordon-init), and the approval
 step is in [Workspace Enrollment](workspace-enrollment.md).
 
+It also registers `agentcordon mcp-serve` in each of those runtimes' MCP configuration —
+`.mcp.json` for Claude Code, `.codex/config.toml` for Codex, `.cursor/mcp.json` for Cursor and
+so on, ten runtimes in all; the five that configure MCP per user rather than per project get
+the path and the snippet printed for you to paste. That is what makes the credential proxy and
+the brokered MCP tools **native tools** the runtime can type-check and permission, instead of a
+shell command the model has to remember. The trade-off is a real one and it is why there is a
+flag: the skill costs nothing until a task triggers it, while the MCP tools cost about 800
+tokens of schemas in every session — a fixed number, whether the workspace has one brokered
+server or twenty. `--no-mcp` takes the skill and skips the schemas, and the picker asks once so
+the answer is yours either way. See
+[ADR-0014](adr/0014-mcp-server-surface-is-the-cli-over-stdio.md).
+
 ### From GitHub Releases
 
 Without a server to install from, take the assets straight from a release. Pick the target
