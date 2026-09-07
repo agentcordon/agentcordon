@@ -84,7 +84,10 @@ pub async fn post_proxy(
             return error_response(
                 StatusCode::BAD_REQUEST,
                 "bad_request",
-                &format!("Blocked by SSRF protection: {}", reason),
+                &format!(
+                    "Blocked by SSRF protection: {reason}.{}",
+                    super::helpers::LOOPBACK_HINT
+                ),
             );
         }
     }

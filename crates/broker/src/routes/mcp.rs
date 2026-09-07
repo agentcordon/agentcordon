@@ -237,7 +237,10 @@ async fn check_upstream_target(
         error_response(
             StatusCode::BAD_REQUEST,
             "ssrf_blocked",
-            &format!("Blocked by SSRF protection: MCP server '{server_name}': {reason}"),
+            &format!(
+                "Blocked by SSRF protection: MCP server '{server_name}': {reason}.{}",
+                super::helpers::LOOPBACK_HINT
+            ),
         )
     })
 }

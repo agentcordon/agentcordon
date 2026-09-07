@@ -30,6 +30,20 @@ pub fn ok_response(data: serde_json::Value) -> (StatusCode, axum::Json<serde_jso
     )
 }
 
+/// What to do about an SSRF refusal, appended to every one of them.
+///
+/// The guard's own reason ("target address is in a private or reserved
+/// range") named no escape hatch, so a first local-development call was a
+/// dead end. Worse, the obvious guess is wrong: the flag is a clap `env`
+/// argument on the broker (`crates/broker/src/config.rs`), read once when the
+/// process starts, so prefixing an `agentcordon proxy` command with it sets
+/// it on a process that never looks at it and the call is refused again
+/// (uat/artifacts/reviews/ONBOARDING-empirical.md F4).
+///
+/// One string, used by `/proxy` and by `/mcp/*`, so the two guards cannot
+/// drift into explaining the same flag differently.
+pub const LOOPBACK_HINT: &str = " To reach a loopback or private address for local development,                                  restart the broker with the flag:                                  `AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker                                  --server-url <server>`. The broker reads it once, at startup,                                  so the running broker has to be restarted; putting it in front                                  of the CLI command does nothing.";
+
 /// Error codes on a server 403 that the broker relays verbatim instead of
 /// summarising as a policy denial. Each names a cause the caller can act on
 /// and that has nothing to do with Cedar.

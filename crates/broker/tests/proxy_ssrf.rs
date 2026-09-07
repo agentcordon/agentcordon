@@ -212,3 +212,40 @@ async fn the_same_loopback_target_is_forwarded_when_loopback_is_allowed() {
         "no vend may be requested for a target the broker will not call"
     );
 }
+
+/// The refusal has to name its own escape hatch, and say where the escape
+/// hatch is read.
+///
+/// `Blocked by SSRF protection: target address is in a private or reserved
+/// range` is a dead end: it does not mention `AGTCRDN_PROXY_ALLOW_LOOPBACK`,
+/// and the flag is a clap `env` argument on the broker
+/// (`crates/broker/src/config.rs`), so it is read once, at startup. The
+/// obvious guess — prefixing the `agentcordon proxy` call with it — sets it on
+/// a process that never looks at it, and the call is refused again. Every
+/// local-development first call hits this
+/// (uat/artifacts/reviews/ONBOARDING-empirical.md F4).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_refusal_says_how_to_allow_loopback_and_where_the_flag_is_read() {
+    let (broker, ws) = guarded().await;
+
+    let (status, body) = proxy_to(&broker, &ws, "http://127.0.0.1:18080/echo").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let msg = message(&body);
+
+    assert!(
+        msg.contains("AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker"),
+        "the flag belongs in front of the broker, at start: {msg}"
+    );
+    assert!(
+        msg.contains("restart"),
+        "the fix is to restart the broker, not to retry the command: {msg}"
+    );
+    assert!(
+        msg.contains("startup"),
+        "say that the broker reads the flag once, at startup: {msg}"
+    );
+    assert!(
+        !msg.contains("AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon proxy"),
+        "the CLI never reads the flag: {msg}"
+    );
+}
