@@ -102,8 +102,10 @@ test.describe('S0 install as documented', () => {
     const body = await r.text();
 
     // docs/installation.md § "What the installer writes"
+    // The script composes the path from $HOME, so assert the pieces it is
+    // built from; the run below asserts the path it actually prints.
     expect(body, 'the installer must record the server it was served by').toContain(
-      '.agentcordon/config.toml',
+      'CONFIG_FILE="${CONFIG_DIR}/config.toml"',
     );
     expect(body).toContain('server_url = ');
 
