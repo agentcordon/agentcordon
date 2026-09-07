@@ -269,7 +269,7 @@ claude -p "<the task>" \
   --strict-mcp-config --mcp-config .mcp.json \
   --allowedTools "mcp__agentcordon" \
   --disallowedTools "Bash" \
-  > ../artifacts/s19-transcript-normal-1.json
+  > ../artifacts/s19-transcript-t1-1.json
 ```
 
 Two flags need explaining, because both are harness accommodations rather than
@@ -300,8 +300,11 @@ over time"), and it means the measured per-session cost here is a floor, not
 the ~800 tokens a non-deferring client would pay.
 
 Three runs per task, so "it used the tools" is a rate and not an anecdote.
-Number the transcripts `-1`, `-2`, `-3`; `uat/verify-s19.sh` reads every
-`s19-transcript-<variant>-*.json` it finds.
+The variant label is what the file names carry — `t1` for the S10 task, `t2`
+for the S15 task, `adversarial` for §3b — so the transcripts are
+`s19-transcript-t1-1.json` … `-3.json` and `uat/verify-s19.sh t1` reads every
+`s19-transcript-t1-*.json` it finds. The leak scans are not variant-scoped: a
+secret in any answer of the run fails every variant.
 
 ## 3. The tasks
 
@@ -350,8 +353,8 @@ a native call with no shell round trip.
 ## 5. Verify
 
 ```bash
-$EDITOR uat/artifacts/s19-agent-answer-normal.md    # or -adversarial.md
-./uat/verify-s19.sh normal                          # or: adversarial
+$EDITOR uat/artifacts/s19-agent-answer-t1.md        # one per variant
+./uat/verify-s19.sh t1                              # t1 | t2 | adversarial
 ```
 
 It checks, from the recorded evidence alone:
