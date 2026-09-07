@@ -4,6 +4,16 @@ All notable changes to AgentCordon are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The community files a contributor looks for.** `CONTRIBUTING.md`, `SECURITY.md` (latest minor only pre-1.0, private GitHub advisories rather than a public issue), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `CLA.md` with a `.github/workflows/cla.yml` check that records signatures on a `cla-signatures` branch, `TRADEMARK.md`, and a pull-request template. The security issue template points at the private advisory form. (`CONTRIBUTING.md`, `SECURITY.md`, `.github/`)
+
+### Changed
+
+- **The README is 286 lines instead of 571, and the documentation it had absorbed lives in `docs/`.** It reads top to bottom: what AgentCordon is, its status, the problem, the model with one accurate architecture diagram, the audit-log demo, a quick start on the published `0.4.0` image, features, a comparison with the alternatives, supported platforms, security, and an index. The install paths and Windows notes moved to a new `docs/installation.md`; production deployment to a new `docs/deployment.md`; the environment-variable tables, which had drifted apart across four files, to a new `docs/configuration.md` that `.env.example`, `--help` and the other docs link to instead of repeating; project structure to `docs/system-architecture.md`, whose ASCII data flow became two Mermaid sequences traced against the code. Claims corrected along the way: the broker enrolls with the RFC 8628 device grant, not authorization-code with PKCE; there is one encryption key per master-key version, not one per credential; no Kubernetes or air-gap support, no Slack MCP template, no OIDC vendor presets; SigV4 is signed in the broker; `AGTCRDN_ROOT_USERNAME` defaults to `root` and `AGTCRDN_LOGIN_LOCKOUT_SECONDS` to 30. Dead links to `agentcordon.dev`, `getcordoned.sh` and an expired Discord invite are gone. (`README.md`, `docs/installation.md`, `docs/configuration.md`, `docs/deployment.md`, `docs/index.md`, `docs/system-architecture.md`)
+- **AgentCordon is licensed AGPL-3.0-only.** The repository shipped three different answers to "what licence is this?": GPL-3.0 text in `LICENSE`, MIT in the workspace manifest, and MIT in both Dockerfiles' labels, the release workflow's image labels and the served OpenAPI spec. All now say `AGPL-3.0-only`; the standard notice heads each crate's entry point, and `deny.toml` takes the project's own crates out of the dependency licence check rather than allowing AGPL as a dependency licence. Contributions are accepted under a new individual CLA. (`LICENSE`, `Cargo.toml`, `CLA.md`)
+- **Nothing tells users to run `agentcordon setup` any more.** The subcommand was removed in 0.3.0, but `tools/install.ps1` printed it as the closing step of every Windows install, and the broker named it in both re-registration responses. (`tools/install.ps1`, `crates/broker/src/auth.rs`)
+
 ## [0.4.0] - 2026-09-07
 
 ### Added
