@@ -304,14 +304,13 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "POST".to_string(),
         path: "/api/v1/mcp-servers/{id}/generate-policies".to_string(),
-        description: "Generates Cedar policies for selected tools on an MCP server. Creates one policy per tool/tag combination. Requires admin role.".to_string(),
+        description: "Generates Cedar policies for selected tools on an MCP server. Creates one policy per tool/tag combination. Both fields are optional, so an empty body ({}) grants what the server already has. Requires admin role.".to_string(),
         auth_required: true,
         request_body: Some(json!({
             "type": "object",
-            "required": ["tools", "agent_tags"],
             "properties": {
-                "tools": { "type": "array", "items": { "type": "string" }, "description": "List of tool names to generate policies for (max 50)" },
-                "agent_tags": { "type": "array", "items": { "type": "string" }, "description": "List of agent tags to grant access (max 50)" }
+                "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool names to generate policies for (max 50). Omit for every tool the server currently has: its allowed_tools, else what discovery found. An explicit empty list is rejected." },
+                "agent_tags": { "type": "array", "items": { "type": "string" }, "description": "Agent tags to grant access (max 50). Omit for every tag the workspaces bound to this server carry. An explicit empty list is rejected." }
             }
         })),
         response_body: Some(json!({

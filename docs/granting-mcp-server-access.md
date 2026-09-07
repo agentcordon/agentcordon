@@ -487,6 +487,22 @@ permit(
 };
 ```
 
+Both fields are optional, so the shortest form of this call is an empty body:
+
+```bash
+curl -X POST http://localhost:3140/api/v1/mcp-servers/{server-id}/generate-policies \
+  -H "Content-Type: application/json" \
+  -H "Cookie: session=..." \
+  -d '{}'
+```
+
+- Omitted `tools` means **every tool the server currently has**: its `allowed_tools`, or
+  what discovery found when it has no allow-list.
+- Omitted `agent_tags` means **every tag the workspaces bound to this server carry**.
+- An explicit empty list (`"tools": []`) is a `400`, and so is a default that resolves to
+  nothing -- a server with no known tools, or one bound only to untagged workspaces. The
+  message names the missing half; creating no policies quietly would read as success.
+
 Limits: maximum 50 tools and 50 agent tags per request. Duplicate policy names are skipped.
 
 #### Option D: Write a custom Cedar policy (`/policies` -> **New**)

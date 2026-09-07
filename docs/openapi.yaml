@@ -2861,6 +2861,13 @@ paths:
       description: |
         Admin only. Generates Cedar policies that grant specified agent tags
         access to specified tools on this MCP server.
+
+        Both fields are optional. An omitted `tools` means every tool the
+        server currently has -- its `allowed_tools`, or what discovery found
+        when it has no allow-list. An omitted `agent_tags` means every tag
+        carried by the workspaces this server is bound to. So an empty body
+        (`{}`) grants what the server already knows about. An explicit empty
+        list, or a default that resolves to nothing, is a `400`.
       security:
         - SessionCookie: []
       parameters:
@@ -2871,23 +2878,26 @@ paths:
             type: string
             format: uuid
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
               type: object
-              required: [tools, agent_tags]
               properties:
                 tools:
                   type: array
                   items:
                     type: string
-                  description: List of tool names to generate policies for
+                  description: >
+                    Tool names to generate policies for (max 50). Omit for
+                    every tool the server currently has.
                 agent_tags:
                   type: array
                   items:
                     type: string
-                  description: Agent tags to grant access to
+                  description: >
+                    Agent tags to grant access to (max 50). Omit for every tag
+                    the workspaces bound to this server carry.
       responses:
         '200':
           description: Policies generated

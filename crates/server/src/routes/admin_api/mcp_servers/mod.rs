@@ -251,11 +251,3 @@ pub(crate) struct InstalledWorkspaceInfo {
     pub id: String,
     pub name: String,
 }
-
-// --- Helpers ---
-
-/// Validate that a string is safe for use as a Cedar policy identifier.
-///
-/// Only allows alphanumeric characters, hyphens, underscores, and dots.
-/// This prevents Cedar policy injection via crafted tool or tag names.
-pub(crate) use crate::services::mcp_servers::is_safe_identifier;

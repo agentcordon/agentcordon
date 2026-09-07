@@ -14,8 +14,6 @@ use crate::middleware::request_id::CorrelationId;
 use crate::response::{ApiError, ApiResponse};
 use crate::state::AppState;
 
-use super::is_safe_identifier;
-
 // ---------------------------------------------------------------------------
 // Tool Discovery (internal helper, used by import on re-registration)
 // ---------------------------------------------------------------------------
@@ -329,10 +327,16 @@ pub(super) async fn rediscover_tools(
 // Policy Generation
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub(super) struct GeneratePoliciesRequest {
-    tools: Vec<String>,
-    agent_tags: Vec<String>,
+    /// Omitted means every tool the server currently has. An explicit empty
+    /// list is a mistake, and is rejected.
+    #[serde(default)]
+    tools: Option<Vec<String>>,
+    /// Omitted means every tag carried by the workspaces this server is
+    /// bound to. An explicit empty list is rejected.
+    #[serde(default)]
+    agent_tags: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -344,56 +348,20 @@ pub(super) struct GeneratePoliciesResponse {
 ///
 /// For each selected tool and agent tag, generates a Cedar policy that permits
 /// agents with the specified tag to call that tool on this MCP server.
-/// Stores each policy via the store and reloads the Cedar engine.
+///
+/// Both fields are optional: an omitted `tools` means every tool the server
+/// currently has, and an omitted `agent_tags` means every tag the workspaces
+/// bound to it carry, so an empty body grants what the server already knows
+/// about. Resolving those defaults, validating the result and storing the
+/// policies is the service's job.
 pub(super) async fn generate_policies(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     axum::Extension(corr): axum::Extension<CorrelationId>,
     Path(id): Path<Uuid>,
-    Json(req): Json<GeneratePoliciesRequest>,
+    body: Option<Json<GeneratePoliciesRequest>>,
 ) -> Result<Json<ApiResponse<GeneratePoliciesResponse>>, ApiError> {
-    // Validate input
-    if req.tools.is_empty() {
-        return Err(ApiError::BadRequest(
-            "tools list cannot be empty".to_string(),
-        ));
-    }
-    if req.agent_tags.is_empty() {
-        return Err(ApiError::BadRequest(
-            "agent_tags list cannot be empty".to_string(),
-        ));
-    }
-
-    // Limit array sizes to prevent abuse
-    if req.tools.len() > 50 {
-        return Err(ApiError::BadRequest(
-            "maximum 50 tools per request".to_string(),
-        ));
-    }
-    if req.agent_tags.len() > 50 {
-        return Err(ApiError::BadRequest(
-            "maximum 50 agent_tags per request".to_string(),
-        ));
-    }
-
-    // Validate tool names and tags to prevent Cedar policy injection
-    for tool_name in &req.tools {
-        if !is_safe_identifier(tool_name) {
-            return Err(ApiError::BadRequest(format!(
-                "invalid tool name '{}': must be 1-128 alphanumeric, hyphen, underscore, or dot characters",
-                tool_name
-            )));
-        }
-    }
-    for tag in &req.agent_tags {
-        if !is_safe_identifier(tag) {
-            return Err(ApiError::BadRequest(format!(
-                "invalid agent tag '{}': must be 1-128 alphanumeric, hyphen, underscore, or dot characters",
-                tag
-            )));
-        }
-    }
-
+    let req = body.map(|Json(req)| req).unwrap_or_default();
     let created = state
         .services
         .mcp_servers
@@ -401,8 +369,8 @@ pub(super) async fn generate_policies(
             &auth,
             &corr.0,
             &McpServerId(id),
-            &req.tools,
-            &req.agent_tags,
+            req.tools.as_deref(),
+            req.agent_tags.as_deref(),
         )
         .await?;
 

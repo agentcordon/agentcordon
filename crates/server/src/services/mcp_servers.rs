@@ -1081,6 +1081,51 @@ permit(
     ))
 }
 
+/// Every tool the record currently knows about: the allow-list if it has
+/// one, else whatever discovery found.
+fn current_tool_names(server: &McpServer) -> Vec<String> {
+    match server.allowed_tools.as_deref() {
+        Some(names) if !names.is_empty() => names.to_vec(),
+        _ => server
+            .discovered_tools
+            .as_deref()
+            .map(tool_names)
+            .unwrap_or_default(),
+    }
+}
+
+/// Guard the policy generator's inputs: bounded in size, and safe to
+/// interpolate into Cedar text.
+fn validate_grant_inputs(tools: &[String], agent_tags: &[String]) -> Result<(), ApiError> {
+    if tools.len() > 50 {
+        return Err(ApiError::BadRequest(
+            "maximum 50 tools per request".to_string(),
+        ));
+    }
+    if agent_tags.len() > 50 {
+        return Err(ApiError::BadRequest(
+            "maximum 50 agent_tags per request".to_string(),
+        ));
+    }
+    for tool_name in tools {
+        if !is_safe_identifier(tool_name) {
+            return Err(ApiError::BadRequest(format!(
+                "invalid tool name '{}': must be 1-128 alphanumeric, hyphen, underscore, or dot characters",
+                tool_name
+            )));
+        }
+    }
+    for tag in agent_tags {
+        if !is_safe_identifier(tag) {
+            return Err(ApiError::BadRequest(format!(
+                "invalid agent tag '{}': must be 1-128 alphanumeric, hyphen, underscore, or dot characters",
+                tag
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The names of a tool list, in order — what `allowed_tools` holds.
 fn tool_names(tools: &[agent_cordon_core::domain::mcp::McpTool]) -> Vec<String> {
     tools.iter().map(|t| t.name.clone()).collect()
@@ -1119,15 +1164,64 @@ pub struct ImportOutcome {
 impl McpServerService {
     /// Create one grant policy per (tool, tag) for this server, skipping
     /// names that already exist, then reload the engine once.
+    ///
+    /// `tools`/`agent_tags` are what the caller asked for. `None` means "what
+    /// this server has": every tool it currently knows about, and every tag
+    /// the workspaces it is bound to carry. An explicit empty list, or a
+    /// default that resolves to nothing, is a 400 — silently creating no
+    /// policies would read as success.
     pub async fn generate_policies(
         &self,
         auth: &AuthenticatedUser,
         corr: &str,
         id: &McpServerId,
-        tools: &[String],
-        agent_tags: &[String],
+        tools: Option<&[String]>,
+        agent_tags: Option<&[String]>,
     ) -> Result<Vec<GeneratedPolicy>, ApiError> {
         let (server, policy_decision) = self.load_and_authorize(auth, id).await?;
+
+        let tools = match tools {
+            Some(explicit) => {
+                if explicit.is_empty() {
+                    return Err(ApiError::BadRequest(
+                        "tools list cannot be empty".to_string(),
+                    ));
+                }
+                explicit.to_vec()
+            }
+            None => {
+                let known = current_tool_names(&server);
+                if known.is_empty() {
+                    return Err(ApiError::BadRequest(format!(
+                        "MCP server '{}' has no known tools to generate policies for: run tool discovery or name the tools in the request",
+                        server.name
+                    )));
+                }
+                known
+            }
+        };
+        let agent_tags = match agent_tags {
+            Some(explicit) => {
+                if explicit.is_empty() {
+                    return Err(ApiError::BadRequest(
+                        "agent_tags list cannot be empty".to_string(),
+                    ));
+                }
+                explicit.to_vec()
+            }
+            None => {
+                let bound = self.bound_workspace_tags(id).await?;
+                if bound.is_empty() {
+                    return Err(ApiError::BadRequest(format!(
+                        "no agent_tags given and the workspaces bound to MCP server '{}' carry no tags: tag a workspace or name the tags in the request",
+                        server.name
+                    )));
+                }
+                bound
+            }
+        };
+        validate_grant_inputs(&tools, &agent_tags)?;
+        let (tools, agent_tags) = (tools.as_slice(), agent_tags.as_slice());
 
         let existing_names: std::collections::HashSet<String> = self
             .store
@@ -1204,6 +1298,24 @@ impl McpServerService {
         write_audit(&*self.store, &event).await;
 
         Ok(created)
+    }
+
+    /// Every tag carried by the workspaces this MCP server is bound to,
+    /// in first-seen order and without duplicates. This is the tag set an
+    /// omitted `agent_tags` means.
+    async fn bound_workspace_tags(&self, id: &McpServerId) -> Result<Vec<String>, ApiError> {
+        let mut tags: Vec<String> = Vec::new();
+        for (workspace_id, _) in self.store.list_workspaces_for_mcp_server(id).await? {
+            let Some(workspace) = self.store.get_workspace(&workspace_id).await? else {
+                continue;
+            };
+            for tag in workspace.tags {
+                if !tags.contains(&tag) {
+                    tags.push(tag);
+                }
+            }
+        }
+        Ok(tags)
     }
 
     /// Register the servers an agent uploaded for `workspace_id`: a new
