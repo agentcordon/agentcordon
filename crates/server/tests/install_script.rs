@@ -391,3 +391,118 @@ async fn a_configured_base_url_beats_the_request_headers() {
         r#"SERVER_URL="https://agentcordon.example.com""#
     );
 }
+
+// ---------------------------------------------------------------------------
+// What the installer leaves the user with
+// (uat/artifacts/reviews/ONBOARDING-empirical.md F3, F6, F7)
+// ---------------------------------------------------------------------------
+
+/// `GET /install.ps1` body, for the assertions that are about the served text.
+async fn get_install_ps1(app: &Router) -> String {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/install.ps1")
+                .header(header::HOST, "cordon.example.test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// The closing message is the only instruction most people read, and `init`
+/// now asks which agent runtimes to install the skill for. Saying just
+/// "agentcordon init" leaves the reader with no idea a choice is being made.
+#[tokio::test]
+async fn the_installers_tell_you_init_chooses_your_agent_runtimes() {
+    let app = setup_test_app().await;
+    let sh = get_install_script(&app, None).await.2;
+    let ps1 = get_install_ps1(&app).await;
+
+    for (name, body) in [("install.sh", &sh), ("install.ps1", &ps1)] {
+        assert!(
+            body.contains("agentcordon init"),
+            "{name}: the closing message must name `agentcordon init`"
+        );
+        assert!(
+            body.to_lowercase().contains("agent runtime")
+                || body.to_lowercase().contains("which agents"),
+            "{name}: the closing message must say `init` chooses the agent runtimes"
+        );
+    }
+}
+
+/// `export PATH="…:$PATH"` is ephemeral — the next terminal has no
+/// `agentcordon` — and it does not parse in nushell at all. The script knows
+/// `$SHELL`, so it can name the file to add the line to.
+#[tokio::test]
+async fn the_unix_installer_names_the_right_profile_file_for_the_users_shell() {
+    let app = setup_test_app().await;
+    let (_, _, body) = get_install_script(&app, None).await;
+
+    assert!(body.contains("$SHELL"), "the script must look at $SHELL");
+    for expected in [
+        ".bashrc",
+        ".zshrc",
+        "fish_add_path",
+        "$env.PATH",
+        "config.nu",
+    ] {
+        assert!(
+            body.contains(expected),
+            "PATH guidance must cover {expected}"
+        );
+    }
+}
+
+/// `install.sh` refuses an asset with no `SHA256SUMS` entry; `install.ps1`
+/// warned and installed it anyway, so the two documented one-liners had
+/// different security postures while `docs/installation.md` described them
+/// identically (F6).
+#[tokio::test]
+async fn the_windows_installer_refuses_an_asset_with_no_checksum_entry() {
+    let app = setup_test_app().await;
+    let body = get_install_ps1(&app).await;
+
+    assert!(
+        !body.contains("skipping verification"),
+        "install.ps1 must not install an unverified asset"
+    );
+    assert!(
+        body.contains("refusing to install"),
+        "install.ps1 must refuse an asset with no SHA256SUMS entry, as install.sh does"
+    );
+}
+
+/// A proxy, a DNS blip or a rate-limit produced "No published release for
+/// AgentCordon vX" and a "build from source" instruction — a confidently wrong
+/// diagnosis (F7). Only a 404 means there is no release.
+#[tokio::test]
+async fn both_installers_tell_a_missing_release_apart_from_a_failed_fetch() {
+    let app = setup_test_app().await;
+    let sh = get_install_script(&app, None).await.2;
+    let ps1 = get_install_ps1(&app).await;
+
+    assert!(
+        sh.contains("404"),
+        "install.sh must check for a 404 before blaming a missing release"
+    );
+    assert!(
+        sh.contains("Could not reach") || sh.contains("could not reach"),
+        "install.sh needs a separate message for a transport failure"
+    );
+    assert!(
+        ps1.contains("404") && ps1.contains("StatusCode"),
+        "install.ps1 must inspect the HTTP status before blaming a missing release"
+    );
+    assert!(
+        ps1.contains("Could not reach"),
+        "install.ps1 needs a separate message for a transport failure"
+    );
+}

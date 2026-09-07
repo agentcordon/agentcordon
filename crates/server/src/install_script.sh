@@ -21,6 +21,11 @@ GITHUB_RELEASE="https://github.com/agentcordon/agentcordon/releases/download/v{v
 
 # Printed whenever the pinned release is not on GitHub — the normal state of a
 # server built from `main` between releases.
+#
+# Only a 404 means that. A proxy, a DNS failure or a rate-limit used to land
+# here too, so a network problem was reported as "there is no release" and the
+# user was told to build from source (ONBOARDING-empirical.md F7).
+# `fetch_status` separates the two.
 no_release() {
     echo "" >&2
     echo "No published release for AgentCordon v${AGTCRDN_VERSION}." >&2
@@ -33,6 +38,26 @@ no_release() {
     echo "  git clone https://github.com/agentcordon/agentcordon" >&2
     echo "  cd agentcordon && cargo build --release" >&2
     echo "  install -m 0755 target/release/agentcordon target/release/agentcordon-broker ${INSTALL_DIR}/" >&2
+    echo "" >&2
+    exit 1
+}
+
+# The HTTP status of a GET, or "000" when the request never completed. curl
+# exits non-zero on a transport failure and prints nothing, so an empty
+# capture is the transport case.
+fetch_status() {
+    curl -fsSL -o "$2" -w '%{http_code}' "$1" 2>/dev/null || echo "000"
+}
+
+# A fetch that did not complete: DNS, a proxy, TLS, a rate-limit. Distinct from
+# a 404, which really does mean the release is not published.
+unreachable() {
+    echo "" >&2
+    echo "Could not reach ${1}." >&2
+    echo "" >&2
+    echo "This is a network failure, not a missing release: the request did not" >&2
+    echo "complete. Check your connection, proxy settings (HTTPS_PROXY) and DNS," >&2
+    echo "then run the installer again." >&2
     echo "" >&2
     exit 1
 }
@@ -95,11 +120,18 @@ sha256_of() {
 SUMS="${TMPDIR_AC}/SHA256SUMS"
 if [ "$SKIP_CHECKSUM" != "1" ]; then
     echo "Fetching SHA256SUMS..."
-    if ! curl -fsSL "${GITHUB_RELEASE}/SHA256SUMS" -o "$SUMS"; then
-        # The release tag is this server's version, so the overwhelmingly
-        # likely cause is that it has not been published yet.
-        no_release
-    fi
+    status=$(fetch_status "${GITHUB_RELEASE}/SHA256SUMS" "$SUMS")
+    case "$status" in
+        200) ;;
+        404) no_release ;;
+        000) unreachable "${GITHUB_RELEASE}/SHA256SUMS" ;;
+        *)
+            echo "" >&2
+            echo "Unexpected HTTP ${status} fetching SHA256SUMS from GitHub." >&2
+            echo "Nothing was installed." >&2
+            exit 1
+            ;;
+    esac
     if ! sha256_of "$SUMS" >/dev/null 2>&1; then
         echo "No sha256sum, shasum, or openssl on this system; cannot verify downloads." >&2
         echo "Install one of them, or set AGENTCORDON_SKIP_CHECKSUM=1 to override." >&2
@@ -115,7 +147,16 @@ fetch_verified() {
     tmp="${TMPDIR_AC}/${asset}"
 
     echo "Downloading ${asset}..."
-    curl -fsSL "${GITHUB_RELEASE}/${asset}" -o "$tmp" || no_release
+    status=$(fetch_status "${GITHUB_RELEASE}/${asset}" "$tmp")
+    case "$status" in
+        200) ;;
+        404) no_release ;;
+        000) unreachable "${GITHUB_RELEASE}/${asset}" ;;
+        *)
+            echo "Unexpected HTTP ${status} downloading ${asset}. Nothing was installed." >&2
+            exit 1
+            ;;
+    esac
 
     if [ "$SKIP_CHECKSUM" != "1" ]; then
         expected=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1; exit }' "$SUMS")
@@ -149,16 +190,48 @@ echo "  ${INSTALL_DIR}/agentcordon         (workspace CLI)"
 echo "  ${INSTALL_DIR}/agentcordon-broker  (credential broker)"
 echo ""
 
-# Check if install dir is on PATH
+# Check if install dir is on PATH.
+#
+# `export PATH="…:$PATH"` lasts until the terminal closes, and it does not
+# parse in nushell at all. What a user needs is the line *and* the file to put
+# it in, which $SHELL names (ONBOARDING-empirical.md F3).
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
-        echo "Add ${INSTALL_DIR} to your PATH:"
-        echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+        echo "${INSTALL_DIR} is not on your PATH."
+        echo ""
+        case "${SHELL:-}" in
+            */fish)
+                echo "  Add it permanently (fish):"
+                echo "    fish_add_path ${INSTALL_DIR}"
+                ;;
+            */nu)
+                echo "  Add it permanently (nushell) — append to your config.nu"
+                echo "  (\$nu.config-path):"
+                echo "    \$env.PATH = (\$env.PATH | prepend \"${INSTALL_DIR}\")"
+                ;;
+            */zsh)
+                echo "  Add it permanently (zsh) — append to ~/.zshrc:"
+                echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
+                ;;
+            */bash)
+                echo "  Add it permanently (bash) — append to ~/.bashrc:"
+                echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
+                ;;
+            *)
+                echo "  Add it permanently — append to your shell's startup file"
+                echo "  (~/.bashrc for bash, ~/.zshrc for zsh; fish uses"
+                echo "  fish_add_path, nushell uses \$env.PATH in config.nu):"
+                echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
+                ;;
+        esac
+        echo ""
+        echo "  For this terminal only:"
+        echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
         echo ""
         ;;
 esac
 
 echo "Get started:"
-echo "  agentcordon init"
+echo "  agentcordon init                 # choose your agent runtimes and install the skill"
 echo "  agentcordon register --server-url ${SERVER_URL}"

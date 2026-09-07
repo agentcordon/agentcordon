@@ -39,6 +39,11 @@ function Write-Err($text)    { Write-Host "  x $text" -ForegroundColor Red }
 
 # The pinned release is not on GitHub — the normal state of a server built
 # from `main` between releases.
+#
+# Only an HTTP 404 means that. A proxy, a DNS failure or a rate-limit used to
+# land here too, so a network problem was reported as "there is no release" and
+# the user was told to build from source
+# (uat/artifacts/reviews/ONBOARDING-empirical.md F7).
 function Write-NoRelease {
     Write-Host ""
     Write-Err "No published release for AgentCordon v$Version."
@@ -52,6 +57,28 @@ function Write-NoRelease {
     Write-Host "    cd agentcordon; cargo build --release"
     Write-Host ""
     exit 1
+}
+
+# The request never completed: DNS, a proxy, TLS, a rate-limit. Distinct from a
+# 404, which really does mean the release is not published.
+function Write-Unreachable($url, $detail) {
+    Write-Host ""
+    Write-Err "Could not reach $url"
+    if ($detail) { Write-Host "  $detail" }
+    Write-Host ""
+    Write-Host "  This is a network failure, not a missing release: the request did not"
+    Write-Host "  complete. Check your connection, proxy settings and DNS, then run the"
+    Write-Host "  installer again."
+    Write-Host ""
+    exit 1
+}
+
+# The HTTP status carried by a terminating web exception, or $null when the
+# request never got far enough to have one.
+function Get-HttpStatus($errorRecord) {
+    $response = $errorRecord.Exception.Response
+    if ($null -eq $response) { return $null }
+    try { return [int] $response.StatusCode } catch { return $null }
 }
 
 # --- Banner ---
@@ -102,7 +129,12 @@ try {
     }
     Write-Info "Checksums loaded ($($checksums.Count) entries)"
 } catch {
-    Write-NoRelease
+    $status = Get-HttpStatus $_
+    if ($status -eq 404) {
+        Write-NoRelease
+    } else {
+        Write-Unreachable $sumsUrl $_.Exception.Message
+    }
 }
 
 # --- Download + verify + install each binary ---
@@ -117,9 +149,13 @@ foreach ($bin in $binaries) {
     try {
         Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tmp -ErrorAction Stop
     } catch {
-        Write-Err "Failed to download $url : $($_.Exception.Message)"
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
-        exit 1
+        $status = Get-HttpStatus $_
+        if ($status -eq 404) {
+            Write-NoRelease
+        } else {
+            Write-Unreachable $url $_.Exception.Message
+        }
     }
 
     if ($checksums.ContainsKey($remote)) {
@@ -134,7 +170,13 @@ foreach ($bin in $binaries) {
         }
         Write-Info "Verified $local (sha256 ok)"
     } else {
-        Write-Warn2 "No checksum entry for $remote — skipping verification."
+        # install.sh refuses here, and docs/installation.md describes the two
+        # one-liners as equally verified. Warning and installing anyway made
+        # Windows quietly the weaker of the two
+        # (uat/artifacts/reviews/ONBOARDING-empirical.md F6).
+        Write-Err "SHA256SUMS has no entry for $remote; refusing to install it."
+        Remove-Item -LiteralPath $tmp -Force
+        exit 1
     }
 
     Move-Item -LiteralPath $tmp -Destination $dest -Force
@@ -170,6 +212,7 @@ Write-Host  "  Open a new terminal and run:"
 Write-Host  "    agentcordon-broker --server-url $ServerUrl" -ForegroundColor White
 Write-Host  "  then, from your project directory:"
 Write-Host  "    agentcordon init" -ForegroundColor White
+Write-Host  "      choose which agent runtimes to install the AgentCordon skill for"
 Write-Host  "    agentcordon register --server-url $ServerUrl" -ForegroundColor White
 Write-Host ""
 exit 0
