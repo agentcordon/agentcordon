@@ -273,70 +273,127 @@ Applied outside-in on every request:
 
 ## Data Flow
 
-### Credential Proxy (via Broker)
+### A credential vend
 
-```
-Agent                  CLI                Broker                 Server             Upstream API
-─────                  ───                ──────                 ──────             ────────────
-  │  agentcordon proxy   │                  │                      │                    │
-  │  github-token GET    │                  │                      │                    │
-  │  api.github.com/user │                  │                      │                    │
-  │─────────────────────►│                  │                      │                    │
-  │                      │ POST /proxy      │                      │                    │
-  │                      │ (Ed25519 signed) │                      │                    │
-  │                      │────────────────►│                      │                    │
-  │                      │                  │ POST /credentials/   │                    │
-  │                      │                  │  vend-device/        │                    │
-  │                      │                  │  github-token        │                    │
-  │                      │                  │  + OAuth token       │                    │
-  │                      │                  │  + broker P-256 key  │                    │
-  │                      │                  │  + method, target URL│                    │
-  │                      │                  │─────────────────────►│                    │
-  │                      │                  │                      │ URL pattern check  │
-  │                      │                  │                      │ Cedar policy check │
-  │                      │                  │                      │ AES-GCM decrypt    │
-  │                      │                  │                      │ ECIES encrypt      │
-  │                      │                  │   ECIES envelope     │                    │
-  │                      │                  │◄─────────────────────│                    │
-  │                      │                  │ ECIES decrypt (P-256)│                    │
-  │                      │                  │ Re-check URL pattern │                    │
-  │                      │                  │ Apply transform      │                    │
-  │                      │                  │ GET + Auth: Bearer   │                    │
-  │                      │                  │ (no redirects)       │                    │
-  │                      │                  │────────────────────────────────────────── │
-  │                      │                  │   response           │                    │
-  │                      │                  │◄──────────────────────────────────────────│
-  │                      │                  │ Redact leaked secret │                    │
-  │                      │   response       │                      │                    │
-  │                      │◄────────────────│                      │                    │
-  │    response          │                  │                      │                    │
-  │◄─────────────────────│                  │                      │                    │
+What `agentcordon proxy github-token GET https://api.github.com/user` does, end to end.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CLI as agentcordon CLI
+    participant B as Broker
+    participant S as Server
+    participant P as Cedar
+    participant U as Upstream API
+
+    CLI->>B: POST /proxy (X-AC-Signature, Ed25519)
+    Note over B: verify signature, then nonce replay
+    Note over B: SSRF check on target_url
+    B->>S: POST /api/v1/credentials/vend-device/{name}<br/>Bearer workspace token · broker_public_key, method, target_url
+    Note over S: scope credentials:vend
+    Note over S: allowed_url_pattern check<br/>deny → 403 url_pattern_denied
+    S->>P: vend_credential (target_url in context)
+    P-->>S: Permit → policy_evaluated
+    Note over S: open from the vault at key_version,<br/>re-seal ECIES for the broker's key
+    S-->>B: envelope + credential_type + allowed_url_pattern<br/>audit credential_vended
+    Note over B: re-check allowed_url_pattern
+    Note over B: open envelope, apply transform
+    B->>U: request with credential injected
+    U-->>B: response
+    Note over B: leak-scan body and headers
+    B-->>CLI: status, headers, body
 ```
 
-### MCP Tool Call (via Broker)
+The order of the checks is the point.
 
+The broker verifies the Ed25519 signature **before** it consults the nonce seen-set, so only
+a verified, registered key can consume an entry in it. It runs the resolving SSRF check on
+the target **before** asking for a credential, so a request to a private address never
+causes a vend at all.
+
+The hop from the broker to the server carries an opaque OAuth 2.0 access token, not a
+workspace signature: the signature covers the CLI-to-broker hop only. The server checks the
+credential's `allowed_url_pattern` **before** Cedar, because a target outside the fence is a
+credential-configuration problem rather than a policy one — it answers 403
+`url_pattern_denied` and writes a `credential_vend_denied` row, so a reader is not sent to
+the policy pages for something no policy will fix. Only then does Cedar decide, with
+`target_url` in the evaluation context so a policy can narrow the fence further.
+
+The server opens the credential with the key its `key_version` names and re-seals it under
+ECIES for the broker's own P-256 key, with the workspace, credential, vend id and timestamp
+as associated data; the broker refuses an envelope whose associated data is not the one it
+asked for. The broker then checks `allowed_url_pattern` a second time, against the response
+the server just sent, before injecting anything (ADR-0007). A credential with no pattern is
+accepted only when its type is `generic`; every other type fails closed.
+
+Everything coming back is scanned. The leak scanner runs in the **broker**, over the
+response body and every response header, replacing each injected value with `[REDACTED]` —
+raw, base64, URL-safe base64 and percent-encoded alike.
+
+The broker answers the CLI with `200` whatever the upstream said; the upstream status is a
+field in the body, and the CLI exits non-zero when it is 400 or above.
+
+### An OAuth2 MCP install, and the delegated refresh behind every tool call
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Admin browser
+    participant S as Server
+    participant M as MCP server
+    participant P as Provider AS
+    participant B as Broker
+
+    Note over A,P: Install
+    A->>S: POST /api/v1/mcp-servers/oauth/initiate<br/>template_key, workspace_id
+    S->>M: RFC 9728 protected-resource metadata
+    M-->>S: the authorization server's URL
+    S->>P: RFC 8414 authorization-server metadata
+    P-->>S: issuer and endpoints, all same-origin
+    S->>P: RFC 7591 DCR, skipped if a provider client exists
+    P-->>S: client_id, client_secret sealed at rest
+    Note over S: state row holds the PKCE verifier
+    S-->>A: authorize_url
+    A->>P: authorize (code, PKCE S256)
+    P-->>A: redirect to /api/v1/mcp-servers/oauth/callback
+    A->>S: GET the callback with code and state
+    S->>P: POST token_endpoint (authorization_code + verifier)
+    P-->>S: access token + refresh token
+    Note over S: the refresh token is stored as an<br/>oauth2_user_authorization credential<br/>audit mcp_server_provisioned
+
+    Note over S,B: Delegated refresh, during sync
+    B->>S: GET /api/v1/workspaces/mcp-servers?include_credentials=true
+    S->>P: POST token_endpoint (grant_type=refresh_token)
+    P-->>S: short-lived access token
+    Note over S: a rotated refresh token is re-sealed here<br/>audit credential_secret_rotated
+    S-->>B: ECIES envelope: access token + expires_at
+
+    Note over S,B: Tool call
+    B->>S: POST /api/v1/workspaces/mcp-authorize<br/>server_name, tool_name
+    S-->>B: decision + correlation_id, no policy reasons
+    B->>M: tools/call with the access token injected
+    M-->>B: result, leak-scanned before it reaches the agent
 ```
-AI Agent               CLI                 Broker                Server
-────────               ───                 ──────                ──────
-  │ mcp-call             │                    │                     │
-  │ server tool          │                    │                     │
-  │─────────────────────►│                    │                     │
-  │                      │ POST /mcp/call     │                     │
-  │                      │ (Ed25519 signed)   │                     │
-  │                      │──────────────────►│                     │
-  │                      │                    │ Resolve credential   │
-  │                      │                    │ from MCP cache       │
-  │                      │                    │ (or vend from server)│
-  │                      │                    │ Apply transform      │
-  │                      │                    │ POST upstream MCP    │
-  │                      │                    │────────────────────►│
-  │                      │                    │    response          │
-  │                      │                    │◄────────────────────│
-  │                      │    response        │                     │
-  │                      │◄──────────────────│                     │
-  │    response          │                    │                     │
-  │◄─────────────────────│                    │                     │
-```
+
+The install runs entirely between the admin's browser and the server. A provider client
+already registered for that authorization server's origin is reused, so DCR happens once
+per provider rather than once per install (ADR-0004). The PKCE verifier lives in the
+server-side state row, never in a cookie; the state is single-use and bound to the user who
+started the flow. The redirect URI is `{AGTCRDN_BASE_URL}/api/v1/mcp-servers/oauth/callback`
+and the install fails outright when `AGTCRDN_BASE_URL` is unset — it deliberately does not
+fall back to the listen address, because a registered redirect URI is not something to guess.
+
+What lands in the vault is the **refresh** token, stored as an `oauth2_user_authorization`
+credential. It never leaves the server (ADR-0006). Every time the broker syncs, the server
+runs the `refresh_token` grant itself and seals only the resulting short-lived access token
+and its expiry into the envelope. If the provider rotates the refresh token, the new one is
+re-sealed and the old one archived in the same transaction that hands out the access token;
+if that write fails, the token cache is evicted and no access token is handed out at all.
+
+The broker never calls a provider token endpoint. A tool call asks the server for a decision
+first — `mcp-authorize` returns a decision and a correlation id and deliberately no policy
+reasons, so a workspace cannot enumerate the policy graph — and the reasons are in the
+`policy_evaluated` audit row that correlation id names.
 
 ---
 
