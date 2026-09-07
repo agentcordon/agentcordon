@@ -9,6 +9,7 @@ mod bind;
 mod channel;
 mod common;
 mod credentials;
+mod mcp_allowed_tools;
 mod mcp_api_key;
 mod mcp_secrets;
 mod no_provider_grant;

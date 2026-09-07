@@ -161,12 +161,45 @@ impl McpServerService {
         id: &McpServerId,
         name: Option<String>,
         enabled: Option<bool>,
+        allowed_tools: Option<Vec<String>>,
     ) -> Result<McpServer, ApiError> {
         let (mut server, policy_decision) = self.load_and_authorize(auth, id).await?;
 
         let enabled_changed = enabled.is_some_and(|e| e != server.enabled);
         if let Some(enabled) = enabled {
             server.enabled = enabled;
+        }
+
+        let allowed_tools_changed = allowed_tools
+            .as_ref()
+            .is_some_and(|t| Some(t) != server.allowed_tools.as_ref());
+        if let Some(requested) = allowed_tools {
+            // Every name has to be one the server actually publishes.
+            // Refusing the whole request, naming each stray, is what keeps a
+            // typo from silently narrowing an agent's access to nothing.
+            let known = discovered_tool_names(&server);
+            let unknown: Vec<&str> = requested
+                .iter()
+                .filter(|t| !known.iter().any(|k| k == *t))
+                .map(String::as_str)
+                .collect();
+            if !unknown.is_empty() {
+                return Err(ApiError::BadRequest(format!(
+                    "MCP server '{}' has no tool named {}. Its tools are: {}",
+                    server.name,
+                    unknown
+                        .iter()
+                        .map(|t| format!("'{t}'"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if known.is_empty() {
+                        "none — run tool discovery first".to_string()
+                    } else {
+                        known.join(", ")
+                    }
+                )));
+            }
+            server.allowed_tools = Some(requested);
         }
 
         if let Some(name) = name {
@@ -198,6 +231,8 @@ impl McpServerService {
                 "server_name": server.name,
                 "enabled": server.enabled,
                 "enabled_changed": enabled_changed,
+                "allowed_tools": server.allowed_tools,
+                "allowed_tools_changed": allowed_tools_changed,
             }))
             .build();
         write_audit(&*self.store, &event).await;
@@ -540,7 +575,24 @@ impl McpServerService {
         }
         let count = tools.len();
         let mut updated = server.clone();
-        updated.allowed_tools = Some(tools.iter().map(|t| t.name.clone()).collect());
+        // A record nobody has narrowed mirrors what the upstream publishes.
+        // A narrowed one keeps its allow-list — rediscovery must not undo an
+        // operator's decision — and gains only the record of the new tools,
+        // which the Tools tab then offers as unticked boxes.
+        if is_narrowed(server) {
+            let found = tool_names(&tools);
+            updated.allowed_tools = Some(
+                server
+                    .allowed_tools
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|name| found.contains(name))
+                    .collect(),
+            );
+        } else {
+            updated.allowed_tools = Some(tool_names(&tools));
+        }
         updated.discovered_tools = Some(tools);
         if let Err(e) = self.store.update_mcp_server(&updated).await {
             tracing::warn!(error = %e, server = %server.name, "failed to update discovered tools");
@@ -1144,6 +1196,34 @@ fn validate_grant_inputs(tools: &[String], agent_tags: &[String]) -> Result<(), 
 /// The names of a tool list, in order — what `allowed_tools` holds.
 fn tool_names(tools: &[agent_cordon_core::domain::mcp::McpTool]) -> Vec<String> {
     tools.iter().map(|t| t.name.clone()).collect()
+}
+
+/// Every tool this server publishes: what discovery found, falling back to
+/// the bare `allowed_tools` names for a record that was never discovered
+/// against. This is the set an `allowed_tools` narrowing must be a subset of.
+pub fn discovered_tool_names(server: &McpServer) -> Vec<String> {
+    match server.discovered_tools.as_deref() {
+        Some(tools) if !tools.is_empty() => tool_names(tools),
+        _ => server.allowed_tools.clone().unwrap_or_default(),
+    }
+}
+
+/// True when this record's tool list has been deliberately narrowed rather
+/// than merely mirroring what discovery last found.
+///
+/// It decides whether rediscovery may widen the list. A server nobody has
+/// narrowed takes every tool the upstream now publishes, the way it always
+/// has; a narrowed one keeps its allow-list and gains only the record of the
+/// new tool, ready for an operator to tick.
+pub fn is_narrowed(server: &McpServer) -> bool {
+    let Some(allowed) = server.allowed_tools.as_deref() else {
+        return false;
+    };
+    let Some(discovered) = server.discovered_tools.as_deref() else {
+        return false;
+    };
+    // Something the upstream publishes that the allow-list leaves out.
+    discovered.iter().any(|t| !allowed.contains(&t.name))
 }
 
 /// What one generated per-tool grant is called.

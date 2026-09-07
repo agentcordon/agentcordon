@@ -39,6 +39,14 @@ pub struct McpServerSyncEntry {
     pub url: Option<String>,
     #[serde(default)]
     pub tools: Vec<String>,
+    /// True when `tools` is the server's `allowed_tools` allow-list rather
+    /// than "nothing is known yet". The broker probes an upstream's
+    /// `tools/list` for servers it has no tools for; without this flag a
+    /// server narrowed to a subset — or to none — would have its full tool
+    /// list handed straight back to the agent by that probe. Added after the
+    /// rest of the entry, so an older reader sees the bytes it always saw.
+    #[serde(default)]
+    pub tools_are_authoritative: bool,
     pub enabled: bool,
     /// Credential IDs this server needs. Informational for the broker: the
     /// material it may actually hold arrives in `credential_envelopes`.

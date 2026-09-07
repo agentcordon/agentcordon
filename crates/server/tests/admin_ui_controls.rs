@@ -5557,3 +5557,46 @@ async fn the_policy_tester_can_name_the_tool_an_mcp_action_is_about() {
         "the result names what was asked about",
     );
 }
+
+/// An operator who wants an agent to see two of four tools had no supported
+/// way to say so: `allowed_tools` was a discovery projection, the update
+/// endpoint rejected the field, and the Tools tab was a listing with one
+/// action on it (uat S20, G-S20-1).
+#[tokio::test]
+async fn the_mcp_tools_tab_can_narrow_the_tool_list() {
+    let (ctx, cookie) = admin_session().await;
+    let uri = "/mcp-servers/00000000-0000-0000-0000-0000000000ff";
+    let (status, body) = get_page(&ctx.app, uri, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_contains(
+        &body,
+        uri,
+        r#"data-testid="save-allowed-tools""#,
+        "the Tools tab carries a Save for the tool allow-list",
+    );
+    assert_contains(
+        &body,
+        uri,
+        r#"x-model="allowedTools[tool.name]""#,
+        "with a checkbox per discovered tool",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "saveAllowedTools()",
+        "and the Save calls the update endpoint",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "allowed_tools:",
+        "sending the field the endpoint now accepts",
+    );
+    // Narrowing to none is a real choice and the page has to say what it does
+    // rather than look like an accident.
+    assert!(
+        body.contains("no tools at all"),
+        "{uri}: the Tools tab says what an empty allow-list means"
+    );
+}

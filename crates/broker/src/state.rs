@@ -87,8 +87,14 @@ pub struct CachedMcpServer {
     #[allow(dead_code)] // Retained for cache diagnostics
     pub transport: String,
     pub auth_method: String,
-    #[allow(dead_code)] // Populated from sync, used in future tool-level auth
+    /// The tools this workspace may use on this server. When
+    /// `tools_are_authoritative` this is the server's `allowed_tools`
+    /// allow-list, and nothing outside it may be listed or called.
     pub tools: Vec<String>,
+    /// True when `tools` is an allow-list rather than "nothing known yet".
+    /// The tool-list probe skips such a server: probing it would hand the
+    /// agent the upstream's full tool list and undo the narrowing.
+    pub tools_are_authoritative: bool,
     #[allow(dead_code)] // Populated from sync, checked in future filtering
     pub enabled: bool,
     pub credential: Option<CachedCredential>,

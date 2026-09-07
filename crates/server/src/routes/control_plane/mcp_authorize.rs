@@ -103,6 +103,31 @@ pub(super) async fn authorize(
         }
     };
 
+    // The allow-list is checked before Cedar, and independently of it: a tool
+    // outside `allowed_tools` is not exposed to this workspace at all, so
+    // there is no policy question to ask about it. A Cedar permit on the
+    // server as a whole must not reach a tool an operator has excluded.
+    if let Some(allowed) = mcp_server.allowed_tools.as_deref() {
+        if !allowed.iter().any(|t| t == &tool_name) {
+            state
+                .services
+                .mcp_servers
+                .record_tool_call_denied(
+                    &workspace.workspace,
+                    &correlation_id,
+                    Some(&mcp_server),
+                    &server_name,
+                    &tool_name,
+                    ToolCallDenial::ToolNotAllowed,
+                )
+                .await;
+            return Ok(Json(ApiResponse::ok(McpAuthorizeResponse {
+                decision: McpAuthorizeResponse::FORBID.to_string(),
+                correlation_id,
+            })));
+        }
+    }
+
     // Evaluate Cedar policy via the Authz seam.
     let resource = PolicyResource::McpServer {
         id: mcp_server.id.0.to_string(),

@@ -63,13 +63,13 @@ async function auditRows(page: Page, limit = 300): Promise<any[]> {
 }
 
 test.describe('S20 MCP tool gating', () => {
-  test('an MCP server\'s tool list cannot be restricted through the UI or the API [G-S20-1]', async ({
+  test('an MCP server\'s tool list can be narrowed from the Tools tab and the API [G-S20-1]', async ({
     page,
   }, testInfo) => {
     await login(page);
     const id = need('mcpNoneId');
 
-    // The discovered list is what an agent sees, and it is all four tools.
+    // The discovered list is what discovery found, and it is all four tools.
     const detail = await apiFromPage(page, 'GET', `/api/v1/mcp-servers/${id}`);
     expect(detail.status, JSON.stringify(detail.body)).toBe(200);
     expect(detail.body.data.tools.map((t: any) => t.name).sort()).toEqual([
@@ -79,43 +79,63 @@ test.describe('S20 MCP tool gating', () => {
       'whoami',
     ]);
 
-    // The detail page shows them and offers no way to change the set: the
-    // Tools tab is a listing with one action on it, Rediscover.
+    // The Tools tab draws a box per discovered tool and a Save.
     await page.goto(`/mcp-servers/${id}`);
     const toolsPanel = page.locator('#mcp-panel-tools');
     await expect(toolsPanel).toBeVisible();
-    expect(
-      await toolsPanel.locator('input[type="checkbox"], select, textarea').count(),
-      'the Tools tab offers no control to edit the tool list',
-    ).toBe(0);
-    await shot(page, testInfo, 's20-mcp-tools-tab-no-control');
+    await expect(toolsPanel.locator('input[type="checkbox"]')).toHaveCount(4);
+    await expect(toolsPanel.locator('[data-testid="save-allowed-tools"]')).toBeVisible();
+    await shot(page, testInfo, 's20-mcp-tools-tab-allow-list');
 
-    // And the update endpoint refuses the field outright: it takes `name` and
-    // `enabled`, and `deny_unknown_fields` rejects anything else.
-    const attempt = await apiFromPage(page, 'PUT', `/api/v1/mcp-servers/${id}`, {
+    // The update endpoint takes the field, and refuses a tool the server does
+    // not have — naming it, so a typo is not a silent narrowing.
+    const bogus = await apiFromPage(page, 'PUT', `/api/v1/mcp-servers/${id}`, {
+      allowed_tools: ['echo', 'not_a_tool'],
+    });
+    expect(bogus.status, JSON.stringify(bogus.body)).toBe(400);
+    expect(JSON.stringify(bogus.body)).toContain('not_a_tool');
+
+    // This scenario needs every tool available to the rest of its steps, so it
+    // narrows and then restores. The narrowing is what the assertions are
+    // about.
+    const narrowed = await apiFromPage(page, 'PUT', `/api/v1/mcp-servers/${id}`, {
       allowed_tools: [GRANTED_TOOL, DENIED_TOOL],
     });
-    expect(attempt.status, JSON.stringify(attempt.body)).toBeGreaterThanOrEqual(400);
+    expect(narrowed.status, JSON.stringify(narrowed.body)).toBe(200);
+    expect(narrowed.body.data.allowed_tools.sort()).toEqual([GRANTED_TOOL, DENIED_TOOL].sort());
 
-    // The docs agree with the code, which is why this is a product gap and not
-    // a documentation one.
-    const doc = readDoc('docs/granting-mcp-server-access.md');
-    expect(doc).toContain('Update MCP server: `name` and/or `enabled`');
+    // A narrowed tool is gone from what an agent is handed, not merely
+    // refused when it is called.
+    await waitFor(
+      'the broker to sync the narrowed tool list',
+      () => !cli(['mcp-tools']).out.includes('team_notice'),
+      120_000,
+      3000,
+    );
+    const listed = cli(['mcp-tools']);
+    expect(listed.code, listed.out).toBe(0);
+    expect(listed.out).toContain(GRANTED_TOOL);
+    expect(listed.out, 'a narrowed tool is not listed at all').not.toContain('team_notice');
 
-    recordFinding({
-      scenario: 'S20',
-      title:
-        "An MCP server's tool list cannot be narrowed; `allowed_tools` is a discovery projection, not a permission list",
-      doc: 'docs/granting-mcp-server-access.md § "API Reference"',
-      detail:
-        '`allowed_tools` is written only by tool discovery (crates/server/src/services/mcp_servers.rs). ' +
-        'PUT /api/v1/mcp-servers/{id} accepts only `name` and `enabled` and rejects `allowed_tools` ' +
-        '(deny_unknown_fields), and the detail page has no control for it. An operator who wants an agent ' +
-        'to see two of four tools has no supported way to do it: the per-tool Cedar deny below refuses the ' +
-        'CALL but leaves the tool in every listing, so the agent still discovers it and still tries it.',
-      workaround:
-        'Per-tool `mcp_tool_call:<tool>` denies from the Access tab, which is what the rest of this scenario exercises.',
+    // And it is refused if called anyway, with the same denial row a policy
+    // refusal writes.
+    const refused = cli(['mcp-call', SERVER_NAME, 'team_notice']);
+    expect(refused.code, refused.out).not.toBe(0);
+
+    // Restore the full set for the steps that follow.
+    const restored = await apiFromPage(page, 'PUT', `/api/v1/mcp-servers/${id}`, {
+      allowed_tools: ['echo', 'echo_raw_auth', 'team_notice', 'whoami'],
     });
+    expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+    await waitFor(
+      'the broker to sync the restored tool list',
+      () => cli(['mcp-tools']).out.includes('team_notice'),
+      120_000,
+      3000,
+    );
+
+    const doc = readDoc('docs/granting-mcp-server-access.md');
+    expect(doc).toContain('Update MCP server: `name`, `enabled` and/or `allowed_tools`');
   });
 
   test('an admin shares uat-none with the second workspace from the Access tab (docs/granting-mcp-server-access.md § "Sharing with more workspaces")', async ({
@@ -279,8 +299,8 @@ test.describe('S20 MCP tool gating', () => {
     );
     expect(forbidden, 'a policy_evaluated forbid for the denied call').toBeTruthy();
 
-    // The per-tool deny refuses the CALL; it does not hide the tool. The
-    // listing still names it — the gap G-S20-1 records.
+    // The per-tool deny refuses the CALL; it does not hide the tool. Hiding
+    // one is what `allowed_tools` is for, above.
     const listed = cliIn(WS2, ['mcp-tools']);
     expect(listed.code, listed.out).toBe(0);
     expect(listed.out, 'a denied tool is still discoverable').toContain(DENIED_TOOL);

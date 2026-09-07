@@ -148,6 +148,7 @@ async fn seed_cached_token(
         transport: "http".to_string(),
         auth_method: "oauth2".to_string(),
         tools: vec!["search".to_string()],
+        tools_are_authoritative: false,
         enabled: true,
         credential: Some(CachedCredential {
             credential_type: "oauth2_user_authorization".to_string(),

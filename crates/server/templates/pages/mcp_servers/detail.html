@@ -159,17 +159,45 @@
             <div x-show="!server || !server.tools || server.tools.length === 0" class="empty-state empty-state-sm">
                 <p>No tools registered for this server. If the upstream was unreachable when it was installed, use <strong>Rediscover tools</strong>.</p>
             </div>
+            <!--
+              The tick is the allow-list. `allowed_tools` used to be a
+              projection of what discovery found and nothing else, so an
+              operator who wanted an agent to see two of four tools had no
+              supported way to say so: a per-tool Cedar deny refuses the call
+              but leaves the tool in every listing, and the agent discovers it
+              and tries it anyway (uat S20).
+            -->
             <table x-show="server && server.tools && server.tools.length > 0" class="tbl">
-                <thead><tr><th>Name</th><th>Description</th></tr></thead>
+                <thead><tr><th class="mcp-tool-allow-col">Allowed</th><th>Name</th><th>Description</th></tr></thead>
                 <tbody>
                     <template x-for="tool in (server?.tools || [])" :key="tool.name">
                         <tr>
+                            <td class="mcp-tool-allow-col">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" class="checkbox-input"
+                                           x-model="allowedTools[tool.name]"
+                                           :aria-label="'Allow ' + tool.name">
+                                </label>
+                            </td>
                             <td class="mono-id" x-text="tool.name"></td>
                             <td x-text="tool.description || '\u2014'"></td>
                         </tr>
                     </template>
                 </tbody>
             </table>
+            <div x-show="server && server.tools && server.tools.length > 0" class="mcp-tool-allow-actions">
+                <p class="text-sm opacity-muted">Unticked tools are not listed to an agent and cannot be called, whatever a policy says. Untick every tool to expose no tools at all.</p>
+                <div class="inline-actions-group">
+                    <button class="btn btn-secondary btn-sm" @click="resetAllowedTools()"
+                            :disabled="savingAllowedTools || !allowedToolsDirty">Reset</button>
+                    <button class="btn btn-primary btn-sm" @click="saveAllowedTools()"
+                            :disabled="savingAllowedTools || !allowedToolsDirty"
+                            data-testid="save-allowed-tools">
+                        <span x-show="savingAllowedTools" class="spinner" aria-hidden="true"></span>
+                        <span x-text="savingAllowedTools ? 'Saving...' : 'Save allowed tools'"></span>
+                    </button>
+                </div>
+            </div>
             </div>
 
             <!-- Access Tab: two sections, one question -->
@@ -301,6 +329,18 @@
 <style>
 /* MCP detail page — extracted from inline styles */
 .mcp-detail-card { margin-bottom: 24px; }
+
+/* Tools tab — the allow-list column and its footer */
+.mcp-tool-allow-col { width: 72px; text-align: center; }
+.mcp-tool-allow-col .checkbox-label { justify-content: center; margin: 0; }
+.mcp-tool-allow-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+}
 .mcp-tabs-container { margin-bottom: 24px; }
 
 /* Permissions sections */
@@ -397,6 +437,9 @@ function mcpServerDetailPage() {
         shareError: '',
         rediscovering: false,
         generatingPolicies: false,
+        /* The Tools tab's allow-list, `{ toolName: boolean }`. */
+        allowedTools: {},
+        savingAllowedTools: false,
         async init() {
             try {
                 const resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}');
@@ -408,6 +451,7 @@ function mcpServerDetailPage() {
                     if (this.server.tools) {
                         this.server.tools.forEach(t => { this.grantTools[t.name] = false; });
                     }
+                    this.resetAllowedTools();
                 } else if (resp.status === 403) {
                     this.accessDenied = true;
                 } else if (resp.status === 404) {
@@ -435,8 +479,73 @@ function mcpServerDetailPage() {
                             if (!(t.name in this.grantTools)) this.grantTools[t.name] = false;
                         });
                     }
+                    this.resetAllowedTools();
                 }
             } catch(e) { showToast('Failed to refresh MCP server', 'error'); }
+        },
+
+        /*
+         * The boxes, as the record has them. `allowed_tools` absent means
+         * nothing has been narrowed, which is every tool ticked; an empty
+         * list means the operator chose no tools at all, so the two cases
+         * must not collapse into each other.
+         */
+        resetAllowedTools() {
+            var allowed = this.server && this.server.allowed_tools;
+            var next = {};
+            ((this.server && this.server.tools) || []).forEach(function(t) {
+                next[t.name] = allowed ? allowed.indexOf(t.name) >= 0 : true;
+            });
+            this.allowedTools = next;
+        },
+
+        /* What the boxes say, in the record's own order. */
+        get allowedToolNames() {
+            var boxes = this.allowedTools;
+            return ((this.server && this.server.tools) || [])
+                .map(function(t) { return t.name; })
+                .filter(function(name) { return !!boxes[name]; });
+        },
+
+        /* Whether Save would change anything — the control is off until it
+           would, so the page never offers a no-op. */
+        get allowedToolsDirty() {
+            var current = (this.server && this.server.allowed_tools) ||
+                          ((this.server && this.server.tools) || []).map(function(t) { return t.name; });
+            var next = this.allowedToolNames;
+            if (current.length !== next.length) return true;
+            for (var i = 0; i < next.length; i++) {
+                if (current.indexOf(next[i]) < 0) return true;
+            }
+            return false;
+        },
+
+        /*
+         * Narrowing takes effect on the next broker sync: an unticked tool
+         * stops being listed to an agent and its calls are refused before any
+         * policy is consulted.
+         */
+        async saveAllowedTools() {
+            if (this.savingAllowedTools) return;
+            this.savingAllowedTools = true;
+            var next = this.allowedToolNames;
+            try {
+                var resp = await AC.fetch('/api/v1/mcp-servers/{{ server_id }}', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+                    body: JSON.stringify({ allowed_tools: next })
+                });
+                if (!resp.ok) {
+                    await AC.reportError(resp, 'Failed to save the allowed tools');
+                } else {
+                    showToast(next.length === 0
+                        ? 'This server now exposes no tools'
+                        : (next.length === 1 ? '1 tool allowed' : next.length + ' tools allowed'),
+                        'success');
+                    await this.refreshServer();
+                }
+            } catch(e) { showToast('Failed to save the allowed tools', 'error'); }
+            this.savingAllowedTools = false;
         },
         /**
          * Re-run tool discovery against the upstream. Reports what came back,

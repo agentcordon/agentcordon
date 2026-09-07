@@ -17,6 +17,8 @@ use agent_cordon_core::domain::mcp::{
 use agent_cordon_core::domain::user::UserRole;
 use agent_cordon_core::domain::workspace::WorkspaceId;
 use agent_cordon_core::storage::{AuditFilter, Store};
+use wiremock::matchers::{body_string_contains, method as wm_method};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::common::*;
 use agent_cordon_server::test_helpers::{TestAppBuilder, TestContext};
@@ -599,5 +601,428 @@ async fn the_tester_route_answers_per_tool_under_a_per_tool_deny() {
         body["data"]["decision"], "forbid",
         "the denied tool is refused, and the difference is the tool name alone: {}",
         body
+    );
+}
+
+// ===========================================================================
+// G-S20-1 — an MCP server's tool list can be narrowed
+// ===========================================================================
+
+async fn put_server(
+    ctx: &TestContext,
+    cookie: &str,
+    csrf: &str,
+    id: &McpServerId,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    send_json(
+        &ctx.app,
+        Method::PUT,
+        &format!("/api/v1/mcp-servers/{}", id.0),
+        None,
+        Some(cookie),
+        Some(csrf),
+        Some(body),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn allowed_tools_narrows_the_set_an_agent_may_call() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let ws = ctx.admin_agent.as_ref().unwrap().id.clone();
+    let id = create_bound_mcp_server(&*ctx.store, &ws, "uat-none").await;
+    let (cookie, csrf) = admin_session(&ctx, "s20-narrow").await;
+
+    let (status, body) = put_server(
+        &ctx,
+        &cookie,
+        &csrf,
+        &id,
+        json!({ "allowed_tools": ["echo"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "PUT allowed_tools: {}", body);
+    assert_eq!(
+        body["data"]["allowed_tools"],
+        json!(["echo"]),
+        "the response reports the narrowed set: {}",
+        body
+    );
+
+    // The detail endpoint keeps reporting every discovered tool — the Tools
+    // tab has to draw a box per tool, ticked or not — and says which are
+    // allowed alongside.
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::GET,
+        &format!("/api/v1/mcp-servers/{}", id.0),
+        None,
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    let names: Vec<&str> = body["data"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["echo", "whoami", "team_notice"],
+        "discovery's list is unchanged: {}",
+        body
+    );
+    assert_eq!(body["data"]["allowed_tools"], json!(["echo"]), "{}", body);
+}
+
+#[tokio::test]
+async fn allowed_tools_refuses_a_tool_the_server_does_not_have() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let ws = ctx.admin_agent.as_ref().unwrap().id.clone();
+    let id = create_bound_mcp_server(&*ctx.store, &ws, "uat-none").await;
+    let (cookie, csrf) = admin_session(&ctx, "s20-narrow-bad").await;
+
+    let (status, body) = put_server(
+        &ctx,
+        &cookie,
+        &csrf,
+        &id,
+        json!({ "allowed_tools": ["echo", "not_a_tool", "also_missing"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", body);
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("not_a_tool") && message.contains("also_missing"),
+        "the refusal names every unknown tool: {}",
+        body
+    );
+
+    let server = ctx
+        .store
+        .get_mcp_server(&id)
+        .await
+        .expect("load")
+        .expect("exists");
+    assert_eq!(
+        server.allowed_tools,
+        Some(vec![
+            "echo".to_string(),
+            "whoami".to_string(),
+            "team_notice".to_string()
+        ]),
+        "a refused narrowing changes nothing"
+    );
+}
+
+#[tokio::test]
+async fn allowed_tools_accepts_an_empty_list_meaning_none() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let ws = ctx.admin_agent.as_ref().unwrap().id.clone();
+    let id = create_bound_mcp_server(&*ctx.store, &ws, "uat-none").await;
+    let (cookie, csrf) = admin_session(&ctx, "s20-narrow-none").await;
+
+    let (status, body) =
+        put_server(&ctx, &cookie, &csrf, &id, json!({ "allowed_tools": [] })).await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    assert_eq!(body["data"]["allowed_tools"], json!([]), "{}", body);
+}
+
+#[tokio::test]
+async fn narrowing_the_tool_list_is_audited() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let ws = ctx.admin_agent.as_ref().unwrap().id.clone();
+    let id = create_bound_mcp_server(&*ctx.store, &ws, "uat-none").await;
+    let (cookie, csrf) = admin_session(&ctx, "s20-narrow-audit").await;
+
+    let (status, body) = put_server(
+        &ctx,
+        &cookie,
+        &csrf,
+        &id,
+        json!({ "allowed_tools": ["echo"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+
+    let updated = audit_events_of(&ctx, "mcp_server_updated").await;
+    let row = updated
+        .iter()
+        .find(|e| e.metadata.get("allowed_tools_changed") == Some(&json!(true)))
+        .unwrap_or_else(|| {
+            panic!(
+                "the narrowing is audited; rows: {:?}",
+                updated
+                    .iter()
+                    .map(|e| e.metadata.clone())
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        row.metadata.get("allowed_tools"),
+        Some(&json!(["echo"])),
+        "the row names the set it was narrowed to: {:?}",
+        row.metadata
+    );
+}
+
+#[tokio::test]
+async fn workspace_sync_carries_only_the_allowed_tools() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let ws = ctx.admin_agent.as_ref().unwrap().id.clone();
+    let id = create_bound_mcp_server(&*ctx.store, &ws, "uat-none").await;
+    let (cookie, csrf) = admin_session(&ctx, "s20-narrow-sync").await;
+    let (status, _) = put_server(
+        &ctx,
+        &cookie,
+        &csrf,
+        &id,
+        json!({ "allowed_tools": ["echo"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let jwt = ctx_admin_jwt(&ctx).await;
+
+    // What `agentcordon mcp-tools` and `agentcordon_mcp_tools` are built from.
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::GET,
+        "/api/v1/workspaces/mcp-tools",
+        Some(&jwt),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    let tools: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["server"] == "uat-none")
+        .map(|t| t["tool"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tools,
+        vec!["echo"],
+        "a narrowed server hands the broker only what it allows: {}",
+        body
+    );
+    // The narrowing must not cost the descriptions discovery captured.
+    let echo = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["tool"] == "echo")
+        .unwrap();
+    assert_eq!(echo["description"], "the echo tool", "{}", body);
+
+    // And the server sync, which is what the broker caches.
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::GET,
+        "/api/v1/workspaces/mcp-servers",
+        Some(&jwt),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    let entry = body["data"]["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "uat-none")
+        .expect("the bound server");
+    assert_eq!(entry["tools"], json!(["echo"]), "{}", body);
+    assert_eq!(
+        entry["tools_are_authoritative"],
+        json!(true),
+        "the broker must not re-widen a narrowed list by probing the upstream: {}",
+        body
+    );
+}
+
+#[tokio::test]
+async fn a_tool_outside_allowed_tools_is_refused_and_audited() {
+    let ctx = TestAppBuilder::new().with_admin().build().await;
+    let ws = ctx.admin_agent.as_ref().unwrap().id.clone();
+    let id = create_bound_mcp_server(&*ctx.store, &ws, "uat-none").await;
+    let (cookie, csrf) = admin_session(&ctx, "s20-narrow-call").await;
+    let (status, _) = put_server(
+        &ctx,
+        &cookie,
+        &csrf,
+        &id,
+        json!({ "allowed_tools": ["echo"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let jwt = ctx_admin_jwt(&ctx).await;
+
+    let (status, body) = authorize(&ctx, &jwt, "uat-none", "echo").await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    assert_eq!(body["data"]["decision"], "permit", "{}", body);
+
+    let (status, body) = authorize(&ctx, &jwt, "uat-none", "whoami").await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    assert_eq!(
+        body["data"]["decision"], "forbid",
+        "a tool outside the allow-list is refused however permissive the policy is: {}",
+        body
+    );
+
+    let denied = audit_events_of(&ctx, "mcp_tool_call_denied").await;
+    let row = denied
+        .iter()
+        .find(|e| e.metadata.get("tool_name") == Some(&json!("whoami")))
+        .expect("the refusal is audited the same way every other one is");
+    assert_eq!(
+        row.metadata.get("reason").and_then(|v| v.as_str()),
+        Some("tool_not_allowed"),
+        "{:?}",
+        row.metadata
+    );
+}
+
+/// A `tools/list` upstream that publishes `tools`.
+async fn mock_upstream(tools: &[&str]) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(wm_method("POST"))
+        .and(body_string_contains("\"method\":\"initialize\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "mock-mcp", "version": "1.0" },
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(wm_method("POST"))
+        .and(body_string_contains("notifications/initialized"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+    let listed: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|n| json!({ "name": n, "description": format!("the {n} tool"), "inputSchema": { "type": "object" } }))
+        .collect();
+    Mock::given(wm_method("POST"))
+        .and(body_string_contains("\"method\":\"tools/list\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 2, "result": { "tools": listed }
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+/// A context whose `uat-none` server points at a live `tools/list` upstream.
+async fn rediscoverable_ctx(
+    username: &str,
+    upstream: &MockServer,
+) -> (TestContext, String, String, McpServerId) {
+    let ctx = TestAppBuilder::new()
+        .with_admin()
+        .with_config(|c| c.proxy_allow_loopback = true)
+        .build()
+        .await;
+    let ws = ctx.admin_agent.as_ref().unwrap().id.clone();
+    let id = create_bound_mcp_server(&*ctx.store, &ws, "uat-none").await;
+    let mut server = ctx
+        .store
+        .get_mcp_server(&id)
+        .await
+        .expect("load")
+        .expect("exists");
+    server.upstream_url = upstream.uri();
+    ctx.store
+        .update_mcp_server(&server)
+        .await
+        .expect("point at the upstream");
+    let (cookie, csrf) = admin_session(&ctx, username).await;
+    (ctx, cookie, csrf, id)
+}
+
+async fn rediscover(
+    ctx: &TestContext,
+    cookie: &str,
+    csrf: &str,
+    id: &McpServerId,
+) -> (StatusCode, serde_json::Value) {
+    send_json(
+        &ctx.app,
+        Method::POST,
+        &format!("/api/v1/mcp-servers/{}/discover-tools", id.0),
+        None,
+        Some(cookie),
+        Some(csrf),
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn rediscovery_does_not_silently_re_widen_a_narrowed_list() {
+    let upstream = mock_upstream(&["echo", "whoami", "team_notice", "brand_new"]).await;
+    let (ctx, cookie, csrf, id) = rediscoverable_ctx("s20-rediscover-narrow", &upstream).await;
+    let (status, _) = put_server(
+        &ctx,
+        &cookie,
+        &csrf,
+        &id,
+        json!({ "allowed_tools": ["echo"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = rediscover(&ctx, &cookie, &csrf, &id).await;
+    assert_eq!(status, StatusCode::OK, "discover-tools: {}", body);
+
+    let after = ctx
+        .store
+        .get_mcp_server(&id)
+        .await
+        .expect("load")
+        .expect("exists");
+    assert_eq!(
+        after.allowed_tools,
+        Some(vec!["echo".to_string()]),
+        "a narrowing survives rediscovery"
+    );
+    assert_eq!(
+        after.discovered_tools.as_ref().map(|t| t.len()),
+        Some(4),
+        "and the new tool is on the record, ready to be ticked"
+    );
+}
+
+#[tokio::test]
+async fn rediscovery_still_widens_a_server_that_was_never_narrowed() {
+    let upstream = mock_upstream(&["echo", "whoami", "team_notice", "brand_new"]).await;
+    let (ctx, cookie, csrf, id) = rediscoverable_ctx("s20-rediscover-wide", &upstream).await;
+
+    let (status, body) = rediscover(&ctx, &cookie, &csrf, &id).await;
+    assert_eq!(status, StatusCode::OK, "discover-tools: {}", body);
+
+    let after = ctx
+        .store
+        .get_mcp_server(&id)
+        .await
+        .expect("load")
+        .expect("exists");
+    assert_eq!(
+        after.allowed_tools.as_ref().map(|t| t.len()),
+        Some(4),
+        "an unnarrowed server takes everything discovery found"
     );
 }

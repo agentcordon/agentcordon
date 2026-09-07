@@ -407,8 +407,15 @@ pub async fn list_tools(
             servers
                 .iter()
                 .filter(|cached| {
-                    // Skip servers that already have tools in the server response
-                    !all_tools.iter().any(|t| t.server == cached.name)
+                    // Skip servers that already have tools in the server
+                    // response, and servers whose tool list the control plane
+                    // says is authoritative: that list is an `allowed_tools`
+                    // allow-list, and probing the upstream would hand the
+                    // agent every tool the operator narrowed away — including
+                    // for a server narrowed to no tools at all, which is
+                    // exactly the case that reaches here with nothing listed.
+                    !cached.tools_are_authoritative
+                        && !all_tools.iter().any(|t| t.server == cached.name)
                 })
                 .filter_map(|cached| {
                     // Only probe servers with credentials and non-empty URLs
