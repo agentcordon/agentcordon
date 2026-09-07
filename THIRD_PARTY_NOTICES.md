@@ -1,6 +1,7 @@
 # Third-party notices
 
-AgentCordon itself is MIT-licensed (see [LICENSE](LICENSE)). This file records
+AgentCordon itself is licensed under the GNU Affero General Public License
+v3.0 only (`AGPL-3.0-only`; see [LICENSE](LICENSE)). This file records
 the third-party material that ships **inside** the binaries and the container
 image but does not come from Cargo.
 

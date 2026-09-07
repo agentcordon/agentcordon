@@ -28,6 +28,11 @@ ignore = [
 
 [licenses]
 version = 2
+# AgentCordon's own five crates are `AGPL-3.0-only` and `publish = false`.
+# `private.ignore` takes them out of this check: the allow-list below is
+# about what we *depend on*, not what we ship under. Adding AGPL-3.0-only to
+# `allow` instead would also let an AGPL dependency in unnoticed.
+private = { ignore = true }
 # Every SPDX identifier below is one that some crate in Cargo.lock actually
 # resolves to. Keep the list to what the tree needs: a licence that stops
 # appearing should be removed rather than left as a standing allowance.

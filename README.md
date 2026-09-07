@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/agentcordon/agentcordon/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/agentcordon/agentcordon/ci.yml?branch=main&label=CI"></a>
   <a href="https://github.com/agentcordon/agentcordon/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/agentcordon/agentcordon"></a>
-  <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-GPL--3.0-blue"></a>
+  <a href="LICENSE"><img alt="Licence: AGPL-3.0-only" src="https://img.shields.io/badge/licence-AGPL--3.0--only-blue"></a>
 </p>
 
 **AgentCordon is a self-hosted credential broker for AI agents.** An agent asks for an API
@@ -238,4 +238,8 @@ cargo fmt --all
 
 ## Licence
 
-GNU General Public License v3.0. See [`LICENSE`](LICENSE).
+GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [`LICENSE`](LICENSE),
+and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the material that ships inside the
+binaries but is not ours. Contributions are accepted under the
+[Contributor Licence Agreement](CLA.md). "AgentCordon" and its logo are trademarks; see
+[`TRADEMARK.md`](TRADEMARK.md).

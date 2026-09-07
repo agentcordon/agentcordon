@@ -57,7 +57,7 @@ LABEL org.opencontainers.image.title="AgentCordon" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.source="https://github.com/agentcordon/agentcordon" \
       org.opencontainers.image.url="https://agentcordon.dev" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="AGPL-3.0-only"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

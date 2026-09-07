@@ -5,7 +5,7 @@ members = ["crates/identity", "crates/core", "crates/server", "crates/broker", "
 [workspace.package]
 version = "0.4.0"
 edition = "2021"
-license = "MIT"
+license = "AGPL-3.0-only"
 homepage = "https://agentcordon.dev"
 repository = "https://github.com/agentcordon/agentcordon"
 
