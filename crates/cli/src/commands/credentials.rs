@@ -94,6 +94,23 @@ impl Credential {
             .map(str::trim)
             .filter(|p| !p.is_empty())
     }
+
+    /// What an agent is told about this credential.
+    ///
+    /// The five fields it can act on: the name to call it by, what it is
+    /// for, and the fence and expiry that decide whether it is the right one
+    /// for a target. The vault, the scopes and the id are the control
+    /// plane's bookkeeping, and `mcp-serve` publishes this over a channel
+    /// whose whole cost is tokens, so they are left out rather than carried.
+    pub(crate) fn agent_view(&self) -> serde_json::Value {
+        serde_json::json!({
+            "name": self.name,
+            "service": self.service,
+            "credential_type": self.credential_type,
+            "allowed_url_pattern": self.fence(),
+            "expires_at": self.expires_at,
+        })
+    }
 }
 
 /// One credential `--auto` could have chosen, as the refusal names it.

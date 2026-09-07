@@ -180,6 +180,7 @@ async fn build_cached_servers(
             transport: entry.transport,
             auth_method: entry.auth_method,
             tools: entry.tools,
+            tools_are_authoritative: entry.tools_are_authoritative,
             enabled: entry.enabled,
             credential,
             last_synced: now,

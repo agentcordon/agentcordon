@@ -101,6 +101,19 @@ path. It is the *whole* integration: `init` writes no `AGENTS.md` and no `CLAUDE
 (ADR-0013). The skill deliberately does not carry the workspace identity — it tells the agent
 to run `agentcordon status`.
 
+**`mcp-serve`** — the CLI serving *itself* as an MCP server over stdio, so a runtime gets
+AgentCordon as native tools instead of prose telling it to shell out (ADR-0013's third tier).
+`crates/cli/src/commands/mcp_serve/`, started by the runtime, never by hand. It publishes six
+fixed tools — `agentcordon_status`, `agentcordon_credentials`, `agentcordon_proxy`,
+`agentcordon_mcp_servers`, `agentcordon_mcp_tools`, `agentcordon_mcp_call` — because an MCP
+client loads every tool's schema into the model's context at session start and a fixed set
+costs the same for a workspace with one upstream and one with twenty; `--expose <server>`
+opts into re-exporting one server's tools as `<server>__<tool>`. Each tool is the same
+**signed** broker route the matching command uses, so the surface is in the CLI and not on
+the broker (a runtime's MCP client cannot sign; ADR-0008, ADR-0006).
+*Beware:* an **MCP server** elsewhere in this file is an upstream AgentCordon calls *out* to;
+this is AgentCordon answering a runtime that calls *in*.
+
 **Workspace key file** — `.agentcordon/workspace.key`, the 32-byte Ed25519 seed in hex, mode
 0600 inside a 0700 directory, created with `O_EXCL`; `.agentcordon/workspace.pub` beside it.
 `crates/identity/src/keyfile.rs`. Written by `agentcordon init`.
@@ -549,6 +562,5 @@ MCP authorize response returns in place of policy reasons.
 | vault (as a name string) | **vault id** | A vault is a row; the name is a display label (ADR-0002). |
 | MCP OAuth app | **OAuth provider client** | Old Settings label, no longer in the UI. |
 | Postgres, `AGTCRDN_DB_TYPE` | **SQLite**, `AGTCRDN_DB_PATH` | One backend; setting the old variables refuses boot (ADR-0001). |
-| `mcp-serve`, stdio MCP | — | No such subcommand and no stdio transport. |
 | "Security" (the nav item) | **Policies** | Only the URL says `/security`. |
 | `delegated_use` (as an action) | `delegated_use` **permission**, `vend_credential` **action** | The permission name maps to the action. |

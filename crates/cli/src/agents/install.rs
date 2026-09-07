@@ -37,6 +37,9 @@ pub struct Installed {
     pub action: Action,
     /// Display names of the selected runtimes this file serves.
     pub serves: Vec<&'static str>,
+    /// Anything the verb does not say — that a merge re-serialised the file,
+    /// say. Printed under the path.
+    pub detail: Option<String>,
 }
 
 /// The line `.aider.conf.yml` needs, and the file it points at.
@@ -130,6 +133,7 @@ fn write_skill(
         path: rel,
         action,
         serves,
+        detail: None,
     })
 }
 
@@ -152,6 +156,7 @@ fn write_aider_conf(root: &Path, serves: Vec<&'static str>) -> Result<Installed,
             path: AIDER_CONF.into(),
             action: Action::Created,
             serves,
+            detail: None,
         });
     };
 
@@ -174,6 +179,7 @@ fn write_aider_conf(root: &Path, serves: Vec<&'static str>) -> Result<Installed,
             path: AIDER_CONF.into(),
             action,
             serves,
+            detail: None,
         });
     }
 
@@ -183,11 +189,12 @@ fn write_aider_conf(root: &Path, serves: Vec<&'static str>) -> Result<Installed,
             action: Action::Skipped {
                 reason: format!(
                     "{AIDER_CONF} already has a `read:` key; a YAML mapping may only have one, \
-                     so nothing was changed"
+                     so nothing was changed. Add this under it:"
                 ),
-                snippet: format!("  - {PORTABLE_SKILL_DIR}/{SKILL_NAME}/SKILL.md"),
+                snippet: format!("- {PORTABLE_SKILL_DIR}/{SKILL_NAME}/SKILL.md"),
             },
             serves,
+            detail: None,
         });
     }
 
@@ -202,6 +209,7 @@ fn write_aider_conf(root: &Path, serves: Vec<&'static str>) -> Result<Installed,
         path: AIDER_CONF.into(),
         action: Action::Updated,
         serves,
+        detail: None,
     })
 }
 
@@ -216,7 +224,7 @@ fn has_read_key(yaml: &str) -> bool {
 }
 
 /// Join a `/`-separated workspace-relative path onto `root`.
-fn join_rel(root: &Path, rel: &str) -> PathBuf {
+pub(crate) fn join_rel(root: &Path, rel: &str) -> PathBuf {
     let mut p = root.to_path_buf();
     for segment in rel.split('/') {
         p.push(segment);

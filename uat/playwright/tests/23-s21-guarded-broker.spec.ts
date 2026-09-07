@@ -6,7 +6,7 @@ import { readDoc } from './helpers/docs';
 import { writeState } from './helpers/state';
 
 /**
- * S18 — The SSRF guard as the broker ships it, and the one thing that
+ * S21 — The SSRF guard as the broker ships it, and the one thing that
  * overrides it.
  *
  * Every other scenario runs its CLI half against a broker started with
@@ -34,7 +34,7 @@ function cliGuarded(args: string[]): ReturnType<typeof cli> {
   return docker(['exec', '-w', '/home/uat/workspace', UAT.cliGuarded, 'agentcordon', ...args]);
 }
 
-test.describe('S18 SSRF guard on, credential pinned to the host', () => {
+test.describe('S21 SSRF guard on, credential pinned to the host', () => {
   test('the guarded broker was started without --proxy-allow-loopback', async () => {
     const inspect = docker(['inspect', '--format', '{{json .Config.Cmd}}', UAT.brokerGuarded]);
     expect(inspect.code, inspect.out).toBe(0);
@@ -79,7 +79,7 @@ test.describe('S18 SSRF guard on, credential pinned to the host', () => {
     await page.goto(`/activate?user_code=${userCode}`);
     await expect(page.locator('p.activate-desc strong')).toHaveText(UAT.workspace3Name);
     await expect(page.locator('p.activate-keyhash code')).toHaveText(`sha256:${pkHash}`);
-    await shot(page, testInfo, 's18-activate-guarded-workspace');
+    await shot(page, testInfo, 's21-activate-guarded-workspace');
     await page.click('button.btn-approve');
     await page.waitForURL('**/activate/success', { timeout: 30_000 });
 
@@ -133,7 +133,7 @@ test.describe('S18 SSRF guard on, credential pinned to the host', () => {
     // this credential vouches for no host.
     await expect(page.locator('#cred-url-pattern')).toHaveValue('');
     await expect(page.locator('.form-hint-warn')).toBeVisible();
-    await shot(page, testInfo, 's18-unfenced-credential-form');
+    await shot(page, testInfo, 's21-unfenced-credential-form');
 
     const createResponse = page.waitForResponse(
       (r) => r.url().endsWith('/api/v1/credentials') && r.request().method() === 'POST',

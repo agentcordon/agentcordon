@@ -75,6 +75,16 @@ pub(crate) struct UpdateMcpServerRequest {
     /// every `mcp_tool_call`/`mcp_list_tools`, and workspace sync stops
     /// handing the server to brokers. Absent means "leave as is".
     pub enabled: Option<bool>,
+    /// Narrow the tools this server exposes to a subset of what discovery
+    /// found. Every name must be one of `discovered_tools`; an unknown name
+    /// is a 400 that says which. An empty list means no tools at all, which
+    /// is a real choice and not a mistake. Absent means "leave as is".
+    ///
+    /// This is the allow-list a per-tool Cedar deny cannot be: a denied tool
+    /// is still listed, still discovered and still attempted, while a tool
+    /// outside `allowed_tools` never reaches the agent's listing at all and
+    /// is refused before Cedar is consulted.
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -251,11 +261,3 @@ pub(crate) struct InstalledWorkspaceInfo {
     pub id: String,
     pub name: String,
 }
-
-// --- Helpers ---
-
-/// Validate that a string is safe for use as a Cedar policy identifier.
-///
-/// Only allows alphanumeric characters, hyphens, underscores, and dots.
-/// This prevents Cedar policy injection via crafted tool or tag names.
-pub(crate) use crate::services::mcp_servers::is_safe_identifier;

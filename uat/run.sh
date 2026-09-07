@@ -336,7 +336,7 @@ docker exec "$UAT_CLI" curl -fsS http://127.0.0.1:9876/health > "$ARTIFACTS/brok
   echo "broker never came up" >&2; docker logs "$UAT_BROKER" | tail -40; exit 1; }
 
 # A second broker the way it ships: no --proxy-allow-loopback, so the SSRF
-# guard is on. S18 enrolls a workspace through it and proves that a credential
+# guard is on. S21 enrolls a workspace through it and proves that a credential
 # fenced to one literal host (http://upstream:8080/*) is forwarded to that
 # host's private address without the flag, and that an unfenced credential is
 # still refused (ADR-0014). The main broker keeps the flag because the MCP

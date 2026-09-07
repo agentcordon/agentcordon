@@ -45,8 +45,20 @@ The `init` command also:
 - Installs the AgentCordon [Agent Skill](https://agentskills.io/specification) into the skill directory each selected agent runtime reads: always `.agents/skills/agentcordon/SKILL.md`, plus `.claude/skills/` for Claude Code and Cline and `.kiro/skills/` for Kiro. Which runtimes is asked on a terminal, taken from `--agent`, or detected; the answer is remembered in `.agentcordon/agents.toml`. See [`agentcordon init`](cli-reference.md#agentcordon-init) and [ADR-0013](adr/0013-init-installs-the-agentcordon-skill-per-runtime.md).
 - **No instruction file carries the workspace identity.** It is derived from the key and would go stale on regeneration; the skill tells the agent to run `agentcordon status`.
 
-`init` does **not** touch `.mcp.json`. MCP servers are reached through the broker
-(`agentcordon mcp-servers`, `mcp-tools`, `mcp-call`), not through a native MCP entry.
+- Registers the CLI as an **MCP server** with each selected runtime, so the same operations
+  are available as native tools: `.mcp.json` for Claude Code, and the equivalent file for the
+  others (`.codex/config.toml`, `opencode.json`, `.vscode/mcp.json`, `.cursor/mcp.json`, and
+  so on). Every entry spawns the same thing — `agentcordon mcp-serve`, by bare name, so the
+  file stays portable across machines. A structured file that already exists is left alone
+  unless it parses and has no `agentcordon` key; where a runtime only takes a user-level
+  registration, `init` prints the command instead of writing anything.
+  `--no-mcp` skips this and installs the skill only.
+
+The two surfaces are the same operations and the same permissions
+([ADR-0015](adr/0015-mcp-server-surface-is-the-cli-over-stdio.md)). The skill costs nothing
+until an agent triggers it and then one shell turn per call; the MCP registration costs a
+fixed set of tool schemas in every session and then a native call with no shell round trip.
+Having both installed is the default because different runtimes prefer different ones.
 
 > **Note:** The keypair is generated once and reused across subsequent registrations. Running `init` again is idempotent.
 
@@ -238,8 +250,8 @@ One command, from the project directory:
 agentcordon init
 ```
 
-It generates the keypair, installs the AgentCordon skill for the runtimes you use, and then
-enrolls: it starts a broker if none is running, prints the four-word code and the activation
+It generates the keypair, installs the AgentCordon skill for the runtimes you use, registers
+`agentcordon mcp-serve` with the ones that read an MCP config, and then enrolls: it starts a broker if none is running, prints the four-word code and the activation
 URL, and polls until you approve. It ends on two lines:
 
 ```
@@ -313,7 +325,7 @@ After enrollment, state is stored in three locations:
 | `workspace.key` | Ed25519 private key seed (hex, mode 0600) |
 | `workspace.pub` | Ed25519 public key (hex, mode 0644) |
 | `broker.fingerprint` | The pinned broker key (hex, mode 0600) |
-| `agents.toml` | The agent runtimes `init` installed the skill for |
+| `agents.toml` | The agent runtimes `init` installed the skill and the MCP registration for |
 
 ### CLI User Config (`~/.agentcordon/config.toml`)
 

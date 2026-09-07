@@ -61,6 +61,21 @@ pub struct ProvisionOutcome {
     pub tool_discovery_error: Option<String>,
 }
 
+/// Why one `mcp_tool_call` was refused. The variant names the audit row's
+/// `reason`, so an operator reading the log can tell a per-tool Deny from a
+/// typo'd server name without re-deriving it from the Cedar reasons.
+pub enum ToolCallDenial<'a> {
+    /// No server of that name resolves for this workspace's owner.
+    UnknownServer,
+    /// The server exists and is switched off — the documented
+    /// immediate-revocation path, not a missing registration.
+    ServerDisabled,
+    /// The tool is not in the server's `allowed_tools` allow-list.
+    ToolNotAllowed,
+    /// Cedar said forbid. Carries the contributing reasons.
+    Policy(&'a [String]),
+}
+
 /// Input for [`McpServerService::provision`].
 pub struct ProvisionInput {
     pub workspace_id: WorkspaceId,
@@ -146,12 +161,45 @@ impl McpServerService {
         id: &McpServerId,
         name: Option<String>,
         enabled: Option<bool>,
+        allowed_tools: Option<Vec<String>>,
     ) -> Result<McpServer, ApiError> {
         let (mut server, policy_decision) = self.load_and_authorize(auth, id).await?;
 
         let enabled_changed = enabled.is_some_and(|e| e != server.enabled);
         if let Some(enabled) = enabled {
             server.enabled = enabled;
+        }
+
+        let allowed_tools_changed = allowed_tools
+            .as_ref()
+            .is_some_and(|t| Some(t) != server.allowed_tools.as_ref());
+        if let Some(requested) = allowed_tools {
+            // Every name has to be one the server actually publishes.
+            // Refusing the whole request, naming each stray, is what keeps a
+            // typo from silently narrowing an agent's access to nothing.
+            let known = discovered_tool_names(&server);
+            let unknown: Vec<&str> = requested
+                .iter()
+                .filter(|t| !known.iter().any(|k| k == *t))
+                .map(String::as_str)
+                .collect();
+            if !unknown.is_empty() {
+                return Err(ApiError::BadRequest(format!(
+                    "MCP server '{}' has no tool named {}. Its tools are: {}",
+                    server.name,
+                    unknown
+                        .iter()
+                        .map(|t| format!("'{t}'"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if known.is_empty() {
+                        "none — run tool discovery first".to_string()
+                    } else {
+                        known.join(", ")
+                    }
+                )));
+            }
+            server.allowed_tools = Some(requested);
         }
 
         if let Some(name) = name {
@@ -183,6 +231,8 @@ impl McpServerService {
                 "server_name": server.name,
                 "enabled": server.enabled,
                 "enabled_changed": enabled_changed,
+                "allowed_tools": server.allowed_tools,
+                "allowed_tools_changed": allowed_tools_changed,
             }))
             .build();
         write_audit(&*self.store, &event).await;
@@ -525,7 +575,24 @@ impl McpServerService {
         }
         let count = tools.len();
         let mut updated = server.clone();
-        updated.allowed_tools = Some(tools.iter().map(|t| t.name.clone()).collect());
+        // A record nobody has narrowed mirrors what the upstream publishes.
+        // A narrowed one keeps its allow-list — rediscovery must not undo an
+        // operator's decision — and gains only the record of the new tools,
+        // which the Tools tab then offers as unticked boxes.
+        if is_narrowed(server) {
+            let found = tool_names(&tools);
+            updated.allowed_tools = Some(
+                server
+                    .allowed_tools
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|name| found.contains(name))
+                    .collect(),
+            );
+        } else {
+            updated.allowed_tools = Some(tool_names(&tools));
+        }
         updated.discovered_tools = Some(tools);
         if let Err(e) = self.store.update_mcp_server(&updated).await {
             tracing::warn!(error = %e, server = %server.name, "failed to update discovered tools");
@@ -1081,6 +1148,105 @@ permit(
     ))
 }
 
+/// Every tool the record currently knows about: the allow-list if it has
+/// one, else whatever discovery found.
+fn current_tool_names(server: &McpServer) -> Vec<String> {
+    match server.allowed_tools.as_deref() {
+        Some(names) if !names.is_empty() => names.to_vec(),
+        _ => server
+            .discovered_tools
+            .as_deref()
+            .map(tool_names)
+            .unwrap_or_default(),
+    }
+}
+
+/// Guard the policy generator's inputs: bounded in size, and safe to
+/// interpolate into Cedar text.
+fn validate_grant_inputs(tools: &[String], agent_tags: &[String]) -> Result<(), ApiError> {
+    if tools.len() > 50 {
+        return Err(ApiError::BadRequest(
+            "maximum 50 tools per request".to_string(),
+        ));
+    }
+    if agent_tags.len() > 50 {
+        return Err(ApiError::BadRequest(
+            "maximum 50 agent_tags per request".to_string(),
+        ));
+    }
+    for tool_name in tools {
+        if !is_safe_identifier(tool_name) {
+            return Err(ApiError::BadRequest(format!(
+                "invalid tool name '{}': must be 1-128 alphanumeric, hyphen, underscore, or dot characters",
+                tool_name
+            )));
+        }
+    }
+    for tag in agent_tags {
+        if !is_safe_identifier(tag) {
+            return Err(ApiError::BadRequest(format!(
+                "invalid agent tag '{}': must be 1-128 alphanumeric, hyphen, underscore, or dot characters",
+                tag
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The names of a tool list, in order — what `allowed_tools` holds.
+fn tool_names(tools: &[agent_cordon_core::domain::mcp::McpTool]) -> Vec<String> {
+    tools.iter().map(|t| t.name.clone()).collect()
+}
+
+/// Every tool this server publishes: what discovery found, falling back to
+/// the bare `allowed_tools` names for a record that was never discovered
+/// against. This is the set an `allowed_tools` narrowing must be a subset of.
+pub fn discovered_tool_names(server: &McpServer) -> Vec<String> {
+    match server.discovered_tools.as_deref() {
+        Some(tools) if !tools.is_empty() => tool_names(tools),
+        _ => server.allowed_tools.clone().unwrap_or_default(),
+    }
+}
+
+/// True when this record's tool list has been deliberately narrowed rather
+/// than merely mirroring what discovery last found.
+///
+/// It decides whether rediscovery may widen the list. A server nobody has
+/// narrowed takes every tool the upstream now publishes, the way it always
+/// has; a narrowed one keeps its allow-list and gains only the record of the
+/// new tool, ready for an operator to tick.
+pub fn is_narrowed(server: &McpServer) -> bool {
+    let Some(allowed) = server.allowed_tools.as_deref() else {
+        return false;
+    };
+    let Some(discovered) = server.discovered_tools.as_deref() else {
+        return false;
+    };
+    // Something the upstream publishes that the allow-list leaves out.
+    discovered.iter().any(|t| !allowed.contains(&t.name))
+}
+
+/// What one generated per-tool grant is called.
+///
+/// The generator used to name its rows `mcp-<server>-<tool>-<tag>`, which no
+/// name predicate recognised: the Policies list showed them as ordinary
+/// authored policies and the last-enabled-policy guard counted them, so a
+/// documented operator step quietly took the seeded `default` policy out of
+/// its own protection. They share the Access tab's `grant:` convention
+/// instead, which [`is_generated_grant`](crate::services::policies::is_generated_grant)
+/// and the Policies list both already know.
+///
+/// The `tag:` segment is what separates these from the Access tab's own
+/// `grant:mcp:{server}:{workspace_uuid}:…` rows: the permissions listing
+/// reads the segment after the server id as a workspace UUID and skips
+/// anything that is not one.
+///
+/// `tag` and `tool` have been through
+/// [`is_safe_identifier`], which admits no `:`, so the name parses back.
+pub fn generated_grant_name(server_id: &str, tag: &str, tool: &str) -> String {
+    format!("grant:mcp:{server_id}:tag:{tag}:mcp_tool_call:{tool}")
+}
+
 /// A policy `generate_policies` created.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GeneratedPolicy {
@@ -1095,7 +1261,10 @@ pub struct ImportEntry {
     pub name: String,
     pub transport: Option<String>,
     pub url: Option<String>,
-    pub tools: Option<Vec<String>>,
+    /// Tools with whatever metadata the uploading workspace knows, stored
+    /// the way discovery stores them: names in `allowed_tools`, the full
+    /// entries in `discovered_tools`.
+    pub tools: Option<Vec<agent_cordon_core::domain::mcp::McpTool>>,
     pub required_credentials: Option<Vec<String>>,
 }
 
@@ -1111,15 +1280,64 @@ pub struct ImportOutcome {
 impl McpServerService {
     /// Create one grant policy per (tool, tag) for this server, skipping
     /// names that already exist, then reload the engine once.
+    ///
+    /// `tools`/`agent_tags` are what the caller asked for. `None` means "what
+    /// this server has": every tool it currently knows about, and every tag
+    /// the workspaces it is bound to carry. An explicit empty list, or a
+    /// default that resolves to nothing, is a 400 — silently creating no
+    /// policies would read as success.
     pub async fn generate_policies(
         &self,
         auth: &AuthenticatedUser,
         corr: &str,
         id: &McpServerId,
-        tools: &[String],
-        agent_tags: &[String],
+        tools: Option<&[String]>,
+        agent_tags: Option<&[String]>,
     ) -> Result<Vec<GeneratedPolicy>, ApiError> {
         let (server, policy_decision) = self.load_and_authorize(auth, id).await?;
+
+        let tools = match tools {
+            Some(explicit) => {
+                if explicit.is_empty() {
+                    return Err(ApiError::BadRequest(
+                        "tools list cannot be empty".to_string(),
+                    ));
+                }
+                explicit.to_vec()
+            }
+            None => {
+                let known = current_tool_names(&server);
+                if known.is_empty() {
+                    return Err(ApiError::BadRequest(format!(
+                        "MCP server '{}' has no known tools to generate policies for: run tool discovery or name the tools in the request",
+                        server.name
+                    )));
+                }
+                known
+            }
+        };
+        let agent_tags = match agent_tags {
+            Some(explicit) => {
+                if explicit.is_empty() {
+                    return Err(ApiError::BadRequest(
+                        "agent_tags list cannot be empty".to_string(),
+                    ));
+                }
+                explicit.to_vec()
+            }
+            None => {
+                let bound = self.bound_workspace_tags(id).await?;
+                if bound.is_empty() {
+                    return Err(ApiError::BadRequest(format!(
+                        "no agent_tags given and the workspaces bound to MCP server '{}' carry no tags: tag a workspace or name the tags in the request",
+                        server.name
+                    )));
+                }
+                bound
+            }
+        };
+        validate_grant_inputs(&tools, &agent_tags)?;
+        let (tools, agent_tags) = (tools.as_slice(), agent_tags.as_slice());
 
         let existing_names: std::collections::HashSet<String> = self
             .store
@@ -1133,7 +1351,7 @@ impl McpServerService {
         let mut created = Vec::new();
         for tool_name in tools {
             for tag in agent_tags {
-                let policy_name = format!("mcp-{}-{}-{}", server_id_str, tool_name, tag);
+                let policy_name = generated_grant_name(&server_id_str, tag, tool_name);
                 if existing_names.contains(&policy_name) {
                     tracing::info!(policy_name = %policy_name, "skipping duplicate policy");
                     continue;
@@ -1198,6 +1416,24 @@ impl McpServerService {
         Ok(created)
     }
 
+    /// Every tag carried by the workspaces this MCP server is bound to,
+    /// in first-seen order and without duplicates. This is the tag set an
+    /// omitted `agent_tags` means.
+    async fn bound_workspace_tags(&self, id: &McpServerId) -> Result<Vec<String>, ApiError> {
+        let mut tags: Vec<String> = Vec::new();
+        for (workspace_id, _) in self.store.list_workspaces_for_mcp_server(id).await? {
+            let Some(workspace) = self.store.get_workspace(&workspace_id).await? else {
+                continue;
+            };
+            for tag in workspace.tags {
+                if !tags.contains(&tag) {
+                    tags.push(tag);
+                }
+            }
+        }
+        Ok(tags)
+    }
+
     /// Register the servers an agent uploaded for `workspace_id`: a new
     /// (workspace, name) pair is created and bound in the junction; an
     /// existing one is kept, gaining tools if it had none.
@@ -1228,7 +1464,7 @@ impl McpServerService {
             .and_then(|ws| ws.owner_id);
 
         let mut results = Vec::new();
-        for entry in entries {
+        for mut entry in entries {
             let name = entry.name.trim().to_string();
             if name.is_empty() || name.contains('.') {
                 continue;
@@ -1239,14 +1475,26 @@ impl McpServerService {
                 .get_mcp_server_by_workspace_and_name(&workspace_id, &name)
                 .await?
             {
-                let status = match (&existing.allowed_tools, &entry.tools) {
-                    (None, Some(tools)) if !tools.is_empty() => {
-                        let mut updated = existing.clone();
-                        updated.allowed_tools = Some(tools.clone());
-                        self.store.update_mcp_server(&updated).await?;
-                        "updated"
+                // An upload fills in what the record is missing and nothing
+                // else: names for a server that has none, and the tool
+                // metadata for one whose tools are still bare names.
+                let mut updated = existing.clone();
+                let mut changed = false;
+                if let Some(tools) = entry.tools.take().filter(|t| !t.is_empty()) {
+                    if updated.allowed_tools.is_none() {
+                        updated.allowed_tools = Some(tool_names(&tools));
+                        changed = true;
                     }
-                    _ => "existing",
+                    if updated.discovered_tools.is_none() {
+                        updated.discovered_tools = Some(tools);
+                        changed = true;
+                    }
+                }
+                let status = if changed {
+                    self.store.update_mcp_server(&updated).await?;
+                    "updated"
+                } else {
+                    "existing"
                 };
                 results.push(ImportOutcome {
                     name,
@@ -1267,6 +1515,7 @@ impl McpServerService {
                 }
             };
 
+            let tools = entry.tools.filter(|t| !t.is_empty());
             let server = McpServer {
                 id: McpServerId(Uuid::new_v4()),
                 // The junction is the source of truth; the legacy column stays None.
@@ -1274,7 +1523,7 @@ impl McpServerService {
                 name: name.clone(),
                 upstream_url: entry.url.unwrap_or_default(),
                 transport,
-                allowed_tools: entry.tools,
+                allowed_tools: tools.as_deref().map(tool_names),
                 enabled: true,
                 created_by: uploading_workspace_id.clone(),
                 created_at: now,
@@ -1288,7 +1537,7 @@ impl McpServerService {
                 }),
                 auth_method: McpAuthMethod::None,
                 template_key: None,
-                discovered_tools: None,
+                discovered_tools: tools,
                 created_by_user: created_by_user.clone(),
             };
             self.store.create_mcp_server(&server).await?;
@@ -1420,25 +1669,47 @@ impl McpServerService {
         Ok(())
     }
 
-    /// A workspace asked to call a tool on a server that does not resolve.
-    /// The decision is forbid and there is no Cedar evaluation to emit, so
-    /// this is the only row the attempt leaves.
+    /// A `mcp_tool_call` was refused. Every refusal writes one of these,
+    /// whatever refused it: the unknown- and disabled-server branches, the
+    /// `allowed_tools` allow-list, and a Cedar forbid.
+    ///
+    /// The Cedar branch also leaves a `policy_evaluated` row (the `Authz` seam
+    /// emits it), but that one is generic; this is the domain event the
+    /// dashboard's MCP activity widget and the workspace History tab read, and
+    /// without it a per-tool Deny produced no record of the refusals it exists
+    /// to cause.
     pub async fn record_tool_call_denied(
         &self,
         workspace: &Workspace,
         correlation_id: &str,
+        server: Option<&McpServer>,
         server_name: &str,
         tool_name: &str,
+        denial: ToolCallDenial<'_>,
     ) {
+        let (reason, detail) = match denial {
+            ToolCallDenial::UnknownServer => ("unknown_server", None),
+            ToolCallDenial::ServerDisabled => ("server_disabled", None),
+            ToolCallDenial::ToolNotAllowed => ("tool_not_allowed", None),
+            ToolCallDenial::Policy(reasons) => ("policy_forbid", Some(reasons.join(", "))),
+        };
+        // The resource is the server's id when one resolved, so the row joins
+        // to the MCP server's History tab; an unknown name has nothing to join
+        // to and names itself.
+        let resource_id = server
+            .map(|s| s.id.0.to_string())
+            .unwrap_or_else(|| server_name.to_string());
         let event = AuditEvent::builder(AuditEventType::McpToolCallDenied)
             .action(&format!("mcp_tool_call/{}", tool_name))
-            .resource("mcp_server", server_name)
+            .resource("mcp_server", &resource_id)
             .workspace_actor(&workspace.id, &workspace.name)
-            .decision(AuditDecision::Forbid, Some("unknown_server"))
+            .decision(AuditDecision::Forbid, Some(reason))
             .details(serde_json::json!({
                 "server_name": server_name,
                 "tool_name": tool_name,
                 "policy_decision": "forbid",
+                "reason": reason,
+                "policy_reasons": detail,
             }))
             .correlation_id(correlation_id)
             .build();

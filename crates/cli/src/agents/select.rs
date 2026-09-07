@@ -11,6 +11,7 @@ use std::path::Path;
 
 use crate::error::CliError;
 
+use super::mcp::Choice;
 use super::{DetectEnv, Runtime, ALL, AUTO, COMPAT_ALIASES, NONE, RUNTIMES};
 
 /// How the selection was arrived at, for the line `init` prints.
@@ -32,6 +33,10 @@ pub struct Selection {
     pub source: Source,
     /// Lines to print before the summary — compatibility notices, mostly.
     pub notices: Vec<String>,
+    /// What this source decided about the MCP registration, if anything. The
+    /// picker asks and `agents.toml` remembers; `--agent` says nothing about
+    /// it. [`resolve_mcp`] turns it into the answer.
+    pub mcp: Option<Choice>,
 }
 
 /// Resolve `--agent` values.
@@ -95,6 +100,7 @@ pub fn from_flags(values: &[String], env: &DetectEnv) -> Result<Selection, CliEr
         runtimes,
         source: Source::Flags,
         notices,
+        mcp: None,
     })
 }
 
@@ -104,7 +110,34 @@ pub fn auto(env: &DetectEnv) -> Selection {
         runtimes: super::detect(env),
         source: Source::Auto,
         notices: Vec::new(),
+        mcp: None,
     }
+}
+
+/// The MCP registration decision.
+///
+/// `--no-mcp` always wins, because it is the only input the user typed *this*
+/// run to say no. Otherwise whatever this run's source decided — the picker
+/// asked, or `agents.toml` remembered — and otherwise yes: a runtime with no
+/// entry in its MCP config cannot see the `agentcordon_*` tools at all, and
+/// the surface is a fixed six tools whatever the workspace holds.
+///
+/// `--expose` replaces the remembered list rather than adding to it, exactly
+/// as `--agent` replaces the remembered runtimes.
+pub fn resolve_mcp(no_mcp: bool, expose: &[String], decided: Option<&Choice>) -> Choice {
+    let register = !no_mcp && decided.is_none_or(|c| c.register);
+    let expose = if expose.is_empty() {
+        decided.map(|c| c.expose.clone()).unwrap_or_default()
+    } else {
+        let mut seen: Vec<String> = Vec::new();
+        for server in expose {
+            if !seen.iter().any(|s| s == server) {
+                seen.push(server.clone());
+            }
+        }
+        seen
+    };
+    Choice { register, expose }
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +153,14 @@ pub struct Saved {
     /// than failing `init`.
     pub version: u32,
     pub runtimes: Vec<String>,
+    /// Whether `init` writes each runtime's MCP configuration. Absent in a
+    /// file written before the MCP surface existed, which reads as "nothing
+    /// was decided" rather than as "no".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<bool>,
+    /// Servers re-exported as typed tools, from `--expose`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expose: Vec<String>,
 }
 
 /// Read the remembered choice. A file that is missing, unparseable or from a
@@ -131,6 +172,13 @@ pub fn load(root: &Path) -> Option<Selection> {
     if saved.version != 1 {
         return None;
     }
+    let mcp = match (saved.mcp, saved.expose.is_empty()) {
+        (None, true) => None,
+        (register, _) => Some(Choice {
+            register: register.unwrap_or(true),
+            expose: saved.expose,
+        }),
+    };
     Some(Selection {
         runtimes: saved
             .runtimes
@@ -139,17 +187,20 @@ pub fn load(root: &Path) -> Option<Selection> {
             .collect(),
         source: Source::Saved,
         notices: Vec::new(),
+        mcp,
     })
 }
 
 /// Remember the choice so the next `init` is non-interactive.
-pub fn save(root: &Path, runtimes: &[&'static Runtime]) -> Result<(), CliError> {
+pub fn save(root: &Path, runtimes: &[&'static Runtime], mcp: &Choice) -> Result<(), CliError> {
     let dir = root.join(".agentcordon");
     std::fs::create_dir_all(&dir)
         .map_err(|e| CliError::general(format!("failed to create .agentcordon/: {e}")))?;
     let saved = Saved {
         version: 1,
         runtimes: runtimes.iter().map(|r| r.id.to_string()).collect(),
+        mcp: Some(mcp.register),
+        expose: mcp.expose.clone(),
     };
     let body = format!(
         "# Which agent runtimes `agentcordon init` installs the AgentCordon skill for.\n\
@@ -215,6 +266,13 @@ pub fn from_indices(chosen: &[usize]) -> Vec<&'static Runtime> {
         .collect()
 }
 
+/// The one yes/no asked after the runtime list. Both halves of the trade-off
+/// are in the question, because a token cost the user is not told about is a
+/// cost they cannot consent to.
+pub const MCP_QUESTION: &str =
+    "Also register the AgentCordon MCP server with these runtimes? (native tools; about 800 \
+     tokens per session)";
+
 /// Show the multi-select, pre-checked with what was detected.
 pub fn prompt(detected: &[&'static Runtime]) -> Result<Selection, CliError> {
     let items = items(detected);
@@ -234,9 +292,25 @@ pub fn prompt(detected: &[&'static Runtime]) -> Result<Selection, CliError> {
         .interact()
         .map_err(|e| CliError::general(format!("could not read your selection: {e}")))?;
 
+    let runtimes = from_indices(&chosen);
+    // Nothing to register against when the answer was "none", so do not ask.
+    let mcp = if runtimes.is_empty() {
+        None
+    } else {
+        Some(Choice {
+            register: dialoguer::Confirm::new()
+                .with_prompt(MCP_QUESTION)
+                .default(true)
+                .interact()
+                .map_err(|e| CliError::general(format!("could not read your answer: {e}")))?,
+            expose: Vec::new(),
+        })
+    };
+
     Ok(Selection {
-        runtimes: from_indices(&chosen),
+        runtimes,
         source: Source::Picker,
         notices: Vec::new(),
+        mcp,
     })
 }

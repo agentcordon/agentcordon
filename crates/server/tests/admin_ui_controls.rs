@@ -5427,3 +5427,176 @@ fn the_detail_tab_strip_is_as_wide_as_the_card_it_sits_in() {
         "vault.css must style the segmented control:\n{seg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// S20: the MCP gating controls an operator is documented to use
+// (uat/playwright/tests/22-s20-mcp-gating.spec.ts)
+// ---------------------------------------------------------------------------
+
+/// `POST /api/v1/mcp-servers/{id}/generate-policies` is a documented operator
+/// step in `docs/granting-mcp-server-access.md` and was reachable only with
+/// curl: nothing on `/mcp-servers/{id}` offered it, so an operator following
+/// `docs/admin-ui.md` never found it (uat S20, G-S20-2).
+#[tokio::test]
+async fn the_mcp_access_tab_offers_the_policy_generator() {
+    let (ctx, cookie) = admin_session().await;
+    let uri = "/mcp-servers/00000000-0000-0000-0000-0000000000ff";
+    let (status, body) = get_page(&ctx.app, uri, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_contains(
+        &body,
+        uri,
+        r#"data-testid="generate-policies""#,
+        "the Access tab carries a Generate policies control",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "generatePolicies()",
+        "and the control calls the generator",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "/generate-policies",
+        "which posts to the documented endpoint",
+    );
+    // The endpoint's defaults are the whole point of the button: an empty body
+    // means every tool this server has, for every tag its workspaces carry.
+    assert_contains(
+        &body,
+        uri,
+        "JSON.stringify({})",
+        "with the empty body the endpoint defaults from",
+    );
+    assert!(
+        body.contains("policies_created"),
+        "{uri}: the control reports how many policies were created"
+    );
+}
+
+/// The Policies list had two predicates where it needed one: `isGrant` tested
+/// the `grant:` prefix and decided the badge and the filter, while
+/// `isGenerated` tested `grant:` *or* `deny:` and decided the enabled count. A
+/// per-tool Deny fell between them and was listed as an authored "Custom"
+/// policy nobody wrote (uat S20).
+#[tokio::test]
+async fn a_generated_deny_row_is_badged_generated_like_a_generated_grant() {
+    let (ctx, cookie) = admin_session().await;
+    let (status, body) = get_page(&ctx.app, "/security", &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(
+        !body.contains("return (policy.name || '').startsWith('grant:');"),
+        "/security: `isGrant` must not test the `grant:` prefix alone — a `deny:` row is \
+         generated too, and testing only `grant:` is what listed it as an authored policy"
+    );
+    assert_contains(
+        &body,
+        "/security",
+        "isGrant(policy) {\n            return this.isGenerated(policy);",
+        "one predicate decides both the badge and the count",
+    );
+    assert_contains(
+        &body,
+        "/security",
+        r#"x-text="grantBadgeLabel(policy)""#,
+        "and the badge says which of the two the row is",
+    );
+}
+
+/// `mcp_tool_call` takes a `tool_name` context claim — every policy the Access
+/// tab's Grant/Deny control writes conditions on exactly that — and the tester
+/// had nowhere to type it, so it answered one decision for a server whose real
+/// answer differs per tool (uat S20, G-S20-3).
+#[tokio::test]
+async fn the_policy_tester_can_name_the_tool_an_mcp_action_is_about() {
+    let (ctx, cookie) = admin_session().await;
+    let uri = "/security/tester";
+    let (status, body) = get_page(&ctx.app, uri, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_contains(
+        &body,
+        uri,
+        r#"id="tester-tool-name""#,
+        "the tester offers a Tool name field",
+    );
+    assert_contains(
+        &body,
+        uri,
+        r#"x-show="actionTakesToolName""#,
+        "shown for the actions that take the claim, and not for the rest",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "'mcp_tool_call'",
+        "and it knows which actions those are",
+    );
+    // The claim has to reach the API under the name the API reads.
+    assert_contains(
+        &body,
+        uri,
+        "context: this.testContext()",
+        "the test request carries a context",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "tool_name: this.toolName",
+        "whose tool_name is what was typed",
+    );
+    // And the answer says which tool it is about, so a permit for `echo` is
+    // not read as a permit for the server.
+    assert_contains(
+        &body,
+        uri,
+        r#"x-text="resultSubject()""#,
+        "the result names what was asked about",
+    );
+}
+
+/// An operator who wants an agent to see two of four tools had no supported
+/// way to say so: `allowed_tools` was a discovery projection, the update
+/// endpoint rejected the field, and the Tools tab was a listing with one
+/// action on it (uat S20, G-S20-1).
+#[tokio::test]
+async fn the_mcp_tools_tab_can_narrow_the_tool_list() {
+    let (ctx, cookie) = admin_session().await;
+    let uri = "/mcp-servers/00000000-0000-0000-0000-0000000000ff";
+    let (status, body) = get_page(&ctx.app, uri, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_contains(
+        &body,
+        uri,
+        r#"data-testid="save-allowed-tools""#,
+        "the Tools tab carries a Save for the tool allow-list",
+    );
+    assert_contains(
+        &body,
+        uri,
+        r#"x-model="allowedTools[tool.name]""#,
+        "with a checkbox per discovered tool",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "saveAllowedTools()",
+        "and the Save calls the update endpoint",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "allowed_tools:",
+        "sending the field the endpoint now accepts",
+    );
+    // Narrowing to none is a real choice and the page has to say what it does
+    // rather than look like an accident.
+    assert!(
+        body.contains("no tools at all"),
+        "{uri}: the Tools tab says what an empty allow-list means"
+    );
+}

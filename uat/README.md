@@ -166,8 +166,8 @@ A user-defined bridge network `agentcordon-uat-net` with:
 | `agentcordon-uat-upstream` | `python:3-slim` | Mock upstream (`uat/mock_upstream.py`), aliases `upstream` and `ssm.us-east-1.amazonaws.com` (the second so S14's regional-endpoint fence check resolves inside the harness), port 8080 (`UAT_UPSTREAM_PORT` / `UAT_BIND` override it; `run.sh` sets neither, so the harness gets `0.0.0.0:8080`) |
 | `agentcordon-uat-broker` | `uat/Dockerfile.tools` | `agentcordon-broker`, alias `broker`, port 9876 |
 | `agentcordon-uat-cli` | `uat/Dockerfile.tools` | `--network container:agentcordon-uat-broker`, so the broker is loopback for it |
-| `agentcordon-uat-broker-guarded` | `uat/Dockerfile.tools` | A second `agentcordon-broker` started **without** `--proxy-allow-loopback`, alias `broker-guarded`, port 9876 (S18) |
-| `agentcordon-uat-cli-guarded` | `uat/Dockerfile.tools` | `--network container:agentcordon-uat-broker-guarded`; S18 enrolls it as the third workspace |
+| `agentcordon-uat-broker-guarded` | `uat/Dockerfile.tools` | A second `agentcordon-broker` started **without** `--proxy-allow-loopback`, alias `broker-guarded`, port 9876 (S21) |
+| `agentcordon-uat-cli-guarded` | `uat/Dockerfile.tools` | `--network container:agentcordon-uat-broker-guarded`; S21 enrolls it as the third workspace |
 | `agentcordon-uat-server2` | repo `Dockerfile` | Started only by S8, expected to exit non-zero |
 | `agentcordon-uat-idp` | `python:3-slim` | Mock OAuth 2.0 authorization server (`uat/mock_oauth_provider.py`), two listeners on 9000/9001 (`UAT_IDP_PORT` / `UAT_IDP_NODCR_PORT` / `UAT_BIND` override them; `oauth-topology.sh` sets no bind, so both get `0.0.0.0`) |
 | `agentcordon-uat-mcp` | `python:3-slim` | Mock Streamable-HTTP MCP server (`uat/mock_mcp.py`), port 9100 (`UAT_MCP_PORT` / `UAT_BIND` override it; `oauth-topology.sh` sets no bind, so it gets `0.0.0.0`) |
@@ -268,7 +268,9 @@ working credential, so S5 runs last.
 | `14-s14-aws.spec.ts` | S14 AWS SigV4 |
 | `15-s16-enforcement.spec.ts` | S16 enforcement across types, second workspace |
 | `16-s17-vaults.spec.ts` | S17 vaults end to end (create, place, rename, share read-only, revoke, refuse a non-empty delete, move, delete), and the provider-client controls an operator is and is not offered |
-| `21-s18-guarded-broker.spec.ts` | S18 the SSRF guard as shipped: a third workspace enrolled through the guarded broker, a credential pinned to one host forwarded to its private address, an unfenced one refused with the fence to write (ADR-0014) |
+| `21-s18-mcp-serve.spec.ts` | S18 `agentcordon mcp-serve`: the CLI's stdio MCP surface, driven over pipes by `uat/mcp_client.py` |
+| `22-s20-mcp-gating.spec.ts` | S20 per-tool MCP gating: `allowed_tools`, the Access tab's Grant/Deny, the generated policies, the tester, and the same decisions through `mcp-serve` |
+| `23-s21-guarded-broker.spec.ts` | S21 the SSRF guard as shipped: a third workspace enrolled through the guarded broker, a credential pinned to one host forwarded to its private address, an unfenced one refused with the fence to write (ADR-0014) |
 | `80-s9-restart.spec.ts` | S9 restart persistence (was `08-`) |
 | `90-s5-lifecycle.spec.ts` | S5 lifecycle (destructive, last; was `09-`) |
 
@@ -277,7 +279,15 @@ unchanged, so the new scenarios sort between them: S11–S17 must run **before**
 the S9 restart (restarting the server container recreates the namespace the
 mocks are joined to) and **before** the destructive S5. S17 additionally runs
 **after** S12/S13, because the provider clients it tries to delete only have
-dependents once those scenarios have installed their OAuth2 MCP servers.
+dependents once those scenarios have installed their OAuth2 MCP servers. S18
+runs after S13 for the same reason from the other end: it drives the CLI's
+stdio MCP surface against the `uat-none` server S13 installs, and against the
+S2 credential and the S3 enrolment. S20 runs after both: it needs S13's server,
+S16's second workspace, and S18's surface, and it is the last scenario that
+changes policy before S9 and S5. S21 sorts last of the new scenarios because
+it is independent of them: it drives its own guarded broker and CLI container
+and enrols a third workspace of its own, so it neither reads nor rewrites the
+state S11–S20 share.
 
 Playwright runs with `workers: 1` and `fullyParallel: false`: the scenarios are
 one ordered story over shared server state. Ids pass between spec files through
@@ -311,7 +321,7 @@ Both now press a button:
    Variables) and disables the whole SSRF check, not only the loopback part.
    **This concession is what let the pinned-host defect reach 0.4.0:** with
    the guard off in every scenario, nothing could show that a credential
-   fenced to one private host was refused. S18 now runs against a second
+   fenced to one private host was refused. S21 now runs against a second
    broker started without the flag, so the guard is exercised on every run:
    a pinned credential goes through, an unfenced one does not (ADR-0014).
 3. **The broker binds `0.0.0.0` with `--shared-secret`.** Required because the
@@ -335,7 +345,11 @@ Both now press a button:
    identity provider, a real MCP server and a real network; nothing about them
    is a product claim. `uat/selftest_sigv4.py` pins the one piece of mock
    behaviour that could produce a false product failure (the SigV4 verifier) to
-   AWS's own published test vector.
+   AWS's own published test vector. `uat/mcp_client.py` is the same kind of
+   stand-in on the other side of the CLI: it is the *client* half of an MCP
+   session, spawning `docker exec -i … agentcordon mcp-serve` so the CLI's
+   stdin is a real pipe, the way a runtime would spawn it. It asserts nothing;
+   S18 asserts on the envelopes it returns.
 8. **The mock IdP and the mock MCP server share the server container's network
    namespace.** Forced by the product: a plain-HTTP `oauth2_token_endpoint` is
    accepted only for the literal hosts `localhost`/`127.0.0.1`/`::1`, and the
@@ -443,3 +457,29 @@ file it expects at `uat/artifacts/s15-agent-answer-<variant>.md`.
 rather than in place: bash re-reads a running script by byte offset, so editing
 `run.sh` mid-run makes the running shell resume at the wrong place — and the
 first thing `run.sh` does is tear the topology down.
+
+## S19: the same blind agent, through MCP instead of the skill
+
+S19 is S10/S15 with the other integration surface. The agent gets **no skill
+and no instruction file** — only a `.mcp.json` registering
+`agentcordon mcp-serve` — and runs with Bash denied, so the MCP tools have to
+carry the task alone or the run fails. `uat/prepare-s15.sh` prepares both
+workspaces in one pass:
+
+| Workspace | Contents | Verifier |
+|---|---|---|
+| `uat/agent-workspace/` | the AgentCordon skill, nothing else | `./uat/verify-s15.sh <variant>` |
+| `uat/agent-workspace-mcp/` | a `.mcp.json`, nothing else | `./uat/verify-s19.sh <variant>` |
+
+Every S15 safety check is repeated: the per-run canary, the prompt injection,
+the raw-secret scan and the IdP-caller check. Two things are different, and
+`uat/s15-blind-agent.md` § S19 states both. `mcp-serve` is a streamed
+subcommand, so the shim records that the session was opened and then
+`exec docker exec -i`s into the container — `uat/artifacts/agent-shim-out/` is
+empty for an S19 run and the runtime's own transcript is what the injection and
+canary scans read. And a shell turn is a *failure* on this path rather than the
+expected mechanism, so the verifier counts them and expects zero.
+
+`uat/mcp_client.py` is the non-agent equivalent: S18
+(`21-s18-mcp-serve.spec.ts`) drives the same surface from the suite, with no
+model in the loop, and asserts the wire protocol itself.

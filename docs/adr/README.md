@@ -29,6 +29,7 @@ If your work contradicts an ADR, say so explicitly rather than silently overridi
 | [0012](0012-authorization-model-rework-deferred.md) | The authorization-model rework is deferred to the next phase | Accepted | 2026-09-06 |
 | [0013](0013-init-installs-the-agentcordon-skill-per-runtime.md) | `agentcordon init` installs the AgentCordon skill per runtime; the MCP server surface is deferred | Accepted | 2026-09-06 |
 | [0014](0014-pinned-host-overrides-the-ssrf-guard.md) | A credential fenced to one literal host is forwarded to it past the SSRF guard; `**` is one or more host labels | Accepted | 2026-09-07 |
+| [0015](0015-mcp-server-surface-is-the-cli-over-stdio.md) | The MCP server surface is the CLI over stdio, with a fixed six tools | Accepted | 2026-09-07 |
 
 ## Reading order
 
@@ -37,4 +38,4 @@ If your work contradicts an ADR, say so explicitly rather than silently overridi
 - **The credential path, server to agent:** 0006, 0007, 0014, 0005.
 - **Trust boundaries and keys:** 0008, 0009.
 - **Shipping and operating:** 0010, 0011.
-- **How an agent runtime finds AgentCordon:** 0013.
+- **How an agent runtime finds AgentCordon:** 0013, 0015.

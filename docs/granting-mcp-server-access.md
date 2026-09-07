@@ -7,7 +7,7 @@ This guide shows how to grant a workspace (agent) access to an MCP server, inclu
 ---
 
 **On this page:**
-[Overview](#overview) · [Prerequisites](#prerequisites) · [Install a server](#step-1----install-the-mcp-server) · [Marketplace templates](#adding-your-own-server-to-the-marketplace) · [OAuth2 servers](#oauth2-servers) · [Provider clients](#oauth-provider-clients) · [Policies](#step-2----default-policy-same-owner-access) · [Call a tool](#step-5----call-the-mcp-tool-from-workstation-a) · [Sharing](#sharing-with-more-workspaces) · [Disabling](#disabling-a-server) · [Credential injection](#credential-injection) · [SSRF Protection](#ssrf-protection) · [Security Considerations](#security-considerations) · [Complete Example](#complete-example) · [API Reference](#api-reference)
+[Overview](#overview) · [Prerequisites](#prerequisites) · [Install a server](#step-1----install-the-mcp-server) · [Marketplace templates](#adding-your-own-server-to-the-marketplace) · [OAuth2 servers](#oauth2-servers) · [Provider clients](#oauth-provider-clients) · [Policies](#step-2----default-policy-same-owner-access) · [Call a tool](#step-5----call-the-mcp-tool-from-workstation-a) · [Sharing](#sharing-with-more-workspaces) · [Narrowing tools](#narrowing-the-tools-a-server-exposes) · [Disabling](#disabling-a-server) · [Credential injection](#credential-injection) · [SSRF Protection](#ssrf-protection) · [Security Considerations](#security-considerations) · [Complete Example](#complete-example) · [API Reference](#api-reference)
 
 ---
 
@@ -359,7 +359,14 @@ curl -X POST https://agentcordon.example.com/api/v1/mcp-servers/import \
         "name": "remote-tools",
         "transport": "http",
         "url": "https://workstation-b.example.com:8080/mcp",
-        "tools": [ { "name": "clone_repo" }, { "name": "list_files" } ],
+        "tools": [
+          {
+            "name": "clone_repo",
+            "description": "Clone a repository into the workspace",
+            "input_schema": { "type": "object", "properties": { "url": { "type": "string" } } }
+          },
+          { "name": "list_files" }
+        ],
         "required_credentials": ["<credential-uuid>"]
       }
     ]
@@ -372,7 +379,12 @@ curl -X POST https://agentcordon.example.com/api/v1/mcp-servers/import \
 - Cedar evaluates the `create` action on the `System` resource for the authenticated
   workspace.
 - **Tool discovery does not run on import.** Supply `tools` yourself, or use the
-  marketplace path, which does discover.
+  marketplace path, which does discover. A tool entry's `description` and `input_schema`
+  are stored the way discovery stores them, so `agentcordon mcp-tools` shows the same
+  metadata for an imported server as for a provisioned one. The MCP spelling
+  `inputSchema` is accepted, so a workspace can forward a `tools/list` answer verbatim.
+  Re-importing a server that already exists fills in only what the record is missing --
+  names for one that has none, metadata for one whose tools are still bare names.
 
 > **Warning:** `name` must **not** contain a dot (`.`) -- dots break the 3-part scope format
 > (`{workspace_name}.{mcp_server_name}.{action}`).
@@ -441,7 +453,23 @@ permit(
 );
 ```
 
-You can also create **deny** policies by adding `"mode": "deny"` to the request body. Deny policies generate `forbid` rules.
+You can also create **deny** policies by adding `"mode": "deny"` to the request body. Deny
+policies generate `forbid` rules.
+
+A deny stops the *call* and nothing else: the tool stays in every listing the agent sees, so
+it is still discovered and still attempted. To take a tool out of the listing entirely,
+narrow the server's `allowed_tools` -- see
+[Narrowing the tools a server exposes](#narrowing-the-tools-a-server-exposes).
+
+Every refused `mcp_tool_call` writes an `mcp_tool_call_denied` audit row naming the
+workspace, the server, the tool and a `reason`:
+
+| `reason` | What happened |
+|----------|---------------|
+| `policy_forbid` | A Cedar policy refused it. The contributing reasons are in `policy_reasons`, and the correlation id ties the row to the `policy_evaluated` row with the full detail. |
+| `tool_not_allowed` | The tool is not in the server's `allowed_tools`. No policy was consulted. |
+| `server_disabled` | The server exists but is switched off. |
+| `unknown_server` | No server of that name resolves for this workspace. |
 
 #### Option B: Grant specific tools only
 
@@ -471,7 +499,13 @@ Tool names in the `mcp_tool_call:<tool_name>` format must be 1-128 alphanumeric,
 
 #### Option C: Generate tag-based policies
 
-Use the generate-policies endpoint to create Cedar policies based on agent tags and specific tools:
+In the admin UI this is the **Generate policies** button on the MCP server's **Access** tab.
+It calls the endpoint below with an empty body, so it writes one grant per tool the server
+has, for every tag the workspaces bound to it carry, and reports how many it created. It
+skips names that already exist, so pressing it twice is safe and the second press reports
+`0`.
+
+Over the API:
 
 ```bash
 curl -X POST http://localhost:3140/api/v1/mcp-servers/{server-id}/generate-policies \
@@ -497,7 +531,31 @@ permit(
 };
 ```
 
+Both fields are optional, so the shortest form of this call is an empty body:
+
+```bash
+curl -X POST http://localhost:3140/api/v1/mcp-servers/{server-id}/generate-policies \
+  -H "Content-Type: application/json" \
+  -H "Cookie: session=..." \
+  -d '{}'
+```
+
+- Omitted `tools` means **every tool the server currently has**: its `allowed_tools`, or
+  what discovery found when it has no allow-list.
+- Omitted `agent_tags` means **every tag the workspaces bound to this server carry**.
+- An explicit empty list (`"tools": []`) is a `400`, and so is a default that resolves to
+  nothing -- a server with no known tools, or one bound only to untagged workspaces. The
+  message names the missing half; creating no policies quietly would read as success.
+
 Limits: maximum 50 tools and 50 agent tags per request. Duplicate policy names are skipped.
+
+The rows it writes are named `grant:mcp:{server_id}:tag:{tag}:mcp_tool_call:{tool}` -- the
+same `grant:` convention the Access tab's Grant/Deny control uses. That is what marks them
+*generated* rather than authored: the Policies list hides them from its default view and
+shows them under **Grants only**, and the last-enabled-policy guard does not count them, so
+generating policies never takes the `default` policy out of its own protection. (Rows an
+older install wrote as `mcp-{server_id}-{tool}-{tag}` are renamed onto the new convention on
+the next server start.)
 
 #### Option D: Write a custom Cedar policy (`/policies` -> **New**)
 
@@ -596,6 +654,41 @@ the detail page's **Access** tab are both rendered from it.
 - **Unsharing is eventually consistent.** The target workspace's broker keeps the MCP in
   its local cache until its next sync tick (`AGTCRDN_MCP_SYNC_INTERVAL`, default 60
   seconds).
+
+### Narrowing the tools a server exposes
+
+A per-tool Cedar deny refuses the *call*; it does not hide the *tool*. The agent still sees
+it in `agentcordon mcp-tools`, still discovers it through `agentcordon_mcp_tools` or an
+`--expose`d `tools/list`, and still tries it. When you want an agent not to see a tool at
+all, narrow the server's `allowed_tools`.
+
+In the admin UI: the MCP server's **Tools** tab has a tick per tool and a **Save allowed
+tools**. Untick a tool and save; untick every tool to expose none.
+
+Over the API:
+
+```bash
+curl -X PUT "$S/api/v1/mcp-servers/{id}" \
+  -H "Content-Type: application/json" -H "Cookie: session=..." \
+  -d '{"allowed_tools": ["clone_repo", "list_files"]}'
+```
+
+- Every name must be one the server publishes -- the `tools` array on
+  `GET /api/v1/mcp-servers/{id}`. An unknown name is a `400` naming every stray, and
+  nothing is changed.
+- `[]` means **no tools at all**. It is a real choice, not an empty update.
+- Omitting the field leaves the allow-list alone.
+
+What changes for an agent:
+
+| Surface | Effect |
+|---------|--------|
+| `agentcordon mcp-tools`, `agentcordon_mcp_tools`, `tools/list` with `--expose` | A narrowed tool is not listed. The broker is handed only the allowed tools, and does not probe the upstream behind that list. |
+| `agentcordon mcp-call`, `agentcordon_mcp_call` | A call to a narrowed tool is refused before Cedar is consulted, and writes the same `mcp_tool_call_denied` audit row every other refusal writes (`reason: tool_not_allowed`). |
+| **Rediscover tools** | Keeps the narrowing. A tool the upstream has newly published appears on the Tools tab unticked, ready for you to allow. A server nobody has narrowed still takes everything discovery finds. |
+
+Narrowing takes effect for a running broker on its next sync tick
+(`AGTCRDN_MCP_SYNC_INTERVAL`, default 60 seconds); the refusal at call time is immediate.
 
 ### Disabling a server
 
@@ -721,6 +814,8 @@ exempt -- which this variable does not affect.
    `mcp_tool_call` (and `mcp_list_tools`) to the workspace.
 3. To let a second workspace you own use the same server, use **Share with workspace** on
    the detail page's **Access** tab.
+4. To expose fewer than all of its tools, untick them on the **Tools** tab and **Save
+   allowed tools**.
 
 ### The same thing over the API
 
@@ -755,7 +850,13 @@ curl -X POST "$S/api/v1/mcp-servers/{id}/generate-policies" \
   -H "Cookie: $COOKIE" -H "X-CSRF-Token: $CSRF" \
   -d '{ "tools": ["run_etl", "check_status"], "agent_tags": ["data-team"] }'
 
-# 4. (Optional) Stop the server immediately without losing its bindings.
+# 4. (Optional) Narrow the tools the server exposes at all.
+curl -X PUT "$S/api/v1/mcp-servers/{id}" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: $COOKIE" -H "X-CSRF-Token: $CSRF" \
+  -d '{ "allowed_tools": ["run_etl", "check_status"] }'
+
+# 5. (Optional) Stop the server immediately without losing its bindings.
 curl -X PUT "$S/api/v1/mcp-servers/{id}" \
   -H "Content-Type: application/json" \
   -H "Cookie: $COOKIE" -H "X-CSRF-Token: $CSRF" \
@@ -782,7 +883,7 @@ Every session-authenticated call needs the `agtcrdn_session` cookie **and** a ma
 |--------|----------|-------------|
 | `GET` | `/api/v1/mcp-servers` | List MCP servers, each with its bound workspaces as `installed_workspaces` |
 | `GET` | `/api/v1/mcp-servers/{id}` | Get MCP server detail: the record, every bound workspace via the junction, and the discovered tools with their descriptions and input schemas |
-| `PUT` | `/api/v1/mcp-servers/{id}` | Update MCP server: `name` and/or `enabled`, both optional; an absent field is left alone and unknown fields are rejected. `{"enabled": false}` drops the server out of broker sync and makes every `mcp_tool_call` / `mcp_list_tools` on it forbidden — see [Disabling a server](#disabling-a-server). |
+| `PUT` | `/api/v1/mcp-servers/{id}` | Update MCP server: `name`, `enabled` and/or `allowed_tools`, all optional; an absent field is left alone and unknown fields are rejected. `{"enabled": false}` drops the server out of broker sync and makes every `mcp_tool_call` / `mcp_list_tools` on it forbidden — see [Disabling a server](#disabling-a-server). `allowed_tools` is the tool allow-list — see [Narrowing the tools a server exposes](#narrowing-the-tools-a-server-exposes); a name the server does not have is a `400`. |
 | `DELETE` | `/api/v1/mcp-servers/{id}` | Delete MCP server (cascades junction rows and grant/deny policies) |
 | `GET` | `/api/v1/mcp-servers/{id}/workspaces` | The workspaces currently bound to this MCP through the junction |
 | `POST` | `/api/v1/mcp-servers/{id}/workspaces` | Share an MCP with more workspaces owned by the caller |

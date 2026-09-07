@@ -69,33 +69,34 @@ fn configured_server_line(configured: Option<&ServerUrl>) -> String {
     }
 }
 
-/// Check workspace registration and broker connectivity.
-pub async fn run() -> Result<(), CliError> {
-    let client = BrokerClient::connect().await?;
-
+/// The report, as text.
+///
+/// `mcp-serve`'s `agentcordon_status` tool answers with this same block, so
+/// the two cannot drift into describing the workspace differently: one
+/// report, two ways of asking for it. The version-skew warning stays with
+/// the command, because it is about the terminal's two binaries rather than
+/// about the workspace.
+pub(crate) async fn report(client: &BrokerClient) -> Result<String, CliError> {
     let resp: StatusResponse = client.get("/status").await?;
     let data = resp.data;
 
-    println!("Broker: {} (healthy)", client.base_url());
-
-    if let Some(warning) = version_skew_warning(client.broker_version(), CLI_VERSION) {
-        eprintln!("{warning}");
-    }
+    let mut lines = vec![format!("Broker: {} (healthy)", client.base_url())];
 
     if let Some(server_url) = &data.server_url {
-        println!("Server: {server_url} (reachable)");
+        lines.push(format!("Server: {server_url} (reachable)"));
     }
 
-    println!(
-        "{}",
-        configured_server_line(config::resolve_server_url(None).as_ref())
-    );
-
-    println!("Workspace: {}", client.keypair().identity());
-    println!("Registered: {}", if data.registered { "yes" } else { "no" });
+    lines.push(configured_server_line(
+        config::resolve_server_url(None).as_ref(),
+    ));
+    lines.push(format!("Workspace: {}", client.keypair().identity()));
+    lines.push(format!(
+        "Registered: {}",
+        if data.registered { "yes" } else { "no" }
+    ));
 
     if !data.scopes.is_empty() {
-        println!("Scopes: {}", data.scopes.join(", "));
+        lines.push(format!("Scopes: {}", data.scopes.join(", ")));
     }
 
     if let Some(token_status) = &data.token_status {
@@ -104,9 +105,22 @@ pub async fn run() -> Result<(), CliError> {
             .as_deref()
             .map(format_expiry)
             .unwrap_or_default();
-        println!("Token: {token_status}{expires}");
+        lines.push(format!("Token: {token_status}{expires}"));
     }
 
+    Ok(lines.join("\n"))
+}
+
+/// Check workspace registration and broker connectivity.
+pub async fn run() -> Result<(), CliError> {
+    let client = BrokerClient::connect().await?;
+    let report = report(&client).await?;
+
+    if let Some(warning) = version_skew_warning(client.broker_version(), CLI_VERSION) {
+        eprintln!("{warning}");
+    }
+
+    println!("{report}");
     Ok(())
 }
 

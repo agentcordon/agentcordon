@@ -10,7 +10,7 @@ Complete reference for the `agentcordon` command-line tool -- the workspace agen
 
 ```
 agentcordon init         [--agent RUNTIME]... [--reconfigure] [--no-register]
-                         [--server-url URL] [--name NAME]
+                         [--no-mcp] [--expose SERVER]... [--server-url URL] [--name NAME]
 agentcordon register     [--server-url URL] [--name NAME] [--scope SCOPE]... [--force]
 agentcordon status
 agentcordon credentials  [--json]
@@ -20,6 +20,7 @@ agentcordon proxy --auto METHOD URL [--header K:V]... [--body JSON] [--json] [--
 agentcordon mcp-servers
 agentcordon mcp-tools    [--schema [--server NAME] [--tool NAME]]
 agentcordon mcp-call     SERVER TOOL [--arg K=V]... [--args-json SRC] [--json]
+agentcordon mcp-serve    [--expose SERVER]...
 ```
 
 ---
@@ -67,6 +68,15 @@ Only reach for the rest when `--auto` refuses:
 
 `agentcordon credentials` and `agentcordon mcp-tools --schema` are for when
 you need to *see* the catalogue -- not something to run before every call.
+
+If your runtime has the AgentCordon MCP server configured, the native
+equivalent of every command above is a tool: `agentcordon_proxy` is
+`proxy --auto`, and it takes `{method, url}` with no shell round trip. Prefer
+the tools when they are there; the commands above are the path for a runtime
+that has no MCP client, and
+[System Architecture](system-architecture.md#a-native-tool-call-through-mcp-serve)
+has a flowchart of which surface you end up on and what each costs. See
+[`agentcordon mcp-serve`](#agentcordon-mcp-serve).
 
 ---
 
@@ -198,14 +208,16 @@ what the next enrollment would use. `status` prints both.
 
 ```
 agentcordon init [--agent <RUNTIME>]... [--reconfigure] [--no-register]
-                 [--server-url <URL>] [--name <NAME>]
+                 [--no-mcp] [--expose <SERVER>]... [--server-url <URL>] [--name <NAME>]
 ```
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--agent <RUNTIME>` | string, repeatable | see below | A runtime id from the table, or `auto`, `all`, `none` |
-| `--reconfigure` | bool | `false` | Ignore the remembered choice and pick again |
+| `--reconfigure` | bool | `false` | Ignore the remembered choice and pick again, including the MCP question |
 | `--no-register` | bool | `false` | Set the directory up and stop: no broker, no device flow. For scripts and air-gapped setups. |
+| `--no-mcp` | bool | `false` | Write the skill but no MCP configuration. Remembered. |
+| `--expose <SERVER>` | string, repeatable | none | A brokered MCP server whose own tools `mcp-serve` re-exports as typed tools. Remembered. |
 | `--server-url <URL>` | string | see [precedence](#the-server-url-and-where-it-comes-from) | The server to enroll with |
 | `--name <NAME>` | string | current directory's basename | Workspace display name, exactly as for `register` |
 
@@ -215,10 +227,11 @@ agentcordon init [--agent <RUNTIME>]... [--reconfigure] [--no-register]
 2. Adds `.agentcordon/` to `.gitignore`.
 3. Decides which runtimes to install for (below).
 4. Writes the **AgentCordon skill** into every skill directory those runtimes read.
-5. Remembers the choice in `.agentcordon/agents.toml` and prints a summary naming every file it wrote and which runtime reads it.
-6. Unless `--no-register`: resolves the server URL, starts a broker pointed at it if none is running, and runs the RFC 8628 device flow — the same code path as [`agentcordon register`](#agentcordon-register), so the printed code, the activation link, the expiry and the polling are identical.
+5. Unless `--no-mcp`: registers [`agentcordon mcp-serve`](#agentcordon-mcp-serve) in each of those runtimes' **MCP configuration**, and prints the snippet for the ones that configure MCP per user rather than per project.
+6. Remembers the choices in `.agentcordon/agents.toml` and prints a summary naming every file it wrote and which runtime reads it.
+7. Unless `--no-register`: resolves the server URL, starts a broker pointed at it if none is running, and runs the RFC 8628 device flow — the same code path as [`agentcordon register`](#agentcordon-register), so the printed code, the activation link, the expiry and the polling are identical.
 
-Idempotent: a rerun reports the same identity, leaves the keypair alone, rewrites a skill file only if its content differs, and — when the workspace is already registered — says so in one line and starts no second device flow.
+Idempotent: a rerun reports the same identity, leaves the keypair alone, rewrites a skill file only if its content differs, leaves an MCP config that already has the entry byte-identical, and — when the workspace is already registered — says so in one line and starts no second device flow.
 
 `init` never prompts off a terminal: the runtime picker needs a human and is skipped without one. Enrollment is not a prompt — the device flow prints a code and polls — so it still runs in a pipe. `--no-register` is the way to avoid it.
 
@@ -246,31 +259,57 @@ The skill does **not** carry the workspace identity. It is derived from the key 
 
 `.agents/skills/agentcordon/SKILL.md` is always written. It is the open-standard path, thirteen of the fifteen runtimes below read it, and it is what Aider's `read:` entry points at.
 
+#### The MCP server
+
+Unless `--no-mcp`, `init` also registers `agentcordon mcp-serve` in each selected runtime's MCP configuration, so the six `agentcordon_*` tools are **native tools** rather than a shell command the model has to remember. The command line is the same everywhere and never contains a path:
+
+```json
+{ "command": "agentcordon", "args": ["mcp-serve"] }
+```
+
+`--expose <server>` adds an `--expose <server>` pair, once per named server; those servers' own tools are re-exported as typed `<server>__<tool>` tools on top of the fixed six. It is repeatable and remembered.
+
+**The trade-off, which is why there is a flag.** The skill costs nothing until the model triggers it, and then one shell turn per call. The MCP surface costs about 800 tokens of tool schemas in every session — fixed, whether the workspace has one brokered server or twenty — and then a native call with no shell round trip, a typed argument list the runtime's permission model can see, and a structured error rather than JSON parsed out of terminal output. Both can be installed, and the skill's fast path opens by saying to prefer the tools when they are there. `--no-mcp` takes the skill without the schemas, and the picker asks once when it runs. See [ADR-0015](adr/0015-mcp-server-surface-is-the-cli-over-stdio.md).
+
+**How a file is edited.** Absent: created. Present, parses, and has no `agentcordon` entry: the entry is inserted. JSON is re-serialised with 2-space indent, so key order and blank lines may change and the summary says so; `.codex/config.toml` is appended to instead, so its comments survive. Present but not strict JSON (a JSONC file with comments), or already carrying an `agentcordon` entry that says something else: the file is left **byte-identical** and the snippet is printed for you to merge.
+
+Five runtimes configure MCP per user and have no project-level file at all. `init` never writes outside the directory it was run in, so for those it prints the path and the snippet:
+
+| Runtime | User-level config |
+|---|---|
+| GitHub Copilot CLI | `~/.copilot/mcp-config.json`, or `copilot mcp add` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| Cline | `~/.cline/mcp.json` |
+| Goose | `~/.config/goose/config.yaml`, or `goose configure` |
+| Zed | `context_servers` in Zed's settings |
+
+One global entry serves every workspace, because `mcp-serve` resolves the workspace from the directory the runtime launched it in.
+
 #### Targets
 
-| `--agent` | Runtime | Detected by | Extra file written |
-|---|---|---|---|
-| `claude-code` | Claude Code | `claude` on PATH, `~/.claude`, `CLAUDE.md`, `.claude/settings.json` | `.claude/skills/agentcordon/SKILL.md` |
-| `codex` | OpenAI Codex CLI | `codex` on PATH, `~/.codex`, `.codex/` | — |
-| `opencode` | OpenCode | `opencode` on PATH, `~/.config/opencode`, `opencode.json[c]`, `.opencode/` | — |
-| `gemini` | Gemini CLI | `gemini` on PATH, `~/.gemini`, `.gemini/`, `GEMINI.md` | — |
-| `copilot` | GitHub Copilot (VS Code and CLI) | `copilot` on PATH, `~/.copilot`, `.github/copilot-instructions.md`, `.vscode/` | — |
-| `cursor` | Cursor | `cursor` on PATH, `~/.cursor`, `.cursor/` | — |
-| `windsurf` | Windsurf | `windsurf` on PATH, `~/.codeium/windsurf`, `.windsurf/`, `.devin/` | — |
-| `cline` | Cline | `~/.cline`, `.clinerules`, `.cline/` | `.claude/skills/agentcordon/SKILL.md` |
-| `roo` | Roo Code | `~/.roo`, `.roo/`, `.roorules` | — |
-| `aider` | Aider | `aider` on PATH, `~/.aider.conf.yml`, `.aider.input.history` | `.aider.conf.yml` (`read:` entry) |
-| `amp` | Amp | `amp` on PATH, `~/.config/amp`, `.amp/` | — |
-| `goose` | Goose | `goose` on PATH, `~/.config/goose`, `.goosehints`, `.goose/` | — |
-| `zed` | Zed | `zed` on PATH, `~/.config/zed`, `.zed/` | — |
-| `junie` | JetBrains Junie | `~/.junie`, `.junie/` | — |
-| `kiro` | Kiro | `kiro` on PATH, `~/.kiro`, `.kiro/steering`, `.kiro/settings` | `.kiro/skills/agentcordon/SKILL.md` |
+| `--agent` | Runtime | Detected by | Extra file written | MCP config |
+|---|---|---|---|---|
+| `claude-code` | Claude Code | `claude` on PATH, `~/.claude`, `CLAUDE.md`, `.claude/settings.json` | `.claude/skills/agentcordon/SKILL.md` | `.mcp.json` (`mcpServers`) |
+| `codex` | OpenAI Codex CLI | `codex` on PATH, `~/.codex` | — | `.codex/config.toml` (`[mcp_servers.agentcordon]`), appended |
+| `opencode` | OpenCode | `opencode` on PATH, `~/.config/opencode`, `opencode.jsonc`, `.opencode/` | — | `opencode.json` (`mcp`, one `command` array) |
+| `gemini` | Gemini CLI | `gemini` on PATH, `~/.gemini`, `.gemini/commands`, `GEMINI.md` | — | `.gemini/settings.json` (`mcpServers`) |
+| `copilot` | GitHub Copilot (VS Code and CLI) | `copilot` on PATH, `~/.copilot`, `.github/copilot-instructions.md`, `.vscode/settings.json` | — | `.vscode/mcp.json` (`servers`); Copilot CLI's is user-level, printed |
+| `cursor` | Cursor | `cursor` on PATH, `~/.cursor`, `.cursor/rules`, `.cursorrules` | — | `.cursor/mcp.json` (`mcpServers`) |
+| `windsurf` | Windsurf | `windsurf` on PATH, `~/.codeium/windsurf`, `.windsurf/`, `.devin/` | — | user-level, printed |
+| `cline` | Cline | `~/.cline`, `.clinerules`, `.cline/` | `.claude/skills/agentcordon/SKILL.md` | user-level, printed |
+| `roo` | Roo Code | `~/.roo`, `.roo/rules`, `.roorules` | — | `.roo/mcp.json` (`mcpServers`) |
+| `aider` | Aider | `aider` on PATH, `~/.aider.conf.yml`, `.aider.input.history` | `.aider.conf.yml` (`read:` entry) | none — Aider has no MCP client |
+| `amp` | Amp | `amp` on PATH, `~/.config/amp` | — | `.amp/settings.json` (`amp.mcpServers`) |
+| `goose` | Goose | `goose` on PATH, `~/.config/goose`, `.goosehints`, `.goose/` | — | user-level, printed |
+| `zed` | Zed | `zed` on PATH, `~/.config/zed`, `.zed/` | — | user-level, printed |
+| `junie` | JetBrains Junie | `~/.junie`, `.junie/guidelines.md`, `.junie/rules`, `.junie/AGENTS.md` | — | `.junie/mcp/mcp.json` (`mcpServers`) |
+| `kiro` | Kiro | `kiro` on PATH, `~/.kiro`, `.kiro/steering`, `.kiro/specs` | `.kiro/skills/agentcordon/SKILL.md` | `.kiro/settings/mcp.json` (`mcpServers`) |
 
-An em dash in the last column means the portable `.agents/skills/` copy is the file that runtime reads; nothing further is needed.
+An em dash under "Extra file written" means the portable `.agents/skills/` copy is the file that runtime reads; nothing further is needed. Every MCP path is workspace-relative and every entry names the bare command `agentcordon`, so PATH resolution stays yours and a committed file works on the next machine.
 
 Aider is the only runtime with no skill discovery at all, so it is the only one that gets a pointer file: a `read:` key in `.aider.conf.yml`, marker-delimited. A config that already has a `read:` key is left byte-identical and the line is printed for you to merge, because a YAML mapping may carry only one.
 
-No detection marker is ever a path `init` writes. A runtime that detected on its own installed skill could never be deselected.
+No detection marker is ever a path `init` writes, or a directory `init` creates on the way there. A runtime that detected on its own installed skill or MCP entry could never be deselected: `--reconfigure` and `--agent auto` would keep finding it. That is why several rows above detect on a rules file the runtime itself writes rather than on its config directory, which now also holds `mcp.json`.
 
 Three keywords are not runtimes:
 
@@ -287,12 +326,12 @@ Three keywords are not runtimes:
 With no `--agent`, `init` decides in this order:
 
 1. The choice remembered in `.agentcordon/agents.toml`, unless `--reconfigure`.
-2. A multi-select picker, if **both** stdin and stdout are a terminal. Detected runtimes are pre-checked, and the list starts with "All runtimes" and "None — install only the portable skill".
+2. A multi-select picker, if **both** stdin and stdout are a terminal. Detected runtimes are pre-checked, and the list starts with "All runtimes" and "None — install only the portable skill". It then asks one yes/no, defaulting to yes: *"Also register the AgentCordon MCP server with these runtimes? (native tools; about 800 tokens per session)"*.
 3. Otherwise `auto`.
 
-`init` never prompts off a terminal, which is what keeps scripts and the UAT harness working. `.agentcordon/agents.toml` is inside the gitignored `.agentcordon/` directory, so the choice is per-checkout.
+The MCP answer follows the same order, with `--no-mcp` ahead of all of it: the flag, then whatever this run decided (the picker asked, or `agents.toml` remembered), then yes. `--expose` replaces the remembered list rather than adding to it, exactly as `--agent` replaces the remembered runtimes.
 
-`init` does not touch `.mcp.json`. MCP tools are reached through the broker (`agentcordon mcp-tools`, `agentcordon mcp-call`), not through a native MCP server entry; there is no `agentcordon mcp-serve` for one to point at.
+`init` never prompts off a terminal, which is what keeps scripts and the UAT harness working. `.agentcordon/agents.toml` is inside the gitignored `.agentcordon/` directory, so the choice is per-checkout.
 
 **Examples:**
 
@@ -310,6 +349,12 @@ agentcordon init --agent none
 # Change your mind
 agentcordon init --reconfigure
 
+# The skill, but no MCP tool schemas in every session
+agentcordon init --no-mcp
+
+# Re-export one brokered server's tools as typed tools as well
+agentcordon init --expose github
+
 # Set the directory up without enrolling (scripts, air-gapped)
 agentcordon init --no-register
 
@@ -322,10 +367,16 @@ agentcordon init --server-url https://agentcordon.example.com --name my-project
 Workspace identity: sha256:a1b2c3d4...
 
 AgentCordon skill:
-  created   .agents/skills/agentcordon/SKILL.md
-            read by OpenAI Codex CLI
-  created   .claude/skills/agentcordon/SKILL.md
-            read by Claude Code
+  created     .agents/skills/agentcordon/SKILL.md
+              read by OpenAI Codex CLI
+  created     .claude/skills/agentcordon/SKILL.md
+              read by Claude Code
+
+MCP server (`agentcordon mcp-serve`):
+  created     .mcp.json
+              used by Claude Code
+  created     .codex/config.toml
+              used by OpenAI Codex CLI
 
 Runtimes: Claude Code, OpenAI Codex CLI
 (from --agent; saved to .agentcordon/agents.toml — rerun `agentcordon init --reconfigure` to choose again.)
@@ -853,6 +904,110 @@ one `Error: ...` line to stderr, and exits non-zero. A tool that answered with
     "kind": "tool_error",
     "tool": "nonexistent_tool",
     "message": "tool not found: 'nonexistent_tool'"
+  }
+}
+```
+
+---
+
+### `agentcordon mcp-serve`
+
+> Serve AgentCordon to an agent runtime as an MCP server, over stdio.
+
+```
+agentcordon mcp-serve [--expose <SERVER>]...
+```
+
+The same brokered calls as the commands above, as **native tools**: a runtime that speaks
+MCP calls `agentcordon_proxy` directly instead of reading the skill and shelling out, so the
+integration stops depending on a model deciding to. Not a command you normally type --
+`agentcordon init` writes the MCP configuration and the runtime starts this process itself.
+
+It speaks newline-delimited JSON-RPC 2.0 on stdin and stdout ([MCP 2025-06-18, stdio
+transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)).
+**stdout carries protocol messages and nothing else**; logs, progress and errors go to
+stderr. `initialize` answers even when no broker is running, and reports the workspace's name
+and `sha256:` identity read from `.agentcordon/`. Requests are served one at a time; `ping` is
+answered, and the session ends when stdin closes.
+
+#### The tools
+
+Six, always, whatever the workspace holds:
+
+| Tool | Arguments | Answers with |
+|---|---|---|
+| `agentcordon_status` | none | The report [`agentcordon status`](#agentcordon-status) prints. |
+| `agentcordon_credentials` | none | A JSON array of `{name, service, credential_type, allowed_url_pattern, expires_at}` -- the projection [`credentials --json`](#agentcordon-credentials) carries. |
+| `agentcordon_proxy` | `credential?`, `method`, `url`, `headers?` (object of strings), `body?` (string) | JSON `{status, headers, body}`, exactly as [`proxy --json`](#agentcordon-proxy) renders it. |
+| `agentcordon_mcp_servers` | none | The MCP servers this workspace may call, as the broker lists them. |
+| `agentcordon_mcp_tools` | `server` | That server's tools, each with its `inputSchema`. |
+| `agentcordon_mcp_call` | `server`, `tool`, `arguments?` | The upstream tool's `content` and `isError` unchanged, with the `correlation_id` in `_meta`. |
+
+`agentcordon_proxy` with no `credential` picks the one whose URL fence covers `url` -- the
+same selector, and the same two refusals, as [`proxy --auto`](#for-agents-the-fast-path).
+
+**The token trade-off**, and why the list is fixed: an MCP client loads every tool's name,
+description and schema into the model's context at session start, so these six cost about 800
+tokens per session -- the same for a workspace with one upstream MCP server and one with
+twenty. Re-exporting each brokered tool would cost 50-200 tokens apiece, which is why
+`--expose` is opt-in per server.
+
+#### `--expose <SERVER>`
+
+Also publish one tool per upstream tool of that server, for the one or two an agent calls
+constantly and where typed arguments earn their schema cost. Repeatable.
+
+- The name is `<server>__<tool>`, lowercased with everything outside `[a-z0-9_]` replaced by
+  `_`, capped at 64 characters. Two names that collide after that each take a suffix derived
+  from their own `server/tool`, so the name a tool gets is stable across refreshes and does
+  not depend on the order the broker listed them in.
+- The description is the upstream's, prefixed `[<server>] `; the `inputSchema` is the
+  upstream's, verbatim.
+- The set is re-read every 30 seconds, and whenever the client asks for `tools/list`. When it
+  changes, the server sends `notifications/tools/list_changed` -- the promise
+  `capabilities.tools.listChanged` makes at `initialize`.
+- A refresh that cannot reach the broker leaves the last known set standing and says so on
+  stderr. Without `--expose` nothing here contacts the broker until a tool is called.
+
+#### How errors surface
+
+A **protocol error** means the request was wrong; anything else is a tool result:
+
+| Situation | What comes back |
+|---|---|
+| A tool this server does not publish | JSON-RPC error `-32602`, naming it |
+| A missing or mistyped argument | JSON-RPC error `-32602`, naming the argument |
+| The broker is not running, or refuses | A result with `isError: true` carrying the CLI's own one-line message -- the same text `agentcordon proxy` or `mcp-call` would print |
+| The workspace is not registered | A result with `isError: true` carrying the message the CLI exits `3` with, which names `agentcordon register` |
+| An MCP tool answered with `isError` | That result, unchanged |
+| An upstream answered 400 or more | The `{status, headers, body}` envelope, with `isError: true` -- the exit code `6` case by another name |
+
+The session survives all of them: a failed call is an answer, not a dead server.
+
+#### The broker
+
+The first tool call that needs one starts a broker if none is running, exactly as
+[`init`](#agentcordon-init) and [`register`](#agentcordon-register) do, and waits for its
+`/health`. With no server URL configured in any of the [three
+places](#the-server-url-and-where-it-comes-from) there is nothing to point a broker at, and
+the call comes back with the ordinary "broker is not running" message.
+
+#### Security
+
+Every tool is the same **signed** broker route the matching command uses, with the same
+workspace key from `.agentcordon/` and the same broker key pin. No credential value ever
+enters this process or the runtime that spawned it -- the broker injects it -- and a proxied
+response reaches the model exactly as the broker's leak scanner left it.
+
+**Example** (`.mcp.json`, which `agentcordon init` writes for you):
+
+```json
+{
+  "mcpServers": {
+    "agentcordon": {
+      "command": "agentcordon",
+      "args": ["mcp-serve"]
+    }
   }
 }
 ```

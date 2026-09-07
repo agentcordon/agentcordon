@@ -143,6 +143,7 @@ pub(super) async fn sync_mcp_servers(
             } else {
                 Some(s.upstream_url)
             },
+            tools_are_authoritative: s.allowed_tools.is_some(),
             tools: s.allowed_tools.unwrap_or_default(),
             enabled: s.enabled,
             required_credentials: s
@@ -291,10 +292,19 @@ pub(super) async fn sync_mcp_tools(
         .into_iter()
         .flat_map(|s| {
             let server_name = s.name.clone();
-            // Prefer discovered_tools (has descriptions) over allowed_tools (names only)
+            // Prefer discovered_tools (it has the descriptions and schemas)
+            // over allowed_tools (names only), but only for the tools
+            // `allowed_tools` admits: it is the allow-list, and a broker must
+            // never be handed a tool an operator has narrowed away.
             if let Some(discovered) = s.discovered_tools {
+                let allowed = s.allowed_tools;
                 discovered
                     .into_iter()
+                    .filter(|tool| {
+                        allowed
+                            .as_deref()
+                            .is_none_or(|names| names.contains(&tool.name))
+                    })
                     .map(move |tool| McpToolSyncEntry {
                         server: server_name.clone(),
                         tool: tool.name,

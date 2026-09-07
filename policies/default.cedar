@@ -36,6 +36,8 @@
 //   mcp_list_tools      - List available tools on an MCP server
 //   register_workspace  - Register a new workspace
 //   manage_tags         - Add/remove tags on workspaces, system
+//   manage_consents     - View/revoke an OAuth consent grant. Admins manage
+//                         any; a user manages their own (section 5).
 //
 // =============================================================================
 

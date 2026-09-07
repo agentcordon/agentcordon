@@ -22,6 +22,7 @@
 use std::path::{Path, PathBuf};
 
 pub mod install;
+pub mod mcp;
 pub mod select;
 
 /// The canonical, cross-runtime skill directory. Always written, whatever the
@@ -44,10 +45,13 @@ pub const SKILL_MD: &str = include_str!("SKILL.md");
 /// `--agent auto`; it is never load-bearing. A false negative costs one
 /// keystroke in the picker, a false positive costs one unread file.
 ///
-/// No marker may name a path `init` itself writes. A runtime that detects on
-/// its own installed skill can never be deselected: `--reconfigure` and
+/// No marker may name a path `init` itself writes, **or a directory `init`
+/// creates on the way there**. A runtime that detects on its own installed
+/// skill or MCP entry can never be deselected: `--reconfigure` and
 /// `--agent auto` would keep finding it, and the file would keep being
-/// refreshed. `detection_ignores_everything_init_writes` pins this.
+/// refreshed. `detection_ignores_everything_init_writes` pins this, and it is
+/// why several runtimes below name a rules file rather than the config
+/// directory that now also holds `mcp.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Marker {
     /// An executable of this name on `PATH`.
@@ -80,6 +84,8 @@ pub struct Runtime {
     pub markers: &'static [Marker],
     /// What this runtime needs beyond [`PORTABLE_SKILL_DIR`].
     pub writers: &'static [Writer],
+    /// Where `agentcordon mcp-serve` gets registered for this runtime.
+    pub mcp: McpConfig,
     /// Which skill directory this runtime actually reads, for the summary.
     pub reads: &'static str,
     /// One line printed in the summary when this runtime is selected, for
@@ -110,20 +116,33 @@ pub const RUNTIMES: &[Runtime] = &[
         // https://code.claude.com/docs/en/skills
         writers: &[Writer::SkillCopy(".claude/skills")],
         reads: ".claude/skills/agentcordon/SKILL.md",
+        // Project-scoped `.mcp.json`, `mcpServers`. A stdio entry is one with
+        // a `command` and no `type`.
+        // https://code.claude.com/docs/en/mcp
+        mcp: McpConfig::Project(McpFile {
+            path: ".mcp.json",
+            shape: McpShape::Json {
+                key: "mcpServers",
+                stdio: false,
+            },
+        }),
         note: None,
     },
     Runtime {
         id: "codex",
         display: "OpenAI Codex CLI",
-        markers: &[
-            Marker::Binary("codex"),
-            Marker::Home(".codex"),
-            Marker::Project(".codex"),
-        ],
+        markers: &[Marker::Binary("codex"), Marker::Home(".codex")],
         // `.agents/skills` from cwd up to the repo root.
         // https://learn.chatgpt.com/docs/build-skills
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // `~/.codex/config.toml`, and a project `.codex/config.toml` for a
+        // project you have marked trusted.
+        // https://learn.chatgpt.com/docs/extend/mcp?surface=cli
+        mcp: McpConfig::Project(McpFile {
+            path: ".codex/config.toml",
+            shape: McpShape::Toml,
+        }),
         note: None,
     },
     Runtime {
@@ -132,13 +151,18 @@ pub const RUNTIMES: &[Runtime] = &[
         markers: &[
             Marker::Binary("opencode"),
             Marker::Home(".config/opencode"),
-            Marker::Project("opencode.json"),
             Marker::Project("opencode.jsonc"),
             Marker::Project(".opencode"),
         ],
         // Reads `.agents/skills` among several. https://opencode.ai/docs/skills/
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // `opencode.json`, key `mcp`, `type: "local"` and one command array.
+        // https://opencode.ai/docs/mcp-servers/
+        mcp: McpConfig::Project(McpFile {
+            path: "opencode.json",
+            shape: McpShape::OpenCode,
+        }),
         note: None,
     },
     Runtime {
@@ -147,13 +171,22 @@ pub const RUNTIMES: &[Runtime] = &[
         markers: &[
             Marker::Binary("gemini"),
             Marker::Home(".gemini"),
-            Marker::Project(".gemini"),
+            Marker::Project(".gemini/commands"),
             Marker::Project("GEMINI.md"),
         ],
         // `.agents/skills` (workspace), on by default.
         // https://geminicli.com/docs/cli/skills/
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // `.gemini/settings.json`, `mcpServers` at the top level.
+        // https://geminicli.com/docs/tools/mcp-server/
+        mcp: McpConfig::Project(McpFile {
+            path: ".gemini/settings.json",
+            shape: McpShape::Json {
+                key: "mcpServers",
+                stdio: false,
+            },
+        }),
         note: None,
     },
     Runtime {
@@ -163,12 +196,34 @@ pub const RUNTIMES: &[Runtime] = &[
             Marker::Binary("copilot"),
             Marker::Home(".copilot"),
             Marker::Project(".github/copilot-instructions.md"),
-            Marker::Project(".vscode"),
+            Marker::Project(".vscode/settings.json"),
+            Marker::Project(".vscode/extensions.json"),
         ],
         // `.github/skills`, `.claude/skills`, `.agents/skills`.
         // https://code.visualstudio.com/docs/copilot/customization/agent-skills
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // Two clients under one name. VS Code reads `.vscode/mcp.json`, key
+        // `servers`, and documents `"type": "stdio"` as required
+        // (https://code.visualstudio.com/docs/copilot/customization/mcp-servers).
+        // Copilot CLI has no project file at all: `~/.copilot/mcp-config.json`
+        // only, with a `tools` allow-list
+        // (https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers).
+        mcp: McpConfig::ProjectAndUser(
+            McpFile {
+                path: ".vscode/mcp.json",
+                shape: McpShape::Json {
+                    key: "servers",
+                    stdio: true,
+                },
+            },
+            McpUser {
+                path: "~/.copilot/mcp-config.json",
+                shape: McpShape::CopilotCli,
+                label: "GitHub Copilot CLI",
+                command: Some("copilot mcp add"),
+            },
+        ),
         note: None,
     },
     Runtime {
@@ -177,11 +232,21 @@ pub const RUNTIMES: &[Runtime] = &[
         markers: &[
             Marker::Binary("cursor"),
             Marker::Home(".cursor"),
-            Marker::Project(".cursor"),
+            Marker::Project(".cursor/rules"),
+            Marker::Project(".cursorrules"),
         ],
         // `.agents/skills`, `.cursor/skills`. https://cursor.com/docs/context/skills
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // `.cursor/mcp.json`, `mcpServers`; `type` is documented as required.
+        // https://cursor.com/docs/context/mcp
+        mcp: McpConfig::Project(McpFile {
+            path: ".cursor/mcp.json",
+            shape: McpShape::Json {
+                key: "mcpServers",
+                stdio: true,
+            },
+        }),
         note: None,
     },
     Runtime {
@@ -197,6 +262,17 @@ pub const RUNTIMES: &[Runtime] = &[
         // https://docs.devin.ai/desktop/cascade/skills
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // `~/.codeium/windsurf/mcp_config.json` only — no project-level file.
+        // https://docs.devin.ai/desktop/cascade/mcp
+        mcp: McpConfig::User(McpUser {
+            path: "~/.codeium/windsurf/mcp_config.json",
+            shape: McpShape::Json {
+                key: "mcpServers",
+                stdio: false,
+            },
+            label: "Windsurf",
+            command: None,
+        }),
         note: Some(
             "Windsurf caps a workspace *rule* file at 12,000 characters. A skill is not a \
              rule file, so the cap does not apply and nothing was added to .windsurfrules.",
@@ -214,6 +290,17 @@ pub const RUNTIMES: &[Runtime] = &[
         // `.agents/skills`. https://docs.cline.bot/features/skills
         writers: &[Writer::SkillCopy(".claude/skills")],
         reads: ".claude/skills/agentcordon/SKILL.md",
+        // `~/.cline/mcp.json` (CLI) or the extension's settings UI. No
+        // project-level file. https://docs.cline.bot/mcp/configuring-mcp-servers
+        mcp: McpConfig::User(McpUser {
+            path: "~/.cline/mcp.json",
+            shape: McpShape::Json {
+                key: "mcpServers",
+                stdio: false,
+            },
+            label: "Cline",
+            command: None,
+        }),
         note: None,
     },
     Runtime {
@@ -221,12 +308,22 @@ pub const RUNTIMES: &[Runtime] = &[
         display: "Roo Code",
         markers: &[
             Marker::Home(".roo"),
-            Marker::Project(".roo"),
+            Marker::Project(".roo/rules"),
             Marker::Project(".roorules"),
         ],
         // `.roo/skills`, `.agents/skills`. https://docs.roocode.com/features/skills
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // `.roo/mcp.json`, `mcpServers`; `type` defaults to `stdio` when there
+        // is a `command`, so it is omitted.
+        // https://roocodeinc.github.io/Roo-Code/features/mcp/using-mcp-in-roo
+        mcp: McpConfig::Project(McpFile {
+            path: ".roo/mcp.json",
+            shape: McpShape::Json {
+                key: "mcpServers",
+                stdio: false,
+            },
+        }),
         note: None,
     },
     Runtime {
@@ -246,6 +343,9 @@ pub const RUNTIMES: &[Runtime] = &[
         // https://aider.chat/docs/usage/conventions.html
         writers: &[Writer::AiderRead],
         reads: ".agents/skills/agentcordon/SKILL.md (via .aider.conf.yml `read:`)",
+        // Aider has no MCP client: neither the options reference nor HISTORY
+        // mentions MCP. https://aider.chat/docs/config/options.html
+        mcp: McpConfig::None,
         note: Some(
             "Aider has no skill discovery, so .aider.conf.yml names the skill explicitly. \
              Aider also asks you before running a shell command, so calls are human-approved.",
@@ -255,14 +355,25 @@ pub const RUNTIMES: &[Runtime] = &[
         id: "amp",
         display: "Amp",
         markers: &[
+            // No project marker: `.amp/` holds exactly one documented file,
+            // `settings.json`, and `init` writes it.
             Marker::Binary("amp"),
             Marker::Home(".config/amp"),
-            Marker::Project(".amp"),
         ],
         // `.agents/skills` (+parents), `.claude/skills`.
         // https://ampcode.com/docs/customize/skills
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // Workspace `.amp/settings.json`, key `"amp.mcpServers"` — one key
+        // with a dot in it, not a nested path.
+        // https://ampcode.com/docs/customize/mcp
+        mcp: McpConfig::Project(McpFile {
+            path: ".amp/settings.json",
+            shape: McpShape::Json {
+                key: "amp.mcpServers",
+                stdio: false,
+            },
+        }),
         note: None,
     },
     Runtime {
@@ -278,6 +389,15 @@ pub const RUNTIMES: &[Runtime] = &[
         // block/goose documentation/docs/guides/context-engineering/using-skills.md
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // `~/.config/goose/config.yaml`, key `extensions`, `cmd` rather than
+        // `command`. No project-level config.
+        // https://block.github.io/goose/docs/guides/config-file/
+        mcp: McpConfig::User(McpUser {
+            path: "~/.config/goose/config.yaml",
+            shape: McpShape::Goose,
+            label: "Goose",
+            command: Some("goose configure"),
+        }),
         note: None,
     },
     Runtime {
@@ -292,6 +412,15 @@ pub const RUNTIMES: &[Runtime] = &[
         // https://zed.dev/docs/ai/skills
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // `context_servers` in Zed's user settings; the docs show no
+        // project-level `.zed/settings.json` entry for it.
+        // https://zed.dev/docs/ai/mcp
+        mcp: McpConfig::User(McpUser {
+            path: "~/.config/zed/settings.json",
+            shape: McpShape::Zed,
+            label: "Zed",
+            command: None,
+        }),
         note: Some(
             "Zed loads only the first of .rules / .cursorrules / .windsurfrules / \
              .clinerules / .github/copilot-instructions.md / AGENT.md / AGENTS.md. Skills \
@@ -301,11 +430,25 @@ pub const RUNTIMES: &[Runtime] = &[
     Runtime {
         id: "junie",
         display: "JetBrains Junie",
-        markers: &[Marker::Home(".junie"), Marker::Project(".junie")],
+        markers: &[
+            Marker::Home(".junie"),
+            Marker::Project(".junie/guidelines.md"),
+            Marker::Project(".junie/rules"),
+            Marker::Project(".junie/AGENTS.md"),
+        ],
         // `.junie/skills`, `.agents/skills` (trusted project).
         // https://junie.jetbrains.com/docs/agent-skills.html
         writers: &[],
         reads: PORTABLE_SKILL_DIR,
+        // `.junie/mcp/mcp.json` (project), `~/.junie/mcp/mcp.json` (user).
+        // https://junie.jetbrains.com/docs/junie-cli-mcp-configuration.html
+        mcp: McpConfig::Project(McpFile {
+            path: ".junie/mcp/mcp.json",
+            shape: McpShape::Json {
+                key: "mcpServers",
+                stdio: false,
+            },
+        }),
         note: Some("Junie reads .agents/skills only in a project you have marked trusted."),
     },
     Runtime {
@@ -315,13 +458,21 @@ pub const RUNTIMES: &[Runtime] = &[
             Marker::Binary("kiro"),
             Marker::Home(".kiro"),
             Marker::Project(".kiro/steering"),
-            Marker::Project(".kiro/settings"),
             Marker::Project(".kiro/specs"),
         ],
         // `.kiro/skills`, `~/.kiro/skills`. `.agents/skills` is not listed.
         // https://kiro.dev/docs/skills/
         writers: &[Writer::SkillCopy(".kiro/skills")],
         reads: ".kiro/skills/agentcordon/SKILL.md",
+        // `.kiro/settings/mcp.json` (workspace), `~/.kiro/settings/mcp.json`
+        // (user); workspace wins. https://kiro.dev/docs/mcp/configuration/
+        mcp: McpConfig::Project(McpFile {
+            path: ".kiro/settings/mcp.json",
+            shape: McpShape::Json {
+                key: "mcpServers",
+                stdio: false,
+            },
+        }),
         note: None,
     },
 ];
@@ -387,4 +538,78 @@ pub fn detect(env: &DetectEnv) -> Vec<&'static Runtime> {
         .iter()
         .filter(|r| r.markers.iter().any(|m| env.matches(m)))
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// MCP server registration
+// ---------------------------------------------------------------------------
+
+/// The binary a runtime starts, and the name the entry is filed under.
+///
+/// Bare, never a path. PATH resolution stays the user's, and an absolute path
+/// baked into a file that gets committed is wrong on every other machine.
+pub const MCP_COMMAND: &str = "agentcordon";
+pub const MCP_ENTRY: &str = SKILL_NAME;
+
+/// How a runtime spells a stdio MCP server entry.
+///
+/// The shapes differ in four ways only: the key the map of servers lives
+/// under, whether the transport has to be named, whether the command is a
+/// string plus an argument list or one array, and the file format. Each use
+/// in [`RUNTIMES`] cites the documentation it was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpShape {
+    /// `{"<key>": {"agentcordon": {"command": …, "args": […]}}}`. `stdio` adds
+    /// `"type": "stdio"`, which VS Code and Cursor document as required and
+    /// which Claude Code and Roo infer from the absence of `url`.
+    Json { key: &'static str, stdio: bool },
+    /// OpenCode: `"type": "local"` and one `command` array.
+    OpenCode,
+    /// Codex: `[mcp_servers.agentcordon]` in TOML.
+    Toml,
+    /// Copilot CLI: `mcpServers`, `"type": "local"`, and a `tools` allow-list.
+    CopilotCli,
+    /// Zed: `context_servers`, with `"source": "custom"`.
+    Zed,
+    /// Goose: a YAML `extensions:` map, `cmd` rather than `command`.
+    Goose,
+}
+
+/// A project-level MCP config file, relative to the workspace root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpFile {
+    /// Workspace-relative, `/`-separated.
+    pub path: &'static str,
+    pub shape: McpShape,
+}
+
+/// A user-level MCP config `init` never writes: it is outside the workspace,
+/// shared by every project, and often maintained by the runtime's own CLI. It
+/// is printed instead, path and snippet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpUser {
+    /// As displayed, with `~`. Never expanded and never opened.
+    pub path: &'static str,
+    pub shape: McpShape,
+    /// Which client this covers, when the runtime also has a project file.
+    pub label: &'static str,
+    /// The command that edits it, when the runtime ships one.
+    pub command: Option<&'static str>,
+}
+
+/// Where a runtime's registration for `agentcordon mcp-serve` lives.
+///
+/// Every runtime names one of these four. A new entry in [`RUNTIMES`] cannot
+/// be left undecided; `every_runtime_declares_what_it_does_about_mcp` fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpConfig {
+    /// A project-level file `init` writes.
+    Project(McpFile),
+    /// A project-level file, plus a user-level path for a second client that
+    /// ships under the same name and has no project file of its own.
+    ProjectAndUser(McpFile, McpUser),
+    /// User-level only: printed, not written.
+    User(McpUser),
+    /// Not an MCP client.
+    None,
 }

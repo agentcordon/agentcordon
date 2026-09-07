@@ -36,8 +36,9 @@ pub(crate) async fn ensure_broker_running(server_url: &str) -> Result<String, Cl
         return Ok(url);
     }
 
-    // Start broker in background
-    println!("  Starting broker daemon...");
+    // Start broker in background. On stderr, not stdout: `mcp-serve` shares
+    // this path and its stdout carries JSON-RPC and nothing else.
+    eprintln!("  Starting broker daemon...");
     let broker_port = find_broker_port();
 
     let mut cmd = std::process::Command::new("agentcordon-broker");

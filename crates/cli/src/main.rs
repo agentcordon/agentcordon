@@ -68,6 +68,16 @@ enum Command {
         #[arg(long = "no-register")]
         no_register: bool,
 
+        /// Install the skill but register no MCP server in any runtime's
+        /// configuration. Remembered in `.agentcordon/agents.toml`.
+        #[arg(long = "no-mcp")]
+        no_mcp: bool,
+
+        /// Brokered MCP server whose tools `mcp-serve` re-exports as typed
+        /// tools. Repeatable; remembered in `.agentcordon/agents.toml`.
+        #[arg(long = "expose", num_args = 1)]
+        expose: Vec<String>,
+
         /// AgentCordon server URL to enroll with. Optional: without it the
         /// CLI falls back to `AGTCRDN_SERVER_URL` and then to `server_url`
         /// in `~/.agentcordon/config.toml`, which your server's installer
@@ -176,6 +186,18 @@ enum Command {
         tool: Option<String>,
     },
 
+    /// Serve AgentCordon as an MCP server over stdio, so a runtime gets
+    /// native tools instead of shelling out to this CLI
+    McpServe {
+        /// Also publish one tool per upstream tool of this MCP server, named
+        /// `<server>__<tool>`. Repeatable. Off by default: every tool's
+        /// schema is loaded into the model's context at session start, so a
+        /// re-export is worth its tokens only for a server an agent calls
+        /// constantly.
+        #[arg(long = "expose", num_args = 1)]
+        expose: Vec<String>,
+    },
+
     /// Call an MCP tool
     McpCall {
         /// MCP server name
@@ -258,6 +280,8 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             agents,
             reconfigure,
             no_register,
+            no_mcp,
+            expose,
             server_url,
             name,
         } => {
@@ -265,6 +289,8 @@ async fn run_async(command: Command) -> Result<(), CliError> {
                 agents,
                 reconfigure,
                 no_register,
+                no_mcp,
+                expose,
                 server_url,
                 name,
             })
@@ -312,6 +338,9 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             server,
             tool,
         } => commands::mcp::list_tools(schema, server, tool).await,
+        Command::McpServe { expose } => {
+            commands::mcp_serve::run(commands::mcp_serve::ServeArgs { expose }).await
+        }
         Command::McpCall {
             server,
             tool,

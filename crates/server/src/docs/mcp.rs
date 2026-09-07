@@ -27,7 +27,20 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                         "properties": {
                             "name": { "type": "string", "description": "MCP server name" },
                             "transport": { "type": "string", "enum": ["http", "sse"], "description": "Transport: http or sse (default: http)" },
-                            "url": { "type": "string", "description": "Upstream URL for HTTP/SSE transport servers" }
+                            "url": { "type": "string", "description": "Upstream URL for HTTP/SSE transport servers" },
+                            "tools": {
+                                "type": "array",
+                                "description": "Tools the workspace knows this server has. Stored the way discovery stores them: names, descriptions and input schemas are all kept.",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["name"],
+                                    "properties": {
+                                        "name": { "type": "string", "description": "Tool name" },
+                                        "description": { "type": "string", "description": "What the tool does" },
+                                        "input_schema": { "type": "object", "description": "JSON Schema for the tool's arguments; the MCP spelling `inputSchema` is accepted too" }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -222,12 +235,14 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "PUT".to_string(),
         path: "/api/v1/mcp-servers/{id}".to_string(),
-        description: "Update a registered MCP server's name. Requires admin role.".to_string(),
+        description: "Update a registered MCP server. Every field is optional and an absent one is left alone; an unknown field is rejected. Requires `manage_mcp_servers` on this server.".to_string(),
         auth_required: true,
         request_body: Some(json!({
             "type": "object",
             "properties": {
-                "name": { "type": "string", "description": "New server name (must not contain dots)" }
+                "name": { "type": "string", "description": "New server name (must not contain dots)" },
+                "enabled": { "type": "boolean", "description": "`false` drops the server out of broker sync and makes every mcp_tool_call / mcp_list_tools on it forbidden — the immediate-revocation path." },
+                "allowed_tools": { "type": "array", "items": { "type": "string" }, "description": "The tools this server exposes, as an allow-list. Every name must be one the server publishes; an unknown name is a 400 naming it and nothing changes. An empty list means no tools at all. A tool outside the list is not listed to any agent and its calls are refused before policy is consulted." }
             }
         })),
         response_body: Some(json!({
@@ -291,14 +306,13 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
     endpoints.push(EndpointDoc {
         method: "POST".to_string(),
         path: "/api/v1/mcp-servers/{id}/generate-policies".to_string(),
-        description: "Generates Cedar policies for selected tools on an MCP server. Creates one policy per tool/tag combination. Requires admin role.".to_string(),
+        description: "Generates Cedar policies for selected tools on an MCP server. Creates one policy per tool/tag combination. Both fields are optional, so an empty body ({}) grants what the server already has. Requires admin role.".to_string(),
         auth_required: true,
         request_body: Some(json!({
             "type": "object",
-            "required": ["tools", "agent_tags"],
             "properties": {
-                "tools": { "type": "array", "items": { "type": "string" }, "description": "List of tool names to generate policies for (max 50)" },
-                "agent_tags": { "type": "array", "items": { "type": "string" }, "description": "List of agent tags to grant access (max 50)" }
+                "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool names to generate policies for (max 50). Omit for every tool the server currently has: its allowed_tools, else what discovery found. An explicit empty list is rejected." },
+                "agent_tags": { "type": "array", "items": { "type": "string" }, "description": "Agent tags to grant access (max 50). Omit for every tag the workspaces bound to this server carry. An explicit empty list is rejected." }
             }
         })),
         response_body: Some(json!({

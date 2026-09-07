@@ -142,7 +142,14 @@ pub(super) async fn update_mcp_server(
     let server = state
         .services
         .mcp_servers
-        .update(&auth, &corr.0, &McpServerId(id), req.name, req.enabled)
+        .update(
+            &auth,
+            &corr.0,
+            &McpServerId(id),
+            req.name,
+            req.enabled,
+            req.allowed_tools,
+        )
         .await?;
 
     Ok(Json(ApiResponse::ok(McpServerResponse::from_server(

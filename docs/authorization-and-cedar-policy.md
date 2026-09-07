@@ -65,6 +65,7 @@ AgentCordon::PolicyResource::"policies"
 | **Policy** | `manage_policies` |
 | **User** | `manage_users` |
 | **Workspace** | `manage_workspaces`, `view_audit`, `rotate_key`, `manage_mcp_servers`, `manage_tags`, `manage_oidc_providers`, `manage_oauth_provider_clients`, `manage_vaults`, `rotate_encryption_key` |
+| **Consent** | `manage_consents` |
 | **Registration** | `register_workspace` |
 
 ---
@@ -95,6 +96,7 @@ evaluate(principal, action, resource, context) -> PolicyDecision
 | `mcp_tool_call` | `tool_name`, `credential_name`, `justification`, `timestamp` |
 | `mcp_list_tools` | `timestamp` |
 | `manage_tags` | `tag_value`, `timestamp` |
+| `manage_consents` | `consent_user_id`, `timestamp` |
 | Others | `timestamp` |
 
 ### Root Bypass
@@ -269,7 +271,7 @@ The nav item is **Policies**; the paths are under `/security` (`/policies` redir
 | `/security` | The policy table. Header: **Open tester** (outlined) and **New Policy** (the page's one primary). Above the table, a search box and one filter select -- *All except grants* / *Grants only* / *System only* / *Custom only*. Name, Enabled and Updated are sortable column headers. Each row is a link to the policy; there is no per-row enable/disable. |
 | `/security/{id}` | One policy. The header carries **Disable** / **Enable**, **Edit**, and a **&hellip;** overflow holding **Delete**. Enabling and disabling never needs edit mode, and the last enabled policy refuses both disable and delete, saying why. The body shows Status, then Policy Statements -- per statement, or all at once via **View all as Cedar**. Edit mode adds a **Raw Cedar** / **Structured** toggle over the statement builder. Below: the **Affected Principals** card, loaded on demand with **Load** / **Refresh** because the query is expensive, and a **Test this policy &rarr;** link into the tester, prefilled with this policy. |
 | `/security/new` | Name, Description, the Cedar source, an **Enabled** checkbox, **Cancel** and **Create Policy**, plus template cards that preview into the editor with **Use this template**. |
-| `/security/tester` | The only policy tester -- there is no second one embedded in a policy page. Pick a **Principal** (workspaces and users, users carrying their role), an **Action** and a **Resource** (a concrete credential or MCP server, or *Any credential* / *Any MCP server* / *Any workspace* / *Any policy*), optionally override the principal's role and tags, then **Test** (Ctrl+Enter) or **Test All Workspaces** for the access matrix. The header's **Scenarios** menu saves the current form, reloads a saved one, and clears the list; scenarios live in the browser's local storage, so they are per-browser and not shared. |
+| `/security/tester` | The only policy tester -- there is no second one embedded in a policy page. Pick a **Principal** (workspaces and users, users carrying their role), an **Action** and a **Resource** (a concrete credential or MCP server, or *Any credential* / *Any MCP server* / *Any workspace* / *Any policy*), optionally override the principal's role and tags, then **Test** (Ctrl+Enter) or **Test All Workspaces** for the access matrix. Choosing `mcp_tool_call` adds a **Tool name** field, because that decision is per tool: every policy the MCP Access tab's Grant/Deny control writes conditions on `context.tool_name`, and the result line names the tool it answered for. Leave it empty to ask about the server with no tool named. The header's **Scenarios** menu saves the current form -- the tool name included -- reloads a saved one, and clears the list; scenarios live in the browser's local storage, so they are per-browser and not shared. |
 
 ---
 

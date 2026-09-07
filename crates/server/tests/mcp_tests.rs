@@ -969,3 +969,248 @@ async fn test_generate_policies_server_not_found() {
 
     assert_eq!(status, StatusCode::NOT_FOUND, "should return 404");
 }
+
+// ---------------------------------------------------------------------------
+// 7b. Generate policies — an empty body means "every tool, every bound tag"
+// ---------------------------------------------------------------------------
+
+/// Create a workspace with `tags`, an MCP server with the given tool lists,
+/// and bind the two through the junction. Returns the server.
+async fn mcp_bound_to_tagged_workspace(
+    store: &(dyn Store + Send + Sync),
+    name: &str,
+    tags: &[&str],
+    allowed_tools: Option<Vec<String>>,
+    discovered_tools: Option<Vec<agent_cordon_core::domain::mcp::McpTool>>,
+) -> McpServer {
+    let now = chrono::Utc::now();
+    let workspace = agent_cordon_core::domain::workspace::Workspace {
+        id: agent_cordon_core::domain::workspace::WorkspaceId(Uuid::new_v4()),
+        name: format!("ws-{}", name),
+        status: agent_cordon_core::domain::workspace::WorkspaceStatus::Active,
+        pk_hash: None,
+        encryption_public_key: None,
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+        owner_id: None,
+        parent_id: None,
+        tool_name: None,
+        created_at: now,
+        updated_at: now,
+    };
+    store
+        .create_workspace(&workspace)
+        .await
+        .expect("create workspace");
+
+    let server = McpServer {
+        id: McpServerId(Uuid::new_v4()),
+        workspace_id: None,
+        name: name.to_string(),
+        upstream_url: "http://mcp-test:3000".to_string(),
+        transport: McpTransport::Http,
+        allowed_tools,
+        enabled: true,
+        created_by: None,
+        created_at: now,
+        updated_at: now,
+        tags: vec![],
+        required_credentials: None,
+        auth_method: McpAuthMethod::default(),
+        template_key: None,
+        discovered_tools,
+        created_by_user: None,
+    };
+    store
+        .create_mcp_server(&server)
+        .await
+        .expect("create mcp server");
+    store
+        .add_mcp_server_workspace(&server.id, &workspace.id, None)
+        .await
+        .expect("bind mcp server to workspace");
+    server
+}
+
+/// An empty body is the "grant what this server has" request: every tool the
+/// server currently knows about, to every tag its bound workspaces carry.
+#[tokio::test]
+async fn test_generate_policies_empty_body_uses_the_servers_own_tools_and_tags() {
+    let ctx = TestAppBuilder::new().build().await;
+    let _admin = create_user_in_db(&*ctx.store, "mcp-admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, csrf) = login_user(&ctx.app, "mcp-admin", TEST_PASSWORD).await;
+
+    let server = mcp_bound_to_tagged_workspace(
+        &*ctx.store,
+        "defaults-mcp",
+        &["ci"],
+        Some(vec!["create_issue".to_string(), "list_repos".to_string()]),
+        None,
+    )
+    .await;
+
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::POST,
+        &format!("/api/v1/mcp-servers/{}/generate-policies", server.id.0),
+        None,
+        Some(&cookie),
+        Some(&csrf),
+        Some(json!({})),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an empty body is a valid request: {}",
+        body
+    );
+    let policies = body["data"]["policies_created"]
+        .as_array()
+        .unwrap_or_else(|| panic!("policies_created: {}", body));
+    assert_eq!(policies.len(), 2, "2 tools x 1 tag: {}", body);
+    let names: Vec<&str> = policies.iter().filter_map(|p| p["name"].as_str()).collect();
+    assert!(
+        names.iter().any(|n| n.contains("create_issue")),
+        "every tool gets a grant: {:?}",
+        names
+    );
+    assert!(
+        names.iter().any(|n| n.contains("list_repos")),
+        "every tool gets a grant: {:?}",
+        names
+    );
+    for p in policies {
+        assert!(
+            p["cedar_policy"].as_str().unwrap().contains("\"ci\""),
+            "the bound workspace's tag: {}",
+            p
+        );
+    }
+
+    // A POST with no body at all is the same request; the policies already
+    // exist, so it is a 200 that creates nothing rather than a 422.
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::POST,
+        &format!("/api/v1/mcp-servers/{}/generate-policies", server.id.0),
+        None,
+        Some(&cookie),
+        Some(&csrf),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a body-less POST: {}", body);
+    assert!(
+        body["data"]["policies_created"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "the same grants already exist: {}",
+        body
+    );
+}
+
+/// A server whose tools are known only from discovery still has tools.
+#[tokio::test]
+async fn test_generate_policies_falls_back_to_discovered_tools() {
+    let ctx = TestAppBuilder::new().build().await;
+    let _admin = create_user_in_db(&*ctx.store, "mcp-admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, csrf) = login_user(&ctx.app, "mcp-admin", TEST_PASSWORD).await;
+
+    let server = mcp_bound_to_tagged_workspace(
+        &*ctx.store,
+        "discovered-only-mcp",
+        &["ci"],
+        None,
+        Some(vec![agent_cordon_core::domain::mcp::McpTool {
+            name: "echo".to_string(),
+            description: Some("Echo a message".to_string()),
+            input_schema: None,
+        }]),
+    )
+    .await;
+
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::POST,
+        &format!("/api/v1/mcp-servers/{}/generate-policies", server.id.0),
+        None,
+        Some(&cookie),
+        Some(&csrf),
+        Some(json!({ "agent_tags": ["ci"] })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    let policies = body["data"]["policies_created"].as_array().unwrap();
+    assert_eq!(policies.len(), 1, "one discovered tool: {}", body);
+    assert!(policies[0]["name"].as_str().unwrap().contains("echo"));
+}
+
+/// Nothing to grant is a 400 that says which half was missing, not an
+/// empty 200 that looks like it worked.
+#[tokio::test]
+async fn test_generate_policies_without_tools_to_default_to_is_rejected() {
+    let ctx = TestAppBuilder::new().build().await;
+    let _admin = create_user_in_db(&*ctx.store, "mcp-admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, csrf) = login_user(&ctx.app, "mcp-admin", TEST_PASSWORD).await;
+
+    let server =
+        mcp_bound_to_tagged_workspace(&*ctx.store, "toolless-mcp", &["ci"], None, None).await;
+
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::POST,
+        &format!("/api/v1/mcp-servers/{}/generate-policies", server.id.0),
+        None,
+        Some(&cookie),
+        Some(&csrf),
+        Some(json!({})),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", body);
+    let message = body.to_string();
+    assert!(
+        message.contains("tools"),
+        "the error names the missing half: {}",
+        message
+    );
+}
+
+/// Same for the tag half: a server bound only to untagged workspaces has no
+/// tags to grant to.
+#[tokio::test]
+async fn test_generate_policies_without_tags_to_default_to_is_rejected() {
+    let ctx = TestAppBuilder::new().build().await;
+    let _admin = create_user_in_db(&*ctx.store, "mcp-admin", TEST_PASSWORD, UserRole::Admin).await;
+    let (cookie, csrf) = login_user(&ctx.app, "mcp-admin", TEST_PASSWORD).await;
+
+    let server = mcp_bound_to_tagged_workspace(
+        &*ctx.store,
+        "untagged-mcp",
+        &[],
+        Some(vec!["create_issue".to_string()]),
+        None,
+    )
+    .await;
+
+    let (status, body) = send_json(
+        &ctx.app,
+        Method::POST,
+        &format!("/api/v1/mcp-servers/{}/generate-policies", server.id.0),
+        None,
+        Some(&cookie),
+        Some(&csrf),
+        Some(json!({})),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", body);
+    assert!(
+        body.to_string().contains("agent_tags"),
+        "the error names the missing half: {}",
+        body
+    );
+}

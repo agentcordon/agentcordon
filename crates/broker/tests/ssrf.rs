@@ -54,6 +54,7 @@ fn cached_server(id: &str, name: &str, url: &str, credential: CachedCredential) 
         transport: "http".to_string(),
         auth_method: "bearer".to_string(),
         tools: vec![],
+        tools_are_authoritative: false,
         enabled: true,
         credential: Some(credential),
         last_synced: chrono::Utc::now(),

@@ -24,6 +24,23 @@ struct McpServer {
     transport: String,
 }
 
+/// The broker's MCP server listing, as it answered it.
+///
+/// `mcp-serve` publishes the same call as `agentcordon_mcp_servers`, so the
+/// route and its envelope are named once here rather than once per caller.
+pub(crate) async fn fetch_servers(
+    client: &BrokerClient,
+) -> Result<Vec<serde_json::Value>, CliError> {
+    #[derive(Deserialize)]
+    struct Raw {
+        data: Vec<serde_json::Value>,
+    }
+    let resp: Raw = client
+        .post("/mcp/list-servers", &serde_json::json!({}))
+        .await?;
+    Ok(resp.data)
+}
+
 /// List available MCP servers, deduplicated by name.
 ///
 /// Multiple workspaces may import the same server, so the server-side catalog
@@ -31,9 +48,14 @@ struct McpServer {
 /// each server name.
 pub async fn list_servers() -> Result<(), CliError> {
     let client = BrokerClient::connect().await?;
-    let resp: McpServersResponse = client
-        .post("/mcp/list-servers", &serde_json::json!({}))
-        .await?;
+    let entries = fetch_servers(&client).await?;
+    let resp = McpServersResponse {
+        data: entries
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<Vec<McpServer>, _>>()
+            .map_err(|e| CliError::general(format!("invalid response JSON: {e}")))?,
+    };
 
     if resp.data.is_empty() {
         println!("No MCP servers available.");
@@ -81,6 +103,15 @@ struct McpToolsResponseRaw {
     data: Vec<serde_json::Value>,
 }
 
+/// The broker's tool catalogue, entry for entry as it answered it: one
+/// object per tool with `server`, `tool`, `description` and `input_schema`.
+pub(crate) async fn fetch_tools(client: &BrokerClient) -> Result<Vec<serde_json::Value>, CliError> {
+    let resp: McpToolsResponseRaw = client
+        .post("/mcp/list-tools", &serde_json::json!({}))
+        .await?;
+    Ok(resp.data)
+}
+
 /// List all available MCP tools.
 ///
 /// When `schema` is set, emits the raw JSON-RPC `tools/list` response shape
@@ -92,9 +123,9 @@ pub async fn list_tools(
     tool: Option<String>,
 ) -> Result<(), CliError> {
     let client = BrokerClient::connect().await?;
-    let resp: McpToolsResponseRaw = client
-        .post("/mcp/list-tools", &serde_json::json!({}))
-        .await?;
+    let resp = McpToolsResponseRaw {
+        data: fetch_tools(&client).await?,
+    };
 
     if schema {
         let filtered = filter_tools(&resp.data, server.as_deref(), tool.as_deref());
@@ -161,6 +192,25 @@ struct McpCallRequest {
     server: String,
     tool: String,
     arguments: serde_json::Value,
+}
+
+/// One `tools/call` through the broker, which authorizes it and injects the
+/// upstream credential. The whole `data` object comes back — `content`,
+/// `isError` and the `correlation_id` that ties it to the policy decision in
+/// the audit log — because `mcp-serve` hands all three to its caller.
+pub(crate) async fn call_tool(
+    client: &BrokerClient,
+    server: &str,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, CliError> {
+    let req = McpCallRequest {
+        server: server.to_string(),
+        tool: tool.to_string(),
+        arguments,
+    };
+    let resp: McpCallResponse = client.post("/mcp/call", &req).await?;
+    Ok(resp.data)
 }
 
 #[derive(Deserialize)]
@@ -281,18 +331,9 @@ async fn call_inner(
     };
     let arguments = build_arguments(args_json_value, &args)?;
 
-    let req = McpCallRequest {
-        server,
-        tool,
-        arguments,
-    };
-
-    let resp: McpCallResponse = client
-        .post("/mcp/call", &req)
+    let result = call_tool(&client, &server, &tool, arguments)
         .await
         .map_err(CallFailure::Pre)?;
-
-    let result = resp.data;
     let content = result
         .get("content")
         .and_then(|c| c.as_array())

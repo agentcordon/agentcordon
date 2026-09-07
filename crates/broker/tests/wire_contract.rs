@@ -95,6 +95,7 @@ fn sync_entry(name: &str, url: &str) -> McpServerSyncEntry {
         transport: "http".to_string(),
         url: Some(url.to_string()),
         tools: vec!["forecast".to_string()],
+        tools_are_authoritative: false,
         enabled: true,
         required_credentials: None,
         auth_method: "none".to_string(),

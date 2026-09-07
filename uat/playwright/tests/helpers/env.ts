@@ -82,7 +82,7 @@ export const UAT = {
   operatorUsername: raw.UAT_OPERATOR_USERNAME,
   operatorPassword: raw.UAT_OPERATOR_PASSWORD,
 
-  // S18: the guarded broker (no --proxy-allow-loopback), its CLI container,
+  // S21: the guarded broker (no --proxy-allow-loopback), its CLI container,
   // the workspace enrolled through it, and an unfenced credential that the
   // guard must still refuse.
   brokerGuarded: raw.UAT_BROKER_GUARDED,
