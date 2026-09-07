@@ -7,24 +7,36 @@ AgentCordon is a **5-crate Rust workspace** that separates concerns into **core*
 ---
 
 **On this page:**
-[Crate Overview](#crate-overview) · [API Routes](#api-routes) · [Middleware](#middleware-stack) · [Data Flow](#data-flow) · [MCP Architecture](#mcp-architecture) · [Database](#database) · [Deployment](#deployment) · [Observability](#observability)
+[Project Structure](#project-structure) · [API Routes](#api-routes) · [Middleware](#middleware-stack) · [Data Flow](#data-flow) · [MCP Architecture](#mcp-architecture) · [Database](#database) · [Deployment](#deployment) · [Observability](#observability)
 
 ---
 
-## Crate Overview
+## Project Structure
 
 ```
-AgentCordon/
-├── crates/
-│   ├── core/       # Shared library: crypto, policy, storage, domain models
-│   ├── server/     # Control plane: HTTP API, admin UI, policy engine
-│   ├── broker/     # Per-user daemon: OAuth tokens, credential proxy, MCP sync
-│   ├── cli/        # Thin CLI agent: Ed25519 signing, broker communication
-│   └── identity/   # Key file, sha256: identity, request/register signing (CLI + broker)
-├── policies/       # Cedar policy files and schema
-├── migrations/     # SQLite migration files
-└── data/           # Credential, MCP, and policy templates
+crates/
+  core/         Domain types, Cedar policy engine, crypto (AES-256-GCM key ring,
+                ECIES, HKDF), storage, wire types, transforms, SSRF and
+                URL-pattern checks
+  server/       Control plane: Axum HTTP server, admin API and console, OAuth
+                authorization server, credential vault, audit pipeline
+  broker/       Per-user daemon: OAuth token store, credential vending,
+                upstream HTTP proxy, MCP sync and tool calls
+  cli/          Thin CLI (`agentcordon`): workspace identity, signed requests
+                to the broker
+  identity/     Ed25519 key file, `sha256:` identity, request and register
+                signing — shared by the CLI and the broker, with frozen test
+                vectors
+migrations/     Forward-only SQLite schema migrations, embedded in `core`
+policies/       The Cedar schema and the default policy
+data/           Built-in credential, MCP and policy templates, embedded in the
+                server at compile time
+docs/           This documentation
+uat/            End-to-end acceptance suite (Playwright)
 ```
+
+Three binaries come out of it: `agent-cordon-server` (the control plane),
+`agentcordon-broker` (the daemon) and `agentcordon` (the CLI).
 
 ---
 
@@ -41,8 +53,8 @@ The foundation crate, used by server and broker.
 | `auth/` | OIDC, password hashing |
 | `oauth2/` | OAuth2 client credentials token manager, token utilities, scope types |
 | `proxy/` | URL safety (resolving SSRF check over the full reserved set), structural URL-pattern matching, leak scanning. The broker runs the scanner over proxied response bodies **and** over MCP tool results and `tools/list` discovery probes, replacing any injected value with `[REDACTED]`. |
-| `services/` | Business logic services |
-| `transform/` | Rhai script engine for custom credential transforms |
+| `wire/` | The server<->broker wire types, defined once and shared by both (ADR-0005) |
+| `transform/` | Built-in transforms and the sandboxed Rhai engine for custom ones |
 
 > [!NOTE]
 > **Storage Architecture:** A composite `Store` trait inherits 14 sub-traits (UserStore, SessionStore, CredentialStore, DeviceCodeStore, SecretHistoryStore, PolicyStore, AuditStore, VaultStore, McpStore, McpOAuthStore, OAuthProviderClientStore, OAuthStore, OidcStore, WorkspaceStore). The SQLite backend implements them; it is the only backend.
@@ -145,9 +157,8 @@ The thin CLI binary that agents use. It manages Ed25519 keypairs, signs requests
 
 | Command | Description |
 |---------|-------------|
-| `init` | Generate Ed25519 keypair, write `.agentcordon/` identity, configure `.mcp.json` |
-| `setup` | One-command setup: start broker, generate keys, register workspace |
-| `register` | Start device authorization registration via the broker |
+| `init` | Generate the Ed25519 keypair, write `.agentcordon/`, and write the agent instruction files (`--agent`) |
+| `register` | Start device authorization registration via the broker; auto-starts one with `--server-url` |
 | `status` | Check workspace and broker status |
 | `credentials` | List available credentials |
 | `credentials create` | Create a new credential via the broker |
@@ -365,7 +376,7 @@ MCP server configs are synced on a configurable interval (`AGTCRDN_MCP_SYNC_INTE
 1. **Server** (`GET /api/v1/workspaces/mcp-servers?include_credentials=true`) -- authoritative metadata with ECIES-encrypted credential envelopes
 2. **Broker cache** (`BrokerState::mcp_configs`) -- decrypted credentials cached in memory per workspace
 
-Secrets stay on the server. For an OAuth-backed credential (`oauth2_user_authorization`, `oauth2_client_credentials`) the server runs the upstream `refresh_token` or `client_credentials` exchange itself (`crates/server/src/upstream_token_service.rs`, over the shared `OAuth2TokenManager` cache) and seals only the resulting short-lived access token and its `expires_at` into the envelope. The refresh token and the provider client secret never leave the server; a refresh token the provider rotates is persisted there with a secret-history row and a `CredentialSecretRotated` audit event. The same applies to `POST /api/v1/credentials/vend-device/{name}` for `oauth2_client_credentials` credentials.
+Secrets stay on the server. For an OAuth-backed credential (`oauth2_user_authorization`, `oauth2_client_credentials`) the server runs the upstream `refresh_token` or `client_credentials` exchange itself (`crates/server/src/services/upstream_tokens.rs`, over the shared `OAuth2TokenManager` cache) and seals only the resulting short-lived access token and its `expires_at` into the envelope. The refresh token and the provider client secret never leave the server; a refresh token the provider rotates is persisted there with a secret-history row and a `CredentialSecretRotated` audit event. The same applies to `POST /api/v1/credentials/vend-device/{name}` for `oauth2_client_credentials` credentials.
 
 The broker never calls a token endpoint. It treats the envelope value as a bearer and syncs again when a cached token is within 60 s of `expires_at` or when the upstream MCP server answers 401 (one retry). A server that could not produce a token is reported in the entry's `credential_error` field with no envelope; the rest of the sync is unaffected.
 
@@ -398,64 +409,16 @@ Migrations are the forward-only SQL files in `/migrations/`, embedded in the `ag
 
 ## Deployment
 
-### Docker Compose
+The shipped `docker-compose.yml` runs one server container publishing
+`${AGTCRDN_PORT:-3140}:3140` with a named `agentcordon-data` volume on `/data`.
+`AGTCRDN_PORT` there is the **host** side of the published mapping and nothing else: the
+binary never reads it, and binds `AGTCRDN_LISTEN_ADDR` (default `0.0.0.0:3140`), which is
+the container-internal `3140`.
 
-```yaml
-services:
-  agentcordon:
-    image: ghcr.io/agentcordon/agentcordon:latest
-    container_name: agentcordon
-    command: ["agent-cordon-server"]
-    ports:
-      - "${AGTCRDN_PORT:-3140}:3140"
-    volumes:
-      - agentcordon-data:/data
-    env_file:
-      - path: .env
-        required: false
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3140/health"]
-      interval: 10s
-      timeout: 5s
-      start_period: 15s
-      retries: 5
-    restart: unless-stopped
-```
-
-`AGTCRDN_PORT` here is the **host** side of the published port mapping and nothing else.
-The server binary never reads it; it binds `AGTCRDN_LISTEN_ADDR` (default `0.0.0.0:3140`),
-which is the container-internal `3140` above. A plain `docker run` that sets
-`AGTCRDN_PORT` changes nothing.
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGTCRDN_LISTEN_ADDR` | `0.0.0.0:3140` | Server bind address |
-| `AGTCRDN_DB_PATH` | `./data/agent-cordon.db` | SQLite database path (the only backend) |
-| `AGTCRDN_MASTER_SECRET` | Auto-generated | Encryption master secret (min 16 chars); persisted to `.secret` file |
-| `AGTCRDN_KDF_SALT` | Auto-derived | HKDF salt override (derived from master secret if not set) |
-| `AGTCRDN_LOG_LEVEL` | `info` | Tracing level |
-| `AGTCRDN_LOG_FORMAT` | `json` | `json` or `pretty` |
-| `AGTCRDN_PROXY_TIMEOUT_SECONDS` | `30` | HTTP proxy request timeout |
-| `AGTCRDN_PROXY_ALLOW_LOOPBACK` | `false` | Allow loopback/private URL targets |
-| `AGTCRDN_SESSION_TTL` | `28800` | User session TTL in seconds (8 hours) |
-| `AGTCRDN_SESSION_CLEANUP_INTERVAL` | `300` | Background cleanup interval in seconds (min 10) |
-| `AGTCRDN_ROOT_USERNAME` | `root` | Bootstrap admin username |
-| `AGTCRDN_ROOT_PASSWORD` | Auto-generated | Bootstrap admin password |
-| `AGTCRDN_BASE_URL` | -- | The URL users reach the server on. Every absolute URI the server emits is built from it: the device flow's `verification_uri`, the OAuth2 MCP callback redirect, and `GET /install.sh`. Falls back to `http://` + `AGTCRDN_LISTEN_ADDR`, which is unusable in a container. |
-| `AGTCRDN_AUTH_CODE_TTL` | `600` | OAuth authorization code TTL in seconds |
-| `AGTCRDN_REPLICA_MODE` | `single` | `unsafe-shared` skips the single-instance database lock |
-| `AGTCRDN_TRUST_FORWARDED_HEADERS` | `false` | Trust `X-Forwarded-For` for per-address rate limits |
-| `AGTCRDN_MCP_TEMPLATES_DIR` | -- | Extra MCP marketplace templates, merged with the built-in catalog at startup |
-| `AGTCRDN_CREDENTIAL_TEMPLATES_DIR` | -- | Extra credential templates |
-| `AGTCRDN_POLICY_TEMPLATES_DIR` | -- | Extra policy templates |
-| `AGTCRDN_INSTANCE_LABEL` | `AgentCordon` | `client_name` used in OAuth Dynamic Client Registration |
-| `AGTCRDN_DEVICE_CODE_TTL_SECS` | `600` | Device code lifetime (30--3600) |
-| `AGTCRDN_DEVICE_CODE_POLL_INTERVAL_SECS` | `5` | Device code poll interval (1--60) |
-| `AGTCRDN_BROKER_PORT` | `0` (auto) | Broker daemon listen port |
-| `AGTCRDN_SERVER_URL` | `http://localhost:3140` | Broker's upstream server URL |
-| `AGTCRDN_MCP_SYNC_INTERVAL` | `60` | Broker MCP config sync interval (seconds) |
+[Installation](installation.md) covers every way to start the server;
+[Deployment](deployment.md) covers the production shape — reverse proxy, base URL, volumes,
+the single-instance lock, backups and upgrades. Every environment variable, with its
+default and its clamps, is in [Configuration](configuration.md).
 
 ---
 

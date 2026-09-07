@@ -687,61 +687,20 @@ No re-enrollment is needed. The existing keypairs and cached state continue work
 
 ## Environment Variable Reference
 
-All variables have defaults and are backward-compatible. New variables in newer versions do not break older configurations.
+Every variable, with its default, its clamps and which binary reads it, is in
+[Configuration](configuration.md). It is the single source of truth; this page no longer
+repeats it.
 
-| Variable | Default | Notes |
-|----------|---------|-------|
-| `AGTCRDN_LISTEN_ADDR` | `0.0.0.0:3140` | Server bind address |
-| `AGTCRDN_DB_PATH` | `./data/agent-cordon.db` | SQLite database path. SQLite is the only backend; `AGTCRDN_DB_TYPE` and `AGTCRDN_DB_URL` were removed in 0.4.0 and the server refuses to start while either is set. |
-| `AGTCRDN_MASTER_SECRET` | Auto-generated | Persisted to `.secret` file next to DB. Must be >= 16 chars |
-| `AGTCRDN_KDF_SALT` | Auto-derived from master secret | Override HKDF salt (legacy deployments only) |
-| `AGTCRDN_ROOT_USERNAME` | `root` | Bootstrap admin username |
-| `AGTCRDN_ROOT_PASSWORD` | Auto-generated | Docker entrypoint persists to `/data/.root_password` |
-| `AGTCRDN_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, `error`. The CLI defaults to `warn` instead. |
-| `AGTCRDN_LOG_FORMAT` | `json` | `json` or `pretty` |
-| `AGTCRDN_SESSION_TTL` | `28800` | User session TTL in seconds (8 hours) |
-| `AGTCRDN_PROXY_ALLOW_LOOPBACK` | `false` | **Disables the SSRF guard entirely**, making every private and reserved range a valid proxy target, not just loopback. Read by both the server and the broker. Development only. |
-| `AGTCRDN_BASE_URL` | -- | The URL users reach the server on. The device flow's `verification_uri`, the OAuth2 MCP callback redirect, and `GET /install.sh` are all built from it; it falls back to `http://` + `AGTCRDN_LISTEN_ADDR`, which is unusable in a container. |
-| `AGTCRDN_DEVICE_CODE_TTL_SECS` | `600` | Device code TTL in seconds (clamped 30--3600) |
-| `AGTCRDN_DEVICE_CODE_POLL_INTERVAL_SECS` | `5` | Device flow polling interval (clamped 1--60) |
-| `AGTCRDN_AUTH_CODE_TTL` | `600` | OAuth authorization code TTL in seconds. (There is no `AGTCRDN_OAUTH_AUTH_CODE_TTL`; earlier docs named it wrongly.) |
-| `AGTCRDN_INSTANCE_LABEL` | `AgentCordon` | `client_name` used in OAuth Dynamic Client Registration |
-| `AGTCRDN_MASTER_KEY_VERSION` | `1` | Version of the current master secret; every encrypted row records the version that sealed it |
-| `AGTCRDN_PREVIOUS_MASTER_SECRET` | -- | The secret for version N-1, set only for the duration of a rotation |
-| `AGTCRDN_ARGON2_M_COST_KIB` | `65536` | Argon2id memory cost. An invalid value stops startup. |
-| `AGTCRDN_ARGON2_T_COST` | `3` | Argon2id iterations |
-| `AGTCRDN_ARGON2_P_COST` | `4` | Argon2id lanes |
-| `AGTCRDN_REPLICA_MODE` | `single` | `unsafe-shared` skips the single-instance database lock |
-| `AGTCRDN_TRUST_FORWARDED_HEADERS` | `false` | Trust `X-Forwarded-For` for per-address rate limits. Only behind a proxy that overwrites it. |
-| `AGTCRDN_MCP_TEMPLATES_DIR` | -- | Directory of extra MCP marketplace templates, merged at startup. Read once -- restart after editing. |
-| `AGTCRDN_CREDENTIAL_TEMPLATES_DIR` | -- | Same, for credential templates |
-| `AGTCRDN_POLICY_TEMPLATES_DIR` | -- | Same, for policy templates |
-| `AGTCRDN_SESSION_CLEANUP_INTERVAL` | `300` | Expired-session sweep interval, seconds (floor 10) |
-| `AGTCRDN_PROXY_TIMEOUT_SECONDS` | `30` | Upstream request timeout |
-| `AGTCRDN_PROXY_MAX_RESPONSE_BYTES` | `10485760` | Upstream response cap (floor 1 KiB) |
-| `AGTCRDN_LOGIN_MAX_ATTEMPTS` | `5` | Failed logins per (address, username) before lockout |
-| `AGTCRDN_LOGIN_LOCKOUT_SECONDS` | `30` | Lockout duration |
-| `AGTCRDN_OIDC_STATE_TTL` | `600` | OIDC login state TTL, seconds (floor 60) |
-| `AGTCRDN_BOOTSTRAP_TOKEN_TTL` | `900` | Bootstrap token TTL, seconds (clamped 60--86400) |
+Two things to check specifically before an upgrade:
 
-`AGTCRDN_PORT` is **not** a server variable. It appears in the shipped compose files as the
-host side of the port mapping only.
+- **`AGTCRDN_DB_TYPE` and `AGTCRDN_DB_URL` were removed in 0.4.0.** A server started with
+  either one set refuses to boot, so an old `.env` fails loudly rather than silently
+  opening the wrong database. Remove them and point `AGTCRDN_DB_PATH` at the SQLite file.
+- **`AGTCRDN_KDF_SALT`, once set, must stay set** — including through a master-key
+  rotation. See [Master Key](master-key.md).
 
-### Broker and CLI
-
-| Variable | Default | Notes |
-|----------|---------|-------|
-| `AGTCRDN_SERVER_URL` | `http://localhost:3140` | The server the broker talks to; also read by `agentcordon register --server-url` |
-| `AGTCRDN_BROKER_PORT` | `0` | Broker listen port. `0` means auto-select and write the URL to `~/.agentcordon/broker.port`. **There is no default port 3141 or 9876.** |
-| `AGTCRDN_BROKER_BIND` | `127.0.0.1` | A non-loopback bind is refused without TLS or a shared secret |
-| `AGTCRDN_BROKER_SHARED_SECRET` | -- | Required in `X-AgentCordon-Broker-Secret`; configures the broker and is sent by the CLI |
-| `AGTCRDN_BROKER_TLS_CERT` / `AGTCRDN_BROKER_TLS_KEY` | -- | PEM pair; the broker then serves HTTPS itself |
-| `AGTCRDN_BROKER_CA` | -- | CLI-side extra trust anchor for a broker's own certificate |
-| `AGTCRDN_BROKER_URL` | auto-discovered | CLI-side override of broker discovery. Loopback `http://` or any `https://` only. |
-| `AGTCRDN_DATA_DIR` | `~/.agentcordon` | Broker key, token store, port/pid/lock files |
-| `AGTCRDN_MCP_SYNC_INTERVAL` | `60` | Broker MCP config sync interval, seconds |
-| `AGTCRDN_TOKEN_TTL_BUFFER` | `60` | Seconds before expiry the broker refreshes its access token |
-| `AGTCRDN_WORKSPACE_DIR` | `.` | CLI-side override of where `.agentcordon/` lives |
+New variables in newer versions always have defaults, so an older configuration keeps
+working.
 
 ---
 
