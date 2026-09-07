@@ -416,11 +416,16 @@ async fn get_install_ps1(app: &Router) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// The closing message is the only instruction most people read, and `init`
-/// now asks which agent runtimes to install the skill for. Saying just
-/// "agentcordon init" leaves the reader with no idea a choice is being made.
+/// The closing message is the only instruction most people read, so it names
+/// exactly one command.
+///
+/// It used to also explain what `init` does ("choose your agent runtimes").
+/// `init` now picks the runtimes, installs the skill *and* enrols the
+/// workspace, which is more than a trailing comment can carry — and `init`
+/// itself says what it did. What the installer owes the reader is the name of
+/// the next command.
 #[tokio::test]
-async fn the_installers_tell_you_init_chooses_your_agent_runtimes() {
+async fn the_installers_name_agentcordon_init_as_the_next_command() {
     let app = setup_test_app().await;
     let sh = get_install_script(&app, None).await.2;
     let ps1 = get_install_ps1(&app).await;
@@ -430,29 +435,29 @@ async fn the_installers_tell_you_init_chooses_your_agent_runtimes() {
             body.contains("agentcordon init"),
             "{name}: the closing message must name `agentcordon init`"
         );
-        assert!(
-            body.to_lowercase().contains("agent runtime")
-                || body.to_lowercase().contains("which agents"),
-            "{name}: the closing message must say `init` chooses the agent runtimes"
-        );
     }
 }
 
 /// `export PATH="…:$PATH"` is ephemeral — the next terminal has no
-/// `agentcordon` — and it does not parse in nushell at all. The script knows
-/// `$SHELL`, so it can name the file to add the line to.
+/// `agentcordon` — and it does not parse in nushell at all. The script reads
+/// `$SHELL` and writes the file that shell actually reads.
+///
+/// `config.nu` was the file the old *printed hint* named; the block goes in
+/// `env.nu`, which is nushell's own place for environment setup and the one
+/// that is sourced before `config.nu`.
 #[tokio::test]
-async fn the_unix_installer_names_the_right_profile_file_for_the_users_shell() {
+async fn the_unix_installer_covers_every_shell_it_can_name() {
     let app = setup_test_app().await;
     let (_, _, body) = get_install_script(&app, None).await;
 
     assert!(body.contains("$SHELL"), "the script must look at $SHELL");
     for expected in [
         ".bashrc",
+        ".bash_profile",
         ".zshrc",
         "fish_add_path",
         "$env.PATH",
-        "config.nu",
+        "env.nu",
     ] {
         assert!(
             body.contains(expected),
@@ -504,5 +509,278 @@ async fn both_installers_tell_a_missing_release_apart_from_a_failed_fetch() {
     assert!(
         ps1.contains("Could not reach"),
         "install.ps1 needs a separate message for a transport failure"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What the installer *writes*: the server URL, and PATH that survives the
+// terminal (uat/artifacts/reviews/ONBOARDING-empirical.md F3, P5)
+// ---------------------------------------------------------------------------
+
+/// Run the served `install.sh` under a throwaway `HOME`, with the download
+/// skipped.
+///
+/// `AGENTCORDON_SKIP_DOWNLOAD=1` is the seam these tests need and the escape
+/// hatch a build-from-source user needs: it stops before the GitHub fetch and
+/// still does everything the installer does *locally* — write the config file,
+/// persist PATH, print the closing message. Without it there is no way to
+/// exercise the two things a new user actually depends on without reaching the
+/// public internet from a unit test.
+struct InstallerRun {
+    home: tempfile::TempDir,
+    stdout: String,
+    status: std::process::ExitStatus,
+}
+
+impl InstallerRun {
+    fn file(&self, relative: &str) -> Option<String> {
+        std::fs::read_to_string(self.home.path().join(relative)).ok()
+    }
+}
+
+async fn run_installer(shell: &str, extra_env: &[(&str, &str)]) -> InstallerRun {
+    run_installer_in(setup_test_app().await, shell, extra_env).await
+}
+
+async fn run_installer_in(app: Router, shell: &str, extra_env: &[(&str, &str)]) -> InstallerRun {
+    let (_, _, body) = get_install_script(&app, Some("cordon.example.test")).await;
+
+    let home = tempfile::TempDir::new().expect("temp HOME");
+    let script = home.path().join("install.sh");
+    std::fs::write(&script, &body).expect("write the served script");
+
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg(&script)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", home.path())
+        .env("SHELL", shell)
+        .env("AGENTCORDON_SKIP_DOWNLOAD", "1");
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("the served script must run under sh");
+    InstallerRun {
+        home,
+        stdout: format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        status: out.status,
+    }
+}
+
+/// The installer knows the origin it was fetched from. Writing it to the CLI's
+/// config is what makes `--server-url` optional on `register` and on
+/// `agentcordon init` — the difference between a two-command enrolment and a
+/// user copying a URL out of a terminal.
+#[tokio::test]
+async fn the_installer_records_the_server_it_came_from() {
+    let run = run_installer("/bin/bash", &[]).await;
+    assert!(run.status.success(), "installer failed: {}", run.stdout);
+
+    let config = run
+        .file(".agentcordon/config.toml")
+        .expect("the installer must write ~/.agentcordon/config.toml");
+    assert!(
+        config.contains(r#"server_url = "http://cordon.example.test""#),
+        "config must record the origin the script was fetched from: {config}"
+    );
+    assert!(
+        run.stdout.contains(".agentcordon/config.toml"),
+        "the installer must say it wrote the config: {}",
+        run.stdout
+    );
+}
+
+/// The config directory holds nothing but the broker's own key material next
+/// to it, so it is created `0700` like every other directory the broker owns.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_config_directory_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let run = run_installer("/bin/bash", &[]).await;
+    let mode = std::fs::metadata(run.home.path().join(".agentcordon"))
+        .expect(".agentcordon must exist")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700, "~/.agentcordon must be 0700, was {mode:o}");
+}
+
+/// Re-running the installer from a *different* server silently repointing the
+/// machine is the failure this guards: the change is made, and it is
+/// announced with both URLs.
+#[tokio::test]
+async fn changing_the_recorded_server_is_announced() {
+    let app = setup_test_app().await;
+    let run = run_installer_in(app, "/bin/bash", &[]).await;
+
+    std::fs::write(
+        run.home.path().join(".agentcordon/config.toml"),
+        "server_url = \"https://old.example.com\"\n",
+    )
+    .unwrap();
+
+    let mut cmd = std::process::Command::new("sh");
+    let second = cmd
+        .arg(run.home.path().join("install.sh"))
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", run.home.path())
+        .env("SHELL", "/bin/bash")
+        .env("AGENTCORDON_SKIP_DOWNLOAD", "1")
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&second.stdout).into_owned();
+
+    assert!(
+        out.contains("https://old.example.com") && out.contains("http://cordon.example.test"),
+        "a changed server_url must name both the old and the new value: {out}"
+    );
+    let config = run.file(".agentcordon/config.toml").unwrap();
+    assert!(
+        config.contains("http://cordon.example.test"),
+        "the newly fetched installer's origin wins: {config}"
+    );
+}
+
+/// `export PATH=…` printed to a terminal is gone when that terminal closes,
+/// and it does not parse in nushell at all (F3). rustup and uv both write the
+/// user's shell startup file; so does this.
+#[tokio::test]
+async fn the_installer_persists_path_for_each_shell() {
+    // (login shell, file it must write, line it must contain)
+    let cases: &[(&str, &str, &str)] = &[
+        ("/bin/bash", ".bashrc", "export PATH="),
+        ("/usr/bin/zsh", ".zshrc", "export PATH="),
+        (
+            "/usr/bin/fish",
+            ".config/fish/conf.d/agentcordon.fish",
+            "fish_add_path",
+        ),
+        ("/usr/bin/nu", ".config/nushell/env.nu", "$env.PATH"),
+    ];
+
+    for (shell, file, line) in cases {
+        let run = run_installer(shell, &[]).await;
+        assert!(run.status.success(), "{shell}: {}", run.stdout);
+        let written = run
+            .file(file)
+            .unwrap_or_else(|| panic!("{shell} must have its PATH persisted in {file}"));
+        assert!(
+            written.contains(line),
+            "{shell}: {file} must contain {line}, got: {written}"
+        );
+        assert!(
+            written.contains(".local/bin"),
+            "{shell}: {file} must add the install dir: {written}"
+        );
+        assert!(
+            run.stdout.contains(file),
+            "{shell}: the installer must name the file it changed: {}",
+            run.stdout
+        );
+        assert!(
+            run.stdout.to_lowercase().contains("remove"),
+            "{shell}: the installer must say how to undo the change: {}",
+            run.stdout
+        );
+    }
+}
+
+/// A second install must not append a second block. Marker-delimited, checked
+/// before writing.
+#[tokio::test]
+async fn persisting_path_twice_changes_the_file_once() {
+    let app = setup_test_app().await;
+    let run = run_installer_in(app, "/bin/bash", &[]).await;
+    let after_first = run.file(".bashrc").expect("bashrc written");
+
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg(run.home.path().join("install.sh"))
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", run.home.path())
+        .env("SHELL", "/bin/bash")
+        .env("AGENTCORDON_SKIP_DOWNLOAD", "1")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        run.file(".bashrc").unwrap(),
+        after_first,
+        "a rerun must leave the startup file byte-identical"
+    );
+}
+
+/// Editing a user's dotfiles is the kind of thing that must be refusable, and
+/// refusing it must still leave them able to finish by hand.
+#[tokio::test]
+async fn the_path_edit_can_be_declined() {
+    let run = run_installer("/bin/bash", &[("AGENTCORDON_NO_MODIFY_PATH", "1")]).await;
+
+    assert!(
+        run.file(".bashrc").is_none(),
+        "AGENTCORDON_NO_MODIFY_PATH=1 must write no startup file"
+    );
+    assert!(
+        run.stdout.contains("export PATH="),
+        "declining the edit must still print the line to add by hand: {}",
+        run.stdout
+    );
+}
+
+/// The closing message is the only instruction most people read. After this
+/// change it has one instruction in it, and no `--server-url`: the server is
+/// already remembered.
+#[tokio::test]
+async fn the_closing_message_is_what_was_installed_and_one_next_step() {
+    let run = run_installer("/bin/bash", &[]).await;
+
+    assert!(
+        run.stdout
+            .contains("Next: cd into a project and run `agentcordon init`"),
+        "the closing message must be the single next step: {}",
+        run.stdout
+    );
+    let tail: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|l| l.contains("agentcordon register"))
+        .collect();
+    assert!(
+        tail.is_empty(),
+        "`register` is no longer a step a new user takes: {tail:?}"
+    );
+}
+
+/// The same promise on Windows: the installer knows its origin and records it.
+#[tokio::test]
+async fn the_windows_installer_records_the_server_and_ends_with_init() {
+    let app = setup_test_app().await;
+    let body = get_install_ps1(&app).await;
+
+    assert!(
+        body.contains("config.toml"),
+        "install.ps1 must write the CLI config file"
+    );
+    assert!(
+        body.contains(".agentcordon"),
+        "install.ps1 must write it under the user's .agentcordon directory"
+    );
+    assert!(
+        body.contains("Next: cd into a project and run `agentcordon init`"),
+        "install.ps1's closing message must be the single next step"
+    );
+    assert!(
+        !body.contains("agentcordon register"),
+        "`register` is no longer a step a new user takes"
+    );
+    assert!(
+        body.contains("AGENTCORDON_NO_MODIFY_PATH"),
+        "the PATH edit must be declinable on Windows too"
     );
 }

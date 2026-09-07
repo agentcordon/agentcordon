@@ -78,6 +78,33 @@ if [ -n "${AGTCRDN_SERVER_URL:-}" ]; then SERVER_URL="$AGTCRDN_SERVER_URL"; fi
 # the published SHA256SUMS. Verification is on by default.
 SKIP_CHECKSUM="${AGENTCORDON_SKIP_CHECKSUM:-0}"
 
+# AGENTCORDON_SKIP_DOWNLOAD=1 does everything the installer does *locally* --
+# record the server URL, persist PATH, print the closing message -- and skips
+# the GitHub download. It is for the case a server built from `main` creates:
+# no release matches this version, so you built the two binaries yourself and
+# dropped them in ${INSTALL_DIR}, and you still want the setup that follows.
+# It is also the only way to test the local half of this script without
+# reaching the public internet.
+SKIP_DOWNLOAD="${AGENTCORDON_SKIP_DOWNLOAD:-0}"
+
+# Set AGENTCORDON_NO_MODIFY_PATH=1 to be told the line to add instead of
+# having a shell startup file edited. Same contract as rustup's flag of the
+# same shape.
+NO_MODIFY_PATH="${AGENTCORDON_NO_MODIFY_PATH:-0}"
+
+# The CLI's user-level config. `server_url` here is what makes --server-url
+# optional: this script was served *by* the server, so the machine need never
+# be told which one it belongs to again. The CLI reads the flag first, then
+# AGTCRDN_SERVER_URL, then this file. (The CLI does not read AGTCRDN_DATA_DIR
+# -- see docs/cli-reference.md -- so neither does this.)
+CONFIG_DIR="${HOME}/.agentcordon"
+CONFIG_FILE="${CONFIG_DIR}/config.toml"
+
+# Delimiters for the block appended to a shell startup file, so a rerun can
+# recognise its own work and a user can find the lines to delete.
+MARK_BEGIN="# >>> agentcordon >>>"
+MARK_END="# <<< agentcordon <<<"
+
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 
@@ -123,6 +150,9 @@ sha256_of() {
 
 # --- Fetch SHA256SUMS ------------------------------------------------------
 SUMS="${TMPDIR_AC}/SHA256SUMS"
+if [ "$SKIP_DOWNLOAD" = "1" ]; then
+    SKIP_CHECKSUM=1
+fi
 if [ "$SKIP_CHECKSUM" != "1" ]; then
     echo "Fetching SHA256SUMS..."
     status=$(fetch_status "${GITHUB_RELEASE}/SHA256SUMS" "$SUMS")
@@ -186,57 +216,145 @@ fetch_verified() {
     mv "$tmp" "${INSTALL_DIR}/${dest}"
 }
 
-fetch_verified "agentcordon-${TARGET}" "agentcordon"
-fetch_verified "agentcordon-broker-${TARGET}" "agentcordon-broker"
+if [ "$SKIP_DOWNLOAD" = "1" ]; then
+    echo "AGENTCORDON_SKIP_DOWNLOAD=1: not downloading; configuring this machine only."
+    echo ""
+else
+    fetch_verified "agentcordon-${TARGET}" "agentcordon"
+    fetch_verified "agentcordon-broker-${TARGET}" "agentcordon-broker"
+    echo ""
+fi
 
-echo ""
-echo "Installed:"
-echo "  ${INSTALL_DIR}/agentcordon         (workspace CLI)"
-echo "  ${INSTALL_DIR}/agentcordon-broker  (credential broker)"
-echo ""
-
-# Check if install dir is on PATH.
+# --- Record the server this script came from -------------------------------
 #
-# `export PATH="…:$PATH"` lasts until the terminal closes, and it does not
-# parse in nushell at all. What a user needs is the line *and* the file to put
-# it in, which $SHELL names (ONBOARDING-empirical.md F3).
+# Rewrites only the `server_url` key, so a hand-added key survives. A value
+# that is already what we would write is left alone; a *different* one is
+# replaced and both URLs are printed, because re-running a second server's
+# installer silently repointing the machine is exactly the surprise worth
+# spending two lines on.
+record_server_url() {
+    mkdir -p "$CONFIG_DIR"
+    chmod 700 "$CONFIG_DIR" 2>/dev/null || true
+
+    previous=""
+    if [ -f "$CONFIG_FILE" ]; then
+        previous=$(sed -n 's/^[[:space:]]*server_url[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$CONFIG_FILE" | head -n 1)
+    fi
+
+    if [ "$previous" = "$SERVER_URL" ]; then
+        echo "  ${CONFIG_FILE} already records ${SERVER_URL}"
+        return 0
+    fi
+
+    tmp="${CONFIG_DIR}/.config.toml.$$"
+    if [ -f "$CONFIG_FILE" ]; then
+        grep -v '^[[:space:]]*server_url[[:space:]]*=' "$CONFIG_FILE" > "$tmp" || true
+    else
+        {
+            echo "# Written by the AgentCordon installer."
+            echo "# The CLI reads server_url when neither --server-url nor"
+            echo "# AGTCRDN_SERVER_URL is set."
+        } > "$tmp"
+    fi
+    echo "server_url = \"${SERVER_URL}\"" >> "$tmp"
+    mv "$tmp" "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+
+    if [ -n "$previous" ]; then
+        echo "  Changed the server in ${CONFIG_FILE}:"
+        echo "    was ${previous}"
+        echo "    now ${SERVER_URL}"
+    else
+        echo "  Recorded ${SERVER_URL} in ${CONFIG_FILE}"
+        echo "  (so the CLI needs no --server-url)"
+    fi
+}
+
+# --- Persist PATH ----------------------------------------------------------
+#
+# `export PATH="...:$PATH"` printed to a terminal is gone when that terminal
+# closes, and it does not parse in nushell at all
+# (uat/artifacts/reviews/ONBOARDING-empirical.md F3). rustup and uv both append
+# to the login shell's startup file; so does this, marker-delimited so a rerun
+# is a no-op and the lines to delete are obvious.
+#
+# Sets PATH_FILE and PATH_LINE for the shell named by $SHELL, or leaves
+# PATH_FILE empty when the shell is one we have no rule for.
+resolve_path_target() {
+    PATH_FILE=""
+    PATH_LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""
+    case "${SHELL:-}" in
+        */fish)
+            PATH_FILE="${HOME}/.config/fish/conf.d/agentcordon.fish"
+            PATH_LINE="fish_add_path \"${INSTALL_DIR}\""
+            ;;
+        */nu)
+            PATH_FILE="${HOME}/.config/nushell/env.nu"
+            PATH_LINE="\$env.PATH = (\$env.PATH | prepend \"${INSTALL_DIR}\")"
+            ;;
+        */zsh)
+            PATH_FILE="${HOME}/.zshrc"
+            ;;
+        */bash)
+            # A macOS Terminal tab is a *login* shell, which reads
+            # ~/.bash_profile and not ~/.bashrc.
+            if [ "$OS" = "darwin" ]; then
+                PATH_FILE="${HOME}/.bash_profile"
+            else
+                PATH_FILE="${HOME}/.bashrc"
+            fi
+            ;;
+    esac
+}
+
+persist_path() {
+    resolve_path_target
+
+    if [ "$NO_MODIFY_PATH" = "1" ]; then
+        echo "  AGENTCORDON_NO_MODIFY_PATH=1: no shell startup file was changed."
+        echo "  Add ${INSTALL_DIR} to your PATH yourself:"
+        echo "    ${PATH_LINE}"
+        return 0
+    fi
+
+    if [ -z "$PATH_FILE" ]; then
+        echo "  Unrecognised shell (\$SHELL=${SHELL:-unset}); PATH was not changed."
+        echo "  Add ${INSTALL_DIR} to your PATH yourself:"
+        echo "    ${PATH_LINE}"
+        return 0
+    fi
+
+    if [ -f "$PATH_FILE" ] && grep -qF "$MARK_BEGIN" "$PATH_FILE"; then
+        echo "  ${PATH_FILE} already puts ${INSTALL_DIR} on PATH; left unchanged."
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$PATH_FILE")"
+    {
+        echo ""
+        echo "$MARK_BEGIN"
+        echo "# Added by the AgentCordon installer."
+        echo "$PATH_LINE"
+        echo "$MARK_END"
+    } >> "$PATH_FILE"
+
+    echo "  Added ${INSTALL_DIR} to PATH in ${PATH_FILE}:"
+    echo "    ${PATH_LINE}"
+    echo "  To undo: remove the block between \"${MARK_BEGIN}\" and \"${MARK_END}\"."
+    echo "  Open a new terminal, or: ${PATH_LINE}"
+}
+
+record_server_url
+
 case ":$PATH:" in
-    *":$INSTALL_DIR:"*) ;;
+    *":$INSTALL_DIR:"*)
+        echo "  ${INSTALL_DIR} is already on your PATH."
+        ;;
     *)
-        echo "${INSTALL_DIR} is not on your PATH."
-        echo ""
-        case "${SHELL:-}" in
-            */fish)
-                echo "  Add it permanently (fish):"
-                echo "    fish_add_path ${INSTALL_DIR}"
-                ;;
-            */nu)
-                echo "  Add it permanently (nushell) — append to your config.nu"
-                echo "  (\$nu.config-path):"
-                echo "    \$env.PATH = (\$env.PATH | prepend \"${INSTALL_DIR}\")"
-                ;;
-            */zsh)
-                echo "  Add it permanently (zsh) — append to ~/.zshrc:"
-                echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
-                ;;
-            */bash)
-                echo "  Add it permanently (bash) — append to ~/.bashrc:"
-                echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
-                ;;
-            *)
-                echo "  Add it permanently — append to your shell's startup file"
-                echo "  (~/.bashrc for bash, ~/.zshrc for zsh; fish uses"
-                echo "  fish_add_path, nushell uses \$env.PATH in config.nu):"
-                echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
-                ;;
-        esac
-        echo ""
-        echo "  For this terminal only:"
-        echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
-        echo ""
+        persist_path
         ;;
 esac
 
-echo "Get started:"
-echo "  agentcordon init                 # choose your agent runtimes and install the skill"
-echo "  agentcordon register --server-url ${SERVER_URL}"
+echo ""
+echo "Installed: agentcordon and agentcordon-broker in ${INSTALL_DIR} (server ${SERVER_URL})"
+echo "Next: cd into a project and run \`agentcordon init\`."

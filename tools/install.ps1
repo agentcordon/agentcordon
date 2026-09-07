@@ -6,13 +6,18 @@
 .DESCRIPTION
     Downloads the agentcordon CLI and broker binaries from GitHub Releases,
     installs them to %LOCALAPPDATA%\AgentCordon\bin, verifies SHA-256 checksums,
-    and adds the install directory to the user PATH.
+    adds the install directory to the user PATH, and records the server it was
+    served by in %USERPROFILE%\.agentcordon\config.toml so the CLI never has to
+    be told again.
 
     Invocation:
         irm https://<server>/install.ps1 | iex
 
     Re-running the script is idempotent: binaries are overwritten in place and
     the PATH entry is only added once.
+
+    Set AGENTCORDON_NO_MODIFY_PATH=1 to be told the PATH entry to add instead of
+    having the user PATH changed.
 #>
 
 [CmdletBinding()]
@@ -183,6 +188,52 @@ foreach ($bin in $binaries) {
     Write-Info "Installed $local"
 }
 
+# --- Record the server this script came from -------------------------------
+#
+# This script was served *by* the server, so the machine need never be told
+# which one it belongs to again. The CLI reads --server-url first, then
+# AGTCRDN_SERVER_URL, then this file. Only the server_url key is rewritten, so
+# a hand-added key survives; a *different* existing value is replaced and both
+# URLs are printed, because a second server's installer silently repointing the
+# machine is the surprise worth spending two lines on.
+$configDir  = Join-Path $env:USERPROFILE ".agentcordon"
+$configFile = Join-Path $configDir "config.toml"
+
+if (-not (Test-Path -LiteralPath $configDir)) {
+    New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+}
+
+$previous = $null
+$kept     = @()
+if (Test-Path -LiteralPath $configFile) {
+    foreach ($line in (Get-Content -LiteralPath $configFile)) {
+        if ($line -match '^\s*server_url\s*=\s*"(.*)"\s*$') {
+            if ($null -eq $previous) { $previous = $Matches[1] }
+        } else {
+            $kept += $line
+        }
+    }
+} else {
+    $kept += "# Written by the AgentCordon installer."
+    $kept += "# The CLI reads server_url when neither --server-url nor"
+    $kept += "# AGTCRDN_SERVER_URL is set."
+}
+
+if ($previous -eq $ServerUrl) {
+    Write-Info "$configFile already records $ServerUrl"
+} else {
+    $kept += "server_url = `"$ServerUrl`""
+    Set-Content -LiteralPath $configFile -Value $kept -Encoding UTF8
+    if ($previous) {
+        Write-Info "Changed the server in ${configFile}:"
+        Write-Host "    was $previous"
+        Write-Host "    now $ServerUrl"
+    } else {
+        Write-Info "Recorded $ServerUrl in $configFile"
+        Write-Host "    (so the CLI needs no --server-url)"
+    }
+}
+
 # --- Add to user PATH (idempotent) ---
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ([string]::IsNullOrEmpty($userPath)) { $userPath = "" }
@@ -196,23 +247,23 @@ foreach ($entry in $pathEntries) {
     }
 }
 
-if ($alreadyOnPath) {
+if ($env:AGENTCORDON_NO_MODIFY_PATH -eq "1") {
+    Write-Warn2 "AGENTCORDON_NO_MODIFY_PATH=1: the user PATH was not changed."
+    Write-Host  "  Add it yourself:"
+    Write-Host  "    Add $InstallDir to the user Path in System Properties > Environment Variables."
+} elseif ($alreadyOnPath) {
     Write-Info "PATH already contains $InstallDir"
 } else {
     $newPath = if ([string]::IsNullOrEmpty($userPath)) { $InstallDir } else { "$userPath;$InstallDir" }
     [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
     Write-Info "Added $InstallDir to user PATH"
+    Write-Host  "    To undo: remove $InstallDir from the user Path in System Properties > Environment Variables."
     Write-Warn2 "Open a new terminal for the PATH change to take effect."
 }
 
 # --- Done ---
 Write-Host ""
-Write-Banner "Done."
-Write-Host  "  Open a new terminal and run:"
-Write-Host  "    agentcordon-broker --server-url $ServerUrl" -ForegroundColor White
-Write-Host  "  then, from your project directory:"
-Write-Host  "    agentcordon init" -ForegroundColor White
-Write-Host  "      choose which agent runtimes to install the AgentCordon skill for"
-Write-Host  "    agentcordon register --server-url $ServerUrl" -ForegroundColor White
+Write-Host  "Installed: agentcordon.exe and agentcordon-broker.exe in $InstallDir (server $ServerUrl)"
+Write-Host  'Next: cd into a project and run `agentcordon init`.'
 Write-Host ""
 exit 0
