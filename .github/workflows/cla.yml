@@ -69,7 +69,12 @@ jobs:
             comment on this pull request. You only ever have to do this once.
           custom-allsigned-prcomment: All contributors have signed the CLA.
           lock-pullrequest-aftermerge: false
-          # The maintainer, Dependabot and the repository's own automation do
-          # not sign: the maintainer owns the terms, and the bots author no
-          # copyrightable contribution.
-          allowlist: hotnops,dependabot[bot],github-actions[bot]
+          # The maintainer, Dependabot, the repository's own automation and
+          # the AI coding assistant do not sign: the maintainer owns the
+          # terms, and none of the others is a copyright-holding contributor.
+          # `claude` is the login GitHub derives from the `Co-Authored-By:
+          # Claude ... <noreply@anthropic.com>` trailer the assistant puts on
+          # every commit it helps write, so GitHub counts it as a second
+          # committer on those pull requests; without this entry the check
+          # demands a signature from an account that cannot give one.
+          allowlist: hotnops,claude,dependabot[bot],github-actions[bot]
