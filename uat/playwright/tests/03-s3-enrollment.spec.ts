@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { UAT } from './helpers/env';
-import { cli, cliDetached, readFileInContainer, sh, waitFor } from './helpers/docker';
+import { cli, cliDetached, cliIn, readFileInContainer, sh, waitFor } from './helpers/docker';
 import { login, shot } from './helpers/ui';
 import { readDoc } from './helpers/docs';
 import { need, readState, writeState } from './helpers/state';
@@ -63,6 +63,48 @@ test.describe('S3 enrollment', () => {
       'ls /home/uat/workspace/AGENTS.md /home/uat/workspace/CLAUDE.md 2>&1 || true',
     );
     expect(stray.out).toContain('No such file');
+  });
+
+  test('agentcordon init also registers the CLI as an MCP server for the runtimes that read one, and --no-mcp skips it (docs/workspace-enrollment.md § "What init writes")', async () => {
+    // Two scratch workspaces, so the enrolled one this scenario is about is
+    // not disturbed. `--no-register` is the documented opt-out; all that is
+    // under test here is which files land.
+    const withDir = '/home/uat/init-mcp-on';
+    const withoutDir = '/home/uat/init-mcp-off';
+    expect(sh(UAT.cli, `rm -rf ${withDir} ${withoutDir} && mkdir -p ${withDir} ${withoutDir}`).code).toBe(0);
+
+    const withMcp = cliIn(withDir, ['init', '--agent', 'claude-code', '--no-register']);
+    expect(withMcp.code, withMcp.out).toBe(0);
+
+    // Claude Code reads `.mcp.json`; the entry spawns the CLI's stdio MCP
+    // surface, which is what turns `agentcordon proxy` into a native tool.
+    const raw = readFileInContainer(UAT.cli, `${withDir}/.mcp.json`);
+    expect(raw, 'init --agent claude-code must write .mcp.json').toBeTruthy();
+    const config = JSON.parse(raw);
+    expect(config.mcpServers?.agentcordon, raw).toBeTruthy();
+    expect(config.mcpServers.agentcordon.command).toBe('agentcordon');
+    expect(config.mcpServers.agentcordon.args).toEqual(['mcp-serve']);
+    // Never an absolute path: the file is committed and read on other machines.
+    expect(raw).not.toContain(withDir);
+
+    // The skill is still installed alongside it — the two surfaces coexist.
+    expect(
+      readFileInContainer(UAT.cli, `${withDir}/.claude/skills/agentcordon/SKILL.md`),
+    ).toContain('name: agentcordon');
+
+    // `--no-mcp` is the opt-out for a workspace that wants the skill only.
+    const noMcp = cliIn(withoutDir, [
+      'init',
+      '--agent',
+      'claude-code',
+      '--no-register',
+      '--no-mcp',
+    ]);
+    expect(noMcp.code, noMcp.out).toBe(0);
+    expect(sh(UAT.cli, `ls ${withoutDir}/.mcp.json 2>&1 || true`).out).toContain('No such file');
+    expect(
+      readFileInContainer(UAT.cli, `${withoutDir}/.claude/skills/agentcordon/SKILL.md`),
+    ).toContain('name: agentcordon');
   });
 
   test('agentcordon register prints a one-time code and an activation URL, and the docs warn about the AGTCRDN_BASE_URL fallback (README § "Quick start / 1") [G1]', async () => {
