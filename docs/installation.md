@@ -206,7 +206,9 @@ step is in [Workspace Enrollment](workspace-enrollment.md).
 It also registers `agentcordon mcp-serve` in each of those runtimes' MCP configuration —
 `.mcp.json` for Claude Code, `.codex/config.toml` for Codex, `.cursor/mcp.json` for Cursor and
 so on, ten runtimes in all; the five that configure MCP per user rather than per project get
-the path and the snippet printed for you to paste. That is what makes the credential proxy and
+the path and the snippet printed for you to paste. Claude Code asks once, interactively, before
+it trusts a project's `.mcp.json`; open the project in `claude` and approve the `agentcordon`
+server the first time, or a headless run will not see the tools. That is what makes the credential proxy and
 the brokered MCP tools **native tools** the runtime can type-check and permission, instead of a
 shell command the model has to remember. The trade-off is a real one and it is why there is a
 flag: the skill costs nothing until a task triggers it, while the MCP tools cost about 800
