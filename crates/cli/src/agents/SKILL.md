@@ -6,13 +6,13 @@ compatibility: Requires the `agentcordon` CLI on PATH and a running `agentcordon
 
 # AgentCordon
 
-**Never use a raw secret** — not one from the environment, a dotfile, or a config file. Every
-authenticated call goes through the broker, which injects the credential and audits the access.
+**Never use a raw secret** — not one from the environment, a dotfile, or a config file. Every authenticated call goes through the broker, which injects the credential and audits the access.
 
 ## Fast path
 
-Call an API. `--auto` picks the credential whose URL fence covers the target; the body comes
-back on stdout and one status line on stderr:
+If your tool list already shows an `agentcordon_proxy` tool, call the `agentcordon_*` tools directly instead of the shell commands below — same broker, same rules, no shell turn.
+
+Call an API. `--auto` picks the credential whose URL fence covers the target; the body comes back on stdout, one status line on stderr:
 
 ```
 agentcordon proxy --auto <METHOD> <url> [--body '{"k":"v"}'] [--header 'Accept:application/json']
@@ -55,5 +55,5 @@ Only if a call errors, run `agentcordon credentials` or `agentcordon mcp-servers
 - `agentcordon status` — identity, broker connection, registration, configured server.
 - `mcp-call <s> <t> --args-json '{...}'` for nested arguments (`@file` or `-`); `proxy … --body @file` reads a body from a file.
 - `agentcordon credentials create --name <n> --service <s> --value <secret> --allowed-url-pattern '<glob>'` — only when you have been given a secret to store, and always fenced.
-- Setup, not work: `agentcordon init` (skill + enrollment), `agentcordon register` (re-enrol).
+- Setup, not work: `agentcordon init` (skill, MCP config, enrollment), `agentcordon register` (re-enrol), `agentcordon mcp-serve` (the server your runtime starts; never run it yourself).
 - You never configure the broker: the CLI finds it via `~/.agentcordon/broker.port`; `AGTCRDN_BROKER_URL` is an override only.
