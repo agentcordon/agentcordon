@@ -125,10 +125,10 @@ test.describe('S16 enforcement across types', () => {
     const mk = sh(UAT.cli, `mkdir -p ${UAT.workspace2Dir}`);
     expect(mk.code, mk.out).toBe(0);
 
-    const init = cliIn(UAT.workspace2Dir, ['init']);
-    expect(init.code, init.out).toBe(0);
-    const pkHash = /sha256:([0-9a-f]{64})/.exec(init.out)![1];
-
+    // The three-command story end to end: `agentcordon init` alone installs
+    // the skill *and* enrolls. It blocks while polling for the approval, so
+    // it is started detached with its output redirected -- the terminal
+    // equivalent of leaving it running while you go to the browser.
     docker([
       'exec',
       '-d',
@@ -137,11 +137,12 @@ test.describe('S16 enforcement across types', () => {
       UAT.cli,
       'sh',
       '-c',
-      `agentcordon register --name ${UAT.workspace2Name} > /home/uat/register2.log 2>&1`,
+      `agentcordon init --server-url http://server:3140 --name ${UAT.workspace2Name} ` +
+        `> /home/uat/register2.log 2>&1`,
     ]);
 
     const log = await waitFor(
-      'the second register to print its user code',
+      'the second init to print its user code',
       () => {
         const text = readFileInContainer(UAT.cli, '/home/uat/register2.log');
         return /one-time code: (\S+)/.test(text) ? text : null;
@@ -149,6 +150,11 @@ test.describe('S16 enforcement across types', () => {
       120_000,
       1000,
     );
+    // Everything `init` does before the device flow is in the same log: the
+    // identity, the skill, and which server it is enrolling with.
+    expect(log).toContain('AgentCordon skill:');
+    expect(log).toContain('Enrolling with http://server:3140');
+    const pkHash = /sha256:([0-9a-f]{64})/.exec(log)![1];
     const userCode = /one-time code: (\S+)/.exec(log)![1];
 
     await login(page);
@@ -159,15 +165,21 @@ test.describe('S16 enforcement across types', () => {
     await page.click('button.btn-approve');
     await page.waitForURL('**/activate/success', { timeout: 30_000 });
 
-    await waitFor(
-      'the second register to report success',
+    // The two lines `init` ends on: what was registered where, and the one
+    // command that proves it worked.
+    const done = await waitFor(
+      'the second init to report success',
       () => {
         const text = readFileInContainer(UAT.cli, '/home/uat/register2.log');
-        return text.includes('Logged in as') ? text : null;
+        return text.includes('Registered as') ? text : null;
       },
       120_000,
       1000,
     );
+    expect(done).toContain(
+      `Registered as ${UAT.workspace2Name} at http://server:3140.`,
+    );
+    expect(done).toContain('Try: agentcordon credentials');
 
     // Find the new workspace the way an admin does: open /workspaces and
     // click its row. The row is a link to /workspaces/{id}, which is where the

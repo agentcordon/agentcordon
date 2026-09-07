@@ -106,3 +106,27 @@ async fn register_page_describes_what_the_installer_actually_does() {
         "the page must name where the installer puts the binaries: {html}"
     );
 }
+
+/// Install-to-use is three commands, and this page is where a new user reads
+/// what the third one is. It used to print
+/// `agentcordon init && agentcordon register --server-url <origin>` — two
+/// commands, one of them carrying a URL the reader had to keep hold of. The
+/// installer now records the server and `init` finishes enrollment, so the
+/// page shows one command with nothing to copy into it.
+#[tokio::test]
+async fn register_page_shows_init_as_the_whole_of_step_two() {
+    let html = register_page().await;
+
+    assert!(
+        html.contains("'agentcordon init'"),
+        "step 2 must be `agentcordon init` on its own: {html}"
+    );
+    assert!(
+        !html.contains("agentcordon register --server-url"),
+        "the server URL is recorded by the installer; the page must not ask for it again"
+    );
+    assert!(
+        html.contains("config.toml"),
+        "the page must say the installer records the server: {html}"
+    );
+}

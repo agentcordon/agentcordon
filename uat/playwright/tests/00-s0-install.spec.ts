@@ -92,6 +92,40 @@ test.describe('S0 install as documented', () => {
     expect(body).toContain('AGTCRDN_SERVER_URL');
   });
 
+  test('the installer records the server and persists PATH, and ends on one next step [D7]', async () => {
+    // Install-to-use is three commands, and two of the things that used to
+    // stand between the second and the third are now the installer's job:
+    // remembering which server this machine belongs to, and putting
+    // ~/.local/bin on PATH in a way that survives closing the terminal
+    // (uat/artifacts/reviews/ONBOARDING-empirical.md F3, P5).
+    const r = await fetch(`${UAT.serverUrl}/install.sh`);
+    const body = await r.text();
+
+    // docs/installation.md § "What the installer writes"
+    expect(body, 'the installer must record the server it was served by').toContain(
+      '.agentcordon/config.toml',
+    );
+    expect(body).toContain('server_url = ');
+
+    // docs/installation.md § "Persisting PATH": the file each login shell
+    // actually reads, not a line printed to a terminal that then closes.
+    for (const target of ['.bashrc', '.bash_profile', '.zshrc', 'fish_add_path', 'env.nu']) {
+      expect(body, `PATH persistence must cover ${target}`).toContain(target);
+    }
+    expect(body, 'editing a dotfile must be declinable').toContain('AGENTCORDON_NO_MODIFY_PATH');
+
+    // The closing message: what was installed, and one command.
+    expect(body).toContain('Next: cd into a project and run `agentcordon init`.');
+    expect(
+      body,
+      'the server is recorded, so nothing asks the reader for it again',
+    ).not.toContain('agentcordon register --server-url');
+
+    const install = readDoc('docs/installation.md');
+    expect(install).toContain('AGENTCORDON_NO_MODIFY_PATH');
+    expect(install).toContain('~/.agentcordon/config.toml');
+  });
+
   test('README tells a Linux/macOS user how to obtain the CLI, and points at this server\'s own installer [G2]', async () => {
     // G2 — README used to tell the reader to run `agentcordon-broker` and
     // `agentcordon init` without ever saying how to get those binaries on
@@ -225,7 +259,13 @@ test.describe('S0 install as documented', () => {
   test('the published server URL serves the admin UI and redirects to the login page (README "Open http://localhost:3140")', async ({ page }, testInfo) => {
     // Leave the released binaries out of the way; every later scenario calls
     // /usr/local/bin/agentcordon via the `cli()` helper.
-    exec(UAT.cli, ['rm', '-rf', '/home/uat/.local/bin/agentcordon', '/home/uat/.local/bin/agentcordon-broker', '/home/uat/released']);
+    //
+    // The config file goes too. A successful documented install records this
+    // server in it, which would make `agentcordon init` in S3 enroll on its
+    // own — correct behaviour, but it would make S3 depend on whether a
+    // release happened to exist for this version. S3 drives the two halves
+    // explicitly; S16 drives the enrolling `init`.
+    exec(UAT.cli, ['rm', '-rf', '/home/uat/.local/bin/agentcordon', '/home/uat/.local/bin/agentcordon-broker', '/home/uat/released', '/home/uat/.agentcordon/config.toml']);
 
     await page.goto('/');
     await page.waitForURL(/\/login/, { timeout: 30_000 });

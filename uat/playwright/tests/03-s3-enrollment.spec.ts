@@ -9,23 +9,31 @@ import { need, readState, writeState } from './helpers/state';
  * S3 — Workspace enrollment (RFC 8628 device flow).
  *
  * Documented steps:
- *   README.md § "Quick Start / 3. Set up a workspace":
- *       agentcordon init
- *       agentcordon register --server-url http://localhost:3140
+ *   README.md § "Quick start / 3. Set up a project":
+ *       agentcordon init          # skill + enrollment, in one command
  *     "Open the URL in any browser ... paste the 4-word code, and click Approve."
- *   docs/index.md § "Quick Start / 3. Set up a workspace" (manual variant:
- *     `agentcordon register` with a broker already running).
- *   docs/cli-reference.md § "agentcordon register" and § "agentcordon status".
+ *   docs/cli-reference.md § "agentcordon init", § "agentcordon register" and
+ *     § "agentcordon status".
  *   docs/workspace-enrollment.md § "Flow 1: Interactive Registration".
+ *
+ * This container has no recorded server (the harness starts the broker itself
+ * rather than running the installer), so the two halves of `init` are driven
+ * separately here: `init --no-register` for the skill, then `register` for the
+ * enrollment. S16 drives the enrolling `init` end to end. The last test proves
+ * a rerun of `init` on an enrolled workspace is a one-line no-op.
  *
  * `register` blocks while polling the broker, so it is started detached with
  * its output redirected to a file — the terminal equivalent of leaving it
  * running in another window while you go to the browser.
  */
 test.describe('S3 enrollment', () => {
-  test('agentcordon init generates the workspace identity and installs the AgentCordon skill (docs/cli-reference.md § "agentcordon init")', async () => {
-    const init = cli(['init']);
+  test('agentcordon init --no-register generates the workspace identity and installs the AgentCordon skill (docs/cli-reference.md § "agentcordon init")', async () => {
+    const init = cli(['init', '--no-register']);
     expect(init.code, init.out).toBe(0);
+
+    // `--no-register` is the documented opt-out for scripts and air-gapped
+    // setups, and it says so rather than silently doing less.
+    expect(init.out).toContain('--no-register: skipping enrollment');
     expect(init.out).toMatch(/Workspace identity: sha256:[0-9a-f]{64}/);
     const pkHash = /sha256:([0-9a-f]{64})/.exec(init.out)![1];
     writeState({ pkHash });
@@ -142,6 +150,18 @@ test.describe('S3 enrollment', () => {
     expect(status.out).toContain('Registered: yes');
     expect(status.out).toMatch(/Broker: .* \(healthy\)/);
     expect(status.out).toMatch(/Server: .* \(reachable\)/);
+    // Which of --server-url, AGTCRDN_SERVER_URL and ~/.agentcordon/config.toml
+    // the next enrollment would use. Nothing is configured in this container,
+    // and saying so is the point (docs/cli-reference.md § "agentcordon status").
+    expect(status.out).toContain('Configured server:');
+  });
+
+  test('a rerun of agentcordon init on an enrolled workspace is a one-line no-op (docs/cli-reference.md § "agentcordon init")', async () => {
+    const rerun = cli(['init', '--server-url', 'http://server:3140']);
+    expect(rerun.code, rerun.out).toBe(0);
+    expect(rerun.out).toContain('Already registered with http://server:3140');
+    // A rerun must never start a second device flow.
+    expect(rerun.out).not.toMatch(/one-time code/);
   });
 
   test('the workspaces page lists uat-ws as active', async ({ page }, testInfo) => {

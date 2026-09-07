@@ -96,8 +96,10 @@
             })();
         </script>
         <p class="text-sm opacity-muted mt-2">The install script auto-detects your architecture and installs
-            <code>agentcordon</code> and <code>agentcordon-broker</code> into <code>~/.local/bin</code>. If that
-            directory is not on your <code>PATH</code>, the script prints the <code>export PATH</code> line to add.
+            <code>agentcordon</code> and <code>agentcordon-broker</code> into <code>~/.local/bin</code>. It adds
+            that directory to your login shell's startup file (set <code>AGENTCORDON_NO_MODIFY_PATH=1</code> to be
+            shown the line instead), and it records this server in <code>~/.agentcordon/config.toml</code> &mdash;
+            which is why the next step needs no <code>--server-url</code>.
             <a href="https://github.com/agentcordon/agentcordon/releases/latest" target="_blank">Manual download / other architectures</a>
         </p>
     </div>
@@ -113,8 +115,7 @@
             <code class="text-sm" id="cli-register-cmd"></code>
         </div>
         <script>
-            document.getElementById('cli-register-cmd').textContent =
-                'agentcordon init && agentcordon register --server-url ' + window.location.origin;
+            document.getElementById('cli-register-cmd').textContent = 'agentcordon init';
         </script>
 
         <p class="text-sm opacity-muted mt-2">
@@ -125,8 +126,8 @@
             <code>.kiro/skills/</code> for Kiro. On a terminal it shows a checklist with the
             runtimes it detected already ticked; in a script, pass
             <code>--agent &lt;id&gt;</code> (repeatable) or let it default to what it
-            detects. <code>agentcordon register</code> starts
-            the broker (if needed), then prints a short human-readable activation
+            detects. It then enrolls this workspace with the server the installer recorded:
+            it starts the broker (if needed), then prints a short human-readable activation
             code (e.g. <code>aide-avert-bovs-bonus</code>) and the URL to open.
             It does not open a browser for you &mdash; the broker often runs on
             another host, container or SSH session, so opening a page locally
@@ -134,7 +135,10 @@
             <a href="/activate">/activate</a> yourself on whichever device has
             the browser, enter the code, verify it matches what the CLI showed,
             and click <strong>Approve</strong>. The CLI polls in the background
-            and finishes registration automatically once you approve.
+            and finishes registration automatically once you approve, then prints
+            <code>Registered as &lt;workspace&gt; at &lt;server&gt;</code>.
+            <code>--no-register</code> sets the directory up without enrolling, and
+            <code>agentcordon register</code> re-enrolls later.
         </p>
         <p class="text-sm opacity-muted mt-2">
             This uses the

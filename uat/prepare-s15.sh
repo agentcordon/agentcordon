@@ -78,8 +78,10 @@ if [ "$NEW_RUN_ONLY" = 0 ]; then
   # The suite's own `agentcordon init` runs with no --agent in a container
   # where no runtime is installed, so it writes only the portable copy. The
   # blind agent under test is Claude Code, which reads `.claude/skills`.
+  # `--no-register`: this workspace is already enrolled and all that is wanted
+  # here is the skill file.
   docker exec -w /home/uat/workspace "$UAT_CLI" \
-    agentcordon init --agent claude-code >/dev/null 2>&1 || true
+    agentcordon init --agent claude-code --no-register >/dev/null 2>&1 || true
 
   rm -rf "$HERE/agent-workspace/.claude" "$HERE/agent-workspace/.agents"
   mkdir -p "$HERE/agent-workspace/.claude/skills" "$HERE/agent-workspace/.agents/skills"
