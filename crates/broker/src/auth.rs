@@ -364,7 +364,7 @@ fn reregistration_required_response() -> Response {
         axum::Json(serde_json::json!({
             "error": {
                 "code": "reregistration_required",
-                "message": "Workspace not registered with this broker. Run: agentcordon setup <server_url>"
+                "message": "Workspace not registered with this broker. Run: agentcordon register --server-url <server_url>"
             }
         })),
     )

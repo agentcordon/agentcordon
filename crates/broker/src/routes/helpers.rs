@@ -66,7 +66,7 @@ where
         error_response(
             StatusCode::UNAUTHORIZED,
             "reregistration_required",
-            "Workspace tokens expired and could not be refreshed. Run: agentcordon setup <server_url>",
+            "Workspace tokens expired and could not be refreshed. Run: agentcordon register --force --server-url <server_url>",
         )
     })?;
 

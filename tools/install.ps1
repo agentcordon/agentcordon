@@ -167,6 +167,9 @@ if ($alreadyOnPath) {
 Write-Host ""
 Write-Banner "Done."
 Write-Host  "  Open a new terminal and run:"
-Write-Host  "    agentcordon setup $ServerUrl" -ForegroundColor White
+Write-Host  "    agentcordon-broker --server-url $ServerUrl" -ForegroundColor White
+Write-Host  "  then, from your project directory:"
+Write-Host  "    agentcordon init" -ForegroundColor White
+Write-Host  "    agentcordon register --server-url $ServerUrl" -ForegroundColor White
 Write-Host ""
 exit 0
