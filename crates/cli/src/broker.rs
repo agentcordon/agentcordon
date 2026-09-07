@@ -108,7 +108,12 @@ impl BrokerClient {
         Self::build(broker.base_url, broker.version, keypair)
     }
 
-    fn build(
+    /// Assemble a client around an already-discovered broker.
+    ///
+    /// `pub(crate)` for the enrolment tests in `commands::register`, which
+    /// point a real client at a fake broker on a real socket rather than
+    /// mocking the HTTP layer.
+    pub(crate) fn build(
         base_url: String,
         broker_version: Option<String>,
         keypair: WorkspaceKey,

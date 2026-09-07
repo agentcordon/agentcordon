@@ -7,6 +7,10 @@
 //! on a different host/container than the user's browser (the whole
 //! point of RFC 8628), so a local `xdg-open` would not do what the user
 //! wants. They open the URL themselves on whichever machine they like.
+//!
+//! [`device_flow`] is the whole of that interaction and is shared with
+//! `agentcordon init`, so "`init` runs the device flow exactly as `register`
+//! does" is a fact about the code rather than a promise in a doc comment.
 
 use std::io::{self, Write};
 use std::time::Duration;
@@ -97,6 +101,159 @@ fn expiry_phrase(expires_in: u64) -> String {
     format!("{minutes} {unit}")
 }
 
+/// The scopes a workspace asks for when nothing narrower is requested.
+pub(crate) fn default_scopes() -> Vec<String> {
+    vec![
+        "credentials:discover".to_string(),
+        "credentials:vend".to_string(),
+        "mcp:discover".to_string(),
+        "mcp:invoke".to_string(),
+    ]
+}
+
+/// A completed enrolment.
+pub(crate) struct Enrolled {
+    pub workspace_name: String,
+    pub scopes: Vec<String>,
+}
+
+/// The RFC 8628 device flow, from the registration request to the approval.
+///
+/// Prints the one-time code and the activation link to **stderr** (so the code
+/// stays visible when stdout is captured) and then polls the broker's
+/// `/status` until the broker's background device-code task reports the
+/// workspace registered, the code expires, or the approval is denied.
+///
+/// Shared by `register` and by `init`: they differ only in what they print
+/// afterwards.
+pub(crate) async fn device_flow(
+    client: &BrokerClient,
+    scopes: Vec<String>,
+    name: Option<&str>,
+    poll_interval: Duration,
+) -> Result<Enrolled, CliError> {
+    let scopes = if scopes.is_empty() {
+        default_scopes()
+    } else {
+        scopes
+    };
+
+    let cwd_basename = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+    let workspace_name = resolve_workspace_name(name, cwd_basename.as_deref());
+
+    // Self-signature over `NAME\nPUBLIC_KEY\nSCOPES\nTIMESTAMP\nNONCE`
+    // (identity crate owns the payload; the broker verifies with the same
+    // function's twin and refuses a replayed timestamp+nonce).
+    let signed = agentcordon_identity::sign_register(client.keypair(), &workspace_name, &scopes)
+        .map_err(|e| CliError::general(format!("system clock error: {e}")))?;
+    let req = RegisterRequest {
+        workspace_name: signed.workspace_name,
+        public_key: signed.public_key,
+        scopes: signed.scopes,
+        timestamp: signed.timestamp,
+        nonce: signed.nonce,
+        signature: signed.signature,
+    };
+
+    let resp: RegisterResponse = client.post_unsigned("/register", &req).await?;
+
+    let activation_url = resp
+        .data
+        .verification_uri_complete
+        .clone()
+        .unwrap_or_else(|| resp.data.verification_uri.clone());
+
+    // Print to stderr per locked decision #7 so the user_code is visible
+    // even when stdout is captured.
+    eprintln!();
+    eprintln!("! First, copy your one-time code: {}", resp.data.user_code);
+    eprintln!();
+    eprintln!("Then open this URL in your browser:");
+    eprintln!("  {}", resp.data.verification_uri);
+    if resp.data.verification_uri_complete.is_some() {
+        eprintln!();
+        eprintln!("Or use this link to skip typing the code:");
+        eprintln!("  {activation_url}");
+    }
+    eprintln!();
+    eprint!(
+        "Waiting for approval... (expires in {}) ",
+        expiry_phrase(resp.data.expires_in)
+    );
+    let _ = io::stderr().flush();
+
+    // Poll the broker until the background device-code task reports the
+    // workspace as registered (or surfaces an error via the auth middleware).
+    let timeout = Duration::from_secs(resp.data.expires_in.max(60));
+    let start = std::time::Instant::now();
+
+    loop {
+        if start.elapsed() > timeout {
+            eprintln!();
+            return Err(CliError::general(
+                "Code expired. Run agentcordon register to try again.",
+            ));
+        }
+
+        tokio::time::sleep(poll_interval).await;
+
+        match client.get_raw("/status").await {
+            Ok((status, body)) => {
+                if status == 200 {
+                    if let Ok(status_resp) = serde_json::from_str::<StatusResponse>(&body) {
+                        if status_resp.data.registered {
+                            eprintln!("done!");
+                            return Ok(Enrolled {
+                                workspace_name,
+                                scopes: status_resp.data.scopes,
+                            });
+                        }
+                    }
+                } else if status == 403 {
+                    eprintln!();
+                    return Err(CliError::authorization_denied("Authorization denied."));
+                } else if status == 401 {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
+                        let code = parsed
+                            .get("error")
+                            .and_then(|e| e.get("code"))
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("");
+                        if code == "registration_failed" {
+                            let msg = parsed
+                                .get("error")
+                                .and_then(|e| e.get("message"))
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("device flow failed")
+                                .to_string();
+                            eprintln!();
+                            if msg.contains("expired") {
+                                return Err(CliError::general(
+                                    "Code expired. Run agentcordon register to try again.",
+                                ));
+                            }
+                            if msg.contains("denied") {
+                                return Err(CliError::authorization_denied(
+                                    "Authorization denied.",
+                                ));
+                            }
+                            return Err(CliError::authorization_denied(msg));
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                // Broker may be starting/restarting; keep polling.
+            }
+        }
+    }
+}
+
+/// How often `register` and `init` ask the broker whether the approval landed.
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Register this workspace with the broker via device flow.
 ///
 /// The server URL is resolved by [`config::resolve_server_url`]: the
@@ -144,128 +301,13 @@ pub async fn run(
         }
     }
 
-    let scopes = if scopes.is_empty() {
-        vec![
-            "credentials:discover".to_string(),
-            "credentials:vend".to_string(),
-            "mcp:discover".to_string(),
-            "mcp:invoke".to_string(),
-        ]
-    } else {
-        scopes
-    };
-
-    let cwd_basename = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
-    let workspace_name = resolve_workspace_name(name.as_deref(), cwd_basename.as_deref());
-
-    // Self-signature over `NAME\nPUBLIC_KEY\nSCOPES\nTIMESTAMP\nNONCE`
-    // (identity crate owns the payload; the broker verifies with the same
-    // function's twin and refuses a replayed timestamp+nonce).
-    let signed = agentcordon_identity::sign_register(client.keypair(), &workspace_name, &scopes)
-        .map_err(|e| CliError::general(format!("system clock error: {e}")))?;
-    let req = RegisterRequest {
-        workspace_name: signed.workspace_name,
-        public_key: signed.public_key,
-        scopes: signed.scopes,
-        timestamp: signed.timestamp,
-        nonce: signed.nonce,
-        signature: signed.signature,
-    };
-
-    let resp: RegisterResponse = client.post_unsigned("/register", &req).await?;
-
-    let activation_url = resp
-        .data
-        .verification_uri_complete
-        .clone()
-        .unwrap_or_else(|| resp.data.verification_uri.clone());
-
-    // Print to stderr per locked decision #7 so the user_code is visible
-    // even when stdout is captured.
-    eprintln!();
-    eprintln!("! First, copy your one-time code: {}", resp.data.user_code);
-    eprintln!();
-    eprintln!("Then open this URL in your browser:");
-    eprintln!("  {}", resp.data.verification_uri);
-    if resp.data.verification_uri_complete.is_some() {
-        eprintln!();
-        eprintln!("Or use this link to skip typing the code:");
-        eprintln!("  {activation_url}");
-    }
-    eprintln!();
-    eprint!(
-        "Waiting for approval... (expires in {}) ",
-        expiry_phrase(resp.data.expires_in)
+    let enrolled = device_flow(&client, scopes, name.as_deref(), POLL_INTERVAL).await?;
+    let scope_list = enrolled.scopes.join(", ");
+    println!(
+        "Logged in as {}. Scopes: [{scope_list}]",
+        enrolled.workspace_name
     );
-    let _ = io::stderr().flush();
-
-    // Poll the broker until the background device-code task reports the
-    // workspace as registered (or surfaces an error via the auth middleware).
-    let timeout = Duration::from_secs(resp.data.expires_in.max(60));
-    let poll_interval = Duration::from_secs(2);
-    let start = std::time::Instant::now();
-
-    loop {
-        if start.elapsed() > timeout {
-            eprintln!();
-            return Err(CliError::general(
-                "Code expired. Run agentcordon register to try again.",
-            ));
-        }
-
-        tokio::time::sleep(poll_interval).await;
-
-        match client.get_raw("/status").await {
-            Ok((status, body)) => {
-                if status == 200 {
-                    if let Ok(status_resp) = serde_json::from_str::<StatusResponse>(&body) {
-                        if status_resp.data.registered {
-                            eprintln!("done!");
-                            let scope_list = status_resp.data.scopes.join(", ");
-                            println!("Logged in as {workspace_name}. Scopes: [{scope_list}]");
-                            return Ok(());
-                        }
-                    }
-                } else if status == 403 {
-                    eprintln!();
-                    return Err(CliError::authorization_denied("Authorization denied."));
-                } else if status == 401 {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
-                        let code = parsed
-                            .get("error")
-                            .and_then(|e| e.get("code"))
-                            .and_then(|c| c.as_str())
-                            .unwrap_or("");
-                        if code == "registration_failed" {
-                            let msg = parsed
-                                .get("error")
-                                .and_then(|e| e.get("message"))
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("device flow failed")
-                                .to_string();
-                            eprintln!();
-                            if msg.contains("expired") {
-                                return Err(CliError::general(
-                                    "Code expired. Run agentcordon register to try again.",
-                                ));
-                            }
-                            if msg.contains("denied") {
-                                return Err(CliError::authorization_denied(
-                                    "Authorization denied.",
-                                ));
-                            }
-                            return Err(CliError::authorization_denied(msg));
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                // Broker may be starting/restarting; keep polling.
-            }
-        }
-    }
+    Ok(())
 }
 
 /// Probe the broker's `/status` endpoint to see whether this workspace is
@@ -274,7 +316,7 @@ pub async fn run(
 /// the device flow will fail-closed on its own if something is genuinely
 /// wrong. Used to short-circuit `register` without `--force` so the CLI
 /// doesn't print a user_code that can never be redeemed.
-async fn is_already_registered(client: &BrokerClient) -> bool {
+pub(crate) async fn is_already_registered(client: &BrokerClient) -> bool {
     let Ok((status, body)) = client.get_raw("/status").await else {
         return false;
     };

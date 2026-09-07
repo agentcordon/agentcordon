@@ -22,9 +22,13 @@ mod broker_autostart;
 mod commands;
 mod config;
 mod error;
+#[cfg(test)]
+mod fake_broker;
 mod pin;
 mod platform;
 mod signing;
+#[cfg(test)]
+mod test_env;
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -44,7 +48,7 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Generate the Ed25519 keypair and install the AgentCordon skill
+    /// Set this workspace up end to end: keypair, AgentCordon skill, enrollment
     Init {
         /// Agent runtime to install the skill for. Repeatable. Also accepts
         /// `auto` (every runtime detected in this workspace or your home
@@ -57,6 +61,24 @@ enum Command {
         /// Ignore the remembered choice and pick the runtimes again.
         #[arg(long)]
         reconfigure: bool,
+
+        /// Set this directory up and stop: no broker, no device flow. For
+        /// scripts and air-gapped setups. `agentcordon register` enrolls
+        /// later.
+        #[arg(long = "no-register")]
+        no_register: bool,
+
+        /// AgentCordon server URL to enroll with. Optional: without it the
+        /// CLI falls back to `AGTCRDN_SERVER_URL` and then to `server_url`
+        /// in `~/.agentcordon/config.toml`, which your server's installer
+        /// wrote.
+        #[arg(long = "server-url")]
+        server_url: Option<String>,
+
+        /// Workspace display name for the enrollment. Defaults to the
+        /// current directory's basename, exactly as for `register`.
+        #[arg(long = "name")]
+        name: Option<String>,
     },
 
     /// Register this workspace with the broker
@@ -205,20 +227,11 @@ fn main() -> std::process::ExitCode {
 
     let cli = Cli::parse();
 
-    let result = match cli.command {
-        Command::Init {
-            ref agents,
-            reconfigure,
-        } => commands::init::run(commands::init::InitArgs {
-            agents: agents.clone(),
-            reconfigure,
-        }),
-        _ => {
-            // All other commands are async
-            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-            rt.block_on(run_async(cli.command))
-        }
-    };
+    // `init` used to be the one synchronous command. It now finishes
+    // enrollment — a broker autostart and the RFC 8628 device flow — so every
+    // command goes through the runtime.
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let result = rt.block_on(run_async(cli.command));
 
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -231,7 +244,22 @@ fn main() -> std::process::ExitCode {
 
 async fn run_async(command: Command) -> Result<(), CliError> {
     match command {
-        Command::Init { .. } => unreachable!(),
+        Command::Init {
+            agents,
+            reconfigure,
+            no_register,
+            server_url,
+            name,
+        } => {
+            commands::init::run(commands::init::InitArgs {
+                agents,
+                reconfigure,
+                no_register,
+                server_url,
+                name,
+            })
+            .await
+        }
         Command::Register {
             scopes,
             force,

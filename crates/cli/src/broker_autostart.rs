@@ -132,86 +132,25 @@ fn find_broker_port() -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
+    use crate::test_env::EnvGuard;
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    /// Serialise env-var mutation across parallel tests. `HOME` /
-    /// `USERPROFILE` / `AGTCRDN_BROKER_URL` are process-global, so tests
-    /// that touch them must run one at a time. Copy of the `EnvGuard`
-    /// pattern in `crates/cli/src/commands/init.rs:413-435`, extended to
-    /// cover the broker-URL override used by
-    /// `discover_existing_broker`.
-    struct EnvGuard {
-        _lock: MutexGuard<'static, ()>,
-        prior_home: Option<String>,
-        prior_userprofile: Option<String>,
-        prior_broker_url: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn new() -> Self {
-            static LOCK: Mutex<()> = Mutex::new(());
-            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let prior_home = std::env::var("HOME").ok();
-            let prior_userprofile = std::env::var("USERPROFILE").ok();
-            let prior_broker_url = std::env::var("AGTCRDN_BROKER_URL").ok();
-            // Start each test with a known-clean slate for the broker
-            // URL — otherwise a stray inherited env var could spoof
-            // discovery against a real broker on the host.
-            // SAFETY: tests are serialised via the mutex above.
-            unsafe {
-                std::env::remove_var("AGTCRDN_BROKER_URL");
-            }
-            Self {
-                _lock: lock,
-                prior_home,
-                prior_userprofile,
-                prior_broker_url,
-            }
-        }
-
-        fn set_home(&self, path: &std::path::Path) {
-            // SAFETY: tests are serialised via the mutex above.
-            unsafe {
-                std::env::set_var("HOME", path);
-            }
-        }
-
-        fn set_broker_url(&self, url: &str) {
-            // SAFETY: tests are serialised via the mutex above.
-            unsafe {
-                std::env::set_var("AGTCRDN_BROKER_URL", url);
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: tests are serialised via the mutex above.
-            unsafe {
-                match &self.prior_home {
-                    Some(v) => std::env::set_var("HOME", v),
-                    None => std::env::remove_var("HOME"),
-                }
-                match &self.prior_userprofile {
-                    Some(v) => std::env::set_var("USERPROFILE", v),
-                    None => std::env::remove_var("USERPROFILE"),
-                }
-                match &self.prior_broker_url {
-                    Some(v) => std::env::set_var("AGTCRDN_BROKER_URL", v),
-                    None => std::env::remove_var("AGTCRDN_BROKER_URL"),
-                }
-            }
-        }
+    /// Every test here parks `HOME` on a tempdir and clears
+    /// `AGTCRDN_BROKER_URL`, so a stray value in the developer's shell cannot
+    /// spoof discovery against a real broker on the host.
+    fn env() -> EnvGuard {
+        let mut guard = EnvGuard::new();
+        guard.unset("AGTCRDN_BROKER_URL");
+        guard
     }
 
     #[test]
     fn resolves_home_when_present() {
         let dir = TempDir::new().unwrap();
-        let guard = EnvGuard::new();
-        guard.set_home(dir.path());
+        let mut guard = env();
+        guard.set("HOME", dir.path());
 
         let resolved = broker_port_path().expect("home should resolve");
         assert_eq!(
@@ -272,14 +211,14 @@ mod tests {
     /// this path and never spawns a second broker.
     #[tokio::test]
     async fn discover_finds_broker_via_env_var() {
-        let guard = EnvGuard::new();
+        let mut guard = env();
         // Park HOME on an empty tempdir so the port-file fallback can't
         // accidentally succeed and mask a broken env-var path.
         let home = TempDir::new().unwrap();
-        guard.set_home(home.path());
+        guard.set("HOME", home.path());
 
         let url = spawn_fake_health_server(1).await;
-        guard.set_broker_url(&url);
+        guard.set("AGTCRDN_BROKER_URL", &url);
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(2))
@@ -298,9 +237,9 @@ mod tests {
     /// claim an unreachable URL is healthy.
     #[tokio::test]
     async fn discover_errors_when_env_unset_and_port_file_unreachable() {
-        let guard = EnvGuard::new();
+        let mut guard = env();
         let home = TempDir::new().unwrap();
-        guard.set_home(home.path());
+        guard.set("HOME", home.path());
 
         // Bind-then-drop a listener on an ephemeral port to harvest a
         // port number that is free on this host right now. Brief race

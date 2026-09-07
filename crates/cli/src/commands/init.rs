@@ -1,5 +1,14 @@
-//! `agentcordon init` — generate the workspace key and install the AgentCordon
-//! skill for the agent runtimes this workspace is used with.
+//! `agentcordon init` — generate the workspace key, install the AgentCordon
+//! skill for the agent runtimes this workspace is used with, and enrol the
+//! workspace with the configured server.
+//!
+//! Enrolment moved here in v0.4.1. Install-to-use is three commands: the admin
+//! starts the server, the developer runs the one-liner the server serves, and
+//! `agentcordon init` does everything else. The server URL comes from the
+//! config file the installer wrote, so nothing has to be copied out of a
+//! terminal. `register` is unchanged and remains the standalone re-enrolment
+//! command; `--no-register` is how a script or an air-gapped setup gets the
+//! old `init`.
 //!
 //! What `init` writes changed in v0.4.1. It used to write a ~5.5 KB prose
 //! block into `AGENTS.md`, a `CLAUDE.md` importing it, and two stub files
@@ -17,8 +26,11 @@ use agentcordon_identity::{pk_hash_of, KeyFileError};
 
 use crate::agents::install::Action;
 use crate::agents::{self, install, select, DetectEnv};
+use crate::broker::BrokerClient;
+use crate::commands::register;
+use crate::config::{self, ServerUrl};
 use crate::error::CliError;
-use crate::signing::workspace_dir;
+use crate::{broker_autostart, signing::workspace_dir};
 
 /// The parsed `agentcordon init` command line.
 #[derive(Debug, Default, Clone)]
@@ -28,6 +40,57 @@ pub struct InitArgs {
     pub agents: Vec<String>,
     /// Ignore the remembered choice and pick again.
     pub reconfigure: bool,
+    /// Install the skill and stop: no broker, no device flow. For scripts and
+    /// air-gapped setups.
+    pub no_register: bool,
+    /// `--server-url`, first in the precedence [`config::resolve_server_url`]
+    /// applies.
+    pub server_url: Option<String>,
+    /// Workspace display name for the enrolment; the current directory's
+    /// basename when omitted, exactly as for `register`.
+    pub name: Option<String>,
+}
+
+/// What `init` does once the skill is installed.
+#[derive(Debug, PartialEq, Eq)]
+enum Enrollment {
+    /// `--no-register`.
+    Skipped,
+    /// Enrol against this server.
+    Enrol(ServerUrl),
+    /// No server URL from the flag, the environment or the config file.
+    Unconfigured,
+}
+
+/// The decision, with the resolved server URL supplied.
+///
+/// Being off a terminal is deliberately not an input. The picker needs a human
+/// and is skipped without one, but the device flow prints a code and polls —
+/// it never prompts — so a CI job that wants no enrolment says `--no-register`
+/// rather than getting a different `init` for having no tty.
+fn enrollment_plan(no_register: bool, configured: Option<ServerUrl>) -> Enrollment {
+    if no_register {
+        return Enrollment::Skipped;
+    }
+    match configured {
+        Some(server) => Enrollment::Enrol(server),
+        None => Enrollment::Unconfigured,
+    }
+}
+
+/// The line `--no-register` prints, so the skipped step is visible rather than
+/// silently absent.
+const SKIPPED_NOTICE: &str =
+    "--no-register: skipping enrollment. Run `agentcordon register` when you want it.";
+
+/// The two lines that end a successful `init`.
+fn registered_summary(workspace_name: &str, server: &str) -> String {
+    format!("Registered as {workspace_name} at {server}.\nTry: agentcordon credentials")
+}
+
+/// The one line an already-enrolled workspace gets.
+fn already_registered_line(server: &str) -> String {
+    format!("Already registered with {server}. Nothing to do; `agentcordon register --force` re-enrols.")
 }
 
 /// The workspace root — the directory `init` writes into.
@@ -36,7 +99,10 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Generate the Ed25519 keypair and install the skill.
-pub fn run(args: InitArgs) -> Result<(), CliError> {
+///
+/// The half of `init` that touches only this directory. Split from [`run`] so
+/// it stays synchronous and testable without a broker.
+pub fn install(args: &InitArgs) -> Result<(), CliError> {
     let key_dir = workspace_dir();
     let root = workspace_root();
 
@@ -58,7 +124,7 @@ pub fn run(args: InitArgs) -> Result<(), CliError> {
         add_to_gitignore(&root)?;
     }
 
-    let selection = resolve(&args, &root)?;
+    let selection = resolve(args, &root)?;
     for notice in &selection.notices {
         println!("{notice}");
     }
@@ -67,6 +133,64 @@ pub fn run(args: InitArgs) -> Result<(), CliError> {
     select::save(&root, &selection.runtimes)?;
     report(&selection, &written);
 
+    Ok(())
+}
+
+/// `agentcordon init`: install the skill, then finish enrollment.
+pub async fn run(args: InitArgs) -> Result<(), CliError> {
+    install(&args)?;
+
+    println!();
+    match enrollment_plan(
+        args.no_register,
+        config::resolve_server_url(args.server_url.as_deref()),
+    ) {
+        Enrollment::Skipped => {
+            println!("{SKIPPED_NOTICE}");
+            Ok(())
+        }
+        Enrollment::Unconfigured => Err(CliError::general(format!(
+            "{} Or run `agentcordon init --no-register` to set up this directory only.",
+            config::missing_server_url_hint()
+        ))),
+        Enrollment::Enrol(server) => enroll(&args, &server).await,
+    }
+}
+
+/// Start a broker if none is running, then run the same device flow
+/// `register` runs.
+async fn enroll(args: &InitArgs, server: &ServerUrl) -> Result<(), CliError> {
+    println!(
+        "Enrolling with {} (from {})",
+        server.url,
+        server.source.describe()
+    );
+    broker_autostart::ensure_broker_running(&server.url).await?;
+
+    let client = match BrokerClient::connect_for_registration(false).await {
+        Ok(c) => c,
+        Err(e) if e.code == crate::error::ExitCode::BrokerNotRunning => {
+            return Err(CliError::broker_not_running());
+        }
+        Err(e) => return Err(e),
+    };
+
+    if register::is_already_registered(&client).await {
+        println!("{}", already_registered_line(&server.url));
+        return Ok(());
+    }
+
+    let enrolled = register::device_flow(
+        &client,
+        Vec::new(),
+        args.name.as_deref(),
+        register::POLL_INTERVAL,
+    )
+    .await?;
+    println!(
+        "{}",
+        registered_summary(&enrolled.workspace_name, &server.url)
+    );
     Ok(())
 }
 
@@ -181,40 +305,24 @@ fn add_to_gitignore(root: &Path) -> Result<(), CliError> {
 mod tests {
     use super::*;
     use crate::agents::{Marker, Runtime, RUNTIMES, SKILL_MD};
+    use crate::config::ServerUrlSource;
+    use crate::test_env::EnvGuard;
     use std::collections::BTreeSet;
     use tempfile::TempDir;
 
-    /// Set the workspace dir env var for the duration of the test. Tests that
-    /// touch `AGTCRDN_WORKSPACE_DIR` must run serially because env is process-global.
-    struct EnvGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl EnvGuard {
-        fn new(dir: &Path) -> Self {
-            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            // SAFETY: tests are serialized via the mutex above.
-            unsafe {
-                std::env::set_var("AGTCRDN_WORKSPACE_DIR", dir);
-            }
-            Self { _lock: lock }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: tests are serialized via the mutex.
-            unsafe {
-                std::env::remove_var("AGTCRDN_WORKSPACE_DIR");
-            }
-        }
+    /// Point the CLI at a scratch workspace root. Tests that touch the
+    /// environment must run serially, which [`EnvGuard`] enforces
+    /// process-wide.
+    fn workspace_guard(dir: &Path) -> EnvGuard {
+        let mut guard = EnvGuard::new();
+        guard.set("AGTCRDN_WORKSPACE_DIR", dir);
+        guard
     }
 
     fn init(agents: &[&str]) -> InitArgs {
         InitArgs {
             agents: agents.iter().map(|s| s.to_string()).collect(),
-            reconfigure: false,
+            ..InitArgs::default()
         }
     }
 
@@ -226,9 +334,9 @@ mod tests {
     #[test]
     fn init_writes_the_portable_skill() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["claude-code"])).unwrap();
+        install(&init(&["claude-code"])).unwrap();
 
         let skill = dir.path().join(".agents/skills/agentcordon/SKILL.md");
         assert!(skill.exists(), "init must write the portable Agent Skill");
@@ -243,9 +351,9 @@ mod tests {
     #[test]
     fn selecting_claude_code_writes_a_skill_and_no_markdown_pointer() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["claude-code"])).unwrap();
+        install(&init(&["claude-code"])).unwrap();
 
         assert!(dir
             .path()
@@ -267,9 +375,9 @@ mod tests {
     #[test]
     fn init_writes_no_always_on_instruction_file_for_any_runtime() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["all"])).unwrap();
+        install(&init(&["all"])).unwrap();
 
         for dead in [
             "AGENTS.md",
@@ -294,9 +402,9 @@ mod tests {
     fn every_runtime_gets_a_skill_it_reads() {
         for runtime in RUNTIMES {
             let dir = TempDir::new().unwrap();
-            let _g = EnvGuard::new(dir.path());
+            let _g = workspace_guard(dir.path());
 
-            run(init(&[runtime.id])).unwrap();
+            install(&init(&[runtime.id])).unwrap();
 
             let portable = dir.path().join(".agents/skills/agentcordon/SKILL.md");
             assert!(portable.exists(), "{}: portable skill", runtime.id);
@@ -321,9 +429,9 @@ mod tests {
     #[test]
     fn runtimes_sharing_a_skill_root_share_one_file() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["claude-code", "cline"])).unwrap();
+        install(&init(&["claude-code", "cline"])).unwrap();
 
         let body =
             fs::read_to_string(dir.path().join(".claude/skills/agentcordon/SKILL.md")).unwrap();
@@ -334,12 +442,12 @@ mod tests {
     #[test]
     fn installing_twice_changes_nothing() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["all"])).unwrap();
+        install(&init(&["all"])).unwrap();
         let before = tree(dir.path());
-        run(init(&["all"])).unwrap();
-        run(InitArgs::default()).unwrap();
+        install(&init(&["all"])).unwrap();
+        install(&InitArgs::default()).unwrap();
         assert_eq!(before, tree(dir.path()), "init is idempotent");
     }
 
@@ -348,12 +456,12 @@ mod tests {
     #[test]
     fn a_stale_skill_file_is_rewritten() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
         let path = dir.path().join(".agents/skills/agentcordon/SKILL.md");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "---\nname: agentcordon\n---\n\nold\n").unwrap();
 
-        run(init(&["none"])).unwrap();
+        install(&init(&["none"])).unwrap();
 
         assert_eq!(fs::read_to_string(&path).unwrap(), SKILL_MD);
     }
@@ -365,9 +473,9 @@ mod tests {
     #[test]
     fn aider_gets_a_read_entry_pointing_at_the_portable_skill() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["aider"])).unwrap();
+        install(&init(&["aider"])).unwrap();
 
         let conf = fs::read_to_string(dir.path().join(".aider.conf.yml")).unwrap();
         assert!(conf.contains("read:"));
@@ -381,15 +489,15 @@ mod tests {
     #[test]
     fn an_existing_aider_conf_keeps_its_own_keys() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
         fs::write(
             dir.path().join(".aider.conf.yml"),
             "model: gpt-4o\n# a comment we must not eat\nauto-commits: false\n",
         )
         .unwrap();
 
-        run(init(&["aider"])).unwrap();
-        run(init(&["aider"])).unwrap();
+        install(&init(&["aider"])).unwrap();
+        install(&init(&["aider"])).unwrap();
 
         let conf = fs::read_to_string(dir.path().join(".aider.conf.yml")).unwrap();
         assert!(conf.contains("model: gpt-4o"));
@@ -403,11 +511,11 @@ mod tests {
     #[test]
     fn an_aider_conf_that_already_reads_something_is_left_alone() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
         let original = "read:\n  - CONVENTIONS.md\n";
         fs::write(dir.path().join(".aider.conf.yml"), original).unwrap();
 
-        run(init(&["aider"])).unwrap();
+        install(&init(&["aider"])).unwrap();
 
         assert_eq!(
             fs::read_to_string(dir.path().join(".aider.conf.yml")).unwrap(),
@@ -422,9 +530,9 @@ mod tests {
     #[test]
     fn unknown_agent_is_rejected_and_the_error_lists_the_valid_ones() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        let err = run(init(&["emacs"])).unwrap_err();
+        let err = install(&init(&["emacs"])).unwrap_err();
         assert!(err.message.contains("unknown agent 'emacs'"));
         assert!(err.message.contains("claude-code"));
         assert!(err.message.contains("auto"));
@@ -436,8 +544,8 @@ mod tests {
     fn the_old_agent_names_still_work() {
         for legacy in ["codex", "openclaw"] {
             let dir = TempDir::new().unwrap();
-            let _g = EnvGuard::new(dir.path());
-            run(init(&[legacy])).unwrap();
+            let _g = workspace_guard(dir.path());
+            install(&init(&[legacy])).unwrap();
             assert!(dir
                 .path()
                 .join(".agents/skills/agentcordon/SKILL.md")
@@ -457,15 +565,15 @@ mod tests {
     #[test]
     fn the_choice_is_remembered_and_reused() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["kiro"])).unwrap();
+        install(&init(&["kiro"])).unwrap();
         assert!(dir.path().join(".agentcordon/agents.toml").exists());
 
         // No flags: the remembered choice is used, so Kiro's copy is refreshed
         // and no other runtime's appears.
         fs::remove_dir_all(dir.path().join(".kiro")).unwrap();
-        run(InitArgs::default()).unwrap();
+        install(&InitArgs::default()).unwrap();
         assert!(dir
             .path()
             .join(".kiro/skills/agentcordon/SKILL.md")
@@ -478,11 +586,11 @@ mod tests {
     #[test]
     fn a_broken_agents_toml_is_ignored() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
         fs::create_dir_all(dir.path().join(".agentcordon")).unwrap();
         fs::write(dir.path().join(".agentcordon/agents.toml"), "not = [toml").unwrap();
 
-        run(InitArgs::default()).unwrap();
+        install(&InitArgs::default()).unwrap();
 
         assert!(dir
             .path()
@@ -493,15 +601,16 @@ mod tests {
     #[test]
     fn reconfigure_ignores_the_remembered_choice() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["kiro"])).unwrap();
+        install(&init(&["kiro"])).unwrap();
         // Not a TTY under `cargo test`, so `--reconfigure` falls through to
         // detection rather than prompting. Kiro is not detectable from what
         // `init` wrote, so it drops out.
-        run(InitArgs {
+        install(&InitArgs {
             agents: Vec::new(),
             reconfigure: true,
+            ..InitArgs::default()
         })
         .unwrap();
 
@@ -518,9 +627,9 @@ mod tests {
     #[test]
     fn detection_ignores_everything_init_writes() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["all"])).unwrap();
+        install(&init(&["all"])).unwrap();
 
         let env = DetectEnv {
             workspace: dir.path().to_path_buf(),
@@ -707,9 +816,9 @@ mod tests {
     #[test]
     fn init_does_not_create_mcp_json() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["all"])).unwrap();
+        install(&init(&["all"])).unwrap();
 
         assert!(
             !dir.path().join(".mcp.json").exists(),
@@ -720,12 +829,12 @@ mod tests {
     #[test]
     fn init_leaves_existing_mcp_json_untouched() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
         let original = r#"{"mcpServers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"],"env":{"FOO":"bar"}}}}"#;
         fs::write(dir.path().join(".mcp.json"), original).unwrap();
 
-        run(init(&["all"])).unwrap();
-        run(init(&["all"])).unwrap();
+        install(&init(&["all"])).unwrap();
+        install(&init(&["all"])).unwrap();
 
         let after = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
         assert_eq!(after, original);
@@ -736,15 +845,15 @@ mod tests {
     #[test]
     fn init_creates_loadable_key_and_is_idempotent() {
         let dir = TempDir::new().unwrap();
-        let _g = EnvGuard::new(dir.path());
+        let _g = workspace_guard(dir.path());
 
-        run(init(&["claude-code"])).unwrap();
+        install(&init(&["claude-code"])).unwrap();
         let first = crate::signing::load_keypair().unwrap();
         assert!(agentcordon_identity::workspace_key_exists(
             &dir.path().join(".agentcordon")
         ));
 
-        run(init(&["claude-code"])).unwrap();
+        install(&init(&["claude-code"])).unwrap();
         let second = crate::signing::load_keypair().unwrap();
         assert_eq!(second.seed_hex(), first.seed_hex());
 
@@ -781,5 +890,229 @@ mod tests {
             }
         }
         out
+    }
+
+    // -----------------------------------------------------------------
+    // Enrollment: the third of the three commands
+    // -----------------------------------------------------------------
+
+    fn server(url: &str, source: ServerUrlSource) -> ServerUrl {
+        ServerUrl {
+            url: url.to_string(),
+            source,
+        }
+    }
+
+    /// The installer wrote the server URL, so `init` has one without being
+    /// told. This is the whole point of the change.
+    #[test]
+    fn a_remembered_server_is_enrolled_with() {
+        let configured = server("https://cordon.example.com", ServerUrlSource::ConfigFile);
+        assert_eq!(
+            enrollment_plan(false, Some(configured.clone())),
+            Enrollment::Enrol(configured)
+        );
+    }
+
+    /// Scripts and air-gapped setups: the skill, and nothing that needs a
+    /// network.
+    #[test]
+    fn no_register_skips_enrollment_even_with_a_server_configured() {
+        assert_eq!(
+            enrollment_plan(
+                true,
+                Some(server("https://cordon.example.com", ServerUrlSource::Flag))
+            ),
+            Enrollment::Skipped
+        );
+    }
+
+    /// Silently installing the skill and stopping would leave a user with a
+    /// workspace that looks set up and cannot vend anything. Say so instead.
+    #[test]
+    fn no_server_anywhere_is_an_error_not_a_silent_skip() {
+        assert_eq!(enrollment_plan(false, None), Enrollment::Unconfigured);
+    }
+
+    /// The picker needs a human; the device flow does not — it prints a code
+    /// and polls. So `init` off a terminal installs the skill without asking
+    /// and still enrolls, and `--no-register` stays the way to avoid it.
+    #[test]
+    fn being_off_a_terminal_is_not_an_input_to_the_enrollment_decision() {
+        let configured = server("https://cordon.example.com", ServerUrlSource::Env);
+        assert_eq!(
+            enrollment_plan(false, Some(configured.clone())),
+            Enrollment::Enrol(configured)
+        );
+    }
+
+    /// Two lines: what happened, and the one command that proves it worked.
+    #[test]
+    fn the_summary_is_two_lines_naming_the_workspace_the_server_and_what_to_try() {
+        let summary = registered_summary("my-project", "https://cordon.example.com");
+        let lines: Vec<&str> = summary.lines().collect();
+        assert_eq!(lines.len(), 2, "exactly two lines: {summary}");
+        assert_eq!(
+            lines[0],
+            "Registered as my-project at https://cordon.example.com."
+        );
+        assert_eq!(lines[1], "Try: agentcordon credentials");
+    }
+
+    /// A rerun of `init` is the common case — a new runtime, a changed mind
+    /// about the skill — and it must not restart a device flow.
+    #[test]
+    fn an_already_registered_workspace_gets_one_line() {
+        let line = already_registered_line("https://cordon.example.com");
+        assert_eq!(line.lines().count(), 1, "one line: {line}");
+        assert!(line.contains("Already registered"), "{line}");
+        assert!(line.contains("https://cordon.example.com"), "{line}");
+    }
+
+    /// End to end, over real HTTP against a fake broker: the config file the
+    /// installer writes is enough for `agentcordon init` to enroll. Nothing
+    /// is passed on the command line and `AGTCRDN_SERVER_URL` is cleared.
+    #[tokio::test]
+    async fn init_enrolls_using_only_the_server_the_installer_recorded() {
+        let workspace = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        // One poll says "not yet", the next says approved -- the human
+        // walking to a browser.
+        let broker =
+            crate::fake_broker::spawn(crate::fake_broker::Registration::ApprovedAfter(1)).await;
+
+        std::fs::create_dir_all(home.path().join(".agentcordon")).unwrap();
+        std::fs::write(
+            home.path().join(".agentcordon/config.toml"),
+            "server_url = \"https://cordon.example.com\"\n",
+        )
+        .unwrap();
+
+        let mut env = EnvGuard::new();
+        env.set("AGTCRDN_WORKSPACE_DIR", workspace.path());
+        env.set("HOME", home.path());
+        env.set("AGTCRDN_BROKER_URL", &broker.base_url);
+        env.unset("AGTCRDN_SERVER_URL");
+        env.unset("AGTCRDN_BROKER_SHARED_SECRET");
+        env.unset("AGTCRDN_BROKER_CA");
+
+        run(InitArgs {
+            agents: vec!["none".to_string()],
+            name: Some("my-project".to_string()),
+            ..InitArgs::default()
+        })
+        .await
+        .expect("init must enroll with the recorded server");
+
+        assert_eq!(
+            broker.register_calls(),
+            1,
+            "init must run the device flow exactly once"
+        );
+        assert!(
+            broker.status_polls() >= 2,
+            "init must poll until the approval lands, saw {}",
+            broker.status_polls()
+        );
+        assert!(
+            workspace
+                .path()
+                .join(".agentcordon/broker.fingerprint")
+                .exists(),
+            "enrolling pins the broker key, exactly as `register` does"
+        );
+    }
+
+    /// A rerun must not start a second device flow.
+    #[tokio::test]
+    async fn init_on_an_already_registered_workspace_starts_no_device_flow() {
+        let workspace = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let broker = crate::fake_broker::spawn(crate::fake_broker::Registration::Already).await;
+
+        let mut env = EnvGuard::new();
+        env.set("AGTCRDN_WORKSPACE_DIR", workspace.path());
+        env.set("HOME", home.path());
+        env.set("AGTCRDN_BROKER_URL", &broker.base_url);
+        env.set("AGTCRDN_SERVER_URL", "https://cordon.example.com");
+        env.unset("AGTCRDN_BROKER_SHARED_SECRET");
+        env.unset("AGTCRDN_BROKER_CA");
+
+        run(InitArgs {
+            agents: vec!["none".to_string()],
+            ..InitArgs::default()
+        })
+        .await
+        .expect("a rerun is a no-op, not an error");
+
+        assert_eq!(
+            broker.register_calls(),
+            0,
+            "an already-registered workspace must not start a device flow"
+        );
+    }
+
+    /// `--no-register` never touches the network: no broker discovery, no
+    /// device flow, and no error when no server is configured anywhere.
+    #[tokio::test]
+    async fn no_register_installs_the_skill_and_stops() {
+        let workspace = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+
+        let mut env = EnvGuard::new();
+        env.set("AGTCRDN_WORKSPACE_DIR", workspace.path());
+        env.set("HOME", home.path());
+        env.unset("AGTCRDN_SERVER_URL");
+        env.unset("AGTCRDN_BROKER_URL");
+
+        run(InitArgs {
+            agents: vec!["none".to_string()],
+            no_register: true,
+            ..InitArgs::default()
+        })
+        .await
+        .expect("--no-register must succeed with nothing configured");
+
+        assert!(workspace
+            .path()
+            .join(".agents/skills/agentcordon/SKILL.md")
+            .exists());
+    }
+
+    /// With no server anywhere and no `--no-register`, `init` fails with a
+    /// message that names every way out — after writing the skill, so the
+    /// work is not lost.
+    #[tokio::test]
+    async fn init_without_a_server_says_how_to_fix_it() {
+        let workspace = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+
+        let mut env = EnvGuard::new();
+        env.set("AGTCRDN_WORKSPACE_DIR", workspace.path());
+        env.set("HOME", home.path());
+        env.unset("AGTCRDN_SERVER_URL");
+        env.unset("AGTCRDN_BROKER_URL");
+
+        let err = run(InitArgs {
+            agents: vec!["none".to_string()],
+            ..InitArgs::default()
+        })
+        .await
+        .expect_err("no server anywhere must be an error");
+
+        assert!(err.message.contains("--server-url"), "{}", err.message);
+        assert!(
+            err.message.contains("AGTCRDN_SERVER_URL"),
+            "{}",
+            err.message
+        );
+        assert!(err.message.contains("--no-register"), "{}", err.message);
+        assert!(
+            workspace
+                .path()
+                .join(".agents/skills/agentcordon/SKILL.md")
+                .exists(),
+            "the skill is written before enrollment is attempted"
+        );
     }
 }
