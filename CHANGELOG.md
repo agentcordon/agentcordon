@@ -4,6 +4,8 @@ All notable changes to AgentCordon are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-07
+
 ### Added
 
 - **The MCP marketplace ships 124 templates instead of 12.** Every one was verified against the live endpoint with an MCP `initialize` handshake, not taken from a vendor page. The grid gains five filter chips beside the original three. `developer-tools` adds GitLab, Vercel, Netlify, Supabase, Neon, Render, Railway, Heroku, Pulumi, Azure DevOps, Grafana, Datadog, New Relic, Honeycomb, PagerDuty, CircleCI, Buildkite, Postman, WorkOS, Algolia, Cloudinary, MongoDB Atlas, ClickHouse, Turso, Prisma, PlanetScale, dbt Cloud, and the keyless DeepWiki, Context7, Clerk, Microsoft Learn and AWS Knowledge. `productivity` adds Slack, HubSpot, Front, Airtable, monday.com, ClickUp, Shortcut, Todoist, Trello, Canva, Figma, Miro, Webflow, Box, Dropbox, Typeform, Calendly, Zoom, Klaviyo, Attio, Close, Pipedrive, Gong, Help Scout, Zapier, Smartsheet, Fireflies and Mailchimp Transactional. The new chips are `ai` (Hugging Face, Replicate, Weights & Biases, LangSmith, Braintrust, fal.ai, OpenRouter, RunPod, Roboflow, Chroma), `security` (Wiz, Vanta, Drata, Secureframe, GitGuardian, Censys, Socket, Semgrep, Chainguard), `analytics` (PostHog, Amplitude, Mixpanel, Tableau, Hex, Cube, MotherDuck, Statsig, LaunchDarkly, RudderStack, Airbyte), `research` (Exa, Firecrawl, Tavily, Apify, Perplexity, Linkup, You.com, Jina, Kagi, Bright Data, Apollo.io) and `finance` (Ramp, Brex, Mercury, Airwallex, CoinGecko), with Stripe, Razorpay, Mollie, Checkout.com, GoCardless and Paddle joining `payments`. Ninety-nine are OAuth2 with dynamic client registration, so no provider secret goes in the template; eighteen take an API key in the placement their vendor documents, and seven need no account at all. (`data/mcp-templates/`)
@@ -391,7 +393,8 @@ All notable changes to AgentCordon are documented in this file.
 - Full audit trail
 - Docker and Docker Compose deployment
 
-[Unreleased]: https://github.com/agentcordon/agentcordon/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/agentcordon/agentcordon/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/agentcordon/agentcordon/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/agentcordon/agentcordon/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/agentcordon/agentcordon/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/agentcordon/agentcordon/compare/v0.3.1...v0.3.2

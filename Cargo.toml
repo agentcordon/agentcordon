@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/identity", "crates/core", "crates/server", "crates/broker", "crates/cli"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 homepage = "https://agentcordon.dev"
