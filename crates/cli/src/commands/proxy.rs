@@ -23,7 +23,7 @@ struct ProxyResponse {
 }
 
 #[derive(Deserialize)]
-struct ProxyData {
+pub(crate) struct ProxyData {
     status_code: u16,
     /// `[name, value]` pairs in arrival order; a repeated header (Set-Cookie,
     /// Link) is one entry per value.
@@ -80,6 +80,59 @@ fn parse_target(args: &[String], auto: bool) -> Result<Target, CliError> {
     }
 }
 
+/// One proxied call, from choosing the credential to the broker's answer.
+///
+/// `agentcordon proxy` and `mcp-serve`'s `agentcordon_proxy` are the same
+/// call under two names, so they share this: one selector, one request
+/// shape, one rendering of a refusal. Returns the credential that was
+/// actually used, because when the caller named none it is the only place
+/// that choice is visible.
+pub(crate) async fn execute(
+    client: &BrokerClient,
+    credential: Option<String>,
+    method: &str,
+    url: &str,
+    headers: HashMap<String, String>,
+    body: Option<String>,
+) -> Result<(String, ProxyData), CliError> {
+    // With no credential named, one is chosen from the listing the broker
+    // already holds, structurally, before anything is vended. One extra
+    // request, no extra round trip to the server (the broker caches it).
+    let credential = match credential {
+        Some(name) => name,
+        None => {
+            let creds = credentials::fetch(client).await?;
+            let chosen = credentials::select_for_target(&creds, url)
+                .map_err(|e| CliError::no_credential_match(e.message(url)))?;
+            if chosen.fence().is_none() {
+                eprintln!(
+                    "Note: '{}' is not fenced ({}); no fenced credential covers {url}.",
+                    chosen.name,
+                    credentials::UNRESTRICTED
+                );
+            }
+            chosen.name.clone()
+        }
+    };
+
+    let req = ProxyRequest {
+        method: method.to_uppercase(),
+        url: url.to_string(),
+        credential: credential.clone(),
+        headers,
+        body,
+    };
+
+    let (status, body_text) = client.post_raw("/proxy", &req).await?;
+    if !(200..300).contains(&status) {
+        return Err(render_broker_error(status, &body_text));
+    }
+
+    let resp: ProxyResponse = serde_json::from_str(&body_text)
+        .map_err(|e| CliError::general(format!("invalid proxy response: {e}")))?;
+    Ok((credential, resp.data))
+}
+
 /// Proxy an HTTP request through the broker with credential injection.
 pub async fn run(args: ProxyArgs) -> Result<(), CliError> {
     let ProxyArgs {
@@ -93,28 +146,6 @@ pub async fn run(args: ProxyArgs) -> Result<(), CliError> {
     } = args;
     let target = parse_target(&positional, auto)?;
     let (method, url) = (target.method, target.url);
-
-    let client = BrokerClient::connect().await?;
-
-    // With `--auto` the credential is chosen from the listing the broker
-    // already holds, structurally, before anything is vended. One extra
-    // request, no extra round trip to the server (the broker caches it).
-    let credential = match target.credential {
-        Some(name) => name,
-        None => {
-            let creds = credentials::fetch(&client).await?;
-            let chosen = credentials::select_for_target(&creds, &url)
-                .map_err(|e| CliError::no_credential_match(e.message(&url)))?;
-            if chosen.fence().is_none() {
-                eprintln!(
-                    "Note: '{}' is not fenced ({}); no fenced credential covers {url}.",
-                    chosen.name,
-                    credentials::UNRESTRICTED
-                );
-            }
-            chosen.name.clone()
-        }
-    };
 
     // Parse extra headers
     let mut headers = HashMap::new();
@@ -137,22 +168,9 @@ pub async fn run(args: ProxyArgs) -> Result<(), CliError> {
             other => other,
         };
 
-    let req = ProxyRequest {
-        method: method.to_uppercase(),
-        url,
-        credential: credential.clone(),
-        headers,
-        body,
-    };
-
-    let (status, body_text) = client.post_raw("/proxy", &req).await?;
-    if !(200..300).contains(&status) {
-        return Err(render_broker_error(status, &body_text));
-    }
-
-    let resp: ProxyResponse = serde_json::from_str(&body_text)
-        .map_err(|e| CliError::general(format!("invalid proxy response: {e}")))?;
-    let data = resp.data;
+    let client = BrokerClient::connect().await?;
+    let (credential, data) =
+        execute(&client, target.credential, &method, &url, headers, body).await?;
     let body = body_bytes(&data);
 
     // Exactly one of these writes to stdout, and each writes only what it
@@ -283,7 +301,7 @@ fn is_json_content_type(ct: &str) -> bool {
 /// type says JSON, and a string otherwise: the content type decides, not
 /// the shape, so a `text/plain` body that happens to look like JSON stays
 /// text.
-fn json_envelope(data: &ProxyData) -> serde_json::Value {
+pub(crate) fn json_envelope(data: &ProxyData) -> serde_json::Value {
     let mut headers = serde_json::Map::new();
     for (name, value) in &data.headers {
         let value = serde_json::Value::String(value.clone());
