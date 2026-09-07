@@ -542,3 +542,62 @@ async fn the_startup_migration_renames_legacy_generated_policy_rows() {
     let after = ctx.store.list_policies().await.expect("list policies");
     assert_eq!(after.len(), policies.len(), "a second pass changes nothing");
 }
+
+// ===========================================================================
+// G-S20-3 — the policy tester answers a per-tool question
+// ===========================================================================
+
+/// `POST /api/v1/policies/test` with a `tool_name` context claim, the way the
+/// tester's Tool name field sends it.
+async fn test_policy_for_tool(
+    ctx: &TestContext,
+    cookie: &str,
+    csrf: &str,
+    workspace_id: &WorkspaceId,
+    server_id: &McpServerId,
+    tool_name: &str,
+) -> (StatusCode, serde_json::Value) {
+    send_json(
+        &ctx.app,
+        Method::POST,
+        "/api/v1/policies/test",
+        None,
+        Some(cookie),
+        Some(csrf),
+        Some(json!({
+            "principal": { "type": "Workspace", "id": workspace_id.0.to_string(), "attributes": {} },
+            "action": "mcp_tool_call",
+            "resource": { "type": "McpServer", "id": server_id.0.to_string(), "attributes": {} },
+            "context": { "tool_name": tool_name },
+        })),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn the_tester_route_answers_per_tool_under_a_per_tool_deny() {
+    let ctx = TestAppBuilder::new()
+        .with_policy(PER_TOOL_DENY)
+        .with_admin()
+        .build()
+        .await;
+    let ws = ctx.admin_agent.as_ref().unwrap().id.clone();
+    let id = create_bound_mcp_server(&*ctx.store, &ws, "uat-none").await;
+    let (cookie, csrf) = admin_session(&ctx, "s20-tester").await;
+
+    let (status, body) = test_policy_for_tool(&ctx, &cookie, &csrf, &ws, &id, "echo").await;
+    assert_eq!(status, StatusCode::OK, "policies/test: {}", body);
+    assert_eq!(
+        body["data"]["decision"], "permit",
+        "the granted tool is permitted: {}",
+        body
+    );
+
+    let (status, body) = test_policy_for_tool(&ctx, &cookie, &csrf, &ws, &id, "whoami").await;
+    assert_eq!(status, StatusCode::OK, "policies/test: {}", body);
+    assert_eq!(
+        body["data"]["decision"], "forbid",
+        "the denied tool is refused, and the difference is the tool name alone: {}",
+        body
+    );
+}

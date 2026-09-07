@@ -117,6 +117,18 @@
                     <input type="text" id="tester-tags" class="form-input" x-model="tags"
                            placeholder="e.g. production, admin" @input="clearResults()">
                 </div>
+                <!--
+                  `mcp_tool_call` is decided per tool: every policy the MCP
+                  Access tab's Grant/Deny control writes conditions on
+                  `context.tool_name`, so without this the page answered one
+                  decision for a server whose real answer differs per tool
+                  (uat S20).
+                -->
+                <div class="form-group tester-input-field" x-show="actionTakesToolName">
+                    <label for="tester-tool-name" class="tester-input-label">Tool name <span class="text-sm opacity-muted">(optional)</span></label>
+                    <input type="text" id="tester-tool-name" class="form-input" x-model="toolName"
+                           placeholder="e.g. echo" @input="clearResults()">
+                </div>
             </div>
 
             <div class="tester-action-row">
@@ -142,6 +154,7 @@
                         <span class="tester-result-icon" x-text="getResultIcon({decision: result})"></span>
                         <div>
                             <span class="tester-result-label" x-text="getResultLabel({decision: result})"></span>
+                            <p class="tester-result-subject mono-sm" x-text="resultSubject()"></p>
                             <p class="tester-result-explanation" x-text="getResultExplanation({decision: result})"></p>
                         </div>
                     </div>
@@ -341,6 +354,12 @@
     font-size: 0.8rem;
     opacity: 0.5;
 }
+.tester-result-subject {
+    font-size: 0.8rem;
+    opacity: 0.75;
+    margin-top: 4px;
+    word-break: break-word;
+}
 .tester-result-explanation {
     font-size: 0.8rem;
     opacity: 0.5;
@@ -518,6 +537,8 @@ function policyTesterPage() {
         /* The attributes the merged tester inherited from the inline card:
            a workspace's tags, a user's role. */
         role: '', tags: '',
+        /* The `tool_name` context claim `mcp_tool_call` is decided on. */
+        toolName: '',
         testing: false, testingAllWs: false,
         result: null, contributingPolicies: [],
         allWorkspacesMatrix: [],
@@ -542,6 +563,35 @@ function policyTesterPage() {
            the attributes that kind actually carries into Cedar. */
         get principalType() {
             return this.principal ? this.principal.split(':')[0] : '';
+        },
+
+        /* The actions whose decision depends on which tool is being called
+           (docs/authorization-and-cedar-policy.md § "Context Fields by
+           Action"). `mcp_list_tools` takes no tool name: it is the listing,
+           not one entry in it. */
+        get actionTakesToolName() {
+            return this.action === 'mcp_tool_call';
+        },
+
+        /* The context claims this question carries. Only what the action
+           actually reads — a stray `tool_name` on a credential test would be
+           noise in the audit row the evaluation writes. */
+        testContext() {
+            if (!this.actionTakesToolName || !this.toolName) return {};
+            return { tool_name: this.toolName };
+        },
+
+        /* What the answer is about. A permit for `echo` must not read as a
+           permit for the server. */
+        resultSubject() {
+            var subject = this.action + ' on ' + this.getResourceLabel();
+            if (this.actionTakesToolName && this.toolName) {
+                return subject + ' — tool "' + this.toolName + '"';
+            }
+            if (this.actionTakesToolName) {
+                return subject + ' — any tool (no tool name given)';
+            }
+            return subject;
         },
 
         async loadUsers() {
@@ -742,6 +792,7 @@ function policyTesterPage() {
                         principal: { type: p.type, id: p.id, attributes: this.principalAttributes(p.type) },
                         action: this.action,
                         resource: { type: r.type, id: r.id, attributes: {} },
+                        context: this.testContext(),
                     }),
                 });
                 if (resp.ok) {
@@ -818,7 +869,7 @@ function policyTesterPage() {
             this.savedScenarios.push({
                 name: name,
                 principal: this.principal, action: this.action, resource: this.resource,
-                role: this.role, tags: this.tags
+                role: this.role, tags: this.tags, toolName: this.toolName
             });
             try {
                 localStorage.setItem('ac_test_scenarios', JSON.stringify(this.savedScenarios));
@@ -836,6 +887,7 @@ function policyTesterPage() {
             this.resource = s.resource;
             this.role = s.role || '';
             this.tags = s.tags || '';
+            this.toolName = s.toolName || '';
             this.clearResults();
         },
 

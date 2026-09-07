@@ -520,7 +520,7 @@ test.describe('S20 MCP tool gating', () => {
     ).toBeVisible();
   });
 
-  test('the policy tester cannot answer a per-tool mcp_tool_call question [G-S20-3]', async ({
+  test('the policy tester answers a per-tool mcp_tool_call question [G-S20-3]', async ({
     page,
   }, testInfo) => {
     await login(page);
@@ -536,34 +536,43 @@ test.describe('S20 MCP tool gating', () => {
     expect(actionValues).toContain('mcp_tool_call');
     expect(actionValues).toContain('mcp_list_tools');
 
-    // (a) The gap: `mcp_tool_call` takes a `tool_name` context claim — every
-    // policy the Access tab's Grant/Deny control writes conditions on exactly
-    // that — and the tester has nowhere to type it.
-    const toolNameInputs = await page
-      .locator('input, select, textarea')
-      .evaluateAll((els) =>
-        els.filter((e) => /tool[_ -]?name/i.test((e as HTMLElement).outerHTML)).length,
-      );
-    expect(toolNameInputs, 'the tester offers no tool_name field').toBe(0);
-    await shot(page, testInfo, 's20-tester-no-tool-name');
-
-    // (b) What the page answers for the server as a whole.
+    // (a) The field appears for the action that takes the claim and not for
+    // the rest: `mcp_tool_call` is decided per tool, `manage_policies` is not.
     await page.locator('#tester-principal').selectOption(`Workspace:${workspace2Id}`);
-    await page.locator('#tester-action').selectOption('mcp_tool_call');
     await page.locator('#tester-resource').selectOption(`McpServer:${id}`);
-    const decided = page.waitForResponse(
-      (r) => r.url().includes('/api/v1/policies/test') && r.request().method() === 'POST',
-      { timeout: 30_000 },
-    );
-    await page.locator('.tester-action-row button.btn-primary').click();
-    const pageDecision = (await (await decided).json()).data.decision;
-    expect(typeof pageDecision).toBe('string');
+    await page.locator('#tester-action').selectOption('manage_policies');
+    await expect(page.locator('#tester-tool-name')).toBeHidden();
+    await page.locator('#tester-action').selectOption('mcp_tool_call');
+    await expect(page.locator('#tester-tool-name')).toBeVisible();
+    await shot(page, testInfo, 's20-tester-tool-name-field');
+
+    // (b) The page separates the two tools, and its answer names which one it
+    // is about.
+    const perTool: Record<string, string> = {};
+    for (const tool of [GRANTED_TOOL, DENIED_TOOL]) {
+      await page.fill('#tester-tool-name', tool);
+      const decided = page.waitForResponse(
+        (r) => r.url().includes('/api/v1/policies/test') && r.request().method() === 'POST',
+        { timeout: 30_000 },
+      );
+      await page.locator('.tester-action-row button.btn-primary').click();
+      const response = await decided;
+      // The claim reaches the API under the name the API reads.
+      expect(JSON.parse(response.request().postData() || '{}').context).toEqual({
+        tool_name: tool,
+      });
+      perTool[tool] = (await response.json()).data.decision;
+      await expect(page.locator('.tester-result-subject')).toContainText(`tool "${tool}"`);
+    }
     await shot(page, testInfo, 's20-tester-mcp-tool-call');
 
-    // (c) LABELLED WORKAROUND: the same endpoint with the claim the UI omits.
-    // It separates the two tools; the page's single answer cannot be right for
-    // both, which is the finding.
-    const perTool: Record<string, string> = {};
+    expect(
+      perTool[GRANTED_TOOL],
+      `granted ${GRANTED_TOOL} vs denied ${DENIED_TOOL}: ${JSON.stringify(perTool)}`,
+    ).not.toBe(perTool[DENIED_TOOL]);
+    expect(perTool[DENIED_TOOL], JSON.stringify(perTool)).toBe('forbid');
+
+    // (c) And the endpoint agrees, called directly with the same claim.
     for (const tool of [GRANTED_TOOL, DENIED_TOOL]) {
       const tested = await apiFromPage(page, 'POST', '/api/v1/policies/test', {
         principal: { type: 'Workspace', id: workspace2Id },
@@ -572,26 +581,8 @@ test.describe('S20 MCP tool gating', () => {
         context: { tool_name: tool },
       });
       expect(tested.status, JSON.stringify(tested.body)).toBe(200);
-      perTool[tool] = tested.body.data.decision;
+      expect(tested.body.data.decision, `direct ${tool}`).toBe(perTool[tool]);
     }
-    expect(
-      perTool[GRANTED_TOOL],
-      `granted ${GRANTED_TOOL} vs denied ${DENIED_TOOL}: ${JSON.stringify(perTool)}`,
-    ).not.toBe(perTool[DENIED_TOOL]);
-    expect(perTool[DENIED_TOOL], JSON.stringify(perTool)).toBe('forbid');
-
-    recordFinding({
-      scenario: 'S20',
-      title: 'The policy tester cannot evaluate a per-tool mcp_tool_call decision: there is no tool_name field',
-      doc: 'docs/authorization-and-cedar-policy.md § "Context Fields by Action" (mcp_tool_call takes tool_name)',
-      detail:
-        'POST /api/v1/policies/test accepts context.tool_name and answers ' +
-        `${JSON.stringify(perTool)} for the two tools this scenario granted and denied. /security/tester ` +
-        `sends no tool_name and offers no input for one, so it answers "${pageDecision}" for the server as a ` +
-        'whole — one answer for a question whose real answer differs per tool. An operator who writes a ' +
-        'per-tool deny from the Access tab has no way to check it from the tester the docs point them at.',
-      workaround: 'The same endpoint called with context.tool_name from the signed-in page.',
-    });
   });
 
   test('every action the Cedar schema defines is named in the tester, the grant form and the reference docs [G-S20-4]', async ({

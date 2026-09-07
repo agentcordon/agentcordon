@@ -5505,3 +5505,55 @@ async fn a_generated_deny_row_is_badged_generated_like_a_generated_grant() {
         "and the badge says which of the two the row is",
     );
 }
+
+/// `mcp_tool_call` takes a `tool_name` context claim — every policy the Access
+/// tab's Grant/Deny control writes conditions on exactly that — and the tester
+/// had nowhere to type it, so it answered one decision for a server whose real
+/// answer differs per tool (uat S20, G-S20-3).
+#[tokio::test]
+async fn the_policy_tester_can_name_the_tool_an_mcp_action_is_about() {
+    let (ctx, cookie) = admin_session().await;
+    let uri = "/security/tester";
+    let (status, body) = get_page(&ctx.app, uri, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_contains(
+        &body,
+        uri,
+        r#"id="tester-tool-name""#,
+        "the tester offers a Tool name field",
+    );
+    assert_contains(
+        &body,
+        uri,
+        r#"x-show="actionTakesToolName""#,
+        "shown for the actions that take the claim, and not for the rest",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "'mcp_tool_call'",
+        "and it knows which actions those are",
+    );
+    // The claim has to reach the API under the name the API reads.
+    assert_contains(
+        &body,
+        uri,
+        "context: this.testContext()",
+        "the test request carries a context",
+    );
+    assert_contains(
+        &body,
+        uri,
+        "tool_name: this.toolName",
+        "whose tool_name is what was typed",
+    );
+    // And the answer says which tool it is about, so a permit for `echo` is
+    // not read as a permit for the server.
+    assert_contains(
+        &body,
+        uri,
+        r#"x-text="resultSubject()""#,
+        "the result names what was asked about",
+    );
+}
