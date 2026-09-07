@@ -11,11 +11,14 @@ authenticated call goes through the broker, which injects the credential and aud
 
 ## Fast path
 
-Call an API with the credential whose URL fence covers your target — `agentcordon credentials --json` lists every `name` with its `allowed_url_pattern`:
+Call an API. `--auto` picks the credential whose URL fence covers the target; the body comes
+back on stdout and one status line on stderr:
 
 ```
-agentcordon proxy <credential> <METHOD> <url> [--body '{"k":"v"}'] [--header 'Accept:application/json']
+agentcordon proxy --auto <METHOD> <url> [--body '{"k":"v"}'] [--header 'Accept:application/json']
 ```
+
+If it refuses (exit 7) it names the candidates; rerun with one of them in place of `--auto`.
 
 Call an MCP tool. Read the schema first unless you already know the argument names:
 
@@ -24,8 +27,7 @@ agentcordon mcp-tools --schema --server <server> --tool <tool>
 agentcordon mcp-call <server> <tool> --arg key=value
 ```
 
-Only if a call errors, run `agentcordon credentials` or `agentcordon mcp-servers` and read the
-error text — it names the fence that blocked you, or the fix.
+Only if a call errors, run `agentcordon credentials` or `agentcordon mcp-servers`; the error names the fence or the fix.
 
 ## Choosing
 
@@ -43,17 +45,15 @@ error text — it names the fence that blocked you, or the fix.
 - `url_pattern_denied` — the credential's fence does not cover the target, and the message names
   the pattern. Pick another credential. Never retry with a raw token, and never rewrite the URL
   to get past the fence; if nothing covers the target, say so and ask for a credential.
-- `Blocked by SSRF protection` — a loopback or private target. The **broker** must have been
-  started as `AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker --server-url <server>`. It
-  reads the flag once, at startup, so restart it; prefixing an `agentcordon proxy` call does nothing.
+- `Blocked by SSRF protection` — a loopback or private target: restart the broker as
+  `AGTCRDN_PROXY_ALLOW_LOOPBACK=true agentcordon-broker --server-url <server>`; it reads the flag once, at startup.
 - Exit codes: 2 broker not running · 3 not registered · 4 auth failed · 5 authorization denied
-  (includes `url_pattern_denied`) · 6 upstream service failed, not AgentCordon.
+  (includes `url_pattern_denied`) · 6 upstream failed, not AgentCordon · 7 `--auto` found none or several.
 
 ## Reference
 
 - `agentcordon status` — identity, broker connection, registration, configured server.
-- `agentcordon mcp-call <s> <t> --args-json '{...}'` — nested or array arguments (`@file`, or `-` for stdin). `agentcordon proxy <c> POST <url> --body @file` reads a body from a file.
+- `mcp-call <s> <t> --args-json '{...}'` for nested arguments (`@file` or `-`); `proxy … --body @file` reads a body from a file.
 - `agentcordon credentials create --name <n> --service <s> --value <secret> --allowed-url-pattern '<glob>'` — only when you have been given a secret to store, and always fenced.
 - Setup, not work: `agentcordon init` (skill + enrollment), `agentcordon register` (re-enrol).
-- You never configure the broker. It writes its URL to `~/.agentcordon/broker.port` and the CLI
-  reads that; `AGTCRDN_BROKER_URL` is an override only — do not export it speculatively.
+- You never configure the broker: the CLI finds it via `~/.agentcordon/broker.port`; `AGTCRDN_BROKER_URL` is an override only.

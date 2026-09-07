@@ -796,7 +796,7 @@ mod tests {
             "agentcordon proxy",
             "agentcordon mcp-call",
             "agentcordon mcp-tools --schema",
-            "agentcordon credentials --json",
+            "agentcordon proxy --auto",
         ] {
             assert!(
                 first_section.contains(expected),
