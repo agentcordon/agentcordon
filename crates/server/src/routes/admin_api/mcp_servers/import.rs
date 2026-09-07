@@ -32,17 +32,13 @@ pub(super) struct ImportMcpServerEntry {
     #[allow(dead_code)]
     env: Option<HashMap<String, String>>,
     url: Option<String>,
-    tools: Option<Vec<ImportToolEntry>>,
+    /// Tools as the uploading workspace knows them. Deserialised straight
+    /// into the domain type, so a workspace may forward what its own
+    /// `tools/list` returned: `inputSchema` is read through the alias and
+    /// both `description` and the schema are persisted, exactly as
+    /// discovery persists them.
+    tools: Option<Vec<agent_cordon_core::domain::mcp::McpTool>>,
     required_credentials: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct ImportToolEntry {
-    name: String,
-    #[allow(dead_code)]
-    description: Option<String>,
-    #[allow(dead_code)]
-    input_schema: Option<serde_json::Value>,
 }
 
 /// `POST /api/v1/mcp-servers/import` -- workspace-authenticated bulk MCP import.
@@ -75,9 +71,7 @@ pub(super) async fn import_mcp_servers(
             name: e.name,
             transport: e.transport,
             url: e.url,
-            tools: e
-                .tools
-                .map(|tools| tools.into_iter().map(|t| t.name).collect()),
+            tools: e.tools,
             required_credentials: e.required_credentials,
         })
         .collect();

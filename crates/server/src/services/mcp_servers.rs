@@ -1081,6 +1081,11 @@ permit(
     ))
 }
 
+/// The names of a tool list, in order — what `allowed_tools` holds.
+fn tool_names(tools: &[agent_cordon_core::domain::mcp::McpTool]) -> Vec<String> {
+    tools.iter().map(|t| t.name.clone()).collect()
+}
+
 /// A policy `generate_policies` created.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GeneratedPolicy {
@@ -1095,7 +1100,10 @@ pub struct ImportEntry {
     pub name: String,
     pub transport: Option<String>,
     pub url: Option<String>,
-    pub tools: Option<Vec<String>>,
+    /// Tools with whatever metadata the uploading workspace knows, stored
+    /// the way discovery stores them: names in `allowed_tools`, the full
+    /// entries in `discovered_tools`.
+    pub tools: Option<Vec<agent_cordon_core::domain::mcp::McpTool>>,
     pub required_credentials: Option<Vec<String>>,
 }
 
@@ -1228,7 +1236,7 @@ impl McpServerService {
             .and_then(|ws| ws.owner_id);
 
         let mut results = Vec::new();
-        for entry in entries {
+        for mut entry in entries {
             let name = entry.name.trim().to_string();
             if name.is_empty() || name.contains('.') {
                 continue;
@@ -1239,14 +1247,26 @@ impl McpServerService {
                 .get_mcp_server_by_workspace_and_name(&workspace_id, &name)
                 .await?
             {
-                let status = match (&existing.allowed_tools, &entry.tools) {
-                    (None, Some(tools)) if !tools.is_empty() => {
-                        let mut updated = existing.clone();
-                        updated.allowed_tools = Some(tools.clone());
-                        self.store.update_mcp_server(&updated).await?;
-                        "updated"
+                // An upload fills in what the record is missing and nothing
+                // else: names for a server that has none, and the tool
+                // metadata for one whose tools are still bare names.
+                let mut updated = existing.clone();
+                let mut changed = false;
+                if let Some(tools) = entry.tools.take().filter(|t| !t.is_empty()) {
+                    if updated.allowed_tools.is_none() {
+                        updated.allowed_tools = Some(tool_names(&tools));
+                        changed = true;
                     }
-                    _ => "existing",
+                    if updated.discovered_tools.is_none() {
+                        updated.discovered_tools = Some(tools);
+                        changed = true;
+                    }
+                }
+                let status = if changed {
+                    self.store.update_mcp_server(&updated).await?;
+                    "updated"
+                } else {
+                    "existing"
                 };
                 results.push(ImportOutcome {
                     name,
@@ -1267,6 +1287,7 @@ impl McpServerService {
                 }
             };
 
+            let tools = entry.tools.filter(|t| !t.is_empty());
             let server = McpServer {
                 id: McpServerId(Uuid::new_v4()),
                 // The junction is the source of truth; the legacy column stays None.
@@ -1274,7 +1295,7 @@ impl McpServerService {
                 name: name.clone(),
                 upstream_url: entry.url.unwrap_or_default(),
                 transport,
-                allowed_tools: entry.tools,
+                allowed_tools: tools.as_deref().map(tool_names),
                 enabled: true,
                 created_by: uploading_workspace_id.clone(),
                 created_at: now,
@@ -1288,7 +1309,7 @@ impl McpServerService {
                 }),
                 auth_method: McpAuthMethod::None,
                 template_key: None,
-                discovered_tools: None,
+                discovered_tools: tools,
                 created_by_user: created_by_user.clone(),
             };
             self.store.create_mcp_server(&server).await?;

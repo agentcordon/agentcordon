@@ -2576,6 +2576,25 @@ paths:
                         type: string
                         enum: [http]
                         default: http
+                      tools:
+                        type: array
+                        description: >
+                          Tools the workspace knows this server has. Names,
+                          descriptions and input schemas are all persisted,
+                          exactly as tool discovery persists them.
+                        items:
+                          type: object
+                          required: [name]
+                          properties:
+                            name:
+                              type: string
+                            description:
+                              type: string
+                            input_schema:
+                              type: object
+                              description: >
+                                JSON Schema for the tool's arguments. The MCP
+                                spelling `inputSchema` is accepted as well.
       responses:
         '200':
           description: MCP servers imported

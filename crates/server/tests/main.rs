@@ -35,6 +35,7 @@ mod key_ring;
 mod lifecycle_cross_principal;
 mod login_lockout;
 mod master_secret;
+mod mcp_import_tool_metadata;
 mod mcp_marketplace_gaps;
 mod mcp_server_disable;
 mod mcp_servers_ui_31;

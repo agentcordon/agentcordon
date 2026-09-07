@@ -27,7 +27,20 @@ pub(super) fn push_endpoints(endpoints: &mut Vec<EndpointDoc>) {
                         "properties": {
                             "name": { "type": "string", "description": "MCP server name" },
                             "transport": { "type": "string", "enum": ["http", "sse"], "description": "Transport: http or sse (default: http)" },
-                            "url": { "type": "string", "description": "Upstream URL for HTTP/SSE transport servers" }
+                            "url": { "type": "string", "description": "Upstream URL for HTTP/SSE transport servers" },
+                            "tools": {
+                                "type": "array",
+                                "description": "Tools the workspace knows this server has. Stored the way discovery stores them: names, descriptions and input schemas are all kept.",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["name"],
+                                    "properties": {
+                                        "name": { "type": "string", "description": "Tool name" },
+                                        "description": { "type": "string", "description": "What the tool does" },
+                                        "input_schema": { "type": "object", "description": "JSON Schema for the tool's arguments; the MCP spelling `inputSchema` is accepted too" }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

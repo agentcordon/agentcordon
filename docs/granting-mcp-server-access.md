@@ -337,7 +337,14 @@ curl -X POST https://agentcordon.example.com/api/v1/mcp-servers/import \
         "name": "remote-tools",
         "transport": "http",
         "url": "https://workstation-b.example.com:8080/mcp",
-        "tools": [ { "name": "clone_repo" }, { "name": "list_files" } ],
+        "tools": [
+          {
+            "name": "clone_repo",
+            "description": "Clone a repository into the workspace",
+            "input_schema": { "type": "object", "properties": { "url": { "type": "string" } } }
+          },
+          { "name": "list_files" }
+        ],
         "required_credentials": ["<credential-uuid>"]
       }
     ]
@@ -350,7 +357,12 @@ curl -X POST https://agentcordon.example.com/api/v1/mcp-servers/import \
 - Cedar evaluates the `create` action on the `System` resource for the authenticated
   workspace.
 - **Tool discovery does not run on import.** Supply `tools` yourself, or use the
-  marketplace path, which does discover.
+  marketplace path, which does discover. A tool entry's `description` and `input_schema`
+  are stored the way discovery stores them, so `agentcordon mcp-tools` shows the same
+  metadata for an imported server as for a provisioned one. The MCP spelling
+  `inputSchema` is accepted, so a workspace can forward a `tools/list` answer verbatim.
+  Re-importing a server that already exists fills in only what the record is missing --
+  names for one that has none, metadata for one whose tools are still bare names.
 
 > **Warning:** `name` must **not** contain a dot (`.`) -- dots break the 3-part scope format
 > (`{workspace_name}.{mcp_server_name}.{action}`).
