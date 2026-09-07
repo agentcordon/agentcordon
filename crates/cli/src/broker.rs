@@ -488,19 +488,33 @@ pub fn broker_url_from_port_file(contents: &str) -> Result<String, CliError> {
 }
 
 pub fn validate_broker_url(raw: &str) -> Result<String, CliError> {
+    validate_loopback_or_https(raw, BROKER_URL_ENV)
+}
+
+/// The same loopback-or-https rule, applied to the `agentcordon update`
+/// server URL. Naming the source (`server URL`) rather than
+/// `AGTCRDN_BROKER_URL` keeps the refusal actionable for a user who reached
+/// this through `--server-url` or the config file.
+pub(crate) fn validate_server_url(raw: &str) -> Result<String, CliError> {
+    validate_loopback_or_https(raw, "server URL")
+}
+
+/// Loopback over plain HTTP, or HTTPS to anywhere. Shared by
+/// [`validate_broker_url`] and [`validate_server_url`]; `label` names the
+/// source of the URL in every refusal so the message stays actionable.
+fn validate_loopback_or_https(raw: &str, label: &str) -> Result<String, CliError> {
     let trimmed = raw.trim().trim_end_matches('/');
-    let parsed = url::Url::parse(trimmed).map_err(|e| {
-        CliError::general(format!("{BROKER_URL_ENV}={raw:?} is not a valid URL: {e}"))
-    })?;
+    let parsed = url::Url::parse(trimmed)
+        .map_err(|e| CliError::general(format!("{label}={raw:?} is not a valid URL: {e}")))?;
     match parsed.scheme() {
         "https" if parsed.host().is_some() => Ok(trimmed.to_string()),
         "http" if is_loopback_host(parsed.host()) => Ok(trimmed.to_string()),
         "http" => Err(CliError::general(format!(
-            "{BROKER_URL_ENV}={raw:?} is refused: plain http:// is only allowed to a loopback \
+            "{label}={raw:?} is refused: plain http:// is only allowed to a loopback \
              address (localhost, 127.0.0.1, [::1]). Use https:// for a broker on another host."
         ))),
         other => Err(CliError::general(format!(
-            "{BROKER_URL_ENV}={raw:?} is refused: scheme {other:?} is not supported; \
+            "{label}={raw:?} is refused: scheme {other:?} is not supported; \
              use http:// to loopback or https://"
         ))),
     }

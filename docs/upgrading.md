@@ -252,9 +252,49 @@ cp /data/agent-cordon.db /data/agent-cordon.db.backup-$(date +%Y%m%d)
 
 ## Upgrading the CLI Client
 
-The CLI client (`agentcordon`) is a **single static binary**. Upgrading is a file replacement -- no migration, no state changes.
+The CLI client (`agentcordon`) is a **single static binary**, and so is the broker. Upgrading is a file replacement -- no migration, no state changes.
 
-### Install Script (Recommended)
+### `agentcordon update` (Recommended)
+
+```bash
+agentcordon update
+```
+
+One command replaces **both** binaries and restarts the running broker, so it also solves the
+footgun the manual steps below have: the broker keeps running the old binary until it is
+restarted, and the restart has to re-supply the flags it was started with.
+
+`update` is **server-pinned**. It learns the target version from `{server_url}/install.sh`
+(`AGTCRDN_VERSION`) -- the same lockstep pin the installer uses ([ADR-0010](adr/0010-installer-pinned-to-server-version.md),
+[ADR-0016](adr/0016-agentcordon-update-is-server-pinned-self-update.md)) -- so a workspace never
+runs ahead of its server. The server URL resolves exactly as for `init` and `register`: the
+`--server-url` flag, then `AGTCRDN_SERVER_URL`, then `server_url` in `~/.agentcordon/config.toml`.
+
+It downloads `agentcordon` and `agentcordon-broker` for your platform plus `SHA256SUMS` from the
+matching GitHub release, **verifies both binaries before installing either**, and swaps each in
+atomically (a temp file in the same directory, then `rename` over the target). A checksum
+mismatch aborts and leaves your current binaries untouched. It then discovers the running broker,
+captures its command line, stops it, and starts the new binary **with the same flags** -- or, if
+it cannot read the old command line, restarts with `--server-url` and `--port` and warns which
+other flags (`--bind`, `--shared-secret`, `--proxy-allow-loopback`, `--tls-cert`/`--tls-key`) may
+need re-applying.
+
+| Flag | Effect |
+|------|--------|
+| `--check` | Report the current and available versions and exit; change nothing. |
+| `--force` | Reinstall even when already on the server's pinned version. |
+| `--server-url <url>` | Learn the target version from this server (same precedence as `init`/`register`). |
+| `--yes` | Skip the confirmation prompt (for scripts). The CLI never prompts when stdin is not a terminal. |
+
+> [!NOTE]
+> `agentcordon update` is not yet available on **Windows** -- a running `.exe` cannot be replaced
+> in place. On Windows, re-run the install one-liner (`install.ps1`) and restart the broker, as
+> below.
+
+If `update` is unavailable (an older CLI, Windows, or a server with no matching published
+release), use one of the manual paths below.
+
+### Install Script
 
 The AgentCordon server hosts an install script that auto-detects your platform:
 

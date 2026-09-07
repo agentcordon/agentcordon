@@ -4,6 +4,10 @@ All notable changes to AgentCordon are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`agentcordon update` replaces the CLI and broker in one command and restarts the broker with the flags it was already running.** The version is server-pinned: `update` reads `AGTCRDN_VERSION` from `{server_url}/install.sh` (the ADR-0010 lockstep pin), so a workspace never runs ahead of its server. It downloads both binaries plus `SHA256SUMS` from the matching GitHub release, verifies both before installing either, and swaps each in atomically (a sibling temp file `rename`d over the target, safe over a running binary on Unix). It then discovers the running broker via `~/.agentcordon/broker.port`, captures its argv from `/proc/<pid>/cmdline` (pid from `~/.agentcordon/broker.pid`, `ps` fallback), stops it, and starts the new binary with the same argv -- falling back to `--server-url`/`--port` with a warning when argv cannot be read, and skipping the restart when no broker is running. `--check` reports current vs available, `--force` reinstalls when current, `--yes` skips the prompt (never prompted off a TTY). Windows self-replace is not yet implemented and refuses with a pointer to the install one-liner. (ADR-0016, `crates/cli/src/commands/update.rs`, `docs/upgrading.md`)
+
 ## [0.5.0] - 2026-09-07
 
 ### Added

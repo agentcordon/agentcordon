@@ -56,5 +56,5 @@ Only if a call errors, run `agentcordon credentials` or `agentcordon mcp-servers
 - `agentcordon status` — identity, broker connection, registration, configured server.
 - `mcp-call <s> <t> --args-json '{...}'` for nested arguments (`@file` or `-`); `proxy … --body @file` reads a body from a file.
 - `agentcordon credentials create --name <n> --service <s> --value <secret> --allowed-url-pattern '<glob>'` — only when you have been given a secret to store, and always fenced.
-- Setup, not work: `agentcordon init` (skill, MCP config, enrollment), `agentcordon register` (re-enrol), `agentcordon mcp-serve` (the server your runtime starts; never run it yourself).
+- Setup, not work: `agentcordon init` (skill, MCP config, enrollment), `agentcordon register` (re-enrol), `agentcordon update` (replace both binaries from the server's version and restart the broker), `agentcordon mcp-serve` (the server your runtime starts; never run it yourself).
 - You never configure the broker: the CLI finds it via `~/.agentcordon/broker.port`; `AGTCRDN_BROKER_URL` is an override only.
