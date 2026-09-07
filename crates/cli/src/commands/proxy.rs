@@ -80,13 +80,29 @@ fn parse_target(args: &[String], auto: bool) -> Result<Target, CliError> {
     }
 }
 
+/// One proxied call's answer: the credential that was actually used, the note
+/// the caller has to be told about that choice, and the broker's data.
+///
+/// The note is a return value rather than a `eprintln!` because the two
+/// callers show it in different places. `agentcordon proxy` prints it to
+/// stderr, where a human reading a terminal sees it. `mcp-serve`'s
+/// `agentcordon_proxy` speaks JSON-RPC over stdio to a model that never sees
+/// stderr at all, so for it the note has to be in the tool result — otherwise
+/// the one case where AgentCordon reached past a fence is the one case the
+/// caller cannot learn about.
+pub(crate) struct ProxyOutcome {
+    pub credential: String,
+    /// Set when no credential was named and the one chosen carries no URL
+    /// fence, so nothing constrained where it could be sent.
+    pub unfenced_note: Option<String>,
+    pub data: ProxyData,
+}
+
 /// One proxied call, from choosing the credential to the broker's answer.
 ///
 /// `agentcordon proxy` and `mcp-serve`'s `agentcordon_proxy` are the same
 /// call under two names, so they share this: one selector, one request
-/// shape, one rendering of a refusal. Returns the credential that was
-/// actually used, because when the caller named none it is the only place
-/// that choice is visible.
+/// shape, one rendering of a refusal.
 pub(crate) async fn execute(
     client: &BrokerClient,
     credential: Option<String>,
@@ -94,10 +110,11 @@ pub(crate) async fn execute(
     url: &str,
     headers: HashMap<String, String>,
     body: Option<String>,
-) -> Result<(String, ProxyData), CliError> {
+) -> Result<ProxyOutcome, CliError> {
     // With no credential named, one is chosen from the listing the broker
     // already holds, structurally, before anything is vended. One extra
     // request, no extra round trip to the server (the broker caches it).
+    let mut unfenced_note = None;
     let credential = match credential {
         Some(name) => name,
         None => {
@@ -105,11 +122,11 @@ pub(crate) async fn execute(
             let chosen = credentials::select_for_target(&creds, url)
                 .map_err(|e| CliError::no_credential_match(e.message(url)))?;
             if chosen.fence().is_none() {
-                eprintln!(
+                unfenced_note = Some(format!(
                     "Note: '{}' is not fenced ({}); no fenced credential covers {url}.",
                     chosen.name,
                     credentials::UNRESTRICTED
-                );
+                ));
             }
             chosen.name.clone()
         }
@@ -130,7 +147,11 @@ pub(crate) async fn execute(
 
     let resp: ProxyResponse = serde_json::from_str(&body_text)
         .map_err(|e| CliError::general(format!("invalid proxy response: {e}")))?;
-    Ok((credential, resp.data))
+    Ok(ProxyOutcome {
+        credential,
+        unfenced_note,
+        data: resp.data,
+    })
 }
 
 /// Proxy an HTTP request through the broker with credential injection.
@@ -169,8 +190,17 @@ pub async fn run(args: ProxyArgs) -> Result<(), CliError> {
         };
 
     let client = BrokerClient::connect().await?;
-    let (credential, data) =
-        execute(&client, target.credential, &method, &url, headers, body).await?;
+    let outcome = execute(&client, target.credential, &method, &url, headers, body).await?;
+    let ProxyOutcome {
+        credential,
+        unfenced_note,
+        data,
+    } = outcome;
+    // Straight to stderr: a human reading the terminal is who this is for,
+    // and stdout carries only the body the caller asked for.
+    if let Some(note) = &unfenced_note {
+        eprintln!("{note}");
+    }
     let body = body_bytes(&data);
 
     // Exactly one of these writes to stdout, and each writes only what it

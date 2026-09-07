@@ -1427,3 +1427,87 @@ fn progress_and_errors_never_reach_stdout() {
         assert_eq!(parsed["jsonrpc"], "2.0");
     }
 }
+
+/// Choosing an unfenced credential is a fact the caller needs, and for
+/// `agentcordon proxy` it goes to stderr where a human sees it. A model
+/// driving `agentcordon_proxy` over stdio never sees stderr, so the same note
+/// has to be in the tool result it does see (uat S20).
+#[test]
+fn proxy_tells_a_model_when_it_fell_back_to_an_unfenced_credential() {
+    let broker = StubBroker::start();
+    broker.set(|a| {
+        a.credentials = json!({"data": [
+            cred("fenced-elsewhere", Some("https://api.github.com/*")),
+            cred("no-fence", None),
+        ]});
+    });
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &[]);
+    serve.initialize();
+
+    let result = serve.call_tool(
+        2,
+        "agentcordon_proxy",
+        json!({"method": "GET", "url": "https://api.example.com/things"}),
+    );
+    assert_eq!(result["isError"], json!(false), "{result}");
+
+    let proxied = broker.requests_to("/proxy");
+    let sent: Value = serde_json::from_str(&proxied[0].body).expect("json body");
+    assert_eq!(sent["credential"], "no-fence", "{sent}");
+
+    let text = result["content"]
+        .as_array()
+        .expect("content")
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("no-fence"),
+        "the result names the credential that was chosen: {text}"
+    );
+    assert!(
+        text.contains("not fenced"),
+        "and says it was not fenced to this URL: {text}"
+    );
+    // The envelope the tool has always answered with is still there, intact.
+    assert!(
+        text.contains("\"status\""),
+        "the {{status, headers, body}} envelope survives the note: {text}"
+    );
+
+    assert!(serve.shutdown().success());
+}
+
+/// A fenced credential was the right one, so there is nothing to warn about
+/// and the result is the envelope alone.
+#[test]
+fn proxy_adds_no_note_when_the_credential_it_chose_was_fenced() {
+    let broker = StubBroker::start();
+    broker.set(|a| {
+        a.credentials = json!({"data": [cred("right-one", Some("https://api.example.com/*"))]});
+    });
+    let dir = workspace();
+    let mut serve = Serve::start(&broker.url(), &dir, &[]);
+    serve.initialize();
+
+    let result = serve.call_tool(
+        2,
+        "agentcordon_proxy",
+        json!({"method": "GET", "url": "https://api.example.com/things"}),
+    );
+    let text = result["content"]
+        .as_array()
+        .expect("content")
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !text.contains("not fenced"),
+        "nothing to warn about: {text}"
+    );
+
+    assert!(serve.shutdown().success());
+}

@@ -333,11 +333,20 @@ impl Server {
         let body = optional_str(args, "body")?;
 
         let client = self.broker().await?;
-        let (_, data) = proxy::execute(client, credential, &method, &url, headers, body).await?;
-        let envelope = proxy::json_envelope(&data);
+        let outcome = proxy::execute(client, credential, &method, &url, headers, body).await?;
+        let envelope = proxy::json_envelope(&outcome.data);
         let upstream_failed = envelope["status"].as_u64().unwrap_or(0) >= 400;
+        // `agentcordon proxy` sends this note to stderr, which a model driving
+        // this server over stdio never reads. Reaching past a fence is exactly
+        // the fact a caller must not have to infer, so it goes in the result
+        // — before the envelope, which stays byte-for-byte what it was.
+        let mut content = Vec::new();
+        if let Some(note) = outcome.unfenced_note {
+            content.push(json!({ "type": "text", "text": note }));
+        }
+        content.push(json!({ "type": "text", "text": envelope.to_string() }));
         Ok(json!({
-            "content": [{ "type": "text", "text": envelope.to_string() }],
+            "content": content,
             "isError": upstream_failed,
         }))
     }

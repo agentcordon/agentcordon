@@ -1061,7 +1061,9 @@ fn schema_actions() -> Vec<String> {
 fn action_reference_block() -> String {
     let text = std::fs::read_to_string(repo_root().join("policies/default.cedar"))
         .expect("read default.cedar");
-    let start = text.find("ACTION REFERENCE").expect("an ACTION REFERENCE block");
+    let start = text
+        .find("ACTION REFERENCE")
+        .expect("an ACTION REFERENCE block");
     let rest = &text[start..];
     let end = rest
         .find("\n// ====")
