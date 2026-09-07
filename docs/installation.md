@@ -15,7 +15,7 @@ Port **3140** is the server's default, and every example here assumes it. Change
 published mapping), and read the examples with your own port substituted.
 
 **On this page:**
-[Prerequisites](#prerequisites) · [The server](#the-server) · [The CLI and the broker](#the-cli-and-the-broker) · [Windows](#windows) · [From source](#from-source) · [What gets installed where](#what-gets-installed-where)
+[Prerequisites](#prerequisites) · [The server](#the-server) · [The CLI and the broker](#the-cli-and-the-broker) · [What the installer writes](#what-the-installer-writes) · [Windows](#windows) · [From source](#from-source) · [What gets installed where](#what-gets-installed-where)
 
 ---
 
@@ -131,23 +131,61 @@ than installing a mismatched CLI. That message is reserved for an actual HTTP 40
 a DNS failure or a rate-limit is reported as a network failure instead, because "build from
 source" is the wrong advice for a connection problem.
 
-### Persisting PATH
+`AGENTCORDON_SKIP_DOWNLOAD=1` skips the download and does everything else: use it when you
+built the two binaries from source into `~/.local/bin` yourself and still want the server
+recorded and PATH persisted.
 
-The installer writes to `~/.local/bin`. If that directory is not already on your `PATH`, the
-installer says so and prints the line for **your** shell, read from `$SHELL` — because
-`export PATH=…` lasts only until you close the terminal, and it does not parse in nushell at
-all.
+## What the installer writes
 
-| Shell | Add this | To |
+Three things, each announced as it happens, and each with an opt-out.
+
+### The binaries
+
+`agentcordon` and `agentcordon-broker`, mode `0755`, in `~/.local/bin`.
+
+### The server it came from
+
+The installer is served *by* your server, so it knows the origin you fetched it from. It
+records that in `~/.agentcordon/config.toml`:
+
+```toml
+server_url = "https://agentcordon.example.com"
+```
+
+This is why `agentcordon init` and `agentcordon register` need no `--server-url`. The CLI
+resolves a server URL in one order everywhere: the `--server-url` flag, then
+`AGTCRDN_SERVER_URL`, then this file. `agentcordon status` prints which of the three
+answered. (The CLI does not read `AGTCRDN_DATA_DIR`, so neither does the installer: the
+config file is always under `~/.agentcordon/`.)
+
+Only the `server_url` key is rewritten, so anything else you put in the file survives. If the
+file already names a *different* server, the installer replaces it and prints both URLs —
+running a second server's installer must not silently repoint the machine.
+
+### PATH
+
+`export PATH="…:$PATH"` printed to a terminal is gone when that terminal closes, and it does
+not parse in nushell at all. So, like rustup and uv, the installer appends a
+marker-delimited block to the file your login shell actually reads, chosen from `$SHELL`:
+
+| `$SHELL` | File | Line |
 |---|---|---|
-| bash | `export PATH="$HOME/.local/bin:$PATH"` | `~/.bashrc` |
-| zsh | `export PATH="$HOME/.local/bin:$PATH"` | `~/.zshrc` |
-| fish | `fish_add_path ~/.local/bin` | run once; it persists |
-| nushell | `$env.PATH = ($env.PATH \| prepend "~/.local/bin")` | `config.nu` (`$nu.config-path`) |
+| bash | `~/.bashrc` (`~/.bash_profile` on macOS, whose terminals are login shells) | `export PATH="$HOME/.local/bin:$PATH"` |
+| zsh | `~/.zshrc` | `export PATH="$HOME/.local/bin:$PATH"` |
+| fish | `~/.config/fish/conf.d/agentcordon.fish` | `fish_add_path "$HOME/.local/bin"` |
+| nushell | `~/.config/nushell/env.nu` | `$env.PATH = ($env.PATH \| prepend "…/.local/bin")` |
+
+The block is delimited by `# >>> agentcordon >>>` and `# <<< agentcordon <<<`; deleting it
+undoes the change, and a second install leaves the file byte-identical. Nothing is written
+when `~/.local/bin` is already on your `PATH`, or when `$SHELL` is one the installer has no
+rule for — it prints the line for you to add instead.
+
+**`AGENTCORDON_NO_MODIFY_PATH=1`** declines the edit and prints the line. `install.ps1`
+honours it too.
 
 Open a new terminal, or source the file, before running `agentcordon`.
 
-### Choose your agents
+### Then set up a project
 
 Installing the binaries does not set up a project. From the project directory your coding
 agent opens:
@@ -156,12 +194,14 @@ agent opens:
 agentcordon init
 ```
 
-`init` asks which agent runtimes you use, pre-checking the ones it can see, and writes the
+`init` asks which agent runtimes you use, pre-checking the ones it can see, writes the
 AgentCordon [Agent Skill](https://agentskills.io/specification) into the directory each of
 them reads — `.agents/skills/agentcordon/SKILL.md` for most, `.claude/skills/` for Claude
-Code and Cline, `.kiro/skills/` for Kiro. It remembers the choice, so a rerun is quiet;
-`--reconfigure` asks again and `--agent <id>` skips the question entirely. The full target
-table is in [the CLI reference](cli-reference.md#agentcordon-init).
+Code and Cline, `.kiro/skills/` for Kiro — and then enrolls the workspace with the server
+recorded above. It remembers the runtime choice, so a rerun is quiet; `--reconfigure` asks
+again, `--agent <id>` skips the question, and `--no-register` skips the enrollment. The full
+target table is in [the CLI reference](cli-reference.md#agentcordon-init), and the approval
+step is in [Workspace Enrollment](workspace-enrollment.md).
 
 ### From GitHub Releases
 
@@ -200,9 +240,11 @@ irm https://agentcordon.example.com/install.ps1 | iex
 
 It downloads `agentcordon.exe` and `agentcordon-broker.exe` from the matching GitHub
 release, verifies them against the release's `SHA256SUMS`, installs them to
-`%LOCALAPPDATA%\AgentCordon\bin`, and adds that directory to your user PATH. No admin
-rights, and no Windows service: the broker runs in the terminal you start it from and
-exits when that terminal closes, exactly as on Unix.
+`%LOCALAPPDATA%\AgentCordon\bin`, adds that directory to your user PATH
+(`AGENTCORDON_NO_MODIFY_PATH=1` declines that), and records the server in
+`%USERPROFILE%\.agentcordon\config.toml`. No admin rights, and no Windows service: the
+broker runs in the terminal you start it from and exits when that terminal closes, exactly
+as on Unix.
 
 Without a server to install from, download the two `*-x86_64-pc-windows-msvc.exe` assets
 and `SHA256SUMS` from [a release](https://github.com/agentcordon/agentcordon/releases) and
@@ -212,13 +254,14 @@ check them yourself:
 Get-FileHash .\agentcordon-x86_64-pc-windows-msvc.exe -Algorithm SHA256
 ```
 
-Then, in a new terminal:
+Then, in a new terminal, from your project directory:
 
 ```powershell
-agentcordon-broker --server-url https://agentcordon.example.com
 agentcordon init
-agentcordon register --server-url https://agentcordon.example.com
 ```
+
+A manual download records no server, so pass `agentcordon init --server-url
+https://agentcordon.example.com` once, or set `AGTCRDN_SERVER_URL`.
 
 `install.ps1` verifies both binaries against the release's `SHA256SUMS` and **refuses** an
 asset with no entry, exactly as `install.sh` does.
@@ -255,8 +298,10 @@ released for Linux, and a server on another platform is a source build.
 |---|---|---|
 | `~/.local/bin/` | `install.sh` | `agentcordon`, `agentcordon-broker` |
 | `%LOCALAPPDATA%\AgentCordon\bin` | `install.ps1` | `agentcordon.exe`, `agentcordon-broker.exe` |
-| `~/.agentcordon/` | the broker | `broker.key`, `tokens.enc`, `workspaces.json`, `broker.port`, `broker.pid`, `broker.lock`. Moved by `--data-dir` / `AGTCRDN_DATA_DIR`, which the CLI does not read. |
-| `.agentcordon/` in a project | `agentcordon init`, then `register` | `workspace.key` (0600, in a 0700 directory), `workspace.pub` and `agents.toml` from `init`; `broker.fingerprint` from `register`. Moved by `AGTCRDN_WORKSPACE_DIR`. |
+| your login shell's startup file | `install.sh` (`install.ps1` sets the user PATH instead) | one marker-delimited block adding `~/.local/bin` to `PATH`. `AGENTCORDON_NO_MODIFY_PATH=1` opts out. |
+| `~/.agentcordon/config.toml` | `install.sh`, `install.ps1` | `server_url` — the origin the installer was fetched from, so the CLI needs no `--server-url` (`0600`, in a `0700` directory) |
+| `~/.agentcordon/` | the broker | `broker.key`, `tokens.enc`, `workspaces.json`, `broker.port`, `broker.pid`, `broker.lock`. Moved by `--data-dir` / `AGTCRDN_DATA_DIR`, which the CLI does not read — `config.toml` stays here either way. |
+| `.agentcordon/` in a project | `agentcordon init` | `workspace.key` (0600, in a 0700 directory), `workspace.pub`, `agents.toml`, and `broker.fingerprint` from the enrollment. Moved by `AGTCRDN_WORKSPACE_DIR`. |
 | `.agents/skills/agentcordon/` in a project | `agentcordon init` | `SKILL.md` — the AgentCordon [Agent Skill](https://agentskills.io/specification). Copied to `.claude/skills/` and `.kiro/skills/` for the runtimes that read those instead. |
 | `/data/` in the container | the server | `agent-cordon.db`, `.secret`, `.master-salt`, `.root_password` |
 

@@ -111,14 +111,30 @@ a bounded seen-set of `(key, nonce)` for the skew window, so a captured request 
 replayable. `crates/identity/src/request.rs`, `crates/broker/src/auth.rs`.
 
 **Broker key pin** — the broker publishes `encryption_public_key` and `key_fingerprint` on
-`GET /health`; `agentcordon register` writes `.agentcordon/broker.fingerprint` and every later
-connection refuses a broker whose fingerprint differs. `crates/cli/src/pin.rs`.
+`GET /health`; enrolling (from `agentcordon init` or `agentcordon register`) writes
+`.agentcordon/broker.fingerprint` and every later connection refuses a broker whose
+fingerprint differs. `crates/cli/src/pin.rs`.
+
+**CLI user config** — `~/.agentcordon/config.toml`, written by `install.sh` / `install.ps1`
+and read by the CLI. One key, `server_url`: the origin the installer was fetched from. It is
+what makes `--server-url` optional. `crates/cli/src/config.rs`.
+*Not* moved by `AGTCRDN_DATA_DIR` (the CLI does not read that variable), and not the same
+file as `.agentcordon/agents.toml` in a project, which records the runtime choice.
+
+**Server-URL precedence** — the one order `init` and `register` resolve a server URL in:
+`--server-url`, then `AGTCRDN_SERVER_URL`, then the CLI user config. First one set wins;
+empty is unset. `agentcordon status` names the source that answered on its
+`Configured server:` line, which is distinct from `Server:` (the server the *running broker*
+is bound to). `config::resolve_server_url` in `crates/cli/src/config.rs` (ADR-0013).
 
 **Device-code enrollment** — the one way a workspace comes into existence: RFC 8628 device
 authorization grant. The broker requests a device code, the CLI prints a user code and an
 activation URL, a signed-in human approves it in a browser, and the server provisions the
 workspace and its OAuth client. `crates/server/src/routes/oauth/device.rs`,
 `crates/server/src/services/device_codes.rs`, `crates/server/src/services/oauth.rs`.
+Two commands start it and they share one function, `commands::register::device_flow`:
+`agentcordon init` runs it as its last step (the setup case; `--no-register` skips it) and
+`agentcordon register` runs it on its own (the re-enrolment case).
 *Four words for four parts of it, and they are not interchangeable:* **enrollment** is the docs'
 word for the whole story (`docs/workspace-enrollment.md`); **registration** is what the CLI and
 the broker do (`agentcordon register`, `POST /register`, `WorkspaceStatus::Pending`);

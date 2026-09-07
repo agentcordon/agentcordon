@@ -59,6 +59,17 @@ broker mediating between the CLI and the server. It works for a headless host, a
 and a remote SSH session alike, because approval happens in a browser that need not be on
 the same machine as the CLI.
 
+Two commands start it, and they run the same code:
+
+| Command | When |
+|---|---|
+| `agentcordon init` | Setting a project up. The last thing `init` does, after the keypair and the skill, is enroll. `--no-register` skips it. |
+| `agentcordon register` | Re-enrolling: after a server-side workspace deletion (`--force`), to change the requested scopes, or for a workspace set up with `--no-register`. |
+
+Neither needs `--server-url` on a machine whose installer recorded one; see
+[the precedence](cli-reference.md#the-server-url-and-where-it-comes-from). The approval
+screens are the same either way.
+
 > **Prerequisite: `AGTCRDN_BASE_URL`.** The activation URL the CLI prints
 > (`verification_uri`) is `AGTCRDN_BASE_URL` + `/activate`. When that variable is unset the
 > server falls back to `http://` + its listen address, so the shipped container prints
@@ -214,23 +225,49 @@ The device flow covers the headless case as it stands: the CLI can run anywhere,
 4-word code is approved in a browser by a human with the `manage_workspaces` permission.
 For an unattended pipeline, enroll the workspace once by hand — the keypair in
 `.agentcordon/` and the broker's token store both survive restarts, and the refresh grant
-keeps the access token current without further human involvement.
+keeps the access token current without further human involvement. A pipeline that only
+needs the workspace *set up* (the keypair and the skill, no enrollment) runs
+`agentcordon init --no-register`; `init` never prompts off a terminal, but the device flow
+is not a prompt, so `--no-register` is what stops it.
 
 ### First-Run Onboarding
 
-`agentcordon register` is the canonical onboarding command. Pair it with `agentcordon init` for a first-time setup:
+One command, from the project directory:
 
 ```bash
 agentcordon init
-agentcordon register --server-url <server_url>
 ```
 
-When `--server-url` (or the `AGTCRDN_SERVER_URL` environment variable) is provided and no broker is already running, `register` auto-starts a local broker pointed at that server before kicking off the device flow. If a broker is already running, `--server-url` may be omitted. The requested scopes default to `credentials:discover`, `credentials:vend`, `mcp:discover`, and `mcp:invoke`.
+It generates the keypair, installs the AgentCordon skill for the runtimes you use, and then
+enrolls: it starts a broker if none is running, prints the four-word code and the activation
+URL, and polls until you approve. It ends on two lines:
+
+```
+Registered as my-project at https://agentcordon.example.com.
+Try: agentcordon credentials
+```
+
+A rerun on an enrolled workspace says so in one line and starts no second device flow.
+
+The server URL comes from `--server-url`, then `AGTCRDN_SERVER_URL`, then
+`server_url` in `~/.agentcordon/config.toml` — which your server's installer wrote, so on a
+machine set up that way nothing has to be typed. If none of the three is set, `init` says
+so and names all of them. When a server URL is known and no broker is running, a local
+broker is auto-started pointed at it. The requested scopes default to
+`credentials:discover`, `credentials:vend`, `mcp:discover`, and `mcp:invoke`.
 
 `--name` sets the workspace's display name; without it the name is the current directory's
 basename. Names are **not** unique — two workspaces may share one as long as their keypairs
 differ, and the device-code exchange binds the token to the approved public-key hash rather
 than to the name.
+
+### Re-enrolling
+
+`agentcordon register` is unchanged and is what you run to enroll a workspace again:
+`--force` clears a stale broker registration (and re-pins the broker key) after the
+server-side workspace was deleted; `--scope` asks for a different set of scopes. It takes
+the same server-URL precedence and prints the same code, link and expiry, because it is the
+same flow.
 
 ---
 
@@ -261,13 +298,13 @@ The **broker** mediates between the CLI and server. CLI-to-broker requests use E
 
 The register body carries the same protection: `NAME\nPUBLIC_KEY\nSCOPES\nTIMESTAMP\nNONCE` is signed, and the broker applies the same skew window and seen-set before asking the server for a device code.
 
-**Broker key pinning.** The broker publishes its P-256 public key on `GET /health` (`encryption_public_key`, base64url of the uncompressed SEC1 point, and `key_fingerprint`, its SHA-256 as hex). `agentcordon register` pins the fingerprint in `.agentcordon/broker.fingerprint` (mode `0600`, next to the workspace key). Every later CLI connection compares the live fingerprint to the pin and refuses on mismatch with a message naming both values; `agentcordon register --force` re-pins. A workspace enrolled before pinning existed has its pin written on first successful use, with a one-line notice on stderr.
+**Broker key pinning.** The broker publishes its P-256 public key on `GET /health` (`encryption_public_key`, base64url of the uncompressed SEC1 point, and `key_fingerprint`, its SHA-256 as hex). Enrolling — from either `agentcordon init` or `agentcordon register` — pins the fingerprint in `.agentcordon/broker.fingerprint` (mode `0600`, next to the workspace key). Every later CLI connection compares the live fingerprint to the pin and refuses on mismatch with a message naming both values; `agentcordon register --force` re-pins. A workspace enrolled before pinning existed has its pin written on first successful use, with a one-line notice on stderr.
 
 ---
 
 ## Client-Side State
 
-After enrollment, state is stored in two locations:
+After enrollment, state is stored in three locations:
 
 ### CLI Workspace Directory (`.agentcordon/`)
 
@@ -275,6 +312,16 @@ After enrollment, state is stored in two locations:
 |------|----------|
 | `workspace.key` | Ed25519 private key seed (hex, mode 0600) |
 | `workspace.pub` | Ed25519 public key (hex, mode 0644) |
+| `broker.fingerprint` | The pinned broker key (hex, mode 0600) |
+| `agents.toml` | The agent runtimes `init` installed the skill for |
+
+### CLI User Config (`~/.agentcordon/config.toml`)
+
+Written by `install.sh` / `install.ps1`, not by the CLI. One key, `server_url`, holding the
+origin the installer was fetched from; it is the last of the three
+[server-URL sources](cli-reference.md#the-server-url-and-where-it-comes-from), and it is
+what makes `agentcordon init` need no `--server-url`. It is **not** moved by
+`AGTCRDN_DATA_DIR` — the CLI does not read that variable.
 
 ### Broker Token Store
 

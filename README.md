@@ -87,8 +87,8 @@ Every credential access, and the policy decision behind it, in the audit log:
 
 ## Quick start
 
-Start the server, install the client binaries, start the broker, enroll a workspace, make a
-call. Everything below assumes port **3140**, the server's default.
+Three commands: one for the admin, two for each developer. Everything below assumes port
+**3140**, the server's default.
 
 ### 1. Start the server
 
@@ -114,8 +114,7 @@ production shape.
 
 ### 2. Install the CLI and the broker
 
-`agentcordon` and `agentcordon-broker` are static binaries. Your server serves an installer
-for them, pinned to its own version:
+Your server serves an installer for both binaries, pinned to its own version:
 
 ```bash
 curl -fsSL https://agentcordon.example.com/install.sh | sh
@@ -123,40 +122,38 @@ curl -fsSL https://agentcordon.example.com/install.sh | sh
 
 It detects your OS and architecture, downloads both binaries from the matching GitHub
 release, verifies them against the release's `SHA256SUMS`, and installs them to
-`~/.local/bin`. On Windows, `irm https://agentcordon.example.com/install.ps1 | iex`.
-[Installation](docs/installation.md#the-cli-and-the-broker) has the manual routes.
+`~/.local/bin`. It then adds that directory to your login shell's startup file and records
+the server it came from in `~/.agentcordon/config.toml` — which is why nothing after this
+asks you for a URL. On Windows, `irm https://agentcordon.example.com/install.ps1 | iex`.
+[Installation](docs/installation.md#the-cli-and-the-broker) has what it writes, the
+opt-outs, and the manual routes.
 
-### 3. Start the broker
-
-```bash
-agentcordon-broker --server-url https://agentcordon.example.com
-```
-
-It binds `127.0.0.1` on a port it picks and writes the URL to `~/.agentcordon/broker.port`,
-which is how the CLI finds it. Leave it running in its own terminal, or under a service
-manager. It asks for nothing on first run; enrollment is the next step.
-
-### 4. Enroll a workspace
+### 3. Set up a project
 
 From your agent's project directory:
 
 ```bash
-agentcordon init      # choose your agent runtimes; installs the AgentCordon skill
-agentcordon register --server-url https://agentcordon.example.com
+agentcordon init
 ```
 
 `init` asks which coding agents you use — Claude Code, Codex, Cursor, Kiro and eleven more —
 pre-checking the ones it can see, and writes the AgentCordon skill where each of them looks
-for it. Pass `--agent <id>` (repeatable) to skip the question in a script; see
-[the CLI reference](docs/cli-reference.md#agentcordon-init).
-
-`register` prints a four-word code and an activation URL. Open it in any browser, on any
-machine, sign in, and click **Approve**. This is the
+for it. Then it enrolls this workspace: it starts the broker if none is running and prints a
+four-word code and an activation URL. Open it in any browser, on any machine, sign in, and
+click **Approve**. This is the
 [RFC 8628 device authorization grant](https://datatracker.ietf.org/doc/html/rfc8628), the
 same flow as `gh auth login` — there is no loopback callback and nothing to port-forward.
-If no broker is running, `register --server-url` starts one first.
+`init` finishes on its own once you approve.
 
-### 5. Use it
+`--no-register` sets the directory up without enrolling; `agentcordon register` enrolls
+later, or re-enrolls. See [the CLI reference](docs/cli-reference.md#agentcordon-init).
+
+`init` starts a broker in the background if none is running. For a long-lived setup, run
+`agentcordon-broker --server-url https://agentcordon.example.com` yourself, in its own
+terminal or under a service manager; it binds `127.0.0.1` on a port it picks and writes the
+URL to `~/.agentcordon/broker.port`, which is how the CLI finds it.
+
+### Use it
 
 ```bash
 agentcordon credentials                                                    # what this workspace may use

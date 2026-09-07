@@ -9,7 +9,8 @@ Complete reference for the `agentcordon` command-line tool -- the workspace agen
 ## Quick Reference
 
 ```
-agentcordon init         [--agent RUNTIME]... [--reconfigure]
+agentcordon init         [--agent RUNTIME]... [--reconfigure] [--no-register]
+                         [--server-url URL] [--name NAME]
 agentcordon register     [--server-url URL] [--name NAME] [--scope SCOPE]... [--force]
 agentcordon status
 agentcordon credentials  [--json]
@@ -23,7 +24,7 @@ agentcordon mcp-call     SERVER TOOL [--arg K=V]... [--args-json SRC]
 ---
 
 **On this page:**
-[Exit Codes](#exit-codes) -- [Environment Variables](#environment-variables) -- [Commands](#commands) -- [Files & Directories](#files-and-directories) -- [Credential Types](#credential-types-and-transforms) -- [Authentication](#authentication)
+[Exit Codes](#exit-codes) -- [Environment Variables](#environment-variables) -- [The server URL](#the-server-url-and-where-it-comes-from) -- [Commands](#commands) -- [Files & Directories](#files-and-directories) -- [Credential Types](#credential-types-and-transforms) -- [Authentication](#authentication)
 
 ---
 
@@ -56,6 +57,7 @@ both commands and treat the one guard uniformly.
 | `AGTCRDN_BROKER_URL` | All commands (except `init`) | Auto-discovered via port file | Broker URL override. Accepted only if it is plain `http://` to a loopback host (`localhost`, `*.localhost`, `127.0.0.1`, `[::1]`) or any `https://` URL; anything else is refused before a request is made. The URL is health-checked and must publish the broker key. |
 | `AGTCRDN_BROKER_SHARED_SECRET` | All commands (except `init`); also the broker | unset | Sent as `X-AgentCordon-Broker-Secret` on every request. Required when the broker was started with `--shared-secret` (the same variable configures the broker). |
 | `AGTCRDN_BROKER_CA` | All commands (except `init`) | unset (system roots only) | Path to a PEM certificate or CA bundle to trust for the broker connection, in addition to the system roots. Needed when the broker serves its own certificate (`agentcordon-broker --tls-cert`). See [Serving the broker over TLS](#serving-the-broker-over-tls). |
+| `AGTCRDN_SERVER_URL` | `init`, `register` | unset | AgentCordon server URL. Second in the [server-URL precedence](#the-server-url-and-where-it-comes-from), after `--server-url` and before `~/.agentcordon/config.toml`. |
 | `AGTCRDN_WORKSPACE_DIR` | `init`, keypair loading | `.` (current directory) | Override the workspace root where `.agentcordon/` lives |
 | `AGTCRDN_LOG_LEVEL` | All commands | `warn` | Log level filter (e.g. `info`, `debug`, `trace`) |
 | `AGTCRDN_DATA_DIR` (`--data-dir`) | Broker only | `~/.agentcordon` | Directory for the broker's keys, tokens and runtime files. The **CLI does not read it** -- see [Files and Directories](#files-and-directories). |
@@ -111,20 +113,58 @@ agentcordon status
 
 ---
 
+## The server URL, and where it comes from
+
+`init` and `register` are the only commands that need a server URL — everything else talks
+only to the broker, which already knows. They resolve it in one order:
+
+| # | Source | Set by |
+|---|---|---|
+| 1 | `--server-url <URL>` | you, on the command line |
+| 2 | `AGTCRDN_SERVER_URL` | your shell or CI environment |
+| 3 | `server_url` in `~/.agentcordon/config.toml` | `install.sh` / `install.ps1`, from the origin the installer was fetched from |
+
+The first one set wins; an empty value is treated as unset, and a trailing `/` is trimmed.
+A missing or malformed config file is *absent*, never fatal — the flag and the environment
+variable still work.
+
+With none of the three set, `register` cannot auto-start a broker (it exits `2` if none is
+running) and `init` exits with:
+
+```
+No server URL configured. Pass --server-url <URL>, set AGTCRDN_SERVER_URL, or re-run your
+server's installer (it writes ~/.agentcordon/config.toml). Or run `agentcordon init
+--no-register` to set up this directory only.
+```
+
+`agentcordon status` prints which source answered, on its `Configured server:` line. That is
+worth checking when the CLI seems to be talking to the wrong place: a leftover
+`AGTCRDN_SERVER_URL` in a shell profile silently beats the config file.
+
+Note that the *configured* server and the server the running broker is bound to are
+different facts. The broker is started with one server and keeps it; the configured URL is
+what the next enrollment would use. `status` prints both.
+
+---
+
 ## Commands
 
 ### `agentcordon init`
 
-> Generate an Ed25519 keypair and install the AgentCordon skill for the agent runtimes you use.
+> Set a project up end to end: keypair, the AgentCordon skill for the agent runtimes you use, and enrollment with the server.
 
 ```
-agentcordon init [--agent <RUNTIME>]... [--reconfigure]
+agentcordon init [--agent <RUNTIME>]... [--reconfigure] [--no-register]
+                 [--server-url <URL>] [--name <NAME>]
 ```
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--agent <RUNTIME>` | string, repeatable | see below | A runtime id from the table, or `auto`, `all`, `none` |
 | `--reconfigure` | bool | `false` | Ignore the remembered choice and pick again |
+| `--no-register` | bool | `false` | Set the directory up and stop: no broker, no device flow. For scripts and air-gapped setups. |
+| `--server-url <URL>` | string | see [precedence](#the-server-url-and-where-it-comes-from) | The server to enroll with |
+| `--name <NAME>` | string | current directory's basename | Workspace display name, exactly as for `register` |
 
 **What it does:**
 
@@ -133,8 +173,25 @@ agentcordon init [--agent <RUNTIME>]... [--reconfigure]
 3. Decides which runtimes to install for (below).
 4. Writes the **AgentCordon skill** into every skill directory those runtimes read.
 5. Remembers the choice in `.agentcordon/agents.toml` and prints a summary naming every file it wrote and which runtime reads it.
+6. Unless `--no-register`: resolves the server URL, starts a broker pointed at it if none is running, and runs the RFC 8628 device flow — the same code path as [`agentcordon register`](#agentcordon-register), so the printed code, the activation link, the expiry and the polling are identical.
 
-Idempotent: a rerun reports the same identity, leaves the keypair alone, and rewrites a skill file only if its content differs.
+Idempotent: a rerun reports the same identity, leaves the keypair alone, rewrites a skill file only if its content differs, and — when the workspace is already registered — says so in one line and starts no second device flow.
+
+`init` never prompts off a terminal: the runtime picker needs a human and is skipped without one. Enrollment is not a prompt — the device flow prints a code and polls — so it still runs in a pipe. `--no-register` is the way to avoid it.
+
+**Enrollment output:**
+
+```
+Enrolling with https://agentcordon.example.com (from ~/.agentcordon/config.toml)
+
+! First, copy your one-time code: tidy-zoned-zit-ramp
+...
+Waiting for approval... (expires in 10 minutes) done!
+Registered as my-project at https://agentcordon.example.com.
+Try: agentcordon credentials
+```
+
+On a rerun: `Already registered with https://agentcordon.example.com. Nothing to do; \`agentcordon register --force\` re-enrols.`
 
 #### The skill
 
@@ -209,6 +266,12 @@ agentcordon init --agent none
 
 # Change your mind
 agentcordon init --reconfigure
+
+# Set the directory up without enrolling (scripts, air-gapped)
+agentcordon init --no-register
+
+# Enroll with a server this machine has no record of
+agentcordon init --server-url https://agentcordon.example.com --name my-project
 ```
 
 **Output:**
@@ -229,7 +292,9 @@ Runtimes: Claude Code, OpenAI Codex CLI
 
 ### `agentcordon register`
 
-> Register this workspace with the broker via the RFC 8628 device authorization flow. This is the canonical onboarding command.
+> Register this workspace with the broker via the RFC 8628 device authorization flow.
+
+**Behaviour is unchanged.** [`agentcordon init`](#agentcordon-init) now runs this same flow as its last step, so a first-time setup does not need this command. `register` is what you run to re-enrol: after a server-side workspace deletion (`--force`), to change the requested scopes, or when the workspace was set up with `--no-register`.
 
 ```
 agentcordon register [OPTIONS]
@@ -237,14 +302,14 @@ agentcordon register [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--server-url <URL>` | string | `$AGTCRDN_SERVER_URL` | AgentCordon server URL (e.g. `http://server:3140`). If provided and no broker is running, `register` auto-starts a local broker pointed at this server before kicking off the device flow. |
+| `--server-url <URL>` | string | see [precedence](#the-server-url-and-where-it-comes-from) | AgentCordon server URL (e.g. `http://server:3140`). When one is known and no broker is running, `register` auto-starts a local broker pointed at it before kicking off the device flow. |
 | `--name <NAME>` | string | current directory's basename | Workspace display name. Names are not unique -- two workspaces may share one as long as their keypairs differ. |
 | `--scope <SCOPE>` | string (repeatable) | `credentials:discover credentials:vend mcp:discover mcp:invoke` | OAuth scopes to request |
 | `--force` | bool | `false` | Clear existing broker registration before re-registering (use when the server-side workspace was deleted but the broker holds stale state). Also re-pins the broker key. |
 
 **What it does:**
 
-1. Locates a running broker via `AGTCRDN_BROKER_URL` or `~/.agentcordon/broker.port`. If none is running and `--server-url` (or `AGTCRDN_SERVER_URL`) is provided, auto-starts a broker pointed at that server and waits for it to report healthy.
+1. Locates a running broker via `AGTCRDN_BROKER_URL` or `~/.agentcordon/broker.port`. If none is running and a server URL is known from any of the three [sources](#the-server-url-and-where-it-comes-from), auto-starts a broker pointed at that server and waits for it to report healthy.
 2. If `--force`: sends a deregister request to clear stale state.
 3. Posts a signed registration request with the workspace public key and requested scopes.
 4. Displays a short human-readable activation code and an `/activate` URL (plus a prefilled one if the server returned it).
@@ -257,12 +322,13 @@ If no broker is running and no server URL is available, the command exits with c
 **Examples:**
 
 ```bash
-# Recommended first-run: init the workspace, then register (auto-starts broker)
-agentcordon init
-agentcordon register --server-url http://localhost:3140
+# First run is `agentcordon init` alone; these are the re-enrolment cases.
 
-# Register against an already-running broker
+# Register a workspace that was set up with --no-register
 agentcordon register
+
+# Register against a server this machine has no record of
+agentcordon register --server-url http://localhost:3140
 
 # Re-register after server-side workspace deletion
 agentcordon register --force
@@ -324,11 +390,18 @@ No flags. Requires the broker to be running and a valid keypair.
 ```
 Broker: http://127.0.0.1:52318 (healthy)
 Server: https://agentcordon.example.com (reachable)
+Configured server: https://agentcordon.example.com (from ~/.agentcordon/config.toml)
 Workspace: sha256:a1b2c3d4...
 Registered: yes
 Scopes: credentials:discover, credentials:vend, mcp:discover, mcp:invoke
 Token: valid (expires in 4m 07s)
 ```
+
+`Server:` is the server the *running broker* is bound to. `Configured server:` is what the
+next `init` or `register` would use, and names its source: `--server-url`,
+`AGTCRDN_SERVER_URL` or `~/.agentcordon/config.toml`. When those two lines disagree, an
+enrollment is about to go somewhere the current broker is not. With nothing configured the
+line reads `Configured server: none.` followed by the hint.
 
 ---
 
@@ -671,6 +744,7 @@ The CLI resolves the home directory on every platform (Unix `$HOME`, macOS `$HOM
 
 | File | Description |
 |------|-------------|
+| `config.toml` | The CLI's user-level config (`0600`), written by `install.sh` / `install.ps1`. One key: `server_url`, the origin the installer was fetched from. Third in the [server-URL precedence](#the-server-url-and-where-it-comes-from). Only that key is rewritten on a re-install, so anything else you add survives. **Not** moved by `AGTCRDN_DATA_DIR` — the CLI does not read that variable. |
 | `broker.port` | Broker URL written by the broker on startup (`0600`; older brokers wrote a bare port), read by the CLI for auto-discovery |
 | `broker.pid` | PID file (`0600`) |
 | `broker.lock` | Single-instance advisory lock (`0600`), held for the life of the broker process |

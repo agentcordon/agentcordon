@@ -271,13 +271,18 @@ and `/users/new` redirects to it.
 
 ## Enrollment pages
 
-- **`/register`** -- *Workspace Registration*. Instructions, not a form: the
-  install command per OS, then `agentcordon init && agentcordon register`. The
-  page says what `init` writes -- the workspace key in `.agentcordon/` and the
-  AgentCordon skill in `.agents/skills/agentcordon/SKILL.md`, plus
-  `.claude/skills/` or `.kiro/skills/` for the runtimes that read those --
-  and that `--agent` skips the runtime question in a script. When the CLI
-  passes a fingerprint it also shows *Approve Workspace Registration*.
+- **`/register`** -- *Workspace Registration*. Instructions, not a form, and two
+  steps: the install command per OS, then `agentcordon init`. It carries no
+  `--server-url`, because the installer records the server it was served by in
+  `~/.agentcordon/config.toml`; the page says so, and says the installer adds
+  `~/.local/bin` to the login shell's startup file. The page says what `init`
+  writes -- the workspace key in `.agentcordon/` and the AgentCordon skill in
+  `.agents/skills/agentcordon/SKILL.md`, plus `.claude/skills/` or
+  `.kiro/skills/` for the runtimes that read those -- that `--agent` skips the
+  runtime question in a script, and that `init` then runs the device flow,
+  printing the four-word code and finishing on its own once you approve.
+  `--no-register` sets the directory up without enrolling. When the CLI passes a
+  fingerprint it also shows *Approve Workspace Registration*.
 - **`/activate`** -- *Activate a new device*. Names the workspace and the device
   key, warns when that key is already registered, lists the scopes being asked
   for, and offers **Deny** and **Approve**. It accepts `?user_code=` to prefill.

@@ -99,6 +99,81 @@ file is the AgentCordon skill."* The same question in an empty directory answere
 *"There are no project instructions to answer from."* A project skill is discovered
 without an import file, so Claude Code takes no `CLAUDE.md`.
 
+## Install-to-use is three commands
+
+*Added after the v0.4.0 onboarding review's Part 1 (`uat/artifacts/reviews/ONBOARDING-empirical.md`).*
+
+Part 1 measured the documented path at under fifteen seconds of machine time and found the
+friction was all in what the human had to carry between steps. Two things stood out. PATH was
+left entirely to the reader (F3): the installer printed `export PATH="…:$PATH"`, which is
+gone when the terminal closes and does not parse in nushell at all. And the server URL was
+carried by hand: the installer's closing message ended with
+`agentcordon register --server-url <URL>`, so a URL the *server itself* had just templated
+into the script had to be copied out of a terminal into a later command.
+
+**The decision: install-to-use is three commands.**
+
+1. The admin starts the server.
+2. The developer runs the one-liner the server serves.
+3. In a project, `agentcordon init` does everything else.
+
+Concretely:
+
+- **The installer remembers the server.** `install.sh` and `install.ps1` are served *by* the
+  server and already know the origin they were fetched from. They write it to
+  `~/.agentcordon/config.toml` as `server_url` (`0600`, in a `0700` directory), rewriting
+  only that key so anything else in the file survives, and naming both URLs when replacing a
+  different one — re-running a second server's installer must not silently repoint a machine.
+- **The installer persists PATH.** Like rustup and uv: read `$SHELL`, append a
+  marker-delimited block to the file that shell actually reads (`~/.bashrc`, or
+  `~/.bash_profile` on macOS whose terminals are login shells; `~/.zshrc`;
+  `~/.config/fish/conf.d/agentcordon.fish` with `fish_add_path`;
+  `~/.config/nushell/env.nu` with `$env.PATH`), print what changed and how to undo it, and
+  do nothing on a rerun.
+- **`init` completes enrollment.** After the runtime picker and the skill, `init` starts a
+  broker if none is running and runs the device flow — the same function `register` runs, so
+  the code, the link, the expiry and the polling cannot drift apart — and ends on two lines.
+  `register` is unchanged and is the re-enrolment command.
+
+### Precedence
+
+`init` and `register` are the only commands that need a server URL. One order, everywhere:
+
+| # | Source | Set by |
+|---|---|---|
+| 1 | `--server-url <URL>` | the caller |
+| 2 | `AGTCRDN_SERVER_URL` | the shell or CI environment |
+| 3 | `server_url` in `~/.agentcordon/config.toml` | the installer |
+
+First one set wins; an empty value is unset and a trailing `/` is trimmed. A missing or
+malformed config file is *absent*, never fatal — the flag and the environment variable still
+work, and the error names all three. `agentcordon status` reports which source answered,
+because a leftover `AGTCRDN_SERVER_URL` silently beating the config file is otherwise
+invisible.
+
+### The opt-outs
+
+Every step this adds writes something the user did not ask for by name, so each has one:
+
+| Opt-out | Effect |
+|---|---|
+| `AGENTCORDON_NO_MODIFY_PATH=1` | The installer changes no startup file and prints the line instead. Honoured by both installers. |
+| `AGENTCORDON_SKIP_DOWNLOAD=1` | The installer skips the GitHub fetch and does the local setup only — for a source build against a server with no matching release. |
+| `agentcordon init --no-register` | `init` sets the directory up and stops: no broker, no device flow, and no error when no server is configured. |
+
+Being off a terminal is deliberately **not** an opt-out from enrollment. The runtime picker
+needs a human and is skipped without one; the device flow is not a prompt — it prints a code
+and polls — so a pipe still enrolls, and `--no-register` is the way to say otherwise. Making
+a tty change what `init` *does* would mean a script and a terminal set up different
+workspaces from the same command.
+
+### Consequence
+
+`agentcordon init` can now fail where it used to succeed: a workspace with no server URL
+from any of the three sources is an error rather than a half-finished setup. The skill is
+written first, so nothing is lost, and the message names the flag, the variable, the
+installer and `--no-register`.
+
 ## Consequences
 
 - The always-on context cost drops from ~5.5 KB in every session to the skill's
