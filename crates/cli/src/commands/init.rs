@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use agentcordon_identity::{pk_hash_of, KeyFileError};
 
 use crate::agents::install::Action;
-use crate::agents::{self, install, select, DetectEnv};
+use crate::agents::{self, install, mcp, select, DetectEnv};
 use crate::broker::BrokerClient;
 use crate::commands::register;
 use crate::config::{self, ServerUrl};
@@ -49,6 +49,12 @@ pub struct InitArgs {
     /// Workspace display name for the enrolment; the current directory's
     /// basename when omitted, exactly as for `register`.
     pub name: Option<String>,
+    /// Install the skill but register no MCP server, for a user who wants the
+    /// skill's zero always-on cost and not the ~800 tokens of tool schemas.
+    pub no_mcp: bool,
+    /// `--expose`, repeatable: brokered servers whose tools `mcp-serve`
+    /// re-exports as typed tools.
+    pub expose: Vec<String>,
 }
 
 /// What `init` does once the skill is installed.
@@ -129,9 +135,11 @@ pub fn install(args: &InitArgs) -> Result<(), CliError> {
         println!("{notice}");
     }
 
+    let choice = selection.mcp.clone().unwrap_or_default();
     let written = install::install(&root, &selection.runtimes)?;
-    select::save(&root, &selection.runtimes)?;
-    report(&selection, &written);
+    let registered = mcp::install(&root, &selection.runtimes, &choice)?;
+    select::save(&root, &selection.runtimes, &choice)?;
+    report(&selection, &written, &registered);
 
     Ok(())
 }
@@ -202,49 +210,59 @@ async fn enroll(args: &InitArgs, server: &ServerUrl) -> Result<(), CliError> {
 /// harness and every script that runs `init` in a pipe keep working.
 fn resolve(args: &InitArgs, root: &Path) -> Result<select::Selection, CliError> {
     let env = DetectEnv::current(root);
+    // Read once: the remembered MCP answer survives an explicit `--agent`,
+    // which says nothing about it, but not `--reconfigure`, which is the user
+    // asking to be asked again.
+    let stored = select::load(root).filter(|_| !args.reconfigure);
+    let remembered = stored.as_ref().and_then(|s| s.mcp.clone());
 
-    if !args.agents.is_empty() {
-        return select::from_flags(&args.agents, &env);
-    }
-    if !args.reconfigure {
-        if let Some(saved) = select::load(root) {
-            return Ok(saved);
-        }
-    }
-    if select::interactive() {
-        return select::prompt(&agents::detect(&env));
-    }
-    Ok(select::auto(&env))
+    let mut selection = if !args.agents.is_empty() {
+        select::from_flags(&args.agents, &env)?
+    } else if let Some(saved) = stored {
+        saved
+    } else if select::interactive() {
+        select::prompt(&agents::detect(&env))?
+    } else {
+        select::auto(&env)
+    };
+
+    let decided = selection.mcp.take().or(remembered);
+    selection.mcp = Some(select::resolve_mcp(
+        args.no_mcp,
+        &args.expose,
+        decided.as_ref(),
+    ));
+    Ok(selection)
 }
 
 /// The closing summary: every file, what happened to it, and which of the
 /// selected runtimes reads it.
-fn report(selection: &select::Selection, written: &[install::Installed]) {
+fn report(
+    selection: &select::Selection,
+    written: &[install::Installed],
+    registered: &[install::Installed],
+) {
     println!();
     println!("AgentCordon skill:");
     for file in written {
-        match &file.action {
-            Action::Skipped { reason, snippet } => {
-                println!("  skipped   {}", file.path);
-                println!("            {reason}");
-                println!("            add by hand under `read:`:");
-                println!("              {snippet}");
-            }
-            other => {
-                let verb = match other {
-                    Action::Created => "created",
-                    Action::Updated => "updated",
-                    _ => "unchanged",
-                };
-                let serves = if file.serves.is_empty() {
-                    "portable copy — read by any runtime that follows the Agent Skills standard"
-                        .to_string()
-                } else {
-                    format!("read by {}", file.serves.join(", "))
-                };
-                println!("  {verb:<9} {}", file.path);
-                println!("            {serves}");
-            }
+        print_file(file, "read by");
+    }
+
+    if !registered.is_empty() {
+        println!();
+        let expose = selection
+            .mcp
+            .as_ref()
+            .map(|c| c.expose.clone())
+            .unwrap_or_default();
+        let extra = if expose.is_empty() {
+            String::new()
+        } else {
+            format!(", re-exporting {}", expose.join(", "))
+        };
+        println!("MCP server (`agentcordon mcp-serve`{extra}):");
+        for file in registered {
+            print_file(file, "used by");
         }
     }
 
@@ -279,6 +297,38 @@ fn report(selection: &select::Selection, written: &[install::Installed]) {
     );
 }
 
+/// One file's line in the summary: the verb, the path, who reads it, and
+/// anything the verb does not say.
+fn print_file(file: &install::Installed, whom: &str) {
+    match &file.action {
+        Action::Skipped { reason, snippet } => {
+            println!("  not written {}", file.path);
+            println!("              {reason}");
+            for line in snippet.trim_end().lines() {
+                println!("                {line}");
+            }
+        }
+        other => {
+            let verb = match other {
+                Action::Created => "created",
+                Action::Updated => "updated",
+                _ => "unchanged",
+            };
+            let serves = if file.serves.is_empty() {
+                "portable copy — read by any runtime that follows the Agent Skills standard"
+                    .to_string()
+            } else {
+                format!("{whom} {}", file.serves.join(", "))
+            };
+            println!("  {verb:<11} {}", file.path);
+            println!("              {serves}");
+            if let Some(detail) = &file.detail {
+                println!("              {detail}");
+            }
+        }
+    }
+}
+
 /// Add `.agentcordon/` to `.gitignore` if not already present.
 fn add_to_gitignore(root: &Path) -> Result<(), CliError> {
     let gitignore_path = root.join(".gitignore");
@@ -304,7 +354,7 @@ fn add_to_gitignore(root: &Path) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::{Marker, Runtime, RUNTIMES, SKILL_MD};
+    use crate::agents::{Marker, McpConfig, Runtime, RUNTIMES, SKILL_MD};
     use crate::config::ServerUrlSource;
     use crate::test_env::EnvGuard;
     use std::collections::BTreeSet;
@@ -677,7 +727,10 @@ mod tests {
         let bin = TempDir::new().unwrap();
 
         fs::create_dir_all(home.path().join(".kiro")).unwrap();
+        // `.junie/` itself is not a marker: `init` writes `.junie/mcp/mcp.json`
+        // into it. The guidelines file is Junie's own.
         fs::create_dir_all(project.path().join(".junie")).unwrap();
+        fs::write(project.path().join(".junie/guidelines.md"), "# junie\n").unwrap();
         fs::write(bin.path().join("aider"), "#!/bin/sh\n").unwrap();
 
         let env = DetectEnv {
@@ -854,31 +907,543 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // The MCP server registration
+    // -----------------------------------------------------------------
+
+    /// Claude Code's project-scoped MCP config. `command` is the bare binary
+    /// name so PATH resolution stays the user's.
+    /// <https://code.claude.com/docs/en/mcp>
     #[test]
-    fn init_does_not_create_mcp_json() {
+    fn claude_code_gets_an_mcp_json_pointing_at_mcp_serve() {
         let dir = TempDir::new().unwrap();
         let _g = workspace_guard(dir.path());
 
-        install(&init(&["all"])).unwrap();
+        install(&init(&["claude-code"])).unwrap();
 
-        assert!(
-            !dir.path().join(".mcp.json").exists(),
-            "there is no `agentcordon mcp-serve`; an .mcp.json entry would point at nothing"
+        let body: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(body["mcpServers"]["agentcordon"]["command"], "agentcordon");
+        assert_eq!(
+            body["mcpServers"]["agentcordon"]["args"],
+            serde_json::json!(["mcp-serve"])
         );
     }
 
+    /// Codex reads a project `.codex/config.toml` in a project you have marked
+    /// trusted, so `init` writes one rather than printing it.
+    /// <https://learn.chatgpt.com/docs/extend/mcp?surface=cli>
     #[test]
-    fn init_leaves_existing_mcp_json_untouched() {
+    fn codex_gets_a_project_config_toml_table() {
         let dir = TempDir::new().unwrap();
         let _g = workspace_guard(dir.path());
-        let original = r#"{"mcpServers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"],"env":{"FOO":"bar"}}}}"#;
+
+        install(&init(&["codex"])).unwrap();
+
+        let body = fs::read_to_string(dir.path().join(".codex/config.toml")).unwrap();
+        let parsed: toml::Table = body.parse().unwrap();
+        let entry = &parsed["mcp_servers"]["agentcordon"];
+        assert_eq!(entry["command"].as_str(), Some("agentcordon"));
+        assert_eq!(
+            entry["args"].as_array().unwrap(),
+            &vec![toml::Value::String("mcp-serve".into())]
+        );
+    }
+
+    /// OpenCode is the one runtime whose command is a single array and whose
+    /// transport is called `local`, not `stdio`.
+    /// <https://opencode.ai/docs/mcp-servers/>
+    #[test]
+    fn opencode_gets_one_command_array_and_a_local_type() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+
+        install(&init(&["opencode"])).unwrap();
+
+        let body: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("opencode.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            body["mcp"]["agentcordon"],
+            serde_json::json!({
+                "type": "local",
+                "command": ["agentcordon", "mcp-serve"],
+                "enabled": true,
+            })
+        );
+    }
+
+    /// Every runtime with a project-level file gets it, at the documented path
+    /// and under the documented key. One assertion per runtime, so a wrong key
+    /// names the runtime that has it wrong.
+    #[test]
+    fn every_project_runtime_gets_its_documented_file() {
+        for runtime in RUNTIMES {
+            let file = match runtime.mcp {
+                McpConfig::Project(f) | McpConfig::ProjectAndUser(f, _) => f,
+                _ => continue,
+            };
+            let dir = TempDir::new().unwrap();
+            let _g = workspace_guard(dir.path());
+
+            install(&init(&[runtime.id])).unwrap();
+
+            let path = dir.path().join(file.path);
+            let body = fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{}: {} not written: {e}", runtime.id, file.path));
+            match file.shape {
+                agents::McpShape::Toml => {
+                    let parsed: toml::Table = body
+                        .parse()
+                        .unwrap_or_else(|e| panic!("{}: not TOML: {e}", runtime.id));
+                    assert!(
+                        parsed["mcp_servers"].get("agentcordon").is_some(),
+                        "{}: no [mcp_servers.agentcordon]",
+                        runtime.id
+                    );
+                }
+                shape => {
+                    let parsed: serde_json::Value = serde_json::from_str(&body)
+                        .unwrap_or_else(|e| panic!("{}: not JSON: {e}", runtime.id));
+                    let key = match shape {
+                        agents::McpShape::Json { key, .. } => key,
+                        agents::McpShape::OpenCode => "mcp",
+                        other => panic!("{}: no project writer for {other:?}", runtime.id),
+                    };
+                    assert!(
+                        parsed[key].get("agentcordon").is_some(),
+                        "{}: {} has no {key}.agentcordon: {body}",
+                        runtime.id,
+                        file.path
+                    );
+                }
+            }
+        }
+    }
+
+    /// A repository that already registers MCP servers keeps every one of
+    /// them; ours is inserted alongside.
+    #[test]
+    fn an_existing_mcp_json_keeps_its_own_servers() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+        let original = r#"{"mcpServers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/srv"],"env":{"FOO":"bar"}}}}"#;
         fs::write(dir.path().join(".mcp.json"), original).unwrap();
 
+        install(&init(&["claude-code"])).unwrap();
+
+        let body: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(body["mcpServers"]["filesystem"]["command"], "npx");
+        assert_eq!(body["mcpServers"]["filesystem"]["env"]["FOO"], "bar");
+        assert_eq!(body["mcpServers"]["agentcordon"]["command"], "agentcordon");
+    }
+
+    /// TOML is appended to, not round-tripped: a `config.toml` is hand-written
+    /// and re-serialising it through `toml::Value` deletes every comment.
+    #[test]
+    fn an_existing_codex_config_keeps_its_comments() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let original =
+            "# my settings\nmodel = \"gpt-5\"\n\n[mcp_servers.context7]\ncommand = \"npx\"\n";
+        fs::write(dir.path().join(".codex/config.toml"), original).unwrap();
+
+        install(&init(&["codex"])).unwrap();
+
+        let body = fs::read_to_string(dir.path().join(".codex/config.toml")).unwrap();
+        assert!(
+            body.starts_with(original),
+            "the original is untouched: {body}"
+        );
+        assert!(body.contains("# my settings"));
+        let parsed: toml::Table = body.parse().unwrap();
+        assert!(parsed["mcp_servers"].get("context7").is_some());
+        assert!(parsed["mcp_servers"].get("agentcordon").is_some());
+    }
+
+    /// A config with comments in it is JSONC, not JSON. Guessing at an edit
+    /// would corrupt it, so it is left exactly as it was and the snippet is
+    /// printed instead.
+    #[test]
+    fn an_unparseable_mcp_config_is_left_byte_identical() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+        let original = "{\n  // the filesystem server\n  \"mcpServers\": {}\n}\n";
+        fs::write(dir.path().join(".mcp.json"), original).unwrap();
+
+        install(&init(&["claude-code"])).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".mcp.json")).unwrap(),
+            original
+        );
+    }
+
+    /// An `agentcordon` entry that starts something other than our binary — a
+    /// wrapper script, an absolute path — is a deliberate choice of the
+    /// user's, and overwriting it would undo it.
+    #[test]
+    fn an_agentcordon_entry_that_says_something_else_is_left_alone() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+        let original =
+            "{\n  \"mcpServers\": {\n    \"agentcordon\": {\n      \"command\": \"./wrapper.sh\"\n    }\n  }\n}\n";
+        fs::write(dir.path().join(".mcp.json"), original).unwrap();
+
+        install(&init(&["claude-code"])).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".mcp.json")).unwrap(),
+            original
+        );
+    }
+
+    /// An entry naming our own binary is ours to keep current: changing
+    /// `--expose` has to reach the file, or the flag silently does nothing on
+    /// every workspace that has already run `init`.
+    #[test]
+    fn our_own_entry_is_brought_up_to_date_when_expose_changes() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+
+        install(&init(&["claude-code", "codex"])).unwrap();
+        install(&InitArgs {
+            agents: vec!["claude-code".to_string(), "codex".to_string()],
+            expose: vec!["github".to_string()],
+            ..InitArgs::default()
+        })
+        .unwrap();
+
+        let claude: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            claude["mcpServers"]["agentcordon"]["args"],
+            serde_json::json!(["mcp-serve", "--expose", "github"])
+        );
+        let codex = fs::read_to_string(dir.path().join(".codex/config.toml")).unwrap();
+        assert!(codex.contains("\"--expose\",\"github\""), "{codex}");
+        assert_eq!(
+            codex.matches("[mcp_servers.agentcordon]").count(),
+            1,
+            "the table is replaced, not duplicated: {codex}"
+        );
+    }
+
+    /// Keys the user added to our own entry are theirs; only the ones this
+    /// command writes are refreshed.
+    #[test]
+    fn keys_added_to_our_entry_by_hand_survive_a_rerun() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+        fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"agentcordon":{"command":"agentcordon","args":[],"env":{"AGTCRDN_LOG_LEVEL":"debug"}}}}"#,
+        )
+        .unwrap();
+
+        install(&init(&["claude-code"])).unwrap();
+
+        let body: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            body["mcpServers"]["agentcordon"]["env"]["AGTCRDN_LOG_LEVEL"],
+            "debug"
+        );
+        assert_eq!(
+            body["mcpServers"]["agentcordon"]["args"],
+            serde_json::json!(["mcp-serve"])
+        );
+    }
+
+    /// A codex table with a setting we never write is not ours to rewrite.
+    #[test]
+    fn a_codex_table_with_extra_settings_is_left_alone() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let original = "[mcp_servers.agentcordon]\ncommand = \"agentcordon\"\nargs = [\"mcp-serve\"]\nstartup_timeout_sec = 30\n";
+        fs::write(dir.path().join(".codex/config.toml"), original).unwrap();
+
+        install(&InitArgs {
+            agents: vec!["codex".to_string()],
+            expose: vec!["github".to_string()],
+            ..InitArgs::default()
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".codex/config.toml")).unwrap(),
+            original
+        );
+    }
+
+    /// Every writer, twice, byte for byte. `installing_twice_changes_nothing`
+    /// covers the same ground for the whole tree; this one fails with the
+    /// runtime's name.
+    #[test]
+    fn writing_an_mcp_config_twice_changes_nothing() {
+        for runtime in RUNTIMES {
+            let file = match runtime.mcp {
+                McpConfig::Project(f) | McpConfig::ProjectAndUser(f, _) => f,
+                _ => continue,
+            };
+            let dir = TempDir::new().unwrap();
+            let _g = workspace_guard(dir.path());
+
+            install(&init(&[runtime.id])).unwrap();
+            let first = fs::read_to_string(dir.path().join(file.path)).unwrap();
+            install(&init(&[runtime.id])).unwrap();
+            let second = fs::read_to_string(dir.path().join(file.path)).unwrap();
+
+            assert_eq!(
+                first, second,
+                "{}: {} is not idempotent",
+                runtime.id, file.path
+            );
+        }
+    }
+
+    /// `--expose` is passed through as `--expose <server>` pairs, in every
+    /// config shape: the argument list is the interface `mcp-serve` reads.
+    #[test]
+    fn expose_becomes_expose_arguments_in_every_config() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+
+        install(&InitArgs {
+            agents: vec!["all".to_string()],
+            expose: vec!["github".to_string(), "sentry".to_string()],
+            ..InitArgs::default()
+        })
+        .unwrap();
+
+        let claude: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            claude["mcpServers"]["agentcordon"]["args"],
+            serde_json::json!(["mcp-serve", "--expose", "github", "--expose", "sentry"])
+        );
+
+        // OpenCode folds the command and the arguments into one array.
+        let opencode: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("opencode.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            opencode["mcp"]["agentcordon"]["command"],
+            serde_json::json!([
+                "agentcordon",
+                "mcp-serve",
+                "--expose",
+                "github",
+                "--expose",
+                "sentry"
+            ])
+        );
+
+        let codex = fs::read_to_string(dir.path().join(".codex/config.toml")).unwrap();
+        assert!(codex.contains("\"--expose\",\"sentry\""), "{codex}");
+    }
+
+    /// The skill costs nothing until it is triggered; the MCP surface costs
+    /// ~800 tokens in every session. `--no-mcp` is how a user takes the first
+    /// without the second, and it is remembered.
+    #[test]
+    fn no_mcp_writes_no_mcp_config_and_is_remembered() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+
+        install(&InitArgs {
+            agents: vec!["all".to_string()],
+            no_mcp: true,
+            ..InitArgs::default()
+        })
+        .unwrap();
+
+        for runtime in RUNTIMES {
+            if let McpConfig::Project(f) | McpConfig::ProjectAndUser(f, _) = runtime.mcp {
+                assert!(
+                    !dir.path().join(f.path).exists(),
+                    "{}: --no-mcp wrote {}",
+                    runtime.id,
+                    f.path
+                );
+            }
+        }
+        assert!(dir
+            .path()
+            .join(".agents/skills/agentcordon/SKILL.md")
+            .exists());
+
+        // Remembered, so a bare rerun does not quietly register after all.
         install(&init(&["all"])).unwrap();
+        assert!(!dir.path().join(".mcp.json").exists());
+        let saved = fs::read_to_string(dir.path().join(".agentcordon/agents.toml")).unwrap();
+        assert!(saved.contains("mcp = false"), "{saved}");
+    }
+
+    #[test]
+    fn the_expose_list_is_remembered_and_reused() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+
+        install(&InitArgs {
+            agents: vec!["claude-code".to_string()],
+            expose: vec!["github".to_string()],
+            ..InitArgs::default()
+        })
+        .unwrap();
+        let saved = fs::read_to_string(dir.path().join(".agentcordon/agents.toml")).unwrap();
+        assert!(saved.contains("expose = [\"github\"]"), "{saved}");
+
+        fs::remove_file(dir.path().join(".mcp.json")).unwrap();
+        install(&InitArgs::default()).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            body["mcpServers"]["agentcordon"]["args"],
+            serde_json::json!(["mcp-serve", "--expose", "github"])
+        );
+    }
+
+    /// A user-level config is outside the workspace and shared by every
+    /// project on the machine. `init` writes only inside the directory it was
+    /// run in, so those runtimes get a printed snippet and no file.
+    #[test]
+    fn a_user_level_runtime_gets_a_snippet_and_no_file() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+
+        install(&init(&["windsurf", "cline", "goose", "zed"])).unwrap();
+
+        let before = tree(dir.path());
+        install(&init(&["windsurf", "cline", "goose", "zed"])).unwrap();
+        assert_eq!(before, tree(dir.path()));
+
+        for runtime in RUNTIMES {
+            let McpConfig::User(user) = runtime.mcp else {
+                continue;
+            };
+            assert!(
+                user.path.starts_with('~'),
+                "{}: a user-level path is outside the workspace",
+                runtime.id
+            );
+            let snippet = agents::mcp::snippet(user.shape, &agents::mcp::args(&[]));
+            assert!(
+                snippet.contains("agentcordon") && snippet.contains("mcp-serve"),
+                "{}: the printed snippet must name the command: {snippet}",
+                runtime.id
+            );
+        }
+    }
+
+    /// An absolute path in a file that gets committed is wrong on every other
+    /// machine, and it takes PATH resolution away from the user.
+    #[test]
+    fn mcp_config_never_writes_an_absolute_path() {
+        let dir = TempDir::new().unwrap();
+        let _g = workspace_guard(dir.path());
+
         install(&init(&["all"])).unwrap();
 
-        let after = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
-        assert_eq!(after, original);
+        let root = dir.path().display().to_string();
+        for (path, body) in tree(dir.path()) {
+            assert!(
+                !body.contains(&root),
+                "{path} names the workspace's absolute path"
+            );
+            assert!(
+                !body.contains("\"/") && !body.contains("cmd: /"),
+                "{path} names an absolute command"
+            );
+        }
+    }
+
+    /// Every runtime says what it does about MCP: a file `init` writes, a
+    /// user-level path it prints, or no MCP client at all. A new runtime
+    /// cannot be added without deciding.
+    #[test]
+    fn every_runtime_declares_what_it_does_about_mcp() {
+        for runtime in RUNTIMES {
+            match runtime.mcp {
+                McpConfig::Project(f) | McpConfig::ProjectAndUser(f, _) => {
+                    assert!(
+                        !f.path.starts_with('/') && !f.path.starts_with('~'),
+                        "{}: a project file is workspace-relative",
+                        runtime.id
+                    );
+                }
+                McpConfig::User(u) => assert!(
+                    u.path.starts_with('~'),
+                    "{}: a user-level path is under $HOME",
+                    runtime.id
+                ),
+                // Aider is the only one, and permanently: no MCP client is
+                // documented and HISTORY has never mentioned one.
+                McpConfig::None => assert_eq!(runtime.id, "aider"),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Deciding whether to register at all
+    // -----------------------------------------------------------------
+
+    /// Nothing said: register. A runtime with no entry cannot see the tools.
+    #[test]
+    fn the_default_is_to_register() {
+        assert_eq!(
+            select::resolve_mcp(false, &[], None),
+            agents::mcp::Choice::default()
+        );
+    }
+
+    /// `--no-mcp` is the only thing typed this run that says no, so it beats
+    /// the picker's answer and the remembered one.
+    #[test]
+    fn no_mcp_beats_every_remembered_yes() {
+        let remembered = agents::mcp::Choice {
+            register: true,
+            expose: vec!["github".to_string()],
+        };
+        let resolved = select::resolve_mcp(true, &[], Some(&remembered));
+        assert!(!resolved.register);
+        assert_eq!(resolved.expose, vec!["github".to_string()]);
+    }
+
+    /// `--expose` replaces the remembered list, exactly as `--agent` replaces
+    /// the remembered runtimes, and duplicates collapse.
+    #[test]
+    fn expose_replaces_rather_than_adds_to_what_was_remembered() {
+        let remembered = agents::mcp::Choice {
+            register: true,
+            expose: vec!["github".to_string()],
+        };
+        let flags = ["sentry".to_string(), "sentry".to_string()];
+        assert_eq!(
+            select::resolve_mcp(false, &flags, Some(&remembered)).expose,
+            vec!["sentry".to_string()]
+        );
+        assert_eq!(
+            select::resolve_mcp(false, &[], Some(&remembered)).expose,
+            vec!["github".to_string()]
+        );
+    }
+
+    /// The picker asks once, in one line that carries both halves of the
+    /// trade-off.
+    #[test]
+    fn the_picker_asks_about_the_mcp_server_and_says_what_it_costs() {
+        assert!(select::MCP_QUESTION.contains("Also register the AgentCordon MCP server"));
+        assert!(select::MCP_QUESTION.contains("800 tokens"));
     }
 
     /// `init` writes a key the CLI's own loader accepts, and a second run
