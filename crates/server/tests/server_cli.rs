@@ -90,7 +90,7 @@ fn help_lists_the_documented_environment_variables() {
     let (_, stdout, _) = run_server(dir.path(), &["--help"]);
 
     // The server is configured by environment, so `--help` is the only place
-    // the binary itself can say so. These are the ones README § Configuration
+    // the binary itself can say so. These are the ones docs/configuration.md
     // documents as load-bearing on a first boot.
     for var in [
         "AGTCRDN_LISTEN_ADDR",
@@ -164,7 +164,7 @@ fn an_unknown_argument_is_an_error_and_starts_nothing() {
 }
 
 /// The key-derivation knobs are part of setting a master secret up, and
-/// `--help` closes by calling README § Configuration "the full table" —
+/// `--help` closes by calling docs/configuration.md "the full table" —
 /// which did not list them either. A reader doing master-secret setup from
 /// `--help` alone could not discover that the Argon2 cost of a weak secret
 /// is tunable, or that a KDF salt override exists that must be applied

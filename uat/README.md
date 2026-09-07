@@ -338,7 +338,7 @@ Both now press a button:
    and one from any other container does not.
 9. **`AGTCRDN_MCP_TEMPLATES_DIR` is how a private MCP server reaches the
    marketplace.** It is the only way to put the mock MCP server there. It used
-   to appear in no document (G14); README § Configuration, `.env.example` and
+   to appear in no document (G14); `docs/configuration.md`, `.env.example` and
    docs/granting-mcp-server-access.md now all carry it, and the setup spec
    asserts that against the shipped files rather than recording a finding.
 10. **Three OAuth MCP templates, covering both shapes.** `uat-oauth-dcr` and

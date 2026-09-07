@@ -93,13 +93,14 @@ test.describe('S11-S16 setup: OAuth topology', () => {
     }
 
     // G14 — AGTCRDN_MCP_TEMPLATES_DIR is the only way to put a private MCP
-    // server in the marketplace, and it appeared in no document: not README's
-    // configuration table, not .env.example, not the MCP guide. All three now
-    // carry it, so a user with an in-house server is no longer sent to the
+    // server in the marketplace, and it appeared in no document: not the
+    // configuration reference, not .env.example, not the MCP guide. All three
+    // now carry it, so a user with an in-house server is no longer sent to the
     // source. These read the shipped files, so deleting the documentation
-    // turns this red.
-    const readme = readDoc('README.md');
-    expect(readme, 'README must document AGTCRDN_MCP_TEMPLATES_DIR').toContain(
+    // turns this red. The configuration table moved out of the README into
+    // docs/configuration.md, which is now its single home.
+    const config = readDoc('docs/configuration.md');
+    expect(config, 'the configuration reference must document AGTCRDN_MCP_TEMPLATES_DIR').toContain(
       'AGTCRDN_MCP_TEMPLATES_DIR',
     );
     const envExample = readDoc('.env.example');

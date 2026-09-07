@@ -77,7 +77,7 @@ test.describe('S0 install as documented', () => {
     expect(executable).not.toContain('/install.sh');
     expect(executable).not.toContain('exec bash');
 
-    // D7.1 — README § "Installing on Windows" advertises checksum
+    // D7.1 — docs/installation.md § "Windows" advertises checksum
     // verification; the Unix path had none. Verification must be on by
     // default and a mismatch must abort the install.
     expect(body, 'the installer must fetch the release SHA256SUMS').toContain('SHA256SUMS');
@@ -102,11 +102,12 @@ test.describe('S0 install as documented', () => {
     expect(readme).toContain("verifies them against the release's `SHA256SUMS`");
     expect(readme).toMatch(/curl -fsSL \S+\/install\.sh \| sh/);
 
-    // docs/index.md § "Quick Start" carries the same one-liner and says what
-    // it verifies, so a reader who starts there is not sent to the source.
-    const index = readDoc('docs/index.md');
-    expect(index).toMatch(/curl -fsSL \S+\/install\.sh \| sh/);
-    expect(index).toContain('SHA256SUMS');
+    // docs/installation.md is where the quick start's other routes went when
+    // the README was cut down; it carries the same one-liner and says what it
+    // verifies, so a reader who starts there is not sent to the source.
+    const install = readDoc('docs/installation.md');
+    expect(install).toMatch(/curl -fsSL \S+\/install\.sh \| sh/);
+    expect(install).toContain('SHA256SUMS');
   });
 
   test('the documented installer installs only binaries that match this server, or says why it cannot [D7]', async () => {

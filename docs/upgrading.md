@@ -365,8 +365,8 @@ agentcordon status
 
 The installer the server serves is pinned to **that server's own version** rather than to the
 newest published release, so it either installs the matching pair or stops and tells you no
-release exists for that version yet and to build from source ([README, Building from
-Source](../README.md#building-from-source)) -- which is exactly the lockstep this section
+release exists for that version yet and to build from source ([Installation, from
+source](installation.md#from-source)) -- which is exactly the lockstep this section
 requires. `agentcordon status` warns if the broker it finds is a different version from the
 CLI.
 

@@ -141,7 +141,7 @@ test.describe('S11 application credential (oauth2_client_credentials)', () => {
       scenario: 'S11',
       title:
         'An OAuth2 provider reachable only over plain HTTP cannot be used unless it is literally on localhost, and no document says so',
-      doc: 'docs/credential-encryption.md § "Credential Types / OAuth2 Client Credentials" says only "Validates token endpoint is HTTPS (except localhost in dev)"; README § Configuration and docs/cli-reference.md § "Credential Types and Transforms" say nothing',
+      doc: 'docs/credential-encryption.md § "Credential Types / OAuth2 Client Credentials" says only "Validates token endpoint is HTTPS (except localhost in dev)"; docs/configuration.md and docs/cli-reference.md § "Credential Types and Transforms" say nothing',
       detail:
         'crates/server/src/routes/admin_api/credentials/create.rs:169-183 accepts http:// only when the host string is exactly "localhost", "127.0.0.1" or "::1". A provider on a private network or a Docker service name is refused with "oauth2_token_endpoint must use HTTPS" and no hint about the loopback exemption. The refusal itself is correct hardening; the gap is that the one escape hatch is documented as a parenthesis.',
       workaround:

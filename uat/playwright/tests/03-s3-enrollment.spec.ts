@@ -31,7 +31,7 @@ test.describe('S3 enrollment', () => {
     writeState({ pkHash });
   });
 
-  test('agentcordon register prints a one-time code and an activation URL, and the docs warn about the AGTCRDN_BASE_URL fallback (README § "Quick Start / 3") [G1]', async () => {
+  test('agentcordon register prints a one-time code and an activation URL, and the docs warn about the AGTCRDN_BASE_URL fallback (README § "Quick start / 1") [G1]', async () => {
     cliDetached('agentcordon register --name uat-ws > /home/uat/register.log 2>&1');
 
     const log = await waitFor(

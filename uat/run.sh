@@ -296,7 +296,7 @@ fi
 # plus, because the broker runs in its own container and must be reachable
 # from the CLI container, the flags docs/cli-reference.md § "Broker flags for
 # a non-loopback bind" documents: --bind with --shared-secret.
-# --proxy-allow-loopback is documented in README § "Configuration" and
+# --proxy-allow-loopback is documented in docs/configuration.md and
 # docs/cli-reference.md; the mock upstream is on a private Docker bridge
 # address, which the SSRF guard refuses by design. See uat/README.md.
 log "Starting broker"

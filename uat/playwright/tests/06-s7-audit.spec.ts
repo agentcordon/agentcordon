@@ -102,8 +102,9 @@ test.describe('S7 audit', () => {
     const after = await apiFromPage(page, 'GET', '/api/v1/audit?limit=500');
     const added = after.body.data.filter((e: any) => !beforeIds.has(e.id));
 
-    // README § "Why AgentCordon" ("Every access logged with correlation IDs,
-    // SOC/IR ready") and docs/index.md § "Full Audit Trail". The refusal used
+    // README § "Features" ("Every vend, policy decision and token operation
+    // is an append-only row with a correlation id") and docs/index.md
+    // § "Key capabilities" / Full audit trail. The refusal used
     // to return from check_vend_target() before Cedar ran and before any
     // emission, so a URL-pattern denial — the enforcement boundary this
     // release added — left no trail at all while a Cedar denial did. This

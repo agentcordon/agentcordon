@@ -25,7 +25,7 @@ this table; the full one is here.
 | Variable | Default | Description |
 |---|---|---|
 | `AGTCRDN_LISTEN_ADDR` | `0.0.0.0:3140` | Address and port the server binds. This, not `AGTCRDN_PORT`, is the server's listen setting. |
-| `AGTCRDN_BASE_URL` | — | The URL your users reach this server on. The device-flow activation URL, the OAuth2 MCP callback redirect URI, and `GET /install.sh` are all built from it. Set it before anyone enrols; see [the fallbacks](#agtcrdn_base_url-and-its-two-fallbacks) below. |
+| `AGTCRDN_BASE_URL` | — | The URL your users reach this server on. The device-flow activation URL, the OAuth2 MCP callback redirect URI, and `GET /install.sh` are all built from it. Set it before anyone enrolls; see [the fallbacks](#agtcrdn_base_url-and-its-two-fallbacks) below. |
 | `AGTCRDN_DB_PATH` | `./data/agent-cordon.db` | SQLite database file. SQLite is the only storage backend. The container image sets `/data/agent-cordon.db`. |
 | `AGTCRDN_REPLICA_MODE` | `single` | `unsafe-shared` disables the single-instance database guard. An unrecognised value stops startup rather than falling back. |
 

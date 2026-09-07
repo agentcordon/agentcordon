@@ -94,14 +94,14 @@ ports at all. Tailscale terminates TLS for you.
 
 ## The base URL
 
-Set `AGTCRDN_BASE_URL` to the URL your users type, before anyone enrols a workspace.
+Set `AGTCRDN_BASE_URL` to the URL your users type, before anyone enrolls a workspace.
 
 The device-flow activation URL, the OAuth2 MCP callback redirect URI, and the installer at
 `GET /install.sh` are all built from it. Unset, the activation URL becomes `http://` plus
 the listen address — `http://0.0.0.0:3140` in the shipped container, which no browser can
-open — and every user who tries to enrol is stuck.
+open — and every user who tries to enroll is stuck.
 
-Changing it later is safe for enrolment but not free: an OAuth2 MCP server registered
+Changing it later is safe for enrollment but not free: an OAuth2 MCP server registered
 under the old redirect URI must be re-authorized, because the redirect URI is part of what
 the upstream provider registered.
 

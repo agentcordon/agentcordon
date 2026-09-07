@@ -26,7 +26,7 @@ published mapping), and read the examples with your own port substituted.
 | Run the server from a Compose file | Docker with the Compose plugin. Check with `docker compose version`; on many distributions the plugin is a separate install from the engine. |
 | Run the server without Compose | Docker alone (`docker --version`), driven with `docker run`. |
 | Build any of the three binaries | A Rust toolchain (stable). There are no system libraries to install. |
-| Approve a workspace enrolment | A browser, on any machine that can reach the server. The device flow is copy-a-code-and-click-Approve; there is no loopback callback to forward. |
+| Approve a workspace enrollment | A browser, on any machine that can reach the server. The device flow is copy-a-code-and-click-Approve; there is no loopback callback to forward. |
 
 ---
 
@@ -224,4 +224,4 @@ released for Linux, and a server on another platform is a source build.
 
 ---
 
-> **Next:** [Workspace Enrolment](workspace-enrollment.md) · [Configuration](configuration.md) · [Deployment](deployment.md) · [CLI Reference](cli-reference.md)
+> **Next:** [Workspace Enrollment](workspace-enrollment.md) · [Configuration](configuration.md) · [Deployment](deployment.md) · [CLI Reference](cli-reference.md)
