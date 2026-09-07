@@ -133,14 +133,21 @@ test.describe('S18 mcp-serve', () => {
     expect(text, 'a secret must never reach the model').not.toContain(UAT.credentialSecret);
   });
 
-  test('agentcordon_proxy with no credential named reaches the upstream, redacts the injected value, and leaves a credential_vended row naming the target (docs/system-architecture.md § "A credential vend")', async ({
+  test('agentcordon_proxy reaches the upstream, redacts the injected value, and leaves a credential_vended row naming the target (docs/system-architecture.md § "A credential vend")', async ({
     page,
   }) => {
     await login(page);
     const before = new Set((await vendRows(page)).map((e: any) => e.id));
 
+    // The credential is named here because by this point in the ordered story
+    // three of them share the fence `http://upstream:8080/*`; what the
+    // credential-less form does about that is the test after next.
     const session = mcpServe([
-      callTool('agentcordon_proxy', { method: 'GET', url: S18_ECHO_URL }),
+      callTool('agentcordon_proxy', {
+        credential: UAT.credentialName,
+        method: 'GET',
+        url: S18_ECHO_URL,
+      }),
     ]);
     expect(session.error, session.describe()).toBeNull();
 
@@ -175,37 +182,48 @@ test.describe('S18 mcp-serve', () => {
     expect(row.metadata.credential_name).toBe(UAT.credentialName);
   });
 
-  test('agentcordon_proxy refuses a URL no fence covers, and the refusal names the fence (docs/credential-encryption.md § allowed_url_pattern)', async () => {
+  test('agentcordon_proxy refuses a URL the named credential is not fenced for, in prose (docs/credential-encryption.md § allowed_url_pattern)', async () => {
     const session = mcpServe([
-      // Named credential: the refusal must say which pattern fenced it out.
       callTool('agentcordon_proxy', {
         credential: UAT.credentialName,
         method: 'GET',
         url: OUT_OF_FENCE_URL,
       }),
-      // No credential named: the refusal must say nothing is fenced for it,
-      // rather than picking one at random.
-      callTool('agentcordon_proxy', { method: 'GET', url: OUT_OF_FENCE_URL }),
     ]);
     expect(session.error, session.describe()).toBeNull();
 
     const named = toolResult(session.responses[0]);
     expect(named.isError, session.describe()).toBe(true);
     // The refusal has to be actionable prose, not a status code: it names the
-    // credential and the pattern that fenced the call out.
+    // credential, the pattern that fenced the call out, the target, and that
+    // this is the credential's fence rather than a policy decision.
     const namedText = resultText(session.responses[0]);
     expect(namedText, session.describe()).toContain(UAT.credentialName);
     expect(namedText, session.describe()).toContain(UAT.credentialPattern);
+    expect(namedText, session.describe()).toContain(OUT_OF_FENCE_URL);
+    expect(namedText, session.describe()).toContain('url_pattern_denied');
 
-    const auto = toolResult(session.responses[1]);
-    expect(auto.isError, session.describe()).toBe(true);
-    expect(resultText(session.responses[1]), session.describe()).toMatch(
-      /no credential is fenced for/i,
-    );
+    // An error is a tool result the model can read, not a transport failure.
+    expect(named.content.length, session.describe()).toBeGreaterThan(0);
+  });
 
-    // An error is a tool result the model can read, not a transport failure:
-    // the session survives it and the second call still got an answer.
-    expect(session.responses).toHaveLength(2);
+  test('agentcordon_proxy with no credential refuses to guess when several fences cover the URL, and names them (docs/cli-reference.md § "For agents: the fast path")', async () => {
+    // Three credentials are fenced to `http://upstream:8080/*` by this point
+    // in the ordered story (S2's, S13's api_key_header one and S14's AWS one).
+    // The documented contract for the credential-less form is that it uses the
+    // one fence covering the target and otherwise refuses rather than choosing
+    // for the agent.
+    const session = mcpServe([
+      callTool('agentcordon_proxy', { method: 'GET', url: S18_ECHO_URL }),
+    ]);
+    expect(session.error, session.describe()).toBeNull();
+
+    const result = toolResult(session.responses[0]);
+    expect(result.isError, session.describe()).toBe(true);
+    const text = resultText(session.responses[0]);
+    expect(text, session.describe()).toMatch(/several credentials are fenced for/i);
+    expect(text, session.describe()).toContain(UAT.credentialName);
+    expect(text, session.describe()).toContain(UAT.credentialPattern);
   });
 
   test('agentcordon_mcp_tools returns the uat-none server\'s four tools with their input schemas [D11]', async () => {
