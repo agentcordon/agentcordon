@@ -56,6 +56,15 @@ function cliVersion(): string {
   return m![1];
 }
 
+/** The workspace identity `agentcordon status` reports for the enrolled dir. */
+function workspaceIdentity(): string {
+  const r = cli(['status']);
+  expect(r.code, r.out).toBe(0);
+  const m = /Workspace:\s*(sha256:[0-9a-f]{64})/.exec(r.out);
+  expect(m, `no workspace identity in ${JSON.stringify(r.out)}`).toBeTruthy();
+  return m![1];
+}
+
 /** Every `credential_vended` row the server has, newest first. */
 async function vendRows(page: any): Promise<any[]> {
   const audit = await apiFromPage(page, 'GET', '/api/v1/audit?limit=200');
@@ -78,9 +87,12 @@ test.describe('S18 mcp-serve', () => {
     expect(init.capabilities?.tools?.listChanged, session.describe()).toBe(true);
 
     // `instructions` is the only prose a runtime loads with the server, so it
-    // has to say which workspace these tools act as.
+    // has to say which workspace these tools act as. The identity is the
+    // unambiguous half of that — `agentcordon status` reports the same string
+    // — and it is read from `.agentcordon/`, so a wrong or missing key shows
+    // up here rather than at the first tool call.
     expect(typeof init.instructions, session.describe()).toBe('string');
-    expect(init.instructions, session.describe()).toContain(UAT.workspaceName);
+    expect(init.instructions, session.describe()).toContain(workspaceIdentity());
 
     // stdout is the transport. Anything the server prints that is not a
     // JSON-RPC message corrupts the session; logging belongs on stderr.
@@ -179,9 +191,11 @@ test.describe('S18 mcp-serve', () => {
 
     const named = toolResult(session.responses[0]);
     expect(named.isError, session.describe()).toBe(true);
+    // The refusal has to be actionable prose, not a status code: it names the
+    // credential and the pattern that fenced the call out.
     const namedText = resultText(session.responses[0]);
+    expect(namedText, session.describe()).toContain(UAT.credentialName);
     expect(namedText, session.describe()).toContain(UAT.credentialPattern);
-    expect(namedText, session.describe()).toContain(OUT_OF_FENCE_URL);
 
     const auto = toolResult(session.responses[1]);
     expect(auto.isError, session.describe()).toBe(true);
