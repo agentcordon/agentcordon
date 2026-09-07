@@ -435,10 +435,19 @@ You can also create **deny** policies by adding `"mode": "deny"` to the request 
 policies generate `forbid` rules.
 
 A deny stops the *call* and nothing else: the tool stays in every listing the agent sees, so
-it is still discovered and still attempted, and each attempt writes an
-`mcp_tool_call_denied` audit row. To take a tool out of the listing entirely, narrow the
-server's `allowed_tools` -- see
+it is still discovered and still attempted. To take a tool out of the listing entirely,
+narrow the server's `allowed_tools` -- see
 [Narrowing the tools a server exposes](#narrowing-the-tools-a-server-exposes).
+
+Every refused `mcp_tool_call` writes an `mcp_tool_call_denied` audit row naming the
+workspace, the server, the tool and a `reason`:
+
+| `reason` | What happened |
+|----------|---------------|
+| `policy_forbid` | A Cedar policy refused it. The contributing reasons are in `policy_reasons`, and the correlation id ties the row to the `policy_evaluated` row with the full detail. |
+| `tool_not_allowed` | The tool is not in the server's `allowed_tools`. No policy was consulted. |
+| `server_disabled` | The server exists but is switched off. |
+| `unknown_server` | No server of that name resolves for this workspace. |
 
 #### Option B: Grant specific tools only
 
