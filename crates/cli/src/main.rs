@@ -124,6 +124,30 @@ enum Command {
     /// Check workspace and broker status
     Status,
 
+    /// Update the CLI and broker to the server's pinned version
+    Update {
+        /// Report the current and available versions and exit; change
+        /// nothing.
+        #[arg(long)]
+        check: bool,
+
+        /// Reinstall even when already on the server's pinned version.
+        #[arg(long)]
+        force: bool,
+
+        /// AgentCordon server URL to learn the target version from.
+        /// Optional: without it the CLI falls back to `AGTCRDN_SERVER_URL`
+        /// and then to `server_url` in `~/.agentcordon/config.toml`, exactly
+        /// as `init` and `register` do.
+        #[arg(long = "server-url")]
+        server_url: Option<String>,
+
+        /// Skip the confirmation prompt (for scripts). The CLI also never
+        /// prompts when stdin is not a terminal.
+        #[arg(long)]
+        yes: bool,
+    },
+
     /// List available credentials (or manage them with subcommands)
     Credentials {
         #[command(subcommand)]
@@ -303,6 +327,20 @@ async fn run_async(command: Command) -> Result<(), CliError> {
             name,
         } => commands::register::run(scopes, force, server_url, name).await,
         Command::Status => commands::status::run().await,
+        Command::Update {
+            check,
+            force,
+            server_url,
+            yes,
+        } => {
+            commands::update::run(commands::update::UpdateArgs {
+                check,
+                force,
+                server_url,
+                yes,
+            })
+            .await
+        }
         Command::Credentials { action, json } => match action {
             None => commands::credentials::run(json).await,
             Some(CredentialsAction::Create {

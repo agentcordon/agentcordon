@@ -6,3 +6,4 @@ pub mod mcp_serve;
 pub mod proxy;
 pub mod register;
 pub mod status;
+pub mod update;
