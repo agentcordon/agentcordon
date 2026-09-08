@@ -53,6 +53,7 @@ everything else.
 |---|---|
 | **[CLI Reference](cli-reference.md)** | Every command and flag: `init`, `register`, `status`, `credentials`, `proxy`, `mcp-servers`, `mcp-tools`, `mcp-call` |
 | **[Releasing](releasing.md)** | Cutting a release: one `cargo release` command, what the tag triggers, pre-releases, what to do when a job fails |
+| **[Roadmap](roadmap.md)** | The ranked directions and why each belongs to this project: step-up approval with a passkey first, then impact preview, sub-agent attenuation, secretless cloud access, policy replay, an MCP firewall, data-flow policy, budgets, a red-team suite |
 | **[Domain glossary](../CONTEXT.md)** and **[decision records](adr/README.md)** | Every domain term as the code uses it, with the file it lives in; and one ADR per architectural decision |
 
 ---
